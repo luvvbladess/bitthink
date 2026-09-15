@@ -471,6 +471,33 @@ async def extract_text_from_zip_document(file_data: bytes, file_name: str) -> Op
     return await asyncio.to_thread(_extract)
 
 
+async def extract_zip_archive(file_data: bytes, archive_name: str, user_id: int = None) -> list[tuple[str, str]]:
+    """Разворачивает .zip и извлекает текст из каждого файла внутри через уже
+    существующий extract_text_from_file — никакой новой логики парсинга форматов.
+    Неподдерживаемые форматы внутри архива молча пропускаются (extract_text_from_file
+    вернёт None для них), как и служебные записи macOS/директории.
+    """
+    def _list_entries() -> list[tuple[str, bytes]]:
+        entries = []
+        with zipfile.ZipFile(io.BytesIO(file_data)) as archive:
+            for info in archive.infolist():
+                if info.is_dir():
+                    continue
+                path = Path(info.filename)
+                if path.name.startswith(".") or "__MACOSX" in path.parts:
+                    continue
+                entries.append((info.filename, archive.read(info.filename)))
+        return entries
+
+    entries = await asyncio.to_thread(_list_entries)
+    results: list[tuple[str, str]] = []
+    for name, data in entries:
+        text = await extract_text_from_file(data, name, user_id=user_id)
+        if text:
+            results.append((f"{archive_name}/{name}", text))
+    return results
+
+
 async def extract_text_from_rtf(file_data: bytes) -> str:
     text = await extract_text_from_txt(file_data)
     text = re.sub(r"\\'[0-9a-fA-F]{2}", " ", text)
