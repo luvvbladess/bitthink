@@ -1,0 +1,86 @@
+@import 'highlight.js/styles/github-dark.css';
+
+/* github-dark paints light tokens. In light theme those sit on --bt-panel white. */
+html[data-theme='light'] .hljs {
+  color: var(--bt-ink);
+  background: transparent;
+}
+
+html[data-theme='light'] .hljs-doctag,
+html[data-theme='light'] .hljs-keyword,
+html[data-theme='light'] .hljs-meta .hljs-keyword,
+html[data-theme='light'] .hljs-template-tag,
+html[data-theme='light'] .hljs-template-variable,
+html[data-theme='light'] .hljs-type,
+html[data-theme='light'] .hljs-variable.language_ {
+  color: #b42318;
+}
+
+html[data-theme='light'] .hljs-title,
+html[data-theme='light'] .hljs-title.class_,
+html[data-theme='light'] .hljs-title.class_.inherited__,
+html[data-theme='light'] .hljs-title.function_ {
+  color: #6f42c1;
+}
+
+html[data-theme='light'] .hljs-attr,
+html[data-theme='light'] .hljs-attribute,
+html[data-theme='light'] .hljs-literal,
+html[data-theme='light'] .hljs-meta,
+html[data-theme='light'] .hljs-number,
+html[data-theme='light'] .hljs-operator,
+html[data-theme='light'] .hljs-variable,
+html[data-theme='light'] .hljs-selector-attr,
+html[data-theme='light'] .hljs-selector-class,
+html[data-theme='light'] .hljs-selector-id {
+  color: #0550ae;
+}
+
+html[data-theme='light'] .hljs-regexp,
+html[data-theme='light'] .hljs-string,
+html[data-theme='light'] .hljs-meta .hljs-string {
+  color: #0a3069;
+}
+
+html[data-theme='light'] .hljs-built_in,
+html[data-theme='light'] .hljs-symbol {
+  color: #b35900;
+}
+
+html[data-theme='light'] .hljs-comment,
+html[data-theme='light'] .hljs-code,
+html[data-theme='light'] .hljs-formula {
+  color: var(--bt-ink-muted);
+}
+
+html[data-theme='light'] .hljs-name,
+html[data-theme='light'] .hljs-quote,
+html[data-theme='light'] .hljs-selector-tag,
+html[data-theme='light'] .hljs-selector-pseudo {
+  color: #116329;
+}
+
+html[data-theme='light'] .hljs-subst,
+html[data-theme='light'] .hljs-emphasis,
+html[data-theme='light'] .hljs-strong {
+  color: var(--bt-ink);
+}
+
+html[data-theme='light'] .hljs-section {
+  color: #0550ae;
+  font-weight: 700;
+}
+
+html[data-theme='light'] .hljs-bullet {
+  color: #735c0f;
+}
+
+html[data-theme='light'] .hljs-addition {
+  color: #116329;
+  background-color: transparent;
+}
+
+html[data-theme='light'] .hljs-deletion {
+  color: #b42318;
+  background-color: transparent;
+}

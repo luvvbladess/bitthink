@@ -1,0 +1,12 @@
+User-agent: *
+Allow: /
+Disallow: /chat
+Disallow: /settings
+Disallow: /billing
+Disallow: /admin
+Disallow: /api/
+Disallow: /login
+Disallow: /register
+
+Host: bit-think.space
+Sitemap: https://bit-think.space/sitemap.xml

@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-11T00:00:00Z",
+  "title": "Design System: GPT Ultra Web",
+  "extensions": {
+    "colorMeta": {
+      "obsidian-base": { "role": "neutral", "displayName": "Обсидиановая база", "canonical": "oklch(3% 0 0)", "tonalRamp": ["#020202", "#050505", "#0a0a0a", "#111111", "#1a1a1a", "#2a2a2a", "#3f3f3f", "#5a5a5a"] },
+      "glass-surface": { "role": "neutral", "displayName": "Стеклянная поверхность", "canonical": "oklch(9% 0 0 / 72%)", "tonalRamp": ["#050505", "#0a0a0a", "#0d0d0d", "#111111", "#1c1c1c", "#2e2e2e", "#484848", "#666666"] },
+      "violet-accent": { "role": "primary", "displayName": "Спокойный электрик-фиолет", "canonical": "oklch(64% 0.19 293)", "tonalRamp": ["#2c1a5c", "#4527a0", "#5f35c9", "#7c3aed", "#8b5cf6", "#a78bfa", "#c4b5fd", "#e4dbff"] },
+      "ink-primary": { "role": "neutral", "displayName": "Основной текст", "canonical": "oklch(97% 0.003 260)", "tonalRamp": ["#111111", "#33333a", "#55555e", "#71717a", "#a1a1aa", "#c7c7cf", "#e4e4e9", "#f5f5f7"] },
+      "cyan-whisper": { "role": "secondary", "displayName": "Шёпот циана", "canonical": "oklch(75% 0.13 224 / 12%)", "tonalRamp": ["#082a3a", "#0e4a63", "#146d90", "#1c93bd", "#38bdf8", "#7dd3fc", "#bae6fd", "#e0f6ff"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Герой-заголовки лендинга (h1). Не используется вне hero." },
+      "headline": { "displayName": "Headline", "purpose": "Заголовки секций (Возможности, Тарифы)." },
+      "title": { "displayName": "Title", "purpose": "Заголовки карточек, форм, модальных окон." },
+      "body": { "displayName": "Body", "purpose": "Основной текст и описания, до 60ch." },
+      "label": { "displayName": "Label", "purpose": "Навигация, кнопки, подписи полей — без uppercase." }
+    },
+    "shadows": [
+      { "name": "glass-ambient", "value": "0 8px 32px rgba(0,0,0,0.24)", "purpose": "Базовая тень под каждой стеклянной поверхностью." },
+      { "name": "glass-ambient-hover", "value": "0 8px 32px rgba(0,0,0,0.28)", "purpose": "Усиленная тень при hover интерактивного стекла." },
+      { "name": "accent-glow", "value": "0 8px 32px rgba(139,92,246,0.2)", "purpose": "Свечение вокруг основной CTA-кнопки в состоянии покоя." },
+      { "name": "accent-glow-hover", "value": "0 12px 40px rgba(139,92,246,0.33)", "purpose": "Усиленное свечение CTA-кнопки на hover." }
+    ],
+    "motion": [
+      { "name": "ease-standard", "value": "cubic-bezier(0.23, 1, 0.32, 1)", "purpose": "Стандартный easing для hover/active переходов кнопок и навигации." },
+      { "name": "duration-fast", "value": "0.2s", "purpose": "Быстрые переходы состояний (hover, focus)." },
+      { "name": "duration-reveal", "value": "0.6-0.8s", "purpose": "Fade-up + blur-reveal анимации при появлении в скролле (Framer Motion)." }
+    ],
+    "breakpoints": [
+      { "name": "xs", "value": "0px" },
+      { "name": "md", "value": "900px" },
+      { "name": "lg", "value": "1200px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Основная CTA-кнопка: заливка фиолетовым градиентом, акцентное свечение.",
+      "html": "<button class=\"ds-btn-primary\">Начать бесплатно</button>",
+      "css": ".ds-btn-primary { background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%); color: #ffffff; border: none; border-radius: 999px; padding: 12px 28px; font-weight: 600; box-shadow: 0 8px 32px rgba(139,92,246,0.2); transition: box-shadow 0.2s cubic-bezier(0.23,1,0.32,1), transform 0.2s cubic-bezier(0.23,1,0.32,1); } .ds-btn-primary:hover { box-shadow: 0 12px 40px rgba(139,92,246,0.33); transform: translateY(-1px); } .ds-btn-primary:active { transform: scale(0.98); } .ds-btn-primary:focus-visible { outline: 2px solid #a78bfa; outline-offset: 2px; }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Вторичная кнопка (Island): полупрозрачная стеклянная заливка.",
+      "html": "<button class=\"ds-btn-ghost\">Войти</button>",
+      "css": ".ds-btn-ghost { background: linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.05) 100%); color: #f5f5f7; border: 1px solid rgba(255,255,255,0.1); border-radius: 999px; padding: 10px 24px; font-weight: 600; box-shadow: 0 4px 24px rgba(0,0,0,0.2); transition: box-shadow 0.2s cubic-bezier(0.23,1,0.32,1), transform 0.2s cubic-bezier(0.23,1,0.32,1), background 0.2s; } .ds-btn-ghost:hover { background: linear-gradient(135deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0.07) 100%); box-shadow: 0 8px 32px rgba(0,0,0,0.28); transform: translateY(-1px); } .ds-btn-ghost:active { transform: scale(0.98); }"
+    },
+    {
+      "name": "Nav Pill",
+      "kind": "nav",
+      "refersTo": "nav-pill-active",
+      "description": "Пункт навигации в плавающем island-баре, активное и неактивное состояние.",
+      "html": "<a class=\"ds-nav-pill ds-nav-pill--active\" href=\"#\">Чат</a>",
+      "css": ".ds-nav-pill { display: inline-block; padding: 6px 16px; border-radius: 999px; font-size: 0.875rem; font-weight: 500; color: #a1a1aa; text-decoration: none; transition: all 0.2s cubic-bezier(0.23,1,0.32,1); } .ds-nav-pill:hover { color: #f5f5f7; background: rgba(255,255,255,0.05); } .ds-nav-pill--active { color: #ffffff; background: #8b5cf6; }"
+    },
+    {
+      "name": "Glass Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Сигнатурная стеклянная поверхность — фон для фич-карточек, форм, модалок.",
+      "html": "<div class=\"ds-card\"><div class=\"ds-card__inner\">Контент</div></div>",
+      "css": ".ds-card { position: relative; border-radius: 36px; background: rgba(255,255,255,0.03); box-shadow: 0 8px 32px rgba(0,0,0,0.24); padding: 24px; overflow: hidden; } .ds-card::before { content: ''; position: absolute; inset: 0; border-radius: inherit; padding: 1px; background: linear-gradient(135deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0.02) 50%, rgba(255,255,255,0.08) 100%); -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0); -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none; } .ds-card__inner { border-radius: 24px; background: rgba(13,13,13,0.6); box-shadow: inset 0 1px 1px rgba(255,255,255,0.06); }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Поле ввода формы: полупрозрачная заливка, фиолетовая обводка при фокусе.",
+      "html": "<input class=\"ds-input\" placeholder=\"Email\" />",
+      "css": ".ds-input { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 16px 14px; color: #f5f5f7; font-size: 1rem; transition: border-color 0.2s; } .ds-input:hover { border-color: rgba(255,255,255,0.2); } .ds-input:focus-visible { outline: none; border-color: #8b5cf6; }"
+    },
+    {
+      "name": "Thinking Indicator",
+      "kind": "custom",
+      "refersTo": "thinking-indicator",
+      "description": "Сигнатурный индикатор: орбитальные точки на пульсирующей фиолетовой подсветке, статус ответа ассистента.",
+      "html": "<div class=\"ds-thinking\"><span class=\"ds-thinking__pulse\"></span><span class=\"ds-thinking__dot\" style=\"animation-delay:0s\"></span><span class=\"ds-thinking__dot\" style=\"animation-delay:0.8s\"></span><span class=\"ds-thinking__dot\" style=\"animation-delay:1.6s\"></span></div>",
+      "css": "@keyframes ds-pulse { 0%, 100% { transform: scale(0.8); opacity: 0.4; } 50% { transform: scale(1.2); opacity: 1; } } @keyframes ds-orbit { 0% { transform: rotate(0deg) translateX(18px) rotate(0deg); } 100% { transform: rotate(360deg) translateX(18px) rotate(-360deg); } } .ds-thinking { position: relative; width: 48px; height: 48px; } .ds-thinking__pulse { position: absolute; inset: 0; border-radius: 50%; background: radial-gradient(circle, rgba(139,92,246,0.35) 0%, transparent 70%); animation: ds-pulse 2s ease-in-out infinite; } .ds-thinking__dot { position: absolute; top: 50%; left: 50%; width: 6px; height: 6px; margin-top: -3px; margin-left: -3px; border-radius: 50%; background: #a78bfa; opacity: 0.8; animation: ds-orbit 2.5s linear infinite; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Ethereal Glass",
+    "overview": "GPT Ultra Web живёт на почти чёрном OLED-фоне (#050505), над которым плавают полупрозрачные стеклянные поверхности с мягким blur и едва заметной обводкой. Единственный цветной голос в системе — спокойный электрик-фиолет (#8b5cf6): редкий, но уверенный акцент, а не крикливый неон. Глубина строится через слоистость стекла и мягкое свечение, а не через жёсткие тени — это спокойная, собранная премиальность, а не AI-хайп. Система явно отвергает: визуальную идентичность клона ChatGPT, типовые SaaS-штампы (hero-метрика, градиентный текст, uppercase-эйбрау, одинаковые bento-карточки). Приоритет всегда на стороне понятности для нетехнического платящего пользователя.",
+    "keyCharacteristics": [
+      "Глубокий почти-чёрный OLED-фон, а не тёмно-серый",
+      "Стеклянные поверхности: blur(20px), тонкая градиентная обводка 1px, мягкая внешняя тень",
+      "Один акцентный цвет — спокойный электрик-фиолет — используется избирательно",
+      "Скруглённые pill-формы для интерактивных элементов",
+      "Motion как отклик интерфейса, а не декоративный хаос"
+    ],
+    "rules": [
+      { "name": "The One Accent Rule", "body": "Фиолетовый — единственный смысловой цвет в интерфейсе. Циановое свечение в hero — декоративное исключение, не второй акцент.", "section": "colors" },
+      { "name": "The No-Shout Rule", "body": "Display-заголовки ограничены clamp(..., 6vw, 5rem) — крупно, но никогда не крикливо; letter-spacing никогда не уходит теснее -0.04em.", "section": "typography" },
+      { "name": "The Blur-Not-Shadow Rule", "body": "Глубина строится через blur и полупрозрачность в первую очередь; жёсткие чёрные drop-shadow запрещены.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do держать фон почти чистым чёрным (#050505) — не тёмно-серым и не «тёплым» тёмным.",
+      "Do использовать фиолетовый (#8b5cf6) как единственный смысловой акцент.",
+      "Do строить глубину через blur + полупрозрачность + мягкую обводку.",
+      "Do держать все интерактивные формы pill-образными (999px) с плавными переходами.",
+      "Do проверять контраст text.secondary/text.muted на фоне #050505."
+    ],
+    "donts": [
+      "Don't делать интерфейс похожим на клон ChatGPT.",
+      "Don't использовать типовые SaaS-штампы: hero-метрику, градиентный текст, одинаковые bento-карточки.",
+      "Don't повторять hero-бейдж как эйбрау над каждой секцией.",
+      "Don't добавлять второй насыщенный цвет помимо фиолетового.",
+      "Don't использовать жёсткие контрастные drop-shadow вместо blur/полупрозрачности."
+    ]
+  }
+}

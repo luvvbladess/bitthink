@@ -1,0 +1,53 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.mypy_cache/
+
+# Node
+node_modules/
+dist/
+build/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Runtime data & uploads
+data/
+backend/data/
+backend/uploads/*
+!backend/uploads/.gitkeep
+workspaces/
+users.json
+backend/users.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local secrets (never commit)
+new_password*.txt
+serv.txt
+
+# Scratch/debug scripts and logs at repo root
+/_*.py
+deploy.log
+
+# Archives, caches and scratch generated at repo root
+*.tar.gz
+graphify-out/
+.tmp-pptx-slides/
+tmp/
+Stolzl (1).zip
+_staffing_*.jpg
