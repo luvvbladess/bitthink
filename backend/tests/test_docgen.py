@@ -1,40 +1,18 @@
 from app.config import get_settings  # noqa: F401 — adds bot_core to sys.path
 
-from docgen_router import Chunk, _build_context_block, _extract_source_chunks, _select_relevant_chunks, _parse_outline_response
+from docgen_router import (
+    Chunk,
+    _build_context_block,
+    _classify_documents_hint,
+    _document_previews,
+    _select_relevant_chunks,
+    _parse_outline_response,
+)
 
-
-def _doc_message(name: str, body: str) -> dict:
-    return {
-        "role": "system",
-        "content": f"Пользователь предоставил документ для контекста: {name}\n\nСодержание:\n{body}",
-    }
-
-
-def test_extract_source_chunks_splits_on_page_markers():
-    pages = "\n\n".join(f"--- Страница {i} ---\nТекст страницы номер {i}." for i in range(1, 6))
-    messages = [_doc_message("spec.pdf", pages), {"role": "user", "content": "Сделай документ"}]
-
-    chunks = _extract_source_chunks(messages)
-
-    assert len(chunks) == 5
-    assert all(c.doc_name == "spec.pdf" for c in chunks)
-    assert "страницы номер 3" in chunks[2].text.lower()
-
-
-def test_extract_source_chunks_falls_back_to_fixed_size_without_markers():
-    body = "слово " * 2000  # long plain text, no page markers
-    messages = [_doc_message("plain.txt", body)]
-
-    chunks = _extract_source_chunks(messages)
-
-    assert len(chunks) > 1
-    assert all(chunk.doc_name == "plain.txt" for chunk in chunks)
-
-
-def test_extract_source_chunks_returns_empty_without_documents():
-    messages = [{"role": "user", "content": "Просто вопрос"}]
-
-    assert _extract_source_chunks(messages) == []
+# _extract_source_chunks(user_id) now reads via conversation_manager.get_documents
+# (a raw DB read) instead of parsing chat messages — no cheap way to exercise that
+# without a real DB, so per the task-9 brief it goes without a unit test here,
+# same as _plan_outline/_write_section (covered by the manual smoke check instead).
 
 
 def test_select_relevant_chunks_ranks_keyword_match_first():
@@ -99,3 +77,41 @@ def test_parse_outline_response_skips_items_without_title():
     sections = _parse_outline_response(response)
 
     assert [s.title for s in sections] == ["Есть заголовок"]
+
+
+def test_classify_documents_hint_names_template_and_knowledge_files():
+    chunks = [
+        Chunk(id=0, doc_name="шаблон_итт.docx", title="t", text="x", tokens=frozenset()),
+        Chunk(id=1, doc_name="данные.xlsx", title="t", text="x", tokens=frozenset()),
+    ]
+
+    hint = _classify_documents_hint(chunks)
+
+    assert hint != ""
+    assert "шаблон_итт.docx" in hint
+    assert "данные.xlsx" in hint
+
+
+def test_classify_documents_hint_empty_without_template_like_names():
+    chunks = [
+        Chunk(id=0, doc_name="данные.xlsx", title="t", text="x", tokens=frozenset()),
+        Chunk(id=1, doc_name="отчёт.docx", title="t", text="x", tokens=frozenset()),
+    ]
+
+    assert _classify_documents_hint(chunks) == ""
+
+
+def test_document_previews_produces_labeled_blocks_capped_per_doc():
+    chunks = [
+        Chunk(id=0, doc_name="a.docx", title="t", text="A" * 2000, tokens=frozenset()),
+        Chunk(id=1, doc_name="b.docx", title="t", text="B" * 2000, tokens=frozenset()),
+    ]
+
+    previews = _document_previews(chunks, budget_per_doc=1500)
+
+    assert "--- a.docx (начало файла) ---" in previews
+    assert "--- b.docx (начало файла) ---" in previews
+    a_block = previews.split("--- b.docx")[0]
+    assert a_block.count("A") == 1500
+    b_block = previews.split("--- b.docx")[1]
+    assert b_block.count("B") == 1500

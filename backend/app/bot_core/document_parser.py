@@ -21,8 +21,10 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
-async def extract_text_from_docx(file_data: bytes) -> str:
+async def extract_text_from_docx(file_data: bytes, extended_limits: bool = False) -> str:
     """Извлекает текст из DOCX файла в отдельном потоке."""
+    max_chars = MAX_EXTRACT_CHARS_EXTENDED if extended_limits else MAX_EXTRACT_CHARS
+
     def _extract():
         try:
             doc = Document(io.BytesIO(file_data))
@@ -56,8 +58,8 @@ async def extract_text_from_docx(file_data: bytes) -> str:
                         text_parts.append(" | ".join(row_text))
             
             result = "\n".join(text_parts)
-            if len(result) > MAX_EXTRACT_CHARS:
-                result = result[:MAX_EXTRACT_CHARS] + "\n\n[Текст обрезан: файл слишком длинный для одного сообщения.]"
+            if len(result) > max_chars:
+                result = result[:max_chars] + "\n\n[Текст обрезан: файл слишком длинный для одного сообщения.]"
             return result
         except Exception as e:
             return f"Ошибка при чтении DOCX: {str(e)}"
@@ -69,9 +71,11 @@ MAX_IMAGES_PER_PDF = 8
 MIN_IMAGE_SIZE = 5000
 MIN_IMAGE_DIMENSION = 80
 MAX_PDF_PAGES = 40
+MAX_PDF_PAGES_EXTENDED = 200
 MAX_PDF_TABLE_PAGES = 6
 MAX_PDF_BYTES = 20 * 1024 * 1024
 MAX_EXTRACT_CHARS = 180_000
+MAX_EXTRACT_CHARS_EXTENDED = 800_000
 MAX_ARCHIVE_ENTRIES = 200
 MAX_ARCHIVE_UNPACKED_BYTES = 200 * 1024 * 1024  # 200 MB
 _OCR_MAX_SIDE = 1800
@@ -228,11 +232,13 @@ async def extract_tables_from_pdf_page(page) -> str:
         return ""
 
 
-async def extract_text_from_pdf(file_data: bytes, status_callback=None, user_id: int = None) -> str:
+async def extract_text_from_pdf(file_data: bytes, status_callback=None, user_id: int = None, extended_limits: bool = False) -> str:
     """
     Извлекает текст из PDF файла, включая распознавание текста на изображениях.
     Тяжёлое извлечение вынесено в поток. Большие PDF читаются частично, без pdfplumber на сотнях страниц.
     """
+    max_pages = MAX_PDF_PAGES_EXTENDED if extended_limits else MAX_PDF_PAGES
+    max_chars = MAX_EXTRACT_CHARS_EXTENDED if extended_limits else MAX_EXTRACT_CHARS
     try:
         def _extract_base_data():
             if len(file_data) > MAX_PDF_BYTES:
@@ -249,7 +255,7 @@ async def extract_text_from_pdf(file_data: bytes, status_callback=None, user_id:
             notice = ""
             with fitz.open(stream=file_data, filetype="pdf") as fitz_doc:
                 num_pages = len(fitz_doc)
-                take = min(num_pages, MAX_PDF_PAGES)
+                take = min(num_pages, max_pages)
                 if num_pages > take:
                     notice = (
                         f"В файле {num_pages} страниц. Прочитал первые {take} – "
@@ -363,8 +369,8 @@ async def extract_text_from_pdf(file_data: bytes, status_callback=None, user_id:
 
         chunks = [notice] + text_parts if notice else text_parts
         joined = "\n\n".join(item for item in chunks if item)
-        if len(joined) > MAX_EXTRACT_CHARS:
-            joined = joined[:MAX_EXTRACT_CHARS] + "\n\n[Текст обрезан: файл слишком длинный для одного сообщения.]"
+        if len(joined) > max_chars:
+            joined = joined[:max_chars] + "\n\n[Текст обрезан: файл слишком длинный для одного сообщения.]"
         return joined
     except Exception as e:
         logger.error(f"Error in extract_text_from_pdf: {e}", exc_info=True)
@@ -473,7 +479,7 @@ async def extract_text_from_zip_document(file_data: bytes, file_name: str) -> Op
     return await asyncio.to_thread(_extract)
 
 
-async def extract_zip_archive(file_data: bytes, archive_name: str, user_id: int = None) -> list[tuple[str, str]]:
+async def extract_zip_archive(file_data: bytes, archive_name: str, user_id: int = None, extended_limits: bool = False) -> list[tuple[str, str]]:
     """Разворачивает .zip и извлекает текст из каждого файла внутри через уже
     существующий extract_text_from_file — никакой новой логики парсинга форматов.
     Неподдерживаемые форматы внутри архива молча пропускаются (extract_text_from_file
@@ -511,7 +517,7 @@ async def extract_zip_archive(file_data: bytes, archive_name: str, user_id: int 
     entries = await asyncio.to_thread(_list_entries)
     results: list[tuple[str, str]] = []
     for name, data in entries:
-        text = await extract_text_from_file(data, name, user_id=user_id)
+        text = await extract_text_from_file(data, name, user_id=user_id, extended_limits=extended_limits)
         if text:
             results.append((f"{archive_name}/{name}", text))
     return results
@@ -531,26 +537,27 @@ async def extract_text_from_html(file_data: bytes) -> str:
     return await asyncio.to_thread(lambda: BeautifulSoup(text, "html.parser").get_text("\n", strip=True))
 
 
-async def extract_text_from_file(file_data: bytes, file_name: str, status_callback=None, user_id: int = None) -> Optional[str]:
+async def extract_text_from_file(file_data: bytes, file_name: str, status_callback=None, user_id: int = None, extended_limits: bool = False) -> Optional[str]:
     """
     Определяет тип файла и извлекает текст.
-    
+
     Args:
         file_data: Байты файла
         file_name: Имя файла
         status_callback: Опциональная async-функция для обновления статуса
-        
+        extended_limits: Использовать повышенные лимиты извлечения (для docgen)
+
     Returns:
         Извлеченный текст или None, если формат не поддерживается
     """
     file_name_lower = file_name.lower()
-    
+
     suffix = Path(file_name_lower).suffix
 
     if suffix == '.docx':
-        return await extract_text_from_docx(file_data)
+        return await extract_text_from_docx(file_data, extended_limits=extended_limits)
     elif suffix == '.pdf':
-        return await extract_text_from_pdf(file_data, status_callback=status_callback, user_id=user_id)
+        return await extract_text_from_pdf(file_data, status_callback=status_callback, user_id=user_id, extended_limits=extended_limits)
     elif suffix in {'.xlsx', '.xls'}:
         return await extract_text_from_excel(file_data, file_name)
     elif suffix in {'.pptx', '.odt', '.ods', '.odp', '.epub'}:

@@ -50,20 +50,6 @@ def _tokenize(text: str) -> set:
     return {t.lower() for t in _TOKEN_RE.findall(text or "")}
 
 
-def _extract_document_context(messages: List[Dict[str, Any]]) -> str:
-    """Достаёт системные сообщения с текстом прикреплённых документов — тот же
-    приём, что уже использует hybrid_router.py и director_router.py."""
-    doc_parts = []
-    for m in messages:
-        if m.get("role") == "system":
-            content = m.get("content", "")
-            if "не подмешан" in content:
-                continue  # каталожная заглушка, а не реальный текст документа
-            if "документ для контекста" in content or "предоставил документ" in content:
-                doc_parts.append(content)
-    return "\n\n".join(doc_parts)
-
-
 def _split_into_chunks(doc_name: str, text: str, start_id: int) -> List[Chunk]:
     pieces = [p.strip() for p in _PAGE_MARKER.split(text) if p.strip()]
     chunks: List[Chunk] = []
@@ -82,16 +68,17 @@ def _split_into_chunks(doc_name: str, text: str, start_id: int) -> List[Chunk]:
     return chunks
 
 
-def _extract_source_chunks(messages: List[Dict[str, Any]]) -> List[Chunk]:
-    from studio.briefing import iter_attached_docs
+def _extract_source_chunks(user_id: int) -> List[Chunk]:
+    from conversations import conversation_manager
 
-    document_context = _extract_document_context(messages)
-    docs = iter_attached_docs(document_context)
+    docs = conversation_manager.get_documents(int(user_id))
     chunks: List[Chunk] = []
-    for name, body in docs:
+    for doc in docs:
+        name = str(doc.get("filename") or "документ")
+        body = str(doc.get("content") or "")
         if not body:
             continue
-        chunks.extend(_split_into_chunks(name or "документ", body, len(chunks)))
+        chunks.extend(_split_into_chunks(name, body, len(chunks)))
     return chunks
 
 
@@ -128,6 +115,45 @@ def _build_context_block(chunks: List[Chunk], budget: int) -> str:
     return "\n\n".join(parts)
 
 
+_TEMPLATE_NAME_RE = re.compile(r"(?i)(шаблон|образец|форма|бланк|пример|template|form|sample)")
+
+
+def _classify_documents_hint(chunks: List[Chunk]) -> str:
+    """Дешёвая подсказка планировщику по именам файлов —
+    что похоже на шаблон оформления, а что на базу знаний. Планировщик
+    вправе проигнорировать её, если пользователь в запросе явно называет
+    другой файл шаблоном — это только эвристика на случай, когда
+    пользователь не сказал прямо."""
+    seen: List[str] = []
+    for c in chunks:
+        if c.doc_name not in seen:
+            seen.append(c.doc_name)
+    template_like = [n for n in seen if _TEMPLATE_NAME_RE.search(n)]
+    if not template_like:
+        return ""
+    knowledge_like = [n for n in seen if n not in template_like]
+    return (
+        f"По именам файлов похоже на шаблон оформления: {', '.join(template_like)}. "
+        f"Остальное похоже на базу знаний: {', '.join(knowledge_like) or '(нет других файлов)'}. "
+        "Это только подсказка по имени файла — если пользователь в запросе прямо называет "
+        "другой файл шаблоном, доверяй запросу, а не этой подсказке."
+    )
+
+
+def _document_previews(chunks: List[Chunk], budget_per_doc: int = 1500) -> str:
+    order: List[str] = []
+    bodies: Dict[str, str] = {}
+    for c in chunks:
+        if c.doc_name not in bodies:
+            order.append(c.doc_name)
+            bodies[c.doc_name] = ""
+        if len(bodies[c.doc_name]) < budget_per_doc:
+            bodies[c.doc_name] += c.text
+    return "\n\n".join(
+        f"--- {name} (начало файла) ---\n{bodies[name][:budget_per_doc]}" for name in order
+    )
+
+
 def _parse_outline_response(response_text: str) -> List[Section]:
     cleaned = (response_text or "").strip()
     if cleaned.startswith("```"):
@@ -159,6 +185,9 @@ async def _plan_outline(user_text: str, chunks: List[Chunk], user_id: int) -> Li
     else:
         catalog = "(исходники не найдены — опирайся только на запрос пользователя)"
 
+    classification_hint = _classify_documents_hint(chunks)
+    document_previews = _document_previews(chunks)
+
     prompt = (
         "Построй план большого документа по запросу пользователя.\n"
         "Верни СТРОГО JSON-массив объектов без markdown-обёрток и без пояснений. "
@@ -168,7 +197,14 @@ async def _plan_outline(user_text: str, chunks: List[Chunk], user_id: int) -> Li
         "complexity=complex — для расчётов, таблиц с цифрами, юридических формулировок, "
         "технических требований с точными значениями. Остальное — simple.\n\n"
         f"Запрос пользователя:\n{user_text}\n\n"
-        f"Заголовки доступных фрагментов исходников (id: заголовок):\n{catalog}"
+        f"Заголовки доступных фрагментов исходников (id: заголовок):\n{catalog}\n\n"
+        "Если запрос пользователя или подсказка ниже указывают, что один из документов — шаблон\n"
+        "оформления (пример структуры для итогового документа), построй список разделов, максимально\n"
+        "повторяя структуру (заголовки, их порядок) этого документа, а не придумывай новую. Слова\n"
+        "пользователя в запросе всегда важнее подсказки по имени файла. Если ни то ни другое не\n"
+        "указывает на шаблон, построй план свободно по сути запроса и остальных материалов.\n\n"
+        f"{classification_hint}\n\n"
+        f"Начало каждого документа (для распознавания шаблона):\n{document_previews}"
     )
     messages = [
         {"role": "system", "content": "Ты планировщик документов. Отвечаешь только валидным JSON-массивом."},
@@ -250,7 +286,6 @@ async def _update_status(status_msg: Any, text: str) -> None:
 
 
 async def get_docgen_response(
-    messages: List[Dict[str, Any]],
     user_text: str,
     user_id: int,
     status_msg: Any,
@@ -259,20 +294,19 @@ async def get_docgen_response(
 
     token = billing_pool.set("computer")
     try:
-        return await _run_docgen(messages, user_text, user_id, status_msg)
+        return await _run_docgen(user_text, user_id, status_msg)
     finally:
         billing_pool.reset(token)
 
 
 async def _run_docgen(
-    messages: List[Dict[str, Any]],
     user_text: str,
     user_id: int,
     status_msg: Any,
 ) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
     """Режим Документы: план -> параллельная генерация разделов -> сборка в .docx."""
     await _update_status(status_msg, "📄 Читаю исходники и строю план документа...")
-    chunks = _extract_source_chunks(messages)
+    chunks = _extract_source_chunks(user_id)
     no_sources = not chunks
     outline = await _plan_outline(user_text, chunks, user_id)
 
