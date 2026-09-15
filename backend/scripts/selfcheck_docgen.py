@@ -188,11 +188,34 @@ async def check_failed_sections_are_reported():
     print("OK: failed sections — counted and reported, document still assembled")
 
 
+async def check_truncated_sources_are_reported():
+    from document_parser import TEXT_TRUNCATED_NOTICE
+
+    _set_documents([
+        {"filename": KNOWLEDGE_FILE, "content": "Мощность 2500 кВт." + TEXT_TRUNCATED_NOTICE},
+        {"filename": TEMPLATE_FILE, "content": "ИСХОДНО-ТЕХНИЧЕСКИЕ ТРЕБОВАНИЯ\n1. Общие положения\n"},
+    ])
+    _install_fakes(PLAN_JSON)
+
+    summary, files, _, _ = await dg.get_docgen_response("Сделай ИТТ", 777, FakeStatus())
+
+    assert files and files[0]["bytes"][:2] == b"PK"
+    assert "Прочитаны не целиком" in summary, (
+        f"a source truncated at upload time was not reported: {summary}"
+    )
+    assert KNOWLEDGE_FILE in summary, f"the truncated file was not named: {summary}"
+    assert TEMPLATE_FILE not in summary.split("Прочитаны не целиком")[1], (
+        f"an untruncated file was wrongly reported as truncated: {summary}"
+    )
+    print("OK: truncated sources — named in the summary, with what to do about it")
+
+
 async def main() -> None:
     await check_happy_path()
     await check_no_sources()
     await check_planning_failure_is_reported()
     await check_failed_sections_are_reported()
+    await check_truncated_sources_are_reported()
     print("OK: docgen pipeline self-check passed")
 
 
