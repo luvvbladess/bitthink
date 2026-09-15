@@ -144,3 +144,185 @@ Resolves the "thousands of pages of *source*" gap the final review found. Three 
 - `messages` parameter removal: confirm no other function in `docgen_router.py` still expects it, and the one call site in `handlers/core.py` is updated to match.
 - `extended_limits` threading: confirm it reaches the *innermost* extraction functions (PDF page loop, plain-text char cap) and not just the outer dispatcher — a parameter that's accepted but not actually used anywhere downstream is a silent no-op bug.
 - The classification hint must never be presented as more authoritative than the user's own words — re-read the prompt wording in Change B, item 3, and preserve that priority ordering exactly.
+
+**Status:** Task 9 implemented, reviewed (both named risks independently verified), merged. Fix-wave-1 (commit `8cf6143`) also got its scoped re-review — all 6 findings ADDRESSED, no new breakage. The whole plan (Tasks 1-9 + fix-wave-1) was merged to `main` (commit `e363aa0`, fast-forward, branch `docgen-mode` deleted). **Task 10 below is a further refinement**, requested by the user after reviewing the merged result: template-vs-knowledge role currently only shapes the *outline* (Change B, above) — it was never threaded into per-*section* retrieval, so `_write_section` presents template and knowledge content to the writer model as one undifferentiated pool. Task 10 closes that gap.
+
+---
+
+## Task 10: Carry the template/knowledge distinction into per-section writing
+
+**Why:** `_plan_outline` already determines (via the planner LLM, respecting the user's explicit words over the filename heuristic) which attached document, if any, is the structural template — but that determination is currently used only to shape the outline's section list, then discarded. `_write_section`'s own retrieval (`_select_relevant_chunks` → `_build_context_block`) treats all chunks as one undifferentiated pool regardless of which document they came from, so the writer model never gets an explicit "this is formatting reference" vs "this is a content fact" signal for the fragments it's given. Fix: make `_plan_outline` return which document it identified as the template (not just the section list), and thread that identifier into every `_write_section` call so the same, single determination (not a second, independently-computed one) labels retrieved content by role.
+
+**File:** `backend/app/bot_core/docgen_router.py` (all changes in this one file; only the current bodies of `_parse_outline_response`, `_plan_outline`, `_build_context_block`, `_write_section`, `_run_docgen` change — nothing else does)
+
+### Change 1 — `_parse_outline_response` returns `(sections, template_document)`
+
+Current signature: `def _parse_outline_response(response_text: str) -> List[Section]:`, parsing a bare JSON array.
+
+New signature: `def _parse_outline_response(response_text: str) -> Tuple[List[Section], Optional[str]]:`, parsing a JSON **object** shaped `{"template_document": "имя_файла.docx" | null, "sections": [...]}` instead of a bare array (the `sections` array's own item shape is unchanged — still `{"title", "brief", "complexity"}` per item).
+
+```python
+def _parse_outline_response(response_text: str) -> Tuple[List[Section], Optional[str]]:
+    cleaned = (response_text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\n", "", cleaned)
+        cleaned = re.sub(r"\n```$", "", cleaned)
+    try:
+        raw = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return [], None
+    if not isinstance(raw, dict):
+        return [], None
+    raw_sections = raw.get("sections")
+    if not isinstance(raw_sections, list):
+        return [], None
+    sections: List[Section] = []
+    for i, item in enumerate(raw_sections):
+        if not isinstance(item, dict) or not item.get("title"):
+            continue
+        complexity = item.get("complexity") if item.get("complexity") in ("simple", "complex") else "simple"
+        sections.append(Section(
+            id=i,
+            title=str(item["title"])[:200],
+            brief=str(item.get("brief", ""))[:500],
+            complexity=complexity,
+        ))
+    template_document = raw.get("template_document")
+    template_document = template_document.strip() if isinstance(template_document, str) and template_document.strip() else None
+    return sections[:MAX_SECTIONS], template_document
+```
+
+Add `Optional` to the existing `from typing import Any, Dict, List, Tuple` import line (becomes `from typing import Any, Dict, List, Optional, Tuple`).
+
+### Change 2 — `_plan_outline` asks for and returns `template_document`
+
+New signature: `async def _plan_outline(user_text: str, chunks: List[Chunk], user_id: int) -> Tuple[List[Section], Optional[str]]:`
+
+Update the prompt's format instruction and priority-ordering paragraph (replacing the current "Если запрос пользователя или подсказка..." paragraph) to ask for the new object shape and name the field explicitly:
+
+```python
+    prompt = (
+        "Построй план большого документа по запросу пользователя.\n"
+        "Верни СТРОГО JSON-объект без markdown-обёрток и без пояснений, в формате:\n"
+        '{"template_document": "точное имя файла из списка ниже" | null, '
+        '"sections": [{"title": "Название раздела", "brief": "Что должно быть в разделе, 1-3 предложения", '
+        '"complexity": "simple" | "complex"}, ...]}.\n'
+        "complexity=complex — для расчётов, таблиц с цифрами, юридических формулировок, "
+        "технических требований с точными значениями. Остальное — simple.\n\n"
+        f"Запрос пользователя:\n{user_text}\n\n"
+        f"Заголовки доступных фрагментов исходников (id: заголовок):\n{catalog}\n\n"
+        "template_document — точное имя одного из документов ниже, ТОЛЬКО если запрос пользователя\n"
+        "или подсказка ниже указывают, что этот документ — шаблон оформления (пример структуры для\n"
+        "итогового документа). Слова пользователя в запросе всегда важнее подсказки по имени файла.\n"
+        "Если ни то ни другое не указывает на шаблон, верни template_document: null. Если\n"
+        "template_document задан, построй список разделов, максимально повторяя структуру (заголовки,\n"
+        "их порядок) этого документа, а не придумывай новую; иначе строй план свободно по сути запроса\n"
+        "и остальных материалов.\n\n"
+        f"{classification_hint}\n\n"
+        f"Начало каждого документа (для распознавания шаблона):\n{document_previews}"
+    )
+```
+
+(Same variable references — `catalog`, `classification_hint`, `document_previews` — as the current function already builds; only the prompt's instruction text and requested JSON shape change.)
+
+Update the system message too: `"Ты планировщик документов. Отвечаешь только валидным JSON-объектом."` (was "JSON-массивом").
+
+Update the try/except body:
+```python
+    try:
+        response_text, _, _, _ = await get_chat_response(
+            messages, model=PLANNER_MODEL, user_id=user_id, use_tools=False, use_skills=False,
+        )
+        sections, template_document = _parse_outline_response(response_text)
+        if sections:
+            return sections, template_document
+    except Exception as e:
+        logger.error(f"docgen outline planning failed: {e}", exc_info=True)
+    return [Section(id=0, title="Документ", brief=user_text[:500], complexity="complex")], None
+```
+
+### Change 3 — `_build_context_block` labels template vs knowledge content when a template is known
+
+New signature: `def _build_context_block(chunks: List[Chunk], budget: int, template_name: Optional[str] = None) -> str:`
+
+Extract the current function's body into a small helper `_join_labeled` (identical logic, just renamed so it can be reused for both the template and knowledge halves), then have `_build_context_block` split by `chunk.doc_name == template_name` when `template_name` is given, labeling each non-empty half; falls back to the old unlabeled single-block behavior when `template_name` is `None` (preserves the existing default-call behavior exactly — this is what keeps the plan's already-committed `test_build_context_block_respects_char_budget` test passing unchanged, since it calls `_build_context_block(chunks, budget=8000)` with no third argument):
+
+```python
+def _join_labeled(chunks: List[Chunk], budget: int) -> str:
+    parts = []
+    remaining = budget
+    for chunk in chunks:
+        if remaining <= 0:
+            break
+        piece = chunk.text[:remaining]
+        parts.append(f"[{chunk.doc_name}] {piece}")
+        remaining -= len(piece)
+    return "\n\n".join(parts)
+
+
+def _build_context_block(chunks: List[Chunk], budget: int, template_name: Optional[str] = None) -> str:
+    if not chunks:
+        return ""
+    if not template_name:
+        return _join_labeled(chunks, budget)
+    template_chunks = [c for c in chunks if c.doc_name == template_name]
+    knowledge_chunks = [c for c in chunks if c.doc_name != template_name]
+    if not knowledge_chunks:
+        return f"Формат по шаблону:\n{_join_labeled(template_chunks, budget)}"
+    if not template_chunks:
+        return f"Факты из базы знаний:\n{_join_labeled(knowledge_chunks, budget)}"
+    half = budget // 2
+    template_block = _join_labeled(template_chunks, half)
+    knowledge_block = _join_labeled(knowledge_chunks, budget - len(template_block))
+    return f"Формат по шаблону:\n{template_block}\n\nФакты из базы знаний:\n{knowledge_block}"
+```
+
+### Change 4 — thread `template_document` through `_write_section` and `_run_docgen`
+
+`_write_section` gains one optional parameter, used only to pass through to `_build_context_block`:
+
+```python
+async def _write_section(
+    section: Section, chunks: List[Chunk], previous_tail: str, user_id: int,
+    template_document: Optional[str] = None,
+) -> str:
+    relevant = _select_relevant_chunks(section.title, section.brief, chunks)
+    context_block = _build_context_block(relevant, MAX_CHUNK_CHARS_PER_SECTION, template_document)
+    ...  # rest of the function body is unchanged
+```
+
+In `_run_docgen`, update the outline call site and the per-batch job list:
+
+```python
+    outline, template_document = await _plan_outline(user_text, chunks, user_id)
+    ...
+    jobs = [
+        _write_section(section, chunks, previous_tail, user_id, template_document)
+        for section in batch
+    ]
+```
+
+(Everything else in `_run_docgen` — status updates, batching loop, markdown assembly, docx conversion — is unchanged.)
+
+### Testing
+
+Update the existing outline-parsing tests in `backend/tests/test_docgen.py` (they currently assert against a bare-array response and a `List[Section]` return value — both need updating for the new object-shaped response and `Tuple[List[Section], Optional[str]]` return):
+
+- `test_parse_outline_response_extracts_sections_from_fenced_json`: change the fixture's fenced JSON from an array to `{"template_document": null, "sections": [...]}` (or omit the key entirely — both must work), unpack `sections, template = _parse_outline_response(response)`, assert on `sections` as before plus `template is None`.
+- `test_parse_outline_response_returns_empty_on_garbage`: `assert _parse_outline_response("не json вообще") == ([], None)`.
+- `test_parse_outline_response_defaults_unknown_complexity_to_simple` / `test_parse_outline_response_skips_items_without_title`: wrap their fixture JSON in `{"sections": [...]}` and unpack the tuple return.
+- Add one new test: a fixture with `"template_document": "шаблон.docx"` set produces `template == "шаблон.docx"` from the unpacked tuple.
+
+Add tests for `_build_context_block`'s new labeling behavior:
+- `test_build_context_block_labels_template_and_knowledge_when_both_present`: chunks from two different `doc_name`s, `template_name` set to one of them — result contains both "Формат по шаблону:" and "Факты из базы знаний:" labels, each followed by content from the correct chunk's `doc_name`.
+- `test_build_context_block_falls_back_when_template_name_missing_from_chunks`: `template_name` set to a filename that doesn't match any chunk's `doc_name` — result is a single "Факты из базы знаний:" block containing all chunks (the `not template_chunks` branch), not an error.
+- The existing `test_build_context_block_respects_char_budget` test is unchanged (still calls with 2 positional args) and must still pass — confirms the no-template-name default path is untouched.
+
+No test is needed for `_plan_outline`'s prompt-string changes or `_write_section`'s new parameter itself (same reasoning as the rest of this plan: these touch a live LLM call and aren't unit-testable without mocking, which this plan avoids) — covered by a manual smoke check instead: extend the Task 6/9-style throwaway monkeypatch script so the fake planner response includes `"template_document"` and confirm the fake writer's received prompt contains the "Формат по шаблону:"/"Факты из базы знаний:" labels when the fixture has a matching document.
+
+### Self-review checklist
+
+- Every one of the 4 changes stays inside `docgen_router.py` — no other file should appear in this task's diff.
+- `_parse_outline_response`'s new return shape (`Tuple[List[Section], Optional[str]]`) and `_plan_outline`'s matching new return shape must agree exactly — a mismatch here is a silent `ValueError: not enough values to unpack` the first time `_run_docgen` calls `_plan_outline`.
+- The existing `test_build_context_block_respects_char_budget` test must still pass unmodified — if it needed changing, something about backward compatibility broke.
+- Re-confirm the priority-ordering rule (user's words in the prompt beat the filename heuristic) survives in the rewritten prompt text from Change 2 — this was flagged as the single most important thing to get right in Task 9 and applies here too.
