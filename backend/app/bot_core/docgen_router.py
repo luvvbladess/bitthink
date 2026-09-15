@@ -227,3 +227,57 @@ async def _write_section(section: Section, chunks: List[Chunk], previous_tail: s
     except Exception as e:
         logger.error(f"docgen section '{section.title}' failed: {e}")
         return f"[Не удалось сгенерировать раздел: {str(e)[:200]}]"
+
+
+async def _update_status(status_msg: Any, text: str) -> None:
+    if not status_msg:
+        return
+    try:
+        await status_msg.edit_text(text, parse_mode="Markdown")
+    except Exception as e:
+        logger.debug(f"Failed to edit docgen status message: {e}")
+
+
+async def get_docgen_response(
+    messages: List[Dict[str, Any]],
+    user_text: str,
+    user_id: int,
+    status_msg: Any,
+) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
+    """Режим Документы: план -> параллельная генерация разделов -> сборка в .docx."""
+    await _update_status(status_msg, "📄 Читаю исходники и строю план документа...")
+    chunks = _extract_source_chunks(messages)
+    outline = await _plan_outline(user_text, chunks, user_id)
+
+    total = len(outline)
+    await _update_status(status_msg, f"📄 План готов: {total} раздел(ов). Пишу текст...")
+
+    section_texts: List[str] = [""] * total
+    previous_tail = ""
+    done = 0
+    for batch_start in range(0, total, MAX_PARALLEL_SECTIONS):
+        batch = outline[batch_start:batch_start + MAX_PARALLEL_SECTIONS]
+        jobs = [_write_section(section, chunks, previous_tail, user_id) for section in batch]
+        results = await asyncio.gather(*jobs)
+        for offset, text in enumerate(results):
+            section_texts[batch_start + offset] = text
+        if results and results[-1]:
+            previous_tail = results[-1][-500:]
+        done += len(batch)
+        await _update_status(status_msg, f"📄 Раздел {done} из {total}...")
+
+    await _update_status(status_msg, "📄 Собираю итоговый .docx...")
+    full_markdown = "\n\n".join(
+        f"## {section.title}\n\n{text}" for section, text in zip(outline, section_texts)
+    )
+
+    from docx_generator import convert_markdown_to_docx
+    try:
+        docx_bytes = await asyncio.to_thread(convert_markdown_to_docx, full_markdown)
+    except Exception as e:
+        logger.error(f"docgen docx assembly failed: {e}", exc_info=True)
+        return f"Не удалось собрать документ: {str(e)[:200]}", [], "", []
+
+    summary = f"Готово. Документ из {total} раздел(ов) собран в .docx — файл во вложении."
+    files = [{"filename": "Документ.docx", "bytes": docx_bytes}]
+    return summary, files, "", []
