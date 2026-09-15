@@ -44,39 +44,78 @@ def test_build_context_block_respects_char_budget():
     assert len(block) <= 8000 + len(chunks) * 10
 
 
+def test_build_context_block_labels_template_and_knowledge_when_both_present():
+    chunks = [
+        Chunk(id=0, doc_name="шаблон.docx", title="t", text="структура раздела", tokens=frozenset()),
+        Chunk(id=1, doc_name="данные.xlsx", title="t", text="конкретные цифры", tokens=frozenset()),
+    ]
+
+    block = _build_context_block(chunks, budget=8000, template_name="шаблон.docx")
+
+    assert "Формат по шаблону:" in block
+    assert "Факты из базы знаний:" in block
+    template_part, knowledge_part = block.split("Факты из базы знаний:")
+    assert "[шаблон.docx] структура раздела" in template_part
+    assert "[данные.xlsx] конкретные цифры" in knowledge_part
+
+
+def test_build_context_block_falls_back_when_template_name_missing_from_chunks():
+    chunks = [
+        Chunk(id=0, doc_name="данные.xlsx", title="t", text="конкретные цифры", tokens=frozenset()),
+        Chunk(id=1, doc_name="отчёт.docx", title="t", text="другой текст", tokens=frozenset()),
+    ]
+
+    block = _build_context_block(chunks, budget=8000, template_name="несуществующий.docx")
+
+    assert block.startswith("Факты из базы знаний:")
+    assert "Формат по шаблону:" not in block
+    assert "[данные.xlsx] конкретные цифры" in block
+    assert "[отчёт.docx] другой текст" in block
+
+
 def test_parse_outline_response_extracts_sections_from_fenced_json():
     response = (
         '```json\n'
+        '{"template_document": null, "sections": '
         '[{"title": "Введение", "brief": "Общее описание", "complexity": "simple"},'
-        ' {"title": "Расчёт нагрузки", "brief": "Числа", "complexity": "complex"}]\n'
+        ' {"title": "Расчёт нагрузки", "brief": "Числа", "complexity": "complex"}]}\n'
         '```'
     )
 
-    sections = _parse_outline_response(response)
+    sections, template = _parse_outline_response(response)
 
     assert [s.title for s in sections] == ["Введение", "Расчёт нагрузки"]
     assert sections[0].complexity == "simple"
     assert sections[1].complexity == "complex"
+    assert template is None
 
 
 def test_parse_outline_response_returns_empty_on_garbage():
-    assert _parse_outline_response("не json вообще") == []
+    assert _parse_outline_response("не json вообще") == ([], None)
 
 
 def test_parse_outline_response_defaults_unknown_complexity_to_simple():
-    response = '[{"title": "Раздел", "brief": "текст", "complexity": "нечто странное"}]'
+    response = '{"sections": [{"title": "Раздел", "brief": "текст", "complexity": "нечто странное"}]}'
 
-    sections = _parse_outline_response(response)
+    sections, template = _parse_outline_response(response)
 
     assert sections[0].complexity == "simple"
 
 
 def test_parse_outline_response_skips_items_without_title():
-    response = '[{"brief": "нет заголовка"}, {"title": "Есть заголовок", "brief": "ок"}]'
+    response = '{"sections": [{"brief": "нет заголовка"}, {"title": "Есть заголовок", "brief": "ок"}]}'
 
-    sections = _parse_outline_response(response)
+    sections, template = _parse_outline_response(response)
 
     assert [s.title for s in sections] == ["Есть заголовок"]
+
+
+def test_parse_outline_response_extracts_template_document_when_present():
+    response = '{"template_document": "шаблон.docx", "sections": [{"title": "Раздел", "brief": "текст"}]}'
+
+    sections, template = _parse_outline_response(response)
+
+    assert template == "шаблон.docx"
 
 
 def test_classify_documents_hint_names_template_and_knowledge_files():

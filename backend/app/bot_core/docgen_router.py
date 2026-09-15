@@ -8,7 +8,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from config import DEEPSEEK_API_KEY
 from openai_client import get_chat_response
@@ -103,7 +103,7 @@ def _select_relevant_chunks(
     return [chunk for _, chunk in scored[:top_k]]
 
 
-def _build_context_block(chunks: List[Chunk], budget: int) -> str:
+def _join_labeled(chunks: List[Chunk], budget: int) -> str:
     parts = []
     remaining = budget
     for chunk in chunks:
@@ -113,6 +113,23 @@ def _build_context_block(chunks: List[Chunk], budget: int) -> str:
         parts.append(f"[{chunk.doc_name}] {piece}")
         remaining -= len(piece)
     return "\n\n".join(parts)
+
+
+def _build_context_block(chunks: List[Chunk], budget: int, template_name: Optional[str] = None) -> str:
+    if not chunks:
+        return ""
+    if not template_name:
+        return _join_labeled(chunks, budget)
+    template_chunks = [c for c in chunks if c.doc_name == template_name]
+    knowledge_chunks = [c for c in chunks if c.doc_name != template_name]
+    if not knowledge_chunks:
+        return f"Формат по шаблону:\n{_join_labeled(template_chunks, budget)}"
+    if not template_chunks:
+        return f"Факты из базы знаний:\n{_join_labeled(knowledge_chunks, budget)}"
+    half = budget // 2
+    template_block = _join_labeled(template_chunks, half)
+    knowledge_block = _join_labeled(knowledge_chunks, budget - len(template_block))
+    return f"Формат по шаблону:\n{template_block}\n\nФакты из базы знаний:\n{knowledge_block}"
 
 
 _TEMPLATE_NAME_RE = re.compile(r"(?i)(шаблон|образец|форма|бланк|пример|template|form|sample)")
@@ -154,7 +171,7 @@ def _document_previews(chunks: List[Chunk], budget_per_doc: int = 1500) -> str:
     )
 
 
-def _parse_outline_response(response_text: str) -> List[Section]:
+def _parse_outline_response(response_text: str) -> Tuple[List[Section], Optional[str]]:
     cleaned = (response_text or "").strip()
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:json)?\n", "", cleaned)
@@ -162,11 +179,14 @@ def _parse_outline_response(response_text: str) -> List[Section]:
     try:
         raw = json.loads(cleaned)
     except json.JSONDecodeError:
-        return []
-    if not isinstance(raw, list):
-        return []
+        return [], None
+    if not isinstance(raw, dict):
+        return [], None
+    raw_sections = raw.get("sections")
+    if not isinstance(raw_sections, list):
+        return [], None
     sections: List[Section] = []
-    for i, item in enumerate(raw):
+    for i, item in enumerate(raw_sections):
         if not isinstance(item, dict) or not item.get("title"):
             continue
         complexity = item.get("complexity") if item.get("complexity") in ("simple", "complex") else "simple"
@@ -176,10 +196,12 @@ def _parse_outline_response(response_text: str) -> List[Section]:
             brief=str(item.get("brief", ""))[:500],
             complexity=complexity,
         ))
-    return sections[:MAX_SECTIONS]
+    template_document = raw.get("template_document")
+    template_document = template_document.strip() if isinstance(template_document, str) and template_document.strip() else None
+    return sections[:MAX_SECTIONS], template_document
 
 
-async def _plan_outline(user_text: str, chunks: List[Chunk], user_id: int) -> List[Section]:
+async def _plan_outline(user_text: str, chunks: List[Chunk], user_id: int) -> Tuple[List[Section], Optional[str]]:
     if chunks:
         catalog = "\n".join(f"{c.id}: {c.title}" for c in chunks[:2000])
     else:
@@ -190,41 +212,46 @@ async def _plan_outline(user_text: str, chunks: List[Chunk], user_id: int) -> Li
 
     prompt = (
         "Построй план большого документа по запросу пользователя.\n"
-        "Верни СТРОГО JSON-массив объектов без markdown-обёрток и без пояснений. "
-        "Формат каждого элемента: "
-        '{"title": "Название раздела", "brief": "Что должно быть в разделе, 1-3 предложения", '
-        '"complexity": "simple" | "complex"}.\n'
+        "Верни СТРОГО JSON-объект без markdown-обёрток и без пояснений, в формате:\n"
+        '{"template_document": "точное имя файла из списка ниже" | null, '
+        '"sections": [{"title": "Название раздела", "brief": "Что должно быть в разделе, 1-3 предложения", '
+        '"complexity": "simple" | "complex"}, ...]}.\n'
         "complexity=complex — для расчётов, таблиц с цифрами, юридических формулировок, "
         "технических требований с точными значениями. Остальное — simple.\n\n"
         f"Запрос пользователя:\n{user_text}\n\n"
         f"Заголовки доступных фрагментов исходников (id: заголовок):\n{catalog}\n\n"
-        "Если запрос пользователя или подсказка ниже указывают, что один из документов — шаблон\n"
-        "оформления (пример структуры для итогового документа), построй список разделов, максимально\n"
-        "повторяя структуру (заголовки, их порядок) этого документа, а не придумывай новую. Слова\n"
-        "пользователя в запросе всегда важнее подсказки по имени файла. Если ни то ни другое не\n"
-        "указывает на шаблон, построй план свободно по сути запроса и остальных материалов.\n\n"
+        "template_document — точное имя одного из документов ниже, ТОЛЬКО если запрос пользователя\n"
+        "или подсказка ниже указывают, что этот документ — шаблон оформления (пример структуры для\n"
+        "итогового документа). Слова пользователя в запросе всегда важнее подсказки по имени файла.\n"
+        "Если ни то ни другое не указывает на шаблон, верни template_document: null. Если\n"
+        "template_document задан, построй список разделов, максимально повторяя структуру (заголовки,\n"
+        "их порядок) этого документа, а не придумывай новую; иначе строй план свободно по сути запроса\n"
+        "и остальных материалов.\n\n"
         f"{classification_hint}\n\n"
         f"Начало каждого документа (для распознавания шаблона):\n{document_previews}"
     )
     messages = [
-        {"role": "system", "content": "Ты планировщик документов. Отвечаешь только валидным JSON-массивом."},
+        {"role": "system", "content": "Ты планировщик документов. Отвечаешь только валидным JSON-объектом."},
         {"role": "user", "content": prompt},
     ]
     try:
         response_text, _, _, _ = await get_chat_response(
             messages, model=PLANNER_MODEL, user_id=user_id, use_tools=False, use_skills=False,
         )
-        sections = _parse_outline_response(response_text)
+        sections, template_document = _parse_outline_response(response_text)
         if sections:
-            return sections
+            return sections, template_document
     except Exception as e:
         logger.error(f"docgen outline planning failed: {e}", exc_info=True)
-    return [Section(id=0, title="Документ", brief=user_text[:500], complexity="complex")]
+    return [Section(id=0, title="Документ", brief=user_text[:500], complexity="complex")], None
 
 
-async def _write_section(section: Section, chunks: List[Chunk], previous_tail: str, user_id: int) -> str:
+async def _write_section(
+    section: Section, chunks: List[Chunk], previous_tail: str, user_id: int,
+    template_document: Optional[str] = None,
+) -> str:
     relevant = _select_relevant_chunks(section.title, section.brief, chunks)
-    context_block = _build_context_block(relevant, MAX_CHUNK_CHARS_PER_SECTION)
+    context_block = _build_context_block(relevant, MAX_CHUNK_CHARS_PER_SECTION, template_document)
 
     prompt_parts = [f"Раздел документа: {section.title}", f"Задача раздела: {section.brief}"]
     if context_block:
@@ -308,7 +335,7 @@ async def _run_docgen(
     await _update_status(status_msg, "📄 Читаю исходники и строю план документа...")
     chunks = _extract_source_chunks(user_id)
     no_sources = not chunks
-    outline = await _plan_outline(user_text, chunks, user_id)
+    outline, template_document = await _plan_outline(user_text, chunks, user_id)
 
     total = len(outline)
     plan_status = f"📄 План готов: {total} раздел(ов). Пишу текст..."
@@ -321,7 +348,10 @@ async def _run_docgen(
     done = 0
     for batch_start in range(0, total, MAX_PARALLEL_SECTIONS):
         batch = outline[batch_start:batch_start + MAX_PARALLEL_SECTIONS]
-        jobs = [_write_section(section, chunks, previous_tail, user_id) for section in batch]
+        jobs = [
+            _write_section(section, chunks, previous_tail, user_id, template_document)
+            for section in batch
+        ]
         results = await asyncio.gather(*jobs)
         for offset, text in enumerate(results):
             section_texts[batch_start + offset] = text
