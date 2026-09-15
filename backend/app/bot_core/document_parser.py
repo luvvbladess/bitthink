@@ -72,6 +72,8 @@ MAX_PDF_PAGES = 40
 MAX_PDF_TABLE_PAGES = 6
 MAX_PDF_BYTES = 20 * 1024 * 1024
 MAX_EXTRACT_CHARS = 180_000
+MAX_ARCHIVE_ENTRIES = 200
+MAX_ARCHIVE_UNPACKED_BYTES = 200 * 1024 * 1024  # 200 MB
 _OCR_MAX_SIDE = 1800
 
 
@@ -480,13 +482,30 @@ async def extract_zip_archive(file_data: bytes, archive_name: str, user_id: int 
     def _list_entries() -> list[tuple[str, bytes]]:
         entries = []
         with zipfile.ZipFile(io.BytesIO(file_data)) as archive:
+            entries_info = []
             for info in archive.infolist():
                 if info.is_dir():
                     continue
                 path = Path(info.filename)
                 if path.name.startswith(".") or "__MACOSX" in path.parts:
                     continue
-                entries.append((info.filename, archive.read(info.filename)))
+                entries_info.append(info)
+            if len(entries_info) > MAX_ARCHIVE_ENTRIES:
+                raise ValueError(f"Архив содержит больше {MAX_ARCHIVE_ENTRIES} файлов")
+            total_declared = sum(info.file_size for info in entries_info)
+            if total_declared > MAX_ARCHIVE_UNPACKED_BYTES:
+                raise ValueError(
+                    f"Архив распаковывается больше чем в {MAX_ARCHIVE_UNPACKED_BYTES // (1024 * 1024)} МБ"
+                )
+            total_read = 0
+            for info in entries_info:
+                data = archive.read(info.filename)
+                total_read += len(data)
+                if total_read > MAX_ARCHIVE_UNPACKED_BYTES:
+                    raise ValueError(
+                        f"Архив распаковывается больше чем в {MAX_ARCHIVE_UNPACKED_BYTES // (1024 * 1024)} МБ"
+                    )
+                entries.append((info.filename, data))
         return entries
 
     entries = await asyncio.to_thread(_list_entries)

@@ -57,6 +57,8 @@ def _extract_document_context(messages: List[Dict[str, Any]]) -> str:
     for m in messages:
         if m.get("role") == "system":
             content = m.get("content", "")
+            if "не подмешан" in content:
+                continue  # каталожная заглушка, а не реальный текст документа
             if "документ для контекста" in content or "предоставил документ" in content:
                 doc_parts.append(content)
     return "\n\n".join(doc_parts)
@@ -212,16 +214,25 @@ async def _write_section(section: Section, chunks: List[Chunk], previous_tail: s
         if section.complexity == "complex":
             if DEEPSEEK_API_KEY:
                 from deepseek_client import get_deepseek_response
-                text, _, _, _ = await get_deepseek_response(
-                    messages, model="deepseek-v4-pro", user_id=user_id, use_tools=False,
+                text, _, _, _ = await asyncio.wait_for(
+                    get_deepseek_response(
+                        messages, model="deepseek-v4-pro", user_id=user_id, use_tools=False,
+                    ),
+                    timeout=120,
                 )
             else:
-                text, _, _, _ = await get_chat_response(
-                    messages, model=ESCALATED_WRITER_MODEL, user_id=user_id, use_tools=False, use_skills=False,
+                text, _, _, _ = await asyncio.wait_for(
+                    get_chat_response(
+                        messages, model=ESCALATED_WRITER_MODEL, user_id=user_id, use_tools=False, use_skills=False,
+                    ),
+                    timeout=120,
                 )
         else:
-            text, _, _, _ = await get_chat_response(
-                messages, model=DEFAULT_WRITER_MODEL, user_id=user_id, use_tools=False, use_skills=False,
+            text, _, _, _ = await asyncio.wait_for(
+                get_chat_response(
+                    messages, model=DEFAULT_WRITER_MODEL, user_id=user_id, use_tools=False, use_skills=False,
+                ),
+                timeout=120,
             )
         return text.strip()
     except Exception as e:
@@ -244,13 +255,32 @@ async def get_docgen_response(
     user_id: int,
     status_msg: Any,
 ) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
+    from app.billing.quota import billing_pool
+
+    token = billing_pool.set("computer")
+    try:
+        return await _run_docgen(messages, user_text, user_id, status_msg)
+    finally:
+        billing_pool.reset(token)
+
+
+async def _run_docgen(
+    messages: List[Dict[str, Any]],
+    user_text: str,
+    user_id: int,
+    status_msg: Any,
+) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
     """Режим Документы: план -> параллельная генерация разделов -> сборка в .docx."""
     await _update_status(status_msg, "📄 Читаю исходники и строю план документа...")
     chunks = _extract_source_chunks(messages)
+    no_sources = not chunks
     outline = await _plan_outline(user_text, chunks, user_id)
 
     total = len(outline)
-    await _update_status(status_msg, f"📄 План готов: {total} раздел(ов). Пишу текст...")
+    plan_status = f"📄 План готов: {total} раздел(ов). Пишу текст..."
+    if no_sources:
+        plan_status += " Исходники не найдены — пишу по одному промпту."
+    await _update_status(status_msg, plan_status)
 
     section_texts: List[str] = [""] * total
     previous_tail = ""
@@ -279,5 +309,7 @@ async def get_docgen_response(
         return f"Не удалось собрать документ: {str(e)[:200]}", [], "", []
 
     summary = f"Готово. Документ из {total} раздел(ов) собран в .docx — файл во вложении."
+    if no_sources:
+        summary += " Исходники не найдены — документ написан по одному промпту."
     files = [{"filename": "Документ.docx", "bytes": docx_bytes}]
     return summary, files, "", []

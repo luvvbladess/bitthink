@@ -275,7 +275,7 @@ def build_document_contexts(
     catalog: List[dict] = []
     for document in documents:
         name = document.get("filename") or "документ"
-        if name in forced or needs_all or document_matches_query(document, query):
+        if name in forced or any(name.startswith(f"{f}/") for f in forced) or needs_all or document_matches_query(document, query):
             open_docs.append(document)
         else:
             catalog.append(_catalog_stub(document))
@@ -1780,10 +1780,14 @@ class DatabaseConversationManager:
             conv = session.query(Conversation).filter_by(user_id=user_id, is_active=True).first()
             if not conv:
                 return False
-            doc = session.query(Document).filter_by(conversation_id=conv.id, filename=filename).first()
-            if not doc:
+            docs = [
+                doc for doc in session.query(Document).filter_by(conversation_id=conv.id).all()
+                if doc.filename == filename or doc.filename.startswith(f"{filename}/")
+            ]
+            if not docs:
                 return False
-            session.delete(doc)
+            for doc in docs:
+                session.delete(doc)
             session.commit()
             return True
 

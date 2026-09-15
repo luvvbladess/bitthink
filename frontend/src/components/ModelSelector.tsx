@@ -201,11 +201,9 @@ export function SearchModeSelector() {
                     ? multipliers['gpt-6-astra']
                     : mode.id === 'studio'
                       ? multipliers['studio']
-                      : mode.id === 'docgen'
-                        ? multipliers['gpt-5.6-luna']
-                        : mode.id === 'auto'
-                          ? 1
-                          : undefined;
+                      : mode.id === 'auto'
+                        ? 1
+                        : undefined;
             const lockedHint =
               mode.id === 'astra' ? 'Нужен Ultra' : mode.id === 'studio' || mode.id === 'computer' || mode.id === 'docgen' ? 'Нужен Pro' : 'Нужен Pro+';
             return (

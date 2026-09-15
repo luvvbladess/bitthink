@@ -110,6 +110,8 @@ async def upload_document(
                 status_code=400,
                 detail="Архив слишком тяжёлый для разбора.",
             ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except (zipfile.BadZipFile, OSError) as exc:
             raise HTTPException(
                 status_code=400,
