@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { Box, Popover, Button, Typography, Tooltip } from '@mui/material';
-import { CaretDown, Check, Sparkle, MagnifyingGlass, Books, Desktop, Presentation, Atom } from '@phosphor-icons/react';
+import { CaretDown, Check, Sparkle, MagnifyingGlass, Books, Desktop, Presentation, Atom, FileText } from '@phosphor-icons/react';
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/api/client';
 import { composerChipSelectedSx, composerChipSx } from '@/theme/effects';
 import { GlowSwitch } from '@/components/GlowSwitch';
-import { ASTRA_LABEL, PILOT_LABEL, STUDIO_LABEL } from '@/constants/modes';
+import { ASTRA_LABEL, PILOT_LABEL, STUDIO_LABEL, DOCGEN_LABEL } from '@/constants/modes';
 
 interface Model {
   id: string;
@@ -25,6 +25,7 @@ interface ModelsCache {
   researchModel?: string | null;
   computerAvailable?: boolean;
   studioAvailable?: boolean;
+  docgenAvailable?: boolean;
   astraAvailable?: boolean;
   multipliers?: Record<string, number>;
 }
@@ -35,6 +36,7 @@ const ANSWER_MODES = [
   { id: 'research', label: 'Исследование', description: 'Глубокий разбор источников', model: 'gpt-5.6-sol', icon: Books },
   { id: 'astra', label: ASTRA_LABEL, description: 'Песочница GPT-6: код, договоры, файлы', model: 'gpt-6-astra', icon: Atom },
   { id: 'studio', label: STUDIO_LABEL, description: 'Живой холст: картинки, слайды, лендинг', model: 'studio', icon: Presentation },
+  { id: 'docgen', label: DOCGEN_LABEL, description: 'Большой документ .docx по промпту и вашим файлам', model: 'docgen', icon: FileText },
   { id: 'computer', label: PILOT_LABEL, description: 'Сам зайдёт на сайт, почту или сервер', model: 'director', icon: Desktop },
 ] as const;
 
@@ -101,6 +103,7 @@ export function SearchModeSelector() {
   const researchModel = data?.researchModel || null;
   const computerAvailable = Boolean(data?.computerAvailable);
   const studioAvailable = Boolean(data?.studioAvailable);
+  const docgenAvailable = Boolean(data?.docgenAvailable);
   const astraAvailable = Boolean(data?.astraAvailable);
   const multipliers = data?.multipliers || {};
   const modes = ANSWER_MODES.map((mode) => {
@@ -186,6 +189,7 @@ export function SearchModeSelector() {
               (mode.id === 'research' && Boolean(researchModel)) ||
               (mode.id === 'astra' && astraAvailable) ||
               (mode.id === 'studio' && studioAvailable) ||
+              (mode.id === 'docgen' && docgenAvailable) ||
               (mode.id === 'computer' && computerAvailable);
             const isActive = selectedMode.id === mode.id;
             const factor =
@@ -197,11 +201,13 @@ export function SearchModeSelector() {
                     ? multipliers['gpt-6-astra']
                     : mode.id === 'studio'
                       ? multipliers['studio']
-                      : mode.id === 'auto'
-                        ? 1
-                        : undefined;
+                      : mode.id === 'docgen'
+                        ? multipliers['gpt-5.6-luna']
+                        : mode.id === 'auto'
+                          ? 1
+                          : undefined;
             const lockedHint =
-              mode.id === 'astra' ? 'Нужен Ultra' : mode.id === 'studio' || mode.id === 'computer' ? 'Нужен Pro' : 'Нужен Pro+';
+              mode.id === 'astra' ? 'Нужен Ultra' : mode.id === 'studio' || mode.id === 'computer' || mode.id === 'docgen' ? 'Нужен Pro' : 'Нужен Pro+';
             return (
               <Box
                 key={mode.id}
