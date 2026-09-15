@@ -14,6 +14,7 @@ WEB_MODEL_INFO = {
     "correspondent": {"name": "Официальный стиль", "description": "Деловая переписка и документы"},
     "director": {"name": "Пилот", "description": "Сам заходит на сайты, почту, VPS и сервисы"},
     "studio": {"name": "Студия", "description": "Картинки, слайды и инфографика на холсте"},
+    "docgen": {"name": "Документы", "description": "Большой .docx по промпту и вашим файлам"},
     "kimi-k2.6": {"name": "Поиск в интернете", "description": "Актуальные данные и источники"},
     "gpt-5-nano": {"name": "Быстрый ответ (GPT-5 Nano)", "description": "Мгновенные ответы на простые вопросы"},
     "gpt-5.6-luna": {"name": "Быстрый", "description": "Повседневные вопросы с минимальным расходом"},
@@ -26,7 +27,7 @@ WEB_MODEL_INFO = {
 
 # Perplexity-like public surface: users choose an intent, not a provider catalog.
 # Hidden routes remain available internally to Auto, OCR and specialist pipelines.
-PUBLIC_MODEL_IDS = ["auto", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra", "director", "studio"]
+PUBLIC_MODEL_IDS = ["auto", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra", "director", "studio", "docgen"]
 
 # Reasoning effort: user-adjustable per PRODUCT decision. "max" is Astra-only;
 # "xhigh" is Sol and Astra; every other model caps out at "high".
@@ -91,6 +92,7 @@ async def list_models(user_id: str = Depends(get_current_user)):
         "researchModel": research,
         "computerAvailable": "director" in allowed,
         "studioAvailable": "studio" in allowed,
+        "docgenAvailable": "docgen" in allowed,
         "astraAvailable": "gpt-6-astra" in allowed,
         "multipliers": MODEL_MULTIPLIER,
     }
