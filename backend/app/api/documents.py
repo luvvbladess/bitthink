@@ -103,8 +103,9 @@ async def upload_document(
         from document_parser import extract_zip_archive
 
         bot_user_id = await repo.ensure_user(user_id)
+        extended_limits = (await repo.get_user_model(user_id)) == "docgen"
         try:
-            documents = await extract_zip_archive(contents, filename, user_id=bot_user_id)
+            documents = await extract_zip_archive(contents, filename, user_id=bot_user_id, extended_limits=extended_limits)
         except MemoryError as exc:
             raise HTTPException(
                 status_code=400,
@@ -171,8 +172,9 @@ async def upload_document(
     from document_parser import extract_text_from_file
 
     bot_user_id = await repo.ensure_user(user_id)
+    extended_limits = (await repo.get_user_model(user_id)) == "docgen"
     try:
-        text = await extract_text_from_file(contents, filename, user_id=bot_user_id)
+        text = await extract_text_from_file(contents, filename, user_id=bot_user_id, extended_limits=extended_limits)
     except MemoryError as exc:
         raise HTTPException(
             status_code=400,
