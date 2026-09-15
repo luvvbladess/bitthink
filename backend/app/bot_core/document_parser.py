@@ -59,7 +59,7 @@ async def extract_text_from_docx(file_data: bytes, extended_limits: bool = False
             
             result = "\n".join(text_parts)
             if len(result) > max_chars:
-                result = result[:max_chars] + "\n\n[Текст обрезан: файл слишком длинный для одного сообщения.]"
+                result = result[:max_chars] + TEXT_TRUNCATED_NOTICE
             return result
         except Exception as e:
             return f"Ошибка при чтении DOCX: {str(e)}"
@@ -76,6 +76,12 @@ MAX_PDF_TABLE_PAGES = 6
 MAX_PDF_BYTES = 20 * 1024 * 1024
 MAX_EXTRACT_CHARS = 180_000
 MAX_EXTRACT_CHARS_EXTENDED = 800_000
+# Оба маркера остаются в сохранённом тексте документа, поэтому по ним можно
+# понять постфактум, что исходник прочитан не целиком (docgen предупреждает
+# об этом пользователя — иначе усечение выглядит как полный документ).
+TEXT_TRUNCATED_NOTICE = "\n\n[Текст обрезан: файл слишком длинный для одного сообщения.]"
+PAGES_TRUNCATED_MARKER = "Прочитал первые"
+
 MAX_ARCHIVE_ENTRIES = 200
 MAX_ARCHIVE_UNPACKED_BYTES = 200 * 1024 * 1024  # 200 MB
 _OCR_MAX_SIDE = 1800
@@ -258,7 +264,7 @@ async def extract_text_from_pdf(file_data: bytes, status_callback=None, user_id:
                 take = min(num_pages, max_pages)
                 if num_pages > take:
                     notice = (
-                        f"В файле {num_pages} страниц. Прочитал первые {take} – "
+                        f"В файле {num_pages} страниц. {PAGES_TRUNCATED_MARKER} {take} – "
                         "целиком такой том в чат не поместится.\n"
                     )
                 if take <= MAX_PDF_TABLE_PAGES:
@@ -370,7 +376,7 @@ async def extract_text_from_pdf(file_data: bytes, status_callback=None, user_id:
         chunks = [notice] + text_parts if notice else text_parts
         joined = "\n\n".join(item for item in chunks if item)
         if len(joined) > max_chars:
-            joined = joined[:max_chars] + "\n\n[Текст обрезан: файл слишком длинный для одного сообщения.]"
+            joined = joined[:max_chars] + TEXT_TRUNCATED_NOTICE
         return joined
     except Exception as e:
         logger.error(f"Error in extract_text_from_pdf: {e}", exc_info=True)

@@ -85,6 +85,30 @@ def _extract_source_chunks(user_id: int) -> List[Chunk]:
     return chunks
 
 
+def _truncated_source_names(chunks: List[Chunk]) -> List[str]:
+    """Имена документов, прочитанных при загрузке не целиком.
+
+    Повышенные лимиты извлечения включаются, только если режим «Документы» уже
+    был выбран в момент загрузки файла. Если человек сначала приложил файлы и
+    только потом переключил режим, большой исходник уже усечён, и без этой
+    подсказки он выглядит как полный документ.
+    """
+    from document_parser import PAGES_TRUNCATED_MARKER, TEXT_TRUNCATED_NOTICE
+
+    first_chunk: Dict[str, Chunk] = {}
+    last_chunk: Dict[str, Chunk] = {}
+    for chunk in chunks:
+        first_chunk.setdefault(chunk.doc_name, chunk)
+        last_chunk[chunk.doc_name] = chunk
+    truncated = []
+    for name, chunk in last_chunk.items():
+        # Обрезка по символам дописывает маркер в конец, обрезка по страницам —
+        # в начало, поэтому смотрим оба края документа.
+        if TEXT_TRUNCATED_NOTICE.strip() in chunk.text or PAGES_TRUNCATED_MARKER in first_chunk[name].text:
+            truncated.append(name)
+    return truncated
+
+
 def _select_relevant_chunks(
     section_title: str, section_brief: str, chunks: List[Chunk], top_k: int = TOP_K_CHUNKS
 ) -> List[Chunk]:
@@ -352,6 +376,7 @@ async def _run_docgen(
     # это секунды CPU, которые нельзя держать в event loop — он общий на всех.
     chunks = await asyncio.to_thread(_extract_source_chunks, user_id)
     no_sources = not chunks
+    truncated_sources = _truncated_source_names(chunks)
     outline, template_document, planning_failed = await _plan_outline(user_text, chunks, user_id)
 
     total = len(outline)
@@ -400,5 +425,10 @@ async def _run_docgen(
     failed_sections = sum(1 for text in section_texts if text.startswith(_SECTION_FAILED_PREFIX))
     if failed_sections:
         summary += f" Не удалось сгенерировать разделов: {failed_sections} из {total} — они помечены в тексте."
+    if truncated_sources:
+        summary += (
+            f" Прочитаны не целиком: {', '.join(truncated_sources)}. "
+            "Загрузите эти файлы заново, уже в режиме «Документы» — тогда они будут прочитаны полностью."
+        )
     files = [{"filename": "Документ.docx", "bytes": docx_bytes}]
     return summary, files, "", []
