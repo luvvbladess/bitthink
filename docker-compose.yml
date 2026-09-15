@@ -1,0 +1,95 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gpt_user
+      POSTGRES_PASSWORD: gpt_pass
+      POSTGRES_DB: gpt_ultra
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gpt_user -d gpt_ultra"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://gpt_user:gpt_pass@db:5432/gpt_ultra
+      - SANDBOX_URL=http://sandbox:8090
+      - WORKSPACES_DIR=/workspaces
+    # DEBUG and SECRET_KEY come from the mounted .env file only.
+    # Set both explicitly in .env before deploying.
+    volumes:
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+      - ./.env:/app/.env:ro
+      - ./workspaces:/workspaces:ro
+    networks:
+      - default
+      - sandbox_net
+    working_dir: /app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --ws-ping-interval 25 --ws-ping-timeout 60"
+
+  frontend:
+    image: nginx:alpine
+    ports:
+      - "8081:80"
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html:ro
+      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  sandbox:
+    build:
+      context: .
+      dockerfile: sandbox/Dockerfile
+    volumes:
+      - ./workspaces:/workspaces
+      - ./backend/app/services/workspace_fs.py:/opt/sandbox/workspace_fs.py:ro
+    networks:
+      - sandbox_net
+      - sandbox_out
+    user: "10001:10001"
+    expose:
+      - "8090"
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 8
+
+volumes:
+  postgres_data:
+
+networks:
+  sandbox_net:
+    internal: true
+  sandbox_out:
