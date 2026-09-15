@@ -210,12 +210,35 @@ async def check_truncated_sources_are_reported():
     print("OK: truncated sources — named in the summary, with what to do about it")
 
 
+async def check_truncation_marker_on_a_chunk_boundary():
+    """The notice is ~60 chars and the chunker slices at a fixed width, so for
+    PDFs (whose page labels are stripped before slicing) the marker regularly
+    straddles a chunk boundary. Detecting it per-chunk missed ~half of the tail
+    lengths tried; detection therefore runs on the whole document text."""
+    from document_parser import TEXT_TRUNCATED_NOTICE
+
+    missed = []
+    for tail in range(dg.CHUNK_TARGET_CHARS - 120, dg.CHUNK_TARGET_CHARS):
+        body = "--- Страница 1 ---\n" + ("я" * tail) + TEXT_TRUNCATED_NOTICE
+        _set_documents([{"filename": "том.pdf", "content": body}])
+        _, truncated = dg._extract_source_chunks(1)
+        if not truncated:
+            missed.append(tail)
+    assert not missed, f"truncation went undetected for tail lengths {missed[:5]} (+{len(missed)} total)"
+
+    _set_documents([{"filename": "чистый.pdf", "content": "Прочитал первые страницы отчёта и согласовал."}])
+    _, truncated = dg._extract_source_chunks(1)
+    assert not truncated, "an untruncated document was wrongly reported as truncated"
+    print("OK: truncation marker — found on every chunk boundary, no false positive on similar prose")
+
+
 async def main() -> None:
     await check_happy_path()
     await check_no_sources()
     await check_planning_failure_is_reported()
     await check_failed_sections_are_reported()
     await check_truncated_sources_are_reported()
+    await check_truncation_marker_on_a_chunk_boundary()
     print("OK: docgen pipeline self-check passed")
 
 

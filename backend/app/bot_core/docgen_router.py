@@ -28,6 +28,9 @@ ESCALATED_WRITER_MODEL = "gpt-5.6-terra"
 _TOKEN_RE = re.compile(r"[a-zA-Zа-яА-ЯёЁ0-9]{3,}")
 _PAGE_MARKER = re.compile(r"\n---\s*Страница\s+\d+\s*---\n")
 _SECTION_FAILED_PREFIX = "[Не удалось сгенерировать раздел"
+# Число в маркере обязательно: без него подстрока может встретиться в самом
+# тексте документа и оболгать его как усечённый.
+_PAGES_TRUNCATED_RE = re.compile(r"Прочитал первые \d+")
 
 
 @dataclass
@@ -71,42 +74,33 @@ def _split_into_chunks(doc_name: str, text: str, start_id: int) -> List[Chunk]:
     return chunks
 
 
-def _extract_source_chunks(user_id: int) -> List[Chunk]:
+def _extract_source_chunks(user_id: int) -> Tuple[List[Chunk], List[str]]:
+    """Чанки всех документов беседы и имена тех, что прочитаны не целиком.
+
+    Усечение ищется в целом тексте документа, до нарезки: маркер длиной в
+    десятки символов легко попадает на границу чанков, и тогда ни в одном
+    чанке целиком не находится.
+
+    Про сами усечения: повышенные лимиты извлечения включаются, только если
+    режим «Документы» уже выбран в момент загрузки файла. Если человек сначала
+    приложил файлы и только потом переключил режим, большой исходник уже
+    усечён, и без предупреждения он выглядит как полный документ.
+    """
     from conversations import conversation_manager
+    from document_parser import TEXT_TRUNCATED_NOTICE
 
     docs = conversation_manager.get_documents(int(user_id))
     chunks: List[Chunk] = []
+    truncated: List[str] = []
     for doc in docs:
         name = str(doc.get("filename") or "документ")
         body = str(doc.get("content") or "")
         if not body:
             continue
-        chunks.extend(_split_into_chunks(name, body, len(chunks)))
-    return chunks
-
-
-def _truncated_source_names(chunks: List[Chunk]) -> List[str]:
-    """Имена документов, прочитанных при загрузке не целиком.
-
-    Повышенные лимиты извлечения включаются, только если режим «Документы» уже
-    был выбран в момент загрузки файла. Если человек сначала приложил файлы и
-    только потом переключил режим, большой исходник уже усечён, и без этой
-    подсказки он выглядит как полный документ.
-    """
-    from document_parser import PAGES_TRUNCATED_MARKER, TEXT_TRUNCATED_NOTICE
-
-    first_chunk: Dict[str, Chunk] = {}
-    last_chunk: Dict[str, Chunk] = {}
-    for chunk in chunks:
-        first_chunk.setdefault(chunk.doc_name, chunk)
-        last_chunk[chunk.doc_name] = chunk
-    truncated = []
-    for name, chunk in last_chunk.items():
-        # Обрезка по символам дописывает маркер в конец, обрезка по страницам —
-        # в начало, поэтому смотрим оба края документа.
-        if TEXT_TRUNCATED_NOTICE.strip() in chunk.text or PAGES_TRUNCATED_MARKER in first_chunk[name].text:
+        if TEXT_TRUNCATED_NOTICE.strip() in body or _PAGES_TRUNCATED_RE.search(body):
             truncated.append(name)
-    return truncated
+        chunks.extend(_split_into_chunks(name, body, len(chunks)))
+    return chunks, truncated
 
 
 def _select_relevant_chunks(
@@ -374,9 +368,8 @@ async def _run_docgen(
     await _update_status(status_msg, "📄 Читаю исходники и строю план документа...")
     # Синхронный запрос к БД плюс токенизация всего корпуса: на тысячах страниц
     # это секунды CPU, которые нельзя держать в event loop — он общий на всех.
-    chunks = await asyncio.to_thread(_extract_source_chunks, user_id)
+    chunks, truncated_sources = await asyncio.to_thread(_extract_source_chunks, user_id)
     no_sources = not chunks
-    truncated_sources = _truncated_source_names(chunks)
     outline, template_document, planning_failed = await _plan_outline(user_text, chunks, user_id)
 
     total = len(outline)
