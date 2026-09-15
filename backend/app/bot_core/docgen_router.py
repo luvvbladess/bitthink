@@ -182,3 +182,48 @@ async def _plan_outline(user_text: str, chunks: List[Chunk], user_id: int) -> Li
     except Exception as e:
         logger.error(f"docgen outline planning failed: {e}", exc_info=True)
     return [Section(id=0, title="Документ", brief=user_text[:500], complexity="complex")]
+
+
+async def _write_section(section: Section, chunks: List[Chunk], previous_tail: str, user_id: int) -> str:
+    relevant = _select_relevant_chunks(section.title, section.brief, chunks)
+    context_block = _build_context_block(relevant, MAX_CHUNK_CHARS_PER_SECTION)
+
+    prompt_parts = [f"Раздел документа: {section.title}", f"Задача раздела: {section.brief}"]
+    if context_block:
+        prompt_parts.append(f"Релевантные фрагменты исходников:\n{context_block}")
+    if previous_tail:
+        prompt_parts.append(
+            "Конец предыдущего раздела (для согласованности терминов и стиля, не повторяй "
+            f"его содержание):\n{previous_tail}"
+        )
+    prompt_parts.append(
+        "Напиши текст ТОЛЬКО этого раздела в Markdown, без заголовка раздела (его добавят "
+        "отдельно), без вступлений вида «в этом разделе» и без итоговых выводов в конце. "
+        "Не выдумывай цифры и факты, которых нет в исходниках или в задаче раздела."
+    )
+    prompt = "\n\n".join(prompt_parts)
+
+    messages = [
+        {"role": "system", "content": "Ты технический писатель. Пишешь один раздел документа, по существу, без воды."},
+        {"role": "user", "content": prompt},
+    ]
+
+    try:
+        if section.complexity == "complex":
+            if DEEPSEEK_API_KEY:
+                from deepseek_client import get_deepseek_response
+                text, _, _, _ = await get_deepseek_response(
+                    messages, model="deepseek-v4-pro", user_id=user_id, use_tools=False,
+                )
+            else:
+                text, _, _, _ = await get_chat_response(
+                    messages, model=ESCALATED_WRITER_MODEL, user_id=user_id, use_tools=False, use_skills=False,
+                )
+        else:
+            text, _, _, _ = await get_chat_response(
+                messages, model=DEFAULT_WRITER_MODEL, user_id=user_id, use_tools=False, use_skills=False,
+            )
+        return text.strip()
+    except Exception as e:
+        logger.error(f"docgen section '{section.title}' failed: {e}")
+        return f"[Не удалось сгенерировать раздел: {str(e)[:200]}]"
