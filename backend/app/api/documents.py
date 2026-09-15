@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import uuid
+import zipfile
 from pathlib import Path
 from typing import Optional
 
@@ -92,6 +93,47 @@ async def upload_document(
     ext = Path(filename).suffix.lower()
     declared_image = (file.content_type or "").startswith("image/")
     is_image = declared_image or ext in IMAGE_EXTENSIONS
+    if ext == ".zip":
+        contents = await file.read()
+        if len(contents) > 20 * 1024 * 1024:
+            raise HTTPException(
+                status_code=400,
+                detail="Архив слишком большой (максимум 20 МБ). Разбейте на несколько архивов.",
+            )
+        from document_parser import extract_zip_archive
+
+        bot_user_id = await repo.ensure_user(user_id)
+        try:
+            documents = await extract_zip_archive(contents, filename, user_id=bot_user_id)
+        except MemoryError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Архив слишком тяжёлый для разбора.",
+            ) from exc
+        except (zipfile.BadZipFile, OSError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Не удалось прочитать архив — файл повреждён или не является zip.",
+            ) from exc
+        if not documents:
+            raise HTTPException(status_code=400, detail="В архиве не найдено файлов, которые можно прочитать")
+        for doc_name, text in documents:
+            await repo.add_document(user_id, doc_name, text, conv_id=conversation_id)
+        msg = await repo.add_message(
+            user_id,
+            "user",
+            filename,
+            conv_id=conversation_id,
+            attachment={
+                "name": filename,
+                "size": len(contents),
+                "status": "done",
+                "type": "document",
+                "note": f"{len(documents)} файлов",
+            },
+        )
+        return {"ok": True, "kind": "archive", "filename": filename, "documents": len(documents), "message": msg}
+
     if not is_image and ext not in DOCUMENT_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"Формат {ext or 'без расширения'} пока нельзя прочитать")
 
