@@ -245,7 +245,7 @@ async def get_smart_response(
 
     tier = canonical_tier(sub.get("tier"))
     model = clamp_model(tier, model)
-    pool = "computer" if model in {"director", "studio"} else "chat"
+    pool = "computer" if model in {"director", "studio", "docgen"} else "chat"
     view = usage_view(sub)
     if (
         pool == "chat"
@@ -274,6 +274,15 @@ async def get_smart_response(
     if not user_text:
         logger.warning(f"Empty user_text in get_smart_response for user {user_id}")
         user_text = "Проанализируй предоставленные документы."
+
+    if model == "docgen":
+        # Работает по полному, не сжатому тексту исходников через собственный
+        # отбор релевантных фрагментов — reduce_heavy_context/fit_for_mode
+        # иначе обрежут или пересожмут именно те детали, ради которых и
+        # существует этот режим.
+        from docgen_router import get_docgen_response
+
+        return await get_docgen_response(messages, user_text, user_id, status_msg)
 
     messages = await reduce_heavy_context(messages, user_text, status_msg, user_id=user_id, model=model)
     from model_context import fit_for_mode, search_hop_messages

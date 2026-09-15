@@ -34,7 +34,7 @@ CHEAP_MODELS = [
     "deepseek-v4-flash",
 ]
 
-PRO_MODELS = CHEAP_MODELS + ["director", "studio"]
+PRO_MODELS = CHEAP_MODELS + ["director", "studio", "docgen"]
 PROPLUS_MODELS = PRO_MODELS + ["gpt-5.6-terra"]
 ULTRA_MODELS = PROPLUS_MODELS + ["gpt-5.6-sol", "gpt-5.6-sol-pro", "gpt-6-astra"]
 # Creator is the internal unlimited seat. It must never lag behind Ultra.
@@ -186,6 +186,8 @@ def clamp_model(tier: str | None, model: str) -> str:
     if model == "director" and "director" not in allowed:
         return "gpt-5.6-luna"
     if model == "studio" and "studio" not in allowed:
+        return "gpt-5.6-luna" if "gpt-5.6-luna" in allowed else "gpt-5-nano"
+    if model == "docgen" and "docgen" not in allowed:
         return "gpt-5.6-luna" if "gpt-5.6-luna" in allowed else "gpt-5-nano"
     if model == "deepseek-v4-flash" and "deepseek-v4-pro" in allowed:
         return "deepseek-v4-flash"

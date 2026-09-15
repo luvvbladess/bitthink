@@ -38,7 +38,7 @@ def test_public_model_catalog_hides_internal_routes():
         response = TestClient(app).get("/models")
         assert response.status_code == 200
         ids = {model["id"] for model in response.json()["models"]}
-        assert ids == {"auto", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra", "director", "studio"}
+        assert ids == {"auto", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra", "director", "studio", "docgen"}
         assert "none" in response.json()["reasoningEfforts"]
         assert "deepseek-v4-pro" not in ids
         assert "kimi-k2.6" not in ids
@@ -46,6 +46,7 @@ def test_public_model_catalog_hides_internal_routes():
         assert payload["researchModel"] is None
         assert payload["computerAvailable"] is False
         assert payload["studioAvailable"] is False
+        assert payload["docgenAvailable"] is False
         assert payload["astraAvailable"] is False
         assert payload["multipliers"]["gpt-5.6-sol"] == 32
         assert payload["multipliers"]["gpt-6-astra"] == 90
