@@ -1,6 +1,6 @@
 from app.config import get_settings  # noqa: F401 — adds bot_core to sys.path
 
-from docgen_router import Chunk, _build_context_block, _extract_source_chunks, _select_relevant_chunks
+from docgen_router import Chunk, _build_context_block, _extract_source_chunks, _select_relevant_chunks, _parse_outline_response
 
 
 def _doc_message(name: str, body: str) -> dict:
@@ -64,3 +64,38 @@ def test_build_context_block_respects_char_budget():
 
     # Allow a small, bounded overhead per chunk for the "[doc_name] " label.
     assert len(block) <= 8000 + len(chunks) * 10
+
+
+def test_parse_outline_response_extracts_sections_from_fenced_json():
+    response = (
+        '```json\n'
+        '[{"title": "Введение", "brief": "Общее описание", "complexity": "simple"},'
+        ' {"title": "Расчёт нагрузки", "brief": "Числа", "complexity": "complex"}]\n'
+        '```'
+    )
+
+    sections = _parse_outline_response(response)
+
+    assert [s.title for s in sections] == ["Введение", "Расчёт нагрузки"]
+    assert sections[0].complexity == "simple"
+    assert sections[1].complexity == "complex"
+
+
+def test_parse_outline_response_returns_empty_on_garbage():
+    assert _parse_outline_response("не json вообще") == []
+
+
+def test_parse_outline_response_defaults_unknown_complexity_to_simple():
+    response = '[{"title": "Раздел", "brief": "текст", "complexity": "нечто странное"}]'
+
+    sections = _parse_outline_response(response)
+
+    assert sections[0].complexity == "simple"
+
+
+def test_parse_outline_response_skips_items_without_title():
+    response = '[{"brief": "нет заголовка"}, {"title": "Есть заголовок", "brief": "ок"}]'
+
+    sections = _parse_outline_response(response)
+
+    assert [s.title for s in sections] == ["Есть заголовок"]

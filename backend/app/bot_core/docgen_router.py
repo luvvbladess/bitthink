@@ -124,3 +124,61 @@ def _build_context_block(chunks: List[Chunk], budget: int) -> str:
         parts.append(f"[{chunk.doc_name}] {piece}")
         remaining -= len(piece)
     return "\n\n".join(parts)
+
+
+def _parse_outline_response(response_text: str) -> List[Section]:
+    cleaned = (response_text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\n", "", cleaned)
+        cleaned = re.sub(r"\n```$", "", cleaned)
+    try:
+        raw = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(raw, list):
+        return []
+    sections: List[Section] = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, dict) or not item.get("title"):
+            continue
+        complexity = item.get("complexity") if item.get("complexity") in ("simple", "complex") else "simple"
+        sections.append(Section(
+            id=i,
+            title=str(item["title"])[:200],
+            brief=str(item.get("brief", ""))[:500],
+            complexity=complexity,
+        ))
+    return sections[:MAX_SECTIONS]
+
+
+async def _plan_outline(user_text: str, chunks: List[Chunk], user_id: int) -> List[Section]:
+    if chunks:
+        catalog = "\n".join(f"{c.id}: {c.title}" for c in chunks[:2000])
+    else:
+        catalog = "(исходники не найдены — опирайся только на запрос пользователя)"
+
+    prompt = (
+        "Построй план большого документа по запросу пользователя.\n"
+        "Верни СТРОГО JSON-массив объектов без markdown-обёрток и без пояснений. "
+        "Формат каждого элемента: "
+        '{"title": "Название раздела", "brief": "Что должно быть в разделе, 1-3 предложения", '
+        '"complexity": "simple" | "complex"}.\n'
+        "complexity=complex — для расчётов, таблиц с цифрами, юридических формулировок, "
+        "технических требований с точными значениями. Остальное — simple.\n\n"
+        f"Запрос пользователя:\n{user_text}\n\n"
+        f"Заголовки доступных фрагментов исходников (id: заголовок):\n{catalog}"
+    )
+    messages = [
+        {"role": "system", "content": "Ты планировщик документов. Отвечаешь только валидным JSON-массивом."},
+        {"role": "user", "content": prompt},
+    ]
+    try:
+        response_text, _, _, _ = await get_chat_response(
+            messages, model=PLANNER_MODEL, user_id=user_id, use_tools=False, use_skills=False,
+        )
+        sections = _parse_outline_response(response_text)
+        if sections:
+            return sections
+    except Exception as e:
+        logger.error(f"docgen outline planning failed: {e}", exc_info=True)
+    return [Section(id=0, title="Документ", brief=user_text[:500], complexity="complex")]
