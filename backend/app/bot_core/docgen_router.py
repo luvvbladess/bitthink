@@ -27,6 +27,7 @@ ESCALATED_WRITER_MODEL = "gpt-5.6-terra"
 
 _TOKEN_RE = re.compile(r"[a-zA-Zа-яА-ЯёЁ0-9]{3,}")
 _PAGE_MARKER = re.compile(r"\n---\s*Страница\s+\d+\s*---\n")
+_SECTION_FAILED_PREFIX = "[Не удалось сгенерировать раздел"
 
 
 @dataclass
@@ -36,6 +37,7 @@ class Chunk:
     title: str
     text: str
     tokens: frozenset = field(default_factory=frozenset)
+    title_tokens: frozenset = field(default_factory=frozenset)
 
 
 @dataclass
@@ -63,6 +65,7 @@ def _split_into_chunks(doc_name: str, text: str, start_id: int) -> List[Chunk]:
             chunks.append(Chunk(
                 id=cid, doc_name=doc_name, title=title, text=slice_text,
                 tokens=frozenset(_tokenize(slice_text)),
+                title_tokens=frozenset(_tokenize(title)),
             ))
             cid += 1
     return chunks
@@ -93,7 +96,10 @@ def _select_relevant_chunks(
     scored = []
     for chunk in chunks:
         overlap = len(query_tokens & chunk.tokens)
-        title_overlap = len(query_tokens & _tokenize(chunk.title))
+        # title_tokens is precomputed by _split_into_chunks; a Chunk built by hand
+        # elsewhere still gets the title bonus instead of silently losing it.
+        title_tokens = chunk.title_tokens or _tokenize(chunk.title)
+        title_overlap = len(query_tokens & title_tokens)
         score = overlap + title_overlap * 3
         if score > 0:
             scored.append((score, chunk))
@@ -201,7 +207,15 @@ def _parse_outline_response(response_text: str) -> Tuple[List[Section], Optional
     return sections[:MAX_SECTIONS], template_document
 
 
-async def _plan_outline(user_text: str, chunks: List[Chunk], user_id: int) -> Tuple[List[Section], Optional[str]]:
+async def _plan_outline(
+    user_text: str, chunks: List[Chunk], user_id: int
+) -> Tuple[List[Section], Optional[str], bool]:
+    """Разделы, имя файла-шаблона и флаг «план построить не удалось».
+
+    Флаг нужен, чтобы молчаливый откат на один раздел «Документ» был виден
+    пользователю: без него сбой планировщика выглядит как обычный короткий
+    документ, и человек не понимает, почему структура не та, что он просил.
+    """
     if chunks:
         catalog = "\n".join(f"{c.id}: {c.title}" for c in chunks[:2000])
     else:
@@ -240,10 +254,11 @@ async def _plan_outline(user_text: str, chunks: List[Chunk], user_id: int) -> Tu
         )
         sections, template_document = _parse_outline_response(response_text)
         if sections:
-            return sections, template_document
+            return sections, template_document, False
+        logger.error("docgen outline planning returned no sections: %s", (response_text or "")[:300])
     except Exception as e:
         logger.error(f"docgen outline planning failed: {e}", exc_info=True)
-    return [Section(id=0, title="Документ", brief=user_text[:500], complexity="complex")], None
+    return [Section(id=0, title="Документ", brief=user_text[:500], complexity="complex")], None, True
 
 
 async def _write_section(
@@ -299,8 +314,8 @@ async def _write_section(
             )
         return text.strip()
     except Exception as e:
-        logger.error(f"docgen section '{section.title}' failed: {e}")
-        return f"[Не удалось сгенерировать раздел: {str(e)[:200]}]"
+        logger.error(f"docgen section '{section.title}' failed: {e}", exc_info=True)
+        return f"{_SECTION_FAILED_PREFIX}: {str(e)[:200]}]"
 
 
 async def _update_status(status_msg: Any, text: str) -> None:
@@ -333,14 +348,19 @@ async def _run_docgen(
 ) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
     """Режим Документы: план -> параллельная генерация разделов -> сборка в .docx."""
     await _update_status(status_msg, "📄 Читаю исходники и строю план документа...")
-    chunks = _extract_source_chunks(user_id)
+    # Синхронный запрос к БД плюс токенизация всего корпуса: на тысячах страниц
+    # это секунды CPU, которые нельзя держать в event loop — он общий на всех.
+    chunks = await asyncio.to_thread(_extract_source_chunks, user_id)
     no_sources = not chunks
-    outline, template_document = await _plan_outline(user_text, chunks, user_id)
+    outline, template_document, planning_failed = await _plan_outline(user_text, chunks, user_id)
 
     total = len(outline)
-    plan_status = f"📄 План готов: {total} раздел(ов). Пишу текст..."
-    if no_sources:
-        plan_status += " Исходники не найдены — пишу по одному промпту."
+    if planning_failed:
+        plan_status = "📄 План построить не удалось — пишу документ одним разделом..."
+    else:
+        plan_status = f"📄 План готов: {total} раздел(ов). Пишу текст..."
+        if no_sources:
+            plan_status += " Исходники не найдены — пишу по одному промпту."
     await _update_status(status_msg, plan_status)
 
     section_texts: List[str] = [""] * total
@@ -355,7 +375,7 @@ async def _run_docgen(
         results = await asyncio.gather(*jobs)
         for offset, text in enumerate(results):
             section_texts[batch_start + offset] = text
-        if results and results[-1]:
+        if results and results[-1] and not results[-1].startswith(_SECTION_FAILED_PREFIX):
             previous_tail = results[-1][-500:]
         done += len(batch)
         await _update_status(status_msg, f"📄 Раздел {done} из {total}...")
@@ -375,5 +395,10 @@ async def _run_docgen(
     summary = f"Готово. Документ из {total} раздел(ов) собран в .docx — файл во вложении."
     if no_sources:
         summary += " Исходники не найдены — документ написан по одному промпту."
+    if planning_failed:
+        summary += " План разделов построить не удалось, поэтому документ написан одним разделом."
+    failed_sections = sum(1 for text in section_texts if text.startswith(_SECTION_FAILED_PREFIX))
+    if failed_sections:
+        summary += f" Не удалось сгенерировать разделов: {failed_sections} из {total} — они помечены в тексте."
     files = [{"filename": "Документ.docx", "bytes": docx_bytes}]
     return summary, files, "", []
