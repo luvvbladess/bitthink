@@ -3,6 +3,7 @@ from app.config import get_settings  # noqa: F401 — adds bot_core to sys.path
 from docgen_router import (
     MAX_CHUNK_CHARS_PER_SECTION,
     PLANNER_PREVIEW_BUDGET,
+    PLANNER_PREVIEW_GROUPS,
     Chunk,
     Section,
     _build_context_block,
@@ -249,17 +250,47 @@ def test_document_previews_produces_labeled_blocks_capped_per_doc():
     assert b_block.count("B") == 1500
 
 
-def test_document_previews_stays_bounded_with_many_documents_and_every_doc_shown():
-    n = 200
+def _previews_for(archives: int, per_archive: int) -> str:
     chunks = [
-        Chunk(id=i, doc_name=f"архив.zip/f{i}.docx", title="t", text="X" * 2000, tokens=frozenset())
-        for i in range(n)
+        Chunk(
+            id=a * per_archive + i,
+            doc_name=f"архив{a}.zip/f{i}.docx",
+            title="t",
+            text="X" * 2000,
+            tokens=frozenset(),
+        )
+        for a in range(archives)
+        for i in range(per_archive)
     ]
+    return _document_previews(chunks)
 
-    previews = _document_previews(chunks)
 
-    # Per-document content is bounded by PLANNER_PREVIEW_BUDGET regardless of
-    # file count — headers add bounded overhead on top, not unbounded growth.
-    assert len(previews) < PLANNER_PREVIEW_BUDGET + n * 80
-    for i in range(n):
-        assert f"f{i}.docx" in previews, f"document f{i}.docx missing from previews"
+def test_document_previews_size_stops_growing_with_file_count():
+    """The previous per-file budget had a 300-char floor, so past ~200 files it
+    grew linearly again — 346k chars at 1000 files, worse than the blowup it was
+    meant to fix. Previews are per archive now, so the block must plateau."""
+    small = _previews_for(archives=10, per_archive=5)      # 50 files
+    large = _previews_for(archives=10, per_archive=500)    # 5000 files, same archives
+
+    # 100x the files may only move the block by the width of the counts printed
+    # in each archive header — nothing proportional to the file count.
+    assert len(large) < len(small) * 1.2, (
+        "preview size must depend on archive count, not file count: "
+        f"{len(small)} chars for 50 files vs {len(large)} for 5000"
+    )
+
+
+def test_document_previews_ceiling_holds_at_any_scale():
+    huge = _previews_for(archives=200, per_archive=25)  # 5000 files across 200 archives
+
+    # A fixed ceiling, not one that grows with the input: preview bodies are
+    # capped by PLANNER_PREVIEW_BUDGET and only PLANNER_PREVIEW_GROUPS archives
+    # get one, so headers and name lists add bounded overhead on top.
+    assert len(huge) < PLANNER_PREVIEW_BUDGET * 2
+
+
+def test_document_previews_names_every_archive_even_without_a_preview():
+    previews = _previews_for(archives=PLANNER_PREVIEW_GROUPS + 5, per_archive=2)
+
+    for a in range(PLANNER_PREVIEW_GROUPS + 5):
+        assert f"архив{a}.zip" in previews, f"архив{a}.zip missing from previews entirely"

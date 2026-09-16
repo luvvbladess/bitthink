@@ -32,7 +32,14 @@ MAX_CHUNK_CHARS_PER_SECTION = 12000
 # Measured on 149 files across 5 archives: unbounded previews + catalog reached
 # ~300 000 chars (~120 000 tokens) in the planner call, which is supposed to be
 # the cheap one, and grows linearly with file count. These two caps bound it.
-PLANNER_PREVIEW_BUDGET = 60_000   # total chars of document previews
+PLANNER_PREVIEW_BUDGET = 60_000   # chars of preview bodies (headers extra)
+# Previews are per archive, not per file, so these two give a real ceiling
+# instead of a slower linear growth: at most PLANNER_PREVIEW_GROUPS previews no
+# matter how many files those archives hold, archives beyond it listed by name
+# only. Measured whole-block ceiling including headers and name lists: ~70k
+# chars, flat from ~1000 files up to 5000 (it was 346k at 1000 before).
+PLANNER_PREVIEW_GROUPS = 40
+_NAMES_SHOWN_PER_GROUP = 8        # file names listed per archive before "… и ещё N"
 PLANNER_CATALOG_CHUNKS = 400      # chunk titles shown, was an unbounded 2000
 
 PLANNER_MODEL = "gpt-5.6-terra"
@@ -224,11 +231,18 @@ def _group_by_archive(names: List[str]) -> Dict[str, List[str]]:
 
 
 def _document_previews(chunks: List[Chunk], budget_per_doc: int = 1500) -> str:
-    """Grouped by archive prefix so the planner sees 'archive.zip: N файлов'
-    structure instead of a flat wall of names. Every document still gets a
-    preview — the per-document share just shrinks as the file count grows,
-    so the whole block stays within PLANNER_PREVIEW_BUDGET instead of
-    growing unbounded with file count."""
+    """Одно превью на архив, а не на каждый файл, плюс список имён внутри.
+
+    Превью на файл не ограничивало ничего: пол в 300 символов побеждал деление
+    бюджета, и блок снова рос линейно — замерено 66 878 символов уже на 150
+    файлах и 346 028 на 1000, то есть хуже исходной проблемы. Архивов же в
+    беседе единицы, поэтому бюджет на архив даёт настоящий потолок:
+    PLANNER_PREVIEW_GROUPS × budget_per_doc, независимо от числа файлов.
+
+    Файлы внутри архива обычно однотипны (формы, тома одного справочника), так
+    что для распознавания шаблона хватает начала первого из них; остальные
+    планировщик видит по именам — они дешёвые, и именно их он возвращает.
+    """
     order: List[str] = []
     bodies: Dict[str, str] = {}
     for c in chunks:
@@ -238,14 +252,30 @@ def _document_previews(chunks: List[Chunk], budget_per_doc: int = 1500) -> str:
         if len(bodies[c.doc_name]) < budget_per_doc:
             bodies[c.doc_name] += c.text
 
-    per_doc_budget = max(300, min(budget_per_doc, PLANNER_PREVIEW_BUDGET // max(1, len(order))))
+    groups = _group_by_archive(order)
+    previewed = list(groups.items())[:PLANNER_PREVIEW_GROUPS]
+    per_group_budget = max(300, min(budget_per_doc, PLANNER_PREVIEW_BUDGET // max(1, len(previewed))))
+
+    def _listed(names: List[str]) -> str:
+        shown = ", ".join(names[:_NAMES_SHOWN_PER_GROUP])
+        if len(names) > _NAMES_SHOWN_PER_GROUP:
+            shown += f", … и ещё {len(names) - _NAMES_SHOWN_PER_GROUP}"
+        return shown
 
     parts: List[str] = []
-    for archive, members in _group_by_archive(order).items():
+    for archive, members in previewed:
+        head = members[0]
         if len(members) > 1:
-            parts.append(f"=== Архив {archive}: {len(members)} файлов ===")
-        for name in members:
-            parts.append(f"--- {name} (начало файла) ---\n{bodies[name][:per_doc_budget]}")
+            parts.append(
+                f"=== Архив {archive}: {len(members)} файлов ({_listed(members)}) ===\n"
+                f"--- начало файла {head} ---\n{bodies[head][:per_group_budget]}"
+            )
+        else:
+            parts.append(f"--- {head} (начало файла) ---\n{bodies[head][:per_group_budget]}")
+
+    hidden = list(groups)[PLANNER_PREVIEW_GROUPS:]
+    if hidden:
+        parts.append(f"=== Ещё источники без превью ({len(hidden)}): {_listed(hidden)} ===")
     return "\n\n".join(parts)
 
 
@@ -300,7 +330,13 @@ def _expand_template_names(names: List[str], chunks: List[Chunk]) -> Set[str]:
             all_docs.append(c.doc_name)
 
     resolved: Set[str] = set()
-    for name in names:
+    for raw in names:
+        # Планировщик вполне может назвать архив с хвостовым слэшем
+        # ("shablony.zip/"); без нормализации такое имя не совпадёт ни с чем,
+        # и шаблоны молча окажутся пустыми.
+        name = raw.strip().rstrip("/")
+        if not name:
+            continue
         if name in doc_set:
             resolved.add(name)
         prefix = f"{name}/"
