@@ -100,10 +100,15 @@ def _install_fakes(plan_response: str, writer_fails: bool = False, fail_first_at
         content = messages[-1]["content"]
         if model == dg.PLANNER_MODEL and "Построй план" in content:
             return plan_response, [], "", []
-        attempt_counts[content] = attempt_counts.get(content, 0) + 1
+        # Keyed by the prompt's first line ("Раздел документа: <название>") rather
+        # than the whole prompt: two differently-titled sections can otherwise only
+        # be told apart by their retrieved context, and a same-titled pair would
+        # merge their counts and hide a broken retry loop.
+        key = content.splitlines()[0]
+        attempt_counts[key] = attempt_counts.get(key, 0) + 1
         if writer_fails:
             raise RuntimeError("модель недоступна")
-        if fail_first_attempt and attempt_counts[content] == 1:
+        if fail_first_attempt and attempt_counts[key] == 1:
             raise RuntimeError("модель временно недоступна")
         writer_prompts.append(content)
         return "Текст раздела. Мощность 2500 кВт.", [], "", []
