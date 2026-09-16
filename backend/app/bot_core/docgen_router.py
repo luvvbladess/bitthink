@@ -75,6 +75,36 @@ _TEMPLATE_CONFIRMED = "Да"
 _TEMPLATE_NONE = "Шаблона нет, всё это база знаний"
 _TEMPLATE_WRONG = "Нет, шаблон другой файл"
 
+# Task 15: requisites that repeat across the example set (decimal designations,
+# organisation names, ФИО, dates, long document numbers) get flagged before
+# generation so the user can say what they become in the new document instead
+# of find-replacing a finished 5000-page .docx afterwards.
+MAX_REPLACEMENT_CANDIDATES = 25
+
+_DECIMAL_DESIGNATION_RE = re.compile(r"[А-ЯЁ]{4}\.\d{6}\.\d{3}")
+_ORG_NAME_RE = re.compile(r"(?:[А-ЯЁ]{2,6}\s+)?«[^»\n]{2,80}»")
+_FIO_RE = re.compile(r"[А-ЯЁ][а-яё]+\s+[А-ЯЁ]\.\s?[А-ЯЁ]\.")
+_REQUISITE_DATE_RE = re.compile(r"\b\d{2}\.\d{2}\.\d{4}\b")
+_DOC_NUMBER_RE = re.compile(r"\b\d{6,}\b")
+# Standards, not requisites — never proposed, even though a bare digit run
+# inside "ГОСТ 2.105-95" could otherwise coincidentally match one of the
+# patterns above.
+_STANDARD_REF_PRECEDED_RE = re.compile(r"(?:ГОСТ|ОСТ|ТУ)\s*$")
+
+# Order matters: earlier patterns claim their span first, so a decimal
+# designation's own digits are not also proposed separately as a "document
+# number" by the last, broadest pattern.
+_CANDIDATE_PATTERNS: List[Tuple[re.Pattern, str]] = [
+    (_DECIMAL_DESIGNATION_RE, "Децимальный номер"),
+    (_ORG_NAME_RE, "Организация"),
+    (_FIO_RE, "Разработал"),
+    (_REQUISITE_DATE_RE, "Дата"),
+    (_DOC_NUMBER_RE, "Номер документа"),
+]
+
+_REPLACEMENT_LINE_RE = re.compile(r"^(?P<left>.*?)(?:::=|→|->)(?P<right>.*)$")
+_KEEP_AS_IS = ("как есть", "=")
+
 
 @dataclass
 class Chunk:
@@ -429,22 +459,192 @@ async def _plan_outline(
     return [Section(id=0, title="Документ", brief=user_text[:500], complexity="complex")], set(), True
 
 
+def _find_replacement_candidates(chunks: List[Chunk]) -> List[Tuple[str, str]]:
+    """Requisites that repeat across the example set (Task 15): decimal
+    designations, organisation names in guillemets, ФИО, dates and long
+    document/contract numbers. Kept only if seen in at least two different
+    documents (chunk.doc_name) — a requisite repeats across the example set, a
+    one-off number in a single table does not, and that frequency rule is what
+    keeps genuine technical data off the list. ГОСТ/ОСТ/ТУ references are
+    excluded outright: they are standards, not project requisites.
+
+    Pure regex + frequency over text already in memory — no model call here,
+    so it is safe to run in the same thread as the corpus load. Returns
+    (value, generic_label) pairs, ranked by document count, capped at
+    MAX_REPLACEMENT_CANDIDATES.
+    """
+    occurrences: Dict[str, Set[str]] = {}
+    generic_labels: Dict[str, str] = {}
+    for chunk in chunks:
+        text = chunk.text
+        claimed: List[Tuple[int, int]] = []
+        for pattern, generic_label in _CANDIDATE_PATTERNS:
+            for m in pattern.finditer(text):
+                start, end = m.span()
+                if any(start < c_end and end > c_start for c_start, c_end in claimed):
+                    continue
+                if _STANDARD_REF_PRECEDED_RE.search(text[max(0, start - 15):start]):
+                    continue
+                value = m.group(0).strip()
+                if not value:
+                    continue
+                claimed.append((start, end))
+                occurrences.setdefault(value, set()).add(chunk.doc_name)
+                generic_labels.setdefault(value, generic_label)
+
+    repeated = [(value, docs) for value, docs in occurrences.items() if len(docs) >= 2]
+    repeated.sort(key=lambda pair: len(pair[1]), reverse=True)
+    return [(value, generic_labels[value]) for value, _ in repeated[:MAX_REPLACEMENT_CANDIDATES]]
+
+
+def _parse_candidate_labels(response_text: str, known_values: Set[str]) -> List[Tuple[str, str]]:
+    cleaned = (response_text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\n", "", cleaned)
+        cleaned = re.sub(r"\n```$", "", cleaned)
+    try:
+        raw = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(raw, dict):
+        return []
+    items = raw.get("items")
+    if not isinstance(items, list):
+        return []
+    result: List[Tuple[str, str]] = []
+    seen: Set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        value = str(item.get("value") or "").strip()
+        label = str(item.get("label") or "").strip()[:60]
+        if not value or value not in known_values or not label or value in seen:
+            continue
+        seen.add(value)
+        result.append((value, label))
+    return result
+
+
+async def _label_replacement_candidates(
+    candidates: List[Tuple[str, str]], user_id: int
+) -> List[Tuple[str, str]]:
+    """One cheap labelling call on DEFAULT_WRITER_MODEL (not the planner): it
+    sees only the candidate values — never the corpus — and decides which are
+    genuinely project-specific requisites (as opposed to real technical data
+    that happens to repeat), giving each a short Russian label. A candidate it
+    does not return is dropped.
+
+    Guarded exactly like _parse_outline_response: no candidates skips the
+    call entirely, and any failure or unparseable answer falls back to the
+    regex candidates with their generic labels — never an exception.
+    """
+    if not candidates:
+        return []
+    values = [value for value, _ in candidates]
+    prompt = (
+        "Вот значения, повторяющиеся в примерах документов. Выбери из них те, что являются "
+        "специфичными для проекта реквизитами (заказчик, разработчик, децимальный номер, "
+        "название организации, ФИО, дата и т.п.) и поменяются в новом документе — а не "
+        "техническими данными вроде характеристик изделия. Верни СТРОГО JSON-объект без "
+        'markdown-обёрток: {"items": [{"value": "точное значение из списка", '
+        '"label": "короткая русская подпись"}, ...]}.\n\n'
+        f"Значения:\n{chr(10).join(values)}"
+    )
+    messages = [
+        {"role": "system", "content": "Ты помощник по разметке реквизитов. Отвечаешь только валидным JSON-объектом."},
+        {"role": "user", "content": prompt},
+    ]
+    try:
+        response_text, _, _, _ = await get_chat_response(
+            messages, model=DEFAULT_WRITER_MODEL, user_id=user_id, use_tools=False, use_skills=False,
+        )
+        labelled = _parse_candidate_labels(response_text, set(values))
+        if labelled:
+            return labelled
+        logger.error("docgen candidate labelling returned nothing usable: %s", (response_text or "")[:300])
+    except Exception as e:
+        logger.error(f"docgen candidate labelling failed: {e}", exc_info=True)
+    return candidates
+
+
+def _parse_replacements(text: str) -> Dict[str, str]:
+    """Parses a filled «было → стало» reply (Task 15) into {было: стало}.
+    Accepts →, -> and ::= as the separator — the last is what
+    app/api/documents.py's /edit-docx norm-control endpoint already uses for
+    the same idea. A line may carry an optional "Метка: " prefix before the
+    было value (as shown in the confirmation table); it is stripped. An empty
+    справа value means "no answer given" -> maps to "" (placeholder later).
+    "как есть" or a bare "=" on the right means "keep unchanged", so that
+    pair is dropped from the mapping rather than replacing a value with
+    itself. A line with none of the three separators is ignored — a message
+    with no separators anywhere returns an empty dict, which is exactly what
+    keeps a stray sentence from being mistaken for a confirmation (Task 12's
+    gate relies on this).
+    """
+    result: Dict[str, str] = {}
+    for line in (text or "").splitlines():
+        match = _REPLACEMENT_LINE_RE.match(line.strip())
+        if not match:
+            continue
+        left = match.group("left").strip()
+        right = match.group("right").strip()
+        if ":" in left:
+            _, _, left = left.partition(":")
+            left = left.strip()
+        if not left:
+            continue
+        if right.lower() in _KEEP_AS_IS:
+            continue
+        result[left] = right
+    return result
+
+
+def _label_for_value(value: str) -> str:
+    """A human-readable description for an old value that has no answer, for
+    the [УКАЗАТЬ: <label>] placeholder — reusing the same shape-based
+    categories as _find_replacement_candidates. Never the old value itself:
+    that would defeat the whole point of the sweep."""
+    for pattern, label in _CANDIDATE_PATTERNS:
+        if pattern.fullmatch(value):
+            return label
+    return "Значение"
+
+
+def _apply_replacements(text: str, mapping: Optional[Dict[str, str]]) -> str:
+    """Deterministic sweep (Task 15): plain str.replace per pair, longest
+    было-value first, so a decimal designation is not half-replaced by a
+    shorter overlapping candidate before its own turn comes up. An empty
+    стало value becomes a visible [УКАЗАТЬ: <label>] placeholder — the model
+    cannot be trusted to copy values exactly across thousands of calls, this
+    is what actually guarantees the old value does not survive."""
+    if not mapping or not text:
+        return text
+    for was in sorted(mapping, key=len, reverse=True):
+        become = mapping[was]
+        replacement = become if become else f"[УКАЗАТЬ: {_label_for_value(was)}]"
+        text = text.replace(was, replacement)
+    return text
+
+
 def _section_context(
-    section: Section, chunks: List[Chunk], template_names: Optional[Set[str]]
+    section: Section, chunks: List[Chunk], template_names: Optional[Set[str]],
+    replacements: Optional[Dict[str, str]] = None,
 ) -> str:
     relevant = _select_relevant_chunks(section.title, section.brief, chunks)
-    return _build_context_block(relevant, MAX_CHUNK_CHARS_PER_SECTION, template_names)
+    block = _build_context_block(relevant, MAX_CHUNK_CHARS_PER_SECTION, template_names)
+    return _apply_replacements(block, replacements) if replacements else block
 
 
 async def _write_section(
     section: Section, chunks: List[Chunk], previous_tail: str, user_id: int,
     template_names: Optional[Set[str]] = None,
+    replacements: Optional[Dict[str, str]] = None,
 ) -> str:
     # Selecting chunks + building the context block tokenizes/scans the whole
     # corpus per section; at 12 concurrent writers that's real CPU time on the
     # (shared) event loop, so it runs in a thread instead.
     context_block = await asyncio.to_thread(
-        _section_context, section, chunks, template_names
+        _section_context, section, chunks, template_names, replacements
     )
 
     prompt_parts = [f"Раздел документа: {section.title}", f"Задача раздела: {section.brief}"]
@@ -544,7 +744,12 @@ async def get_docgen_response(
 
     token = billing_pool.set("computer")
     try:
-        if not is_clarify_reply(user_text):
+        # Task 15: a second accepted shape besides the clarify chip reply — a
+        # filled «было → стало» list is an ordinary message, not a chip
+        # reply, so without this check phase two would never be reached and
+        # the mode would re-ask forever. is_clarify_reply(user_text) still
+        # covers the chip path (including "skipped") unchanged.
+        if not is_clarify_reply(user_text) and not _parse_replacements(user_text):
             return await _confirm_before_generating(user_text, user_id, status_msg)
         return await _run_docgen_after_confirmation(messages, user_text, user_id, status_msg)
     finally:
@@ -552,17 +757,23 @@ async def get_docgen_response(
 
 
 def _recover_original_request(messages: List[Dict[str, Any]], user_text: str) -> str:
-    """The last user message that isn't itself a clarify reply — i.e. the
+    """The last user message that isn't itself a confirmation — i.e. the
     request from before the confirmation question was asked. Falls back to
-    user_text so a conversation that somehow starts with a clarify reply
-    doesn't crash."""
+    user_text so a conversation that somehow starts with a confirmation
+    doesn't crash.
+
+    Task 15: a filled «было → стало» reply is a confirmation too, but it is
+    not a clarify chip reply (is_clarify_reply is False for it) — without
+    also skipping it here, this would return the replacement list itself as
+    the "original request" instead of walking further back to find it.
+    """
     from clarify import is_clarify_reply
 
     for message in reversed(messages or []):
         if not isinstance(message, dict) or message.get("role") != "user":
             continue
         content = str(message.get("content") or "")
-        if is_clarify_reply(content):
+        if is_clarify_reply(content) or _parse_replacements(content):
             continue
         return content
     return user_text
@@ -599,6 +810,8 @@ async def _confirm_before_generating(
     await _update_status(status_msg, "📄 Читаю исходники и строю план документа...")
     chunks, truncated_sources, skipped_sources = await asyncio.to_thread(_extract_source_chunks, user_id)
     outline, template_names, planning_failed = await _plan_outline(user_text, chunks, user_id)
+    candidates = await asyncio.to_thread(_find_replacement_candidates, chunks)
+    candidates = await _label_replacement_candidates(candidates, user_id)
 
     total = len(outline)
     approx_pages = max(1, total * CHUNK_TARGET_CHARS // 2000)
@@ -632,6 +845,15 @@ async def _confirm_before_generating(
         )
     if planning_failed:
         lines.append("План построить не удалось — запасной вариант: один раздел на весь документ.")
+    if candidates:
+        lines.append("")
+        lines.append("Это повторяется в примерах — укажите, чем заменить в новых файлах:")
+        lines.append("")
+        for value, label in candidates:
+            lines.append(f"{label}: {value} → ")
+        lines.append("")
+        lines.append("Ответьте этим же списком, дописав значения справа.")
+        lines.append("Пустая строка — поставлю метку [УКАЗАТЬ: …]. Напишите «как есть», если менять не нужно.")
     text = "\n".join(lines)
 
     questions_raw = [
@@ -668,8 +890,16 @@ async def _run_docgen_after_confirmation(
     "Уточнения пропущены…", which is a clarify reply containing neither label.
     Treating that as consent would launch thousands of model calls on one
     accidental keypress — exactly what this confirmation exists to prevent.
+
+    Task 15 adds a second accepted shape: a filled «было → стало» list is
+    itself treated as consent to start (the user would not bother filling in
+    replacement values for a run they don't want), so a message that parses
+    into at least one replacement pair also passes the gate. Everything else —
+    including a chip reply that is neither start nor cancel — still refuses,
+    keeping Task 12's fail-safe intact.
     """
-    if _CONFIRM_START not in user_text:
+    replacements = _parse_replacements(user_text)
+    if _CONFIRM_START not in user_text and not replacements:
         if _CONFIRM_CANCEL in user_text:
             return "Отменил, ничего не генерировал.", [], "", []
         return (
@@ -678,7 +908,9 @@ async def _run_docgen_after_confirmation(
             [], "", [],
         )
     original_request = _recover_original_request(messages, user_text)
-    return await _run_docgen(original_request, user_id, status_msg, extra_instruction=user_text)
+    return await _run_docgen(
+        original_request, user_id, status_msg, extra_instruction=user_text, replacements=replacements
+    )
 
 
 async def _run_docgen(
@@ -686,6 +918,7 @@ async def _run_docgen(
     user_id: int,
     status_msg: Any,
     extra_instruction: str = "",
+    replacements: Optional[Dict[str, str]] = None,
 ) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
     """Режим Документы: план -> параллельная генерация разделов -> сборка в .docx."""
     await _update_status(status_msg, "📄 Читаю исходники и строю план документа...")
@@ -710,7 +943,7 @@ async def _run_docgen(
     for batch_start in range(0, total, MAX_PARALLEL_SECTIONS):
         batch = outline[batch_start:batch_start + MAX_PARALLEL_SECTIONS]
         jobs = [
-            _write_section(section, chunks, previous_tail, user_id, template_names)
+            _write_section(section, chunks, previous_tail, user_id, template_names, replacements)
             for section in batch
         ]
         results = await asyncio.gather(*jobs)
@@ -725,6 +958,12 @@ async def _run_docgen(
     full_markdown = "\n\n".join(
         f"## {section.title}\n\n{text}" for section, text in zip(outline, section_texts)
     )
+    # Deterministic final sweep (Task 15): the model cannot be trusted to
+    # copy values exactly across thousands of calls, so this — not the
+    # per-section context replacement above — is what actually guarantees no
+    # old requisite survives. Runs on the assembled markdown, before the
+    # .docx conversion, so it covers text the writer produced on its own too.
+    full_markdown = _apply_replacements(full_markdown, replacements)
 
     from docx_generator import convert_markdown_to_docx
     try:
@@ -750,5 +989,12 @@ async def _run_docgen(
         summary += (
             f" Не поместились в общий лимит базы знаний и не читались вовсе: {', '.join(skipped_sources)}."
         )
+    if replacements:
+        replaced_count = sum(1 for v in replacements.values() if v)
+        placeholder_count = sum(1 for v in replacements.values() if not v)
+        if replaced_count:
+            summary += f" Заменено реквизитов: {replaced_count}."
+        if placeholder_count:
+            summary += f" Оставлены метки [УКАЗАТЬ: …] вместо не указанных значений: {placeholder_count}."
     files = [{"filename": "Документ.docx", "bytes": docx_bytes}]
     return summary, files, "", []

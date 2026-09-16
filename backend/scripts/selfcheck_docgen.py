@@ -23,6 +23,7 @@ so this runs without API keys, network, or a database.
 Run: python scripts/selfcheck_docgen.py
 """
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -131,6 +132,24 @@ ORIGINAL_PROMPT = f"Сделай ИТТ по шаблону {TEMPLATE_FILE}"
 # retyped literal here would defeat the exact point of check_first_turn.
 CONFIRM_REPLY_START = f"Уточнения по задаче:\n1. Начинать генерацию? – {dg._CONFIRM_START}"
 CONFIRM_REPLY_CANCEL = f"Уточнения по задаче:\n1. Начинать генерацию? – {dg._CONFIRM_CANCEL}"
+
+# Task 15 fixture: the same decimal designation and organisation name repeat
+# across two documents, so both must be proposed as replacement candidates.
+REPL_DOC_A = "форма1.docx"
+REPL_DOC_B = "форма2.docx"
+OLD_DESIGNATION = "АБВГ.123456.789"
+OLD_ORG = "ООО «Ромашка»"
+NEW_DESIGNATION = "ВГДЕ.000001.001"
+NEW_ORG = "ООО «Новый Заказчик»"
+REPL_DOCS = [
+    {"filename": REPL_DOC_A, "content": f"Децимальный номер {OLD_DESIGNATION}. Заказчик {OLD_ORG}."},
+    {"filename": REPL_DOC_B, "content": f"См. также {OLD_DESIGNATION}, заказчик — {OLD_ORG}."},
+]
+REPL_PROMPT = "Сделай документ по образцу форма1.docx"
+REPL_PLAN_JSON = (
+    '{"template_documents": [], "sections": ['
+    '{"title": "Общий раздел", "brief": "Обзор", "complexity": "simple"}]}'
+)
 
 
 def _second_turn(prompt: str = ORIGINAL_PROMPT, reply: str = CONFIRM_REPLY_START):
@@ -518,6 +537,72 @@ async def check_folder_inside_archive_is_its_own_group():
     print("OK: folder inside archive — its own group, planner names the folder, template/knowledge split follows")
 
 
+async def check_replacement_flow():
+    """Task 15 — the whole point of the feature: phase one lists repeating
+    requisites as a «было → стало» table; a filled reply (not a clarify chip)
+    starts generation with that mapping; and the assembled .docx contains the
+    new values and *not* the old ones, on the real .docx bytes.
+
+    The fake writer here always emits the OLD requisites verbatim, regardless
+    of what it was given — the worst case, where the model ignores the
+    already-replaced context and writes from its own "memory" instead. This
+    is exactly why the deterministic final sweep over the assembled markdown
+    (not the per-section context replacement alone) is what has to catch it,
+    independent of the model.
+    """
+    _set_documents(REPL_DOCS)
+
+    async def fake_chat(messages, model=None, user_id=None, use_tools=False, use_skills=True, **kwargs):
+        content = messages[-1]["content"]
+        if model == dg.PLANNER_MODEL and "Построй план" in content:
+            return REPL_PLAN_JSON, [], "", []
+        if "Вот значения, повторяющиеся" in content:
+            values = [v for v in content.split("Значения:\n", 1)[1].splitlines() if v.strip()]
+            items = [{"value": v, "label": "Реквизит"} for v in values]
+            return json.dumps({"items": items}, ensure_ascii=False), [], "", []
+        # Writer call: ignores its prompt entirely and writes the old
+        # requisites verbatim — the case the final markdown sweep must cover.
+        return f"Текст раздела. Реквизит {OLD_DESIGNATION}, заказчик {OLD_ORG}.", [], "", []
+
+    import deepseek_client
+
+    dg.get_chat_response = fake_chat
+    deepseek_client.get_deepseek_response = fake_chat
+
+    text, files, _, search = await dg.get_docgen_response([], REPL_PROMPT, 777, FakeStatus())
+    assert files == [], "phase one must not generate anything"
+    assert OLD_DESIGNATION in text, f"candidate table missing the decimal designation: {text!r}"
+    assert OLD_ORG in text, f"candidate table missing the organisation name: {text!r}"
+    assert "→" in text, f"candidate table missing the было->стало arrow: {text!r}"
+
+    reply = (
+        f"Децимальный номер: {OLD_DESIGNATION} → {NEW_DESIGNATION}\n"
+        f"Организация: {OLD_ORG} → {NEW_ORG}\n"
+    )
+    # A filled replacement list, not a clarify chip reply — this exercises
+    # the second accepted confirmation shape end to end.
+    assert not clarify.is_clarify_reply(reply)
+    messages = [
+        {"role": "user", "content": REPL_PROMPT},
+        {"role": "assistant", "content": text},
+        {"role": "user", "content": reply},
+    ]
+    summary, files, _, _ = await dg.get_docgen_response(messages, reply, 777, FakeStatus())
+
+    assert files and files[0]["bytes"][:2] == b"PK", "replacement run must still produce a real .docx"
+    with zipfile.ZipFile(BytesIO(files[0]["bytes"])) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8", "replace")
+    assert NEW_DESIGNATION in document_xml, "new decimal designation missing from the .docx"
+    assert NEW_ORG in document_xml, "new organisation name missing from the .docx"
+    assert OLD_DESIGNATION not in document_xml, "old decimal designation survived into the .docx"
+    assert OLD_ORG not in document_xml, "old organisation name survived into the .docx"
+    assert "Заменено реквизитов: 2" in summary, f"replacement count missing from summary: {summary!r}"
+    print(
+        "OK: replacement flow — было/стало table shown, filled reply starts generation, "
+        "old requisites absent from the real .docx, new ones present"
+    )
+
+
 async def main() -> None:
     # The retry delays (SECTION_RETRY_DELAYS) are real seconds in production;
     # nothing here is testing timing, so collapse them to keep the self-check
@@ -542,6 +627,7 @@ async def main() -> None:
         await check_truncation_marker_on_a_chunk_boundary()
         await check_multi_archive_templates()
         await check_folder_inside_archive_is_its_own_group()
+        await check_replacement_flow()
     finally:
         asyncio.sleep = orig_sleep
     print("OK: docgen pipeline self-check passed")
