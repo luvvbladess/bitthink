@@ -104,6 +104,28 @@ MULTI_ARCHIVE_PLAN_JSON = (
     % ARCHIVE_TEMPLATE_CHOSEN
 )
 
+# Task 14: one archive with two folders nested inside it — templates in one,
+# knowledge in the other. Before the folder-grouping fix both collapsed into
+# a single "arhiv.zip" group and the planner could never name just the
+# templates folder. Same zero-overlap trick as MULTI_ARCHIVE_DOCS: none of
+# these words share tokens with the section brief, so _select_relevant_chunks
+# falls back to "all chunks" instead of hiding a folder from the assertions.
+FOLDER_ARCHIVE = "arhiv.zip"
+TEMPLATE_FOLDER = f"{FOLDER_ARCHIVE}/shablony"
+KNOWLEDGE_FOLDER = f"{FOLDER_ARCHIVE}/baza"
+FOLDER_DOCS = [
+    {"filename": f"{TEMPLATE_FOLDER}/forma1.docx", "content": "Алеф. Бет. Гимель."},
+    {"filename": f"{TEMPLATE_FOLDER}/forma2.docx", "content": "Далет. Хе. Вав."},
+    {"filename": f"{KNOWLEDGE_FOLDER}/otchet1.docx", "content": "Зайин. Хет. Тет."},
+    {"filename": f"{KNOWLEDGE_FOLDER}/otchet2.docx", "content": "Йод. Каф. Ламед."},
+]
+FOLDER_PROMPT = "Собери документ по шаблону из папки shablony архива arhiv.zip"
+FOLDER_PLAN_JSON = (
+    '{"template_documents": ["%s"], "sections": ['
+    '{"title": "Общий раздел", "brief": "Обзорный текст без цифр", "complexity": "simple"}]}'
+    % TEMPLATE_FOLDER
+)
+
 ORIGINAL_PROMPT = f"Сделай ИТТ по шаблону {TEMPLATE_FILE}"
 # Built from the module's own option constants, not retyped literals — a
 # retyped literal here would defeat the exact point of check_first_turn.
@@ -396,13 +418,13 @@ async def check_truncation_marker_on_a_chunk_boundary():
     for tail in range(dg.CHUNK_TARGET_CHARS - 120, dg.CHUNK_TARGET_CHARS):
         body = "--- Страница 1 ---\n" + ("я" * tail) + TEXT_TRUNCATED_NOTICE
         _set_documents([{"filename": "том.pdf", "content": body}])
-        _, truncated = dg._extract_source_chunks(1)
+        _, truncated, _ = dg._extract_source_chunks(1)
         if not truncated:
             missed.append(tail)
     assert not missed, f"truncation went undetected for tail lengths {missed[:5]} (+{len(missed)} total)"
 
     _set_documents([{"filename": "чистый.pdf", "content": "Прочитал первые страницы отчёта и согласовал."}])
-    _, truncated = dg._extract_source_chunks(1)
+    _, truncated, _ = dg._extract_source_chunks(1)
     assert not truncated, "an untruncated document was wrongly reported as truncated"
     print("OK: truncation marker — found on every chunk boundary, no false positive on similar prose")
 
@@ -455,6 +477,47 @@ async def check_multi_archive_templates():
     print("OK: multi-archive templates — only the chosen archive is the template, others fall through to knowledge, confirmation names both groups")
 
 
+async def check_folder_inside_archive_is_its_own_group():
+    """Task 14: a folder nested inside one archive must group on its own —
+    naming just "arhiv.zip/shablony" must select that folder's files only,
+    and the confirmation must still name both folders, even though they share
+    an archive."""
+    _set_documents(FOLDER_DOCS)
+
+    # Phase one: confirmation text must name both folders as separate groups.
+    _install_fakes(FOLDER_PLAN_JSON)
+    text, files, _, search = await dg.get_docgen_response([], FOLDER_PROMPT, 777, FakeStatus())
+    assert files == [], "phase one must not generate anything"
+    assert TEMPLATE_FOLDER in text, f"template folder missing from confirmation text: {text!r}"
+    assert KNOWLEDGE_FOLDER in text, f"knowledge folder missing from confirmation text: {text!r}"
+
+    # Phase two: the writer prompt's "Формат по шаблону" block must cite only
+    # the named folder's files, and "Факты из базы знаний" the other folder's.
+    writer_prompts, _, _ = _install_fakes(FOLDER_PLAN_JSON)
+    messages, reply = _second_turn(FOLDER_PROMPT)
+    summary, files, _, _ = await dg.get_docgen_response(messages, reply, 777, FakeStatus())
+
+    assert files and files[0]["bytes"][:2] == b"PK", "folder-templated run must still produce a .docx"
+    labelled = [p for p in writer_prompts if "Формат по шаблону:" in p and "Факты из базы знаний:" in p]
+    assert labelled, "no writer prompt separated template from knowledge sources"
+    prompt = labelled[0]
+    template_at = prompt.index("Формат по шаблону:")
+    knowledge_at = prompt.index("Факты из базы знаний:")
+    template_block = prompt[template_at:knowledge_at]
+    knowledge_block = prompt[knowledge_at:]
+
+    assert f"[{TEMPLATE_FOLDER}/" in template_block, (
+        f"named folder's files missing from the template block: {template_block!r}"
+    )
+    assert f"{KNOWLEDGE_FOLDER}/" not in template_block, (
+        f"the other folder leaked into the template block: {template_block!r}"
+    )
+    assert f"{KNOWLEDGE_FOLDER}/" in knowledge_block, (
+        f"the other folder did not fall through to the knowledge block: {knowledge_block!r}"
+    )
+    print("OK: folder inside archive — its own group, planner names the folder, template/knowledge split follows")
+
+
 async def main() -> None:
     # The retry delays (SECTION_RETRY_DELAYS) are real seconds in production;
     # nothing here is testing timing, so collapse them to keep the self-check
@@ -478,6 +541,7 @@ async def main() -> None:
         await check_skipped_questions_do_not_start_generation()
         await check_truncation_marker_on_a_chunk_boundary()
         await check_multi_archive_templates()
+        await check_folder_inside_archive_is_its_own_group()
     finally:
         asyncio.sleep = orig_sleep
     print("OK: docgen pipeline self-check passed")

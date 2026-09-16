@@ -1,7 +1,9 @@
 from app.config import get_settings  # noqa: F401 — adds bot_core to sys.path
 
+import docgen_router as dg
 from docgen_router import (
     MAX_CHUNK_CHARS_PER_SECTION,
+    MAX_SOURCE_CHARS_TOTAL,
     PLANNER_PREVIEW_BUDGET,
     PLANNER_PREVIEW_GROUPS,
     Chunk,
@@ -10,6 +12,8 @@ from docgen_router import (
     _classify_documents_hint,
     _document_previews,
     _expand_template_names,
+    _folder_of,
+    _group_by_folder,
     _section_context,
     _select_relevant_chunks,
     _parse_outline_response,
@@ -194,6 +198,74 @@ def test_expand_template_names_name_both_real_file_and_archive_prefix_selects_un
     resolved = _expand_template_names(["papka"], chunks)
 
     assert resolved == {"papka", "papka/inner.docx"}
+
+
+def test_expand_template_names_folder_inside_archive_selects_only_that_folder():
+    # arhiv.zip holds two folders — shablony (templates) and baza
+    # (knowledge) — plus a sub-subfolder inside shablony. Naming just
+    # "arhiv.zip/shablony" must select every file under it, however deep,
+    # and nothing from "arhiv.zip/baza".
+    chunks = [
+        Chunk(id=0, doc_name="arhiv.zip/shablony/forma1.docx", title="t", text="x", tokens=frozenset()),
+        Chunk(id=1, doc_name="arhiv.zip/shablony/formy/forma2.docx", title="t", text="x", tokens=frozenset()),
+        Chunk(id=2, doc_name="arhiv.zip/baza/otchet1.docx", title="t", text="x", tokens=frozenset()),
+    ]
+
+    resolved = _expand_template_names(["arhiv.zip/shablony"], chunks)
+
+    assert resolved == {"arhiv.zip/shablony/forma1.docx", "arhiv.zip/shablony/formy/forma2.docx"}
+
+
+def test_folder_of_bare_name_has_no_slash():
+    assert _folder_of("report.docx") == "report.docx"
+
+
+def test_folder_of_flat_archive_member_groups_by_the_archive():
+    assert _folder_of("arhiv.zip/forma1.docx") == "arhiv.zip"
+
+
+def test_folder_of_nested_archive_member_groups_by_its_own_folder():
+    assert _folder_of("arhiv.zip/shablony/formy/forma1.docx") == "arhiv.zip/shablony/formy"
+
+
+def test_group_by_folder_nested_paths_group_separately_bare_names_group_alone():
+    names = [
+        "arhiv.zip/shablony/forma1.docx",
+        "arhiv.zip/shablony/forma2.docx",
+        "arhiv.zip/baza/otchet1.docx",
+        "bare.docx",
+    ]
+
+    groups = _group_by_folder(names)
+
+    assert groups["arhiv.zip/shablony"] == ["arhiv.zip/shablony/forma1.docx", "arhiv.zip/shablony/forma2.docx"]
+    assert groups["arhiv.zip/baza"] == ["arhiv.zip/baza/otchet1.docx"]
+    assert groups["bare.docx"] == ["bare.docx"]
+
+
+def test_extract_source_chunks_stops_at_corpus_ceiling_and_reports_skipped(monkeypatch):
+    """Change B: raising the per-file caps removed the only thing that kept
+    the total corpus bounded by accident. A document that would push the
+    running total over MAX_SOURCE_CHARS_TOTAL must not be loaded, but must be
+    named — and a smaller document later in the list still gets its chance."""
+    from conversations import conversation_manager
+
+    big = "x" * (MAX_SOURCE_CHARS_TOTAL // 2 + 1)
+    docs = [
+        {"filename": "a.pdf", "content": big},
+        {"filename": "b.pdf", "content": big},
+        {"filename": "c.pdf", "content": "small enough to still fit"},
+    ]
+    monkeypatch.setattr(conversation_manager, "get_documents", lambda uid: docs)
+
+    chunks, truncated, skipped = dg._extract_source_chunks(1)
+
+    loaded = {c.doc_name for c in chunks}
+    assert "a.pdf" in loaded, "the first document under the ceiling must load"
+    assert "b.pdf" not in loaded, "the document that would exceed the ceiling must not load"
+    assert "b.pdf" in skipped, "a document dropped by the ceiling must be named as skipped"
+    assert "c.pdf" in loaded, "a smaller document after a skip must still be checked and fit"
+    assert not truncated
 
 
 def test_classify_documents_hint_names_template_and_knowledge_files():

@@ -94,16 +94,17 @@ async def upload_document(
     declared_image = (file.content_type or "").startswith("image/")
     is_image = declared_image or ext in IMAGE_EXTENSIONS
     if ext == ".zip":
+        extended_limits = (await repo.get_user_model(user_id)) == "docgen"
+        max_zip_size = 100 * 1024 * 1024 if extended_limits else 20 * 1024 * 1024
         contents = await file.read()
-        if len(contents) > 20 * 1024 * 1024:
+        if len(contents) > max_zip_size:
             raise HTTPException(
                 status_code=400,
-                detail="Архив слишком большой (максимум 20 МБ). Разбейте на несколько архивов.",
+                detail=f"Архив слишком большой (максимум {max_zip_size // 1024 // 1024} МБ). Разбейте на несколько архивов.",
             )
         from document_parser import extract_zip_archive
 
         bot_user_id = await repo.ensure_user(user_id)
-        extended_limits = (await repo.get_user_model(user_id)) == "docgen"
         try:
             documents = await extract_zip_archive(contents, filename, user_id=bot_user_id, extended_limits=extended_limits)
         except MemoryError as exc:
@@ -141,7 +142,11 @@ async def upload_document(
         raise HTTPException(status_code=400, detail=f"Формат {ext or 'без расширения'} пока нельзя прочитать")
 
     contents = await file.read()
-    max_size = 40 * 1024 * 1024 if is_image else 20 * 1024 * 1024
+    extended_limits = not is_image and (await repo.get_user_model(user_id)) == "docgen"
+    if is_image:
+        max_size = 40 * 1024 * 1024
+    else:
+        max_size = 100 * 1024 * 1024 if extended_limits else 20 * 1024 * 1024
     if len(contents) > max_size:
         raise HTTPException(
             status_code=400,
@@ -172,7 +177,6 @@ async def upload_document(
     from document_parser import extract_text_from_file
 
     bot_user_id = await repo.ensure_user(user_id)
-    extended_limits = (await repo.get_user_model(user_id)) == "docgen"
     try:
         text = await extract_text_from_file(contents, filename, user_id=bot_user_id, extended_limits=extended_limits)
     except MemoryError as exc:

@@ -71,11 +71,19 @@ MAX_IMAGES_PER_PDF = 8
 MIN_IMAGE_SIZE = 5000
 MIN_IMAGE_DIMENSION = 80
 MAX_PDF_PAGES = 40
-MAX_PDF_PAGES_EXTENDED = 200
+# Measured on a generated 900-page text PDF: 2 292 190 chars extracted in
+# 1.2s, peak 9MB RAM. 1200 gives that margin. Non-extended MAX_PDF_PAGES stays
+# at 40 — every other mode is not creator-tier-only and needs the zip-bomb /
+# oversized-upload guard as-is.
+MAX_PDF_PAGES_EXTENDED = 1200
 MAX_PDF_TABLE_PAGES = 6
 MAX_PDF_BYTES = 20 * 1024 * 1024
+# The 900-page measurement above needs the byte gate raised too — a big PDF
+# was rejected by this check before page limits even had a chance to apply.
+MAX_PDF_BYTES_EXTENDED = 100 * 1024 * 1024
 MAX_EXTRACT_CHARS = 180_000
-MAX_EXTRACT_CHARS_EXTENDED = 800_000
+# 900 pages measured at 2.29M chars; 3M gives margin without being unbounded.
+MAX_EXTRACT_CHARS_EXTENDED = 3_000_000
 # Оба маркера остаются в сохранённом тексте документа, поэтому по ним можно
 # понять постфактум, что исходник прочитан не целиком (docgen предупреждает
 # об этом пользователя — иначе усечение выглядит как полный документ).
@@ -84,6 +92,10 @@ PAGES_TRUNCATED_MARKER = "Прочитал первые"
 
 MAX_ARCHIVE_ENTRIES = 200
 MAX_ARCHIVE_UNPACKED_BYTES = 200 * 1024 * 1024  # 200 MB
+# A knowledge base of many 900-page files needs both archive gates raised too,
+# for the extended (docgen) path only — same zip-bomb reasoning as above.
+MAX_ARCHIVE_ENTRIES_EXTENDED = 2000
+MAX_ARCHIVE_UNPACKED_BYTES_EXTENDED = 1024 * 1024 * 1024  # 1 GB
 _OCR_MAX_SIDE = 1800
 
 
@@ -247,8 +259,9 @@ async def extract_text_from_pdf(file_data: bytes, status_callback=None, user_id:
     max_chars = MAX_EXTRACT_CHARS_EXTENDED if extended_limits else MAX_EXTRACT_CHARS
     try:
         def _extract_base_data():
-            if len(file_data) > MAX_PDF_BYTES:
-                mb = MAX_PDF_BYTES // (1024 * 1024)
+            max_pdf_bytes = MAX_PDF_BYTES_EXTENDED if extended_limits else MAX_PDF_BYTES
+            if len(file_data) > max_pdf_bytes:
+                mb = max_pdf_bytes // (1024 * 1024)
                 return (
                     [f"PDF больше {mb} МБ. Пришлите выдержку или файл меньшего размера."],
                     [],
@@ -492,6 +505,8 @@ async def extract_zip_archive(file_data: bytes, archive_name: str, user_id: int 
     вернёт None для них), как и служебные записи macOS/директории.
     """
     def _list_entries() -> list[tuple[str, bytes]]:
+        max_entries = MAX_ARCHIVE_ENTRIES_EXTENDED if extended_limits else MAX_ARCHIVE_ENTRIES
+        max_unpacked = MAX_ARCHIVE_UNPACKED_BYTES_EXTENDED if extended_limits else MAX_ARCHIVE_UNPACKED_BYTES
         entries = []
         with zipfile.ZipFile(io.BytesIO(file_data)) as archive:
             entries_info = []
@@ -502,20 +517,20 @@ async def extract_zip_archive(file_data: bytes, archive_name: str, user_id: int 
                 if path.name.startswith(".") or "__MACOSX" in path.parts:
                     continue
                 entries_info.append(info)
-            if len(entries_info) > MAX_ARCHIVE_ENTRIES:
-                raise ValueError(f"Архив содержит больше {MAX_ARCHIVE_ENTRIES} файлов")
+            if len(entries_info) > max_entries:
+                raise ValueError(f"Архив содержит больше {max_entries} файлов")
             total_declared = sum(info.file_size for info in entries_info)
-            if total_declared > MAX_ARCHIVE_UNPACKED_BYTES:
+            if total_declared > max_unpacked:
                 raise ValueError(
-                    f"Архив распаковывается больше чем в {MAX_ARCHIVE_UNPACKED_BYTES // (1024 * 1024)} МБ"
+                    f"Архив распаковывается больше чем в {max_unpacked // (1024 * 1024)} МБ"
                 )
             total_read = 0
             for info in entries_info:
                 data = archive.read(info.filename)
                 total_read += len(data)
-                if total_read > MAX_ARCHIVE_UNPACKED_BYTES:
+                if total_read > max_unpacked:
                     raise ValueError(
-                        f"Архив распаковывается больше чем в {MAX_ARCHIVE_UNPACKED_BYTES // (1024 * 1024)} МБ"
+                        f"Архив распаковывается больше чем в {max_unpacked // (1024 * 1024)} МБ"
                     )
                 entries.append((info.filename, data))
         return entries

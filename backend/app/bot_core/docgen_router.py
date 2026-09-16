@@ -29,6 +29,13 @@ CHUNK_TARGET_CHARS = 3000
 TOP_K_CHUNKS = 6
 MAX_CHUNK_CHARS_PER_SECTION = 12000
 
+# Raising the per-file extraction caps (document_parser.MAX_*_EXTENDED) removes
+# the only thing that used to keep the total corpus small by accident. Measured
+# with the new caps: 50 files x 900 pages = 118 MB of text -> 57 500 chunks,
+# 21.8s, 420MB RAM. That's fine; 200 such files would be ~1.7GB, which is not.
+# This is the deliberate ceiling that replaces that accident.
+MAX_SOURCE_CHARS_TOTAL = 150_000_000
+
 # Measured on 149 files across 5 archives: unbounded previews + catalog reached
 # ~300 000 chars (~120 000 tokens) in the planner call, which is supposed to be
 # the cheap one, and grows linearly with file count. These two caps bound it.
@@ -110,8 +117,9 @@ def _split_into_chunks(doc_name: str, text: str, start_id: int) -> List[Chunk]:
     return chunks
 
 
-def _extract_source_chunks(user_id: int) -> Tuple[List[Chunk], List[str]]:
-    """Чанки всех документов беседы и имена тех, что прочитаны не целиком.
+def _extract_source_chunks(user_id: int) -> Tuple[List[Chunk], List[str], List[str]]:
+    """Чанки всех документов беседы, имена тех, что прочитаны не целиком, и
+    имена тех, что не поместились в общий потолок MAX_SOURCE_CHARS_TOTAL.
 
     Усечение ищется в целом тексте документа, до нарезки: маркер длиной в
     десятки символов легко попадает на границу чанков, и тогда ни в одном
@@ -121,6 +129,13 @@ def _extract_source_chunks(user_id: int) -> Tuple[List[Chunk], List[str]]:
     режим «Документы» уже выбран в момент загрузки файла. Если человек сначала
     приложил файлы и только потом переключил режим, большой исходник уже
     усечён, и без предупреждения он выглядит как полный документ.
+
+    Про общий потолок: документ, который вместе с уже накопленными не
+    поместится в MAX_SOURCE_CHARS_TOTAL, пропускается — но следующие, меньшие
+    по размеру, всё ещё проверяются и могут поместиться. Имя пропущенного
+    документа обязательно возвращается вызывающему: документ, молча
+    исчезнувший из генерации на 5000 страниц, — ровно тот отказ, от которого
+    этот режим и защищали все предыдущие лимиты.
     """
     from conversations import conversation_manager
     from document_parser import TEXT_TRUNCATED_NOTICE
@@ -128,15 +143,21 @@ def _extract_source_chunks(user_id: int) -> Tuple[List[Chunk], List[str]]:
     docs = conversation_manager.get_documents(int(user_id))
     chunks: List[Chunk] = []
     truncated: List[str] = []
+    skipped: List[str] = []
+    total_chars = 0
     for doc in docs:
         name = str(doc.get("filename") or "документ")
         body = str(doc.get("content") or "")
         if not body:
             continue
+        if total_chars + len(body) > MAX_SOURCE_CHARS_TOTAL:
+            skipped.append(name)
+            continue
+        total_chars += len(body)
         if TEXT_TRUNCATED_NOTICE.strip() in body or _PAGES_TRUNCATED_RE.search(body):
             truncated.append(name)
         chunks.extend(_split_into_chunks(name, body, len(chunks)))
-    return chunks, truncated
+    return chunks, truncated, skipped
 
 
 def _select_relevant_chunks(
@@ -217,31 +238,36 @@ def _classify_documents_hint(chunks: List[Chunk]) -> str:
     )
 
 
-def _archive_of(doc_name: str) -> str:
-    """The part before the first '/', or the bare name when there is none —
-    matches how extract_zip_archive names archive members (f"{archive}/{inner}")."""
-    return doc_name.split("/", 1)[0] if "/" in doc_name else doc_name
+def _folder_of(doc_name: str) -> str:
+    """The containing folder — everything before the LAST '/', or the bare
+    name when there is none. extract_zip_archive names nested archive members
+    f"{archive}/{dir}/{inner}", so a file two folders deep groups with its own
+    folder, not with the archive as a whole — that's what lets a planner tell
+    "arhiv.zip/shablony" (templates) apart from "arhiv.zip/baza" (knowledge)."""
+    return doc_name.rsplit("/", 1)[0] if "/" in doc_name else doc_name
 
 
-def _group_by_archive(names: List[str]) -> Dict[str, List[str]]:
+def _group_by_folder(names: List[str]) -> Dict[str, List[str]]:
     groups: Dict[str, List[str]] = {}
     for name in names:
-        groups.setdefault(_archive_of(name), []).append(name)
+        groups.setdefault(_folder_of(name), []).append(name)
     return groups
 
 
 def _document_previews(chunks: List[Chunk], budget_per_doc: int = 1500) -> str:
-    """Одно превью на архив, а не на каждый файл, плюс список имён внутри.
+    """Одно превью на папку (архив или папку внутри него), а не на каждый
+    файл, плюс список имён внутри.
 
     Превью на файл не ограничивало ничего: пол в 300 символов побеждал деление
     бюджета, и блок снова рос линейно — замерено 66 878 символов уже на 150
-    файлах и 346 028 на 1000, то есть хуже исходной проблемы. Архивов же в
-    беседе единицы, поэтому бюджет на архив даёт настоящий потолок:
+    файлах и 346 028 на 1000, то есть хуже исходной проблемы. Папок же в
+    беседе единицы, поэтому бюджет на папку даёт настоящий потолок:
     PLANNER_PREVIEW_GROUPS × budget_per_doc, независимо от числа файлов.
 
-    Файлы внутри архива обычно однотипны (формы, тома одного справочника), так
-    что для распознавания шаблона хватает начала первого из них; остальные
-    планировщик видит по именам — они дешёвые, и именно их он возвращает.
+    Файлы внутри одной папки обычно однотипны (формы, тома одного
+    справочника), так что для распознавания шаблона хватает начала первого из
+    них; остальные планировщик видит по именам — они дешёвые, и именно их он
+    возвращает.
     """
     order: List[str] = []
     bodies: Dict[str, str] = {}
@@ -252,7 +278,7 @@ def _document_previews(chunks: List[Chunk], budget_per_doc: int = 1500) -> str:
         if len(bodies[c.doc_name]) < budget_per_doc:
             bodies[c.doc_name] += c.text
 
-    groups = _group_by_archive(order)
+    groups = _group_by_folder(order)
     previewed = list(groups.items())[:PLANNER_PREVIEW_GROUPS]
     per_group_budget = max(300, min(budget_per_doc, PLANNER_PREVIEW_BUDGET // max(1, len(previewed))))
 
@@ -263,11 +289,11 @@ def _document_previews(chunks: List[Chunk], budget_per_doc: int = 1500) -> str:
         return shown
 
     parts: List[str] = []
-    for archive, members in previewed:
+    for folder, members in previewed:
         head = members[0]
         if len(members) > 1:
             parts.append(
-                f"=== Архив {archive}: {len(members)} файлов ({_listed(members)}) ===\n"
+                f"=== Группа {folder}: {len(members)} файлов ({_listed(members)}) ===\n"
                 f"--- начало файла {head} ---\n{bodies[head][:per_group_budget]}"
             )
         else:
@@ -375,8 +401,9 @@ async def _plan_outline(
         + f"Заголовки доступных фрагментов исходников (id: заголовок):\n{catalog}\n\n"
         "template_documents — точные имена документов ниже (можно несколько), ТОЛЬКО если запрос\n"
         "пользователя или подсказка ниже указывают, что это шаблон оформления (пример структуры для\n"
-        "итогового документа). Вместо перечисления всех файлов архива можно указать имя самого архива\n"
-        "целиком — тогда шаблоном станут все его файлы.\n"
+        "итогового документа). Вместо перечисления всех файлов можно указать имя целого архива, имя\n"
+        "папки внутри архива (например, \"архив.zip/папка\") или имя одного файла — тогда шаблоном\n"
+        "станут все файлы этого архива, все файлы этой папки или один этот файл.\n"
         "Слова пользователя в запросе всегда важнее подсказки по имени файла.\n"
         "Если ничто не указывает на шаблон, верни template_documents: []. Если template_documents\n"
         "задан, построй список разделов, максимально повторяя структуру (заголовки, их порядок) этих\n"
@@ -542,20 +569,21 @@ def _recover_original_request(messages: List[Dict[str, Any]], user_text: str) ->
 
 
 def _format_grouped_names(names: List[str], max_members: int = 5) -> str:
-    """Names grouped by archive prefix for the confirmation text, which has no
-    length limit — unlike the clarify chip prompts. Each group's member list
-    is truncated after max_members with "… и ещё N" so a 200-file base stays
-    readable instead of listing every file."""
+    """Names grouped by containing folder for the confirmation text, which has
+    no length limit — unlike the clarify chip prompts. Each group's member
+    list is truncated after max_members with "… и ещё N" so a 200-file base
+    stays readable instead of listing every file."""
     if not names:
         return ""
     parts = []
-    for archive, members in _group_by_archive(names).items():
-        if len(members) == 1 and members[0] == archive:
-            parts.append(archive)
+    for folder, members in _group_by_folder(names).items():
+        if len(members) == 1 and members[0] == folder:
+            parts.append(folder)
             continue
-        shown = [m.split("/", 1)[1] if "/" in m else m for m in members[:max_members]]
+        prefix = f"{folder}/"
+        shown = [m[len(prefix):] if m.startswith(prefix) else m for m in members[:max_members]]
         suffix = f", … и ещё {len(members) - max_members}" if len(members) > max_members else ""
-        parts.append(f"{archive} ({len(members)} файл(ов): {', '.join(shown)}{suffix})")
+        parts.append(f"{folder} ({len(members)} файл(ов): {', '.join(shown)}{suffix})")
     return "; ".join(parts)
 
 
@@ -569,7 +597,7 @@ async def _confirm_before_generating(
     from clarify import normalize_questions, pack_search
 
     await _update_status(status_msg, "📄 Читаю исходники и строю план документа...")
-    chunks, truncated_sources = await asyncio.to_thread(_extract_source_chunks, user_id)
+    chunks, truncated_sources, skipped_sources = await asyncio.to_thread(_extract_source_chunks, user_id)
     outline, template_names, planning_failed = await _plan_outline(user_text, chunks, user_id)
 
     total = len(outline)
@@ -596,6 +624,11 @@ async def _confirm_before_generating(
     if truncated_sources:
         lines.append(
             f"Прочитаны не целиком: {', '.join(truncated_sources)}. Загрузите их заново в режиме «Документы»."
+        )
+    if skipped_sources:
+        lines.append(
+            f"Не поместились в общий лимит базы знаний ({MAX_SOURCE_CHARS_TOTAL // 1_000_000} млн символов) "
+            f"и не читались вовсе: {', '.join(skipped_sources)}."
         )
     if planning_failed:
         lines.append("План построить не удалось — запасной вариант: один раздел на весь документ.")
@@ -658,7 +691,7 @@ async def _run_docgen(
     await _update_status(status_msg, "📄 Читаю исходники и строю план документа...")
     # Синхронный запрос к БД плюс токенизация всего корпуса: на тысячах страниц
     # это секунды CPU, которые нельзя держать в event loop — он общий на всех.
-    chunks, truncated_sources = await asyncio.to_thread(_extract_source_chunks, user_id)
+    chunks, truncated_sources, skipped_sources = await asyncio.to_thread(_extract_source_chunks, user_id)
     no_sources = not chunks
     outline, template_names, planning_failed = await _plan_outline(user_text, chunks, user_id, extra_instruction)
 
@@ -712,6 +745,10 @@ async def _run_docgen(
         summary += (
             f" Прочитаны не целиком: {', '.join(truncated_sources)}. "
             "Загрузите эти файлы заново, уже в режиме «Документы» — тогда они будут прочитаны полностью."
+        )
+    if skipped_sources:
+        summary += (
+            f" Не поместились в общий лимит базы знаний и не читались вовсе: {', '.join(skipped_sources)}."
         )
     files = [{"filename": "Документ.docx", "bytes": docx_bytes}]
     return summary, files, "", []
