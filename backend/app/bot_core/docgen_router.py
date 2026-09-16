@@ -634,10 +634,11 @@ async def _plan_document(
             sections.extend(chapter_sections)
         # Сотня с лишним вызовов — это минуты; без отчёта о ходе режим выглядит
         # зависшим ровно в той фазе, где пользователь ещё ничего не подтвердил.
+        planned = min(batch_start + MAX_PARALLEL_SECTIONS, len(chapters))
         await _update_status(
             status_msg,
-            f"📄 Планирую: глава {min(batch_start + MAX_PARALLEL_SECTIONS, len(chapters))} "
-            f"из {len(chapters)}, разделов уже {len(sections)}...",
+            f"📄 План: {_progress_bar(planned, len(chapters))} глава {planned} из {len(chapters)}, "
+            f"разделов уже {len(sections)}",
         )
     for i, section in enumerate(sections):
         section.id = i
@@ -934,6 +935,29 @@ async def _write_section(
     return f"{_SECTION_FAILED_PREFIX}: {str(last_error)[:200]}]"
 
 
+def _progress_bar(done: int, total: int, cells: int = 10) -> str:
+    filled = min(cells, max(0, round(done / total * cells))) if total else 0
+    return "▰" * filled + "▱" * (cells - filled)
+
+
+def _progress_line(done: int, total: int, chars_written: int) -> str:
+    """Строка хода работы: доля, разделы и главное — страницы.
+
+    Разделами прогресс мерить бесполезно: человек заказывал страницы и ждёт
+    часами, поэтому «готово 1620 стр. из ~5025» — единственное число, по
+    которому видно, туда ли всё идёт. Готовые страницы считаются по реально
+    написанным символам, а не по плану: если модель пишет короче ожидаемого,
+    это должно быть видно сразу, а не в конце.
+    """
+    pages_done = chars_written // CHARS_PER_PAGE
+    pages_total = max(1, total * CHUNK_TARGET_CHARS // CHARS_PER_PAGE)
+    percent = round(done / total * 100) if total else 0
+    return (
+        f"📄 {_progress_bar(done, total)} {percent}% · "
+        f"раздел {done} из {total} · готово ~{pages_done} стр. из ~{pages_total}"
+    )
+
+
 async def _update_status(status_msg: Any, text: str) -> None:
     if not status_msg:
         return
@@ -1205,7 +1229,11 @@ async def _run_docgen(
         if results and results[-1] and not results[-1].startswith(_SECTION_FAILED_PREFIX):
             previous_tail = results[-1][-500:]
         done += len(batch)
-        await _update_status(status_msg, f"📄 Раздел {done} из {total}...")
+        chars_written = sum(
+            len(text) for text in section_texts
+            if text and not text.startswith(_SECTION_FAILED_PREFIX)
+        )
+        await _update_status(status_msg, _progress_line(done, total, chars_written))
 
     await _update_status(status_msg, "📄 Собираю итоговый .docx...")
     # Заголовок главы выводится один раз, при смене — иначе двухуровневый план
@@ -1232,7 +1260,10 @@ async def _run_docgen(
         logger.error(f"docgen docx assembly failed: {e}", exc_info=True)
         return f"Не удалось собрать документ: {str(e)[:200]}", [], "", []
 
-    summary = f"Готово. Документ из {total} раздел(ов) собран в .docx — файл во вложении."
+    summary = (
+        f"Готово. Документ из {total} раздел(ов), примерно "
+        f"{max(1, len(full_markdown) // CHARS_PER_PAGE)} стр. — файл во вложении."
+    )
     if no_sources:
         summary += " Исходники не найдены — документ написан по одному промпту."
     if planning_failed:

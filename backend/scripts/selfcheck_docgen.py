@@ -257,7 +257,7 @@ async def check_happy_path():
 
     assert "2 раздел" in summary, summary
     assert "не найдены" not in summary, summary
-    assert any("Раздел" in text and "из" in text for text in status.texts), status.texts
+    assert any("раздел" in text and "готово ~" in text for text in status.texts), status.texts
     print("OK: happy path — .docx built, computer pool, template/knowledge split in writer prompt")
 
 
@@ -659,13 +659,23 @@ async def check_thousands_of_pages_are_planned_in_two_levels():
     # Smaller request, run end to end: chapters must reach the real .docx.
     chapter_calls.clear()
     messages, reply = _second_turn(prompt="Сделай документацию на 300 страниц")
-    summary, files, _, _ = await dg.get_docgen_response(messages, reply, 777, FakeStatus())
+    status = FakeStatus()
+    summary, files, _, _ = await dg.get_docgen_response(messages, reply, 777, status)
     assert chapter_calls, "the generating turn must plan in two levels as well"
     assert files and files[0]["bytes"][:2] == b"PK", "two-level run must produce a real .docx"
     with zipfile.ZipFile(BytesIO(files[0]["bytes"])) as archive:
         document_xml = archive.read("word/document.xml").decode("utf-8", "replace")
     assert "Глава 0" in document_xml, "chapter heading missing from the assembled .docx"
     assert "Раздел 0" in document_xml, "section heading missing from the assembled .docx"
+
+    # The progress the user actually watches for hours: pages, not sections.
+    progress = [t for t in status.texts if "готово ~" in t]
+    assert progress, f"no page progress was ever reported: {status.texts[-3:]}"
+    assert "▰" in progress[-1] or "▱" in progress[-1], f"progress bar missing: {progress[-1]!r}"
+    pages_seen = [int(re.search(r"готово ~(\d+) стр", t).group(1)) for t in progress]
+    assert pages_seen == sorted(pages_seen), f"page count went backwards: {pages_seen}"
+    assert pages_seen[-1] > 0, "page progress never left zero"
+    assert "стр." in summary, f"final summary must state the page count: {summary!r}"
     print(
         f"OK: thousands of pages — 5000 стр. -> {planned} разделов через главы, "
         f"оценка ${cost:.2f}, главы дошли до .docx"
