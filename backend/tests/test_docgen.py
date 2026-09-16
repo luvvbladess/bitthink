@@ -470,15 +470,28 @@ def test_requested_sections_clamped_to_max_sections():
     assert dg._requested_sections("нужно 100000 страниц") == dg.MAX_SECTIONS
 
 
-def test_estimate_cost_stays_under_the_hundred_dollar_budget():
-    """The mode's stated budget: 5-7 thousand pages for under $100. Worst
-    realistic case — every section escalated — must still fit, otherwise the
-    confirmation screen is promising something the run cannot keep."""
+def test_deepseek_is_what_keeps_the_run_inside_the_hundred_dollar_budget():
+    """The mode's stated budget is 5-7 thousand pages under $100. With DeepSeek
+    on the escalated sections the worst case fits with room to spare; without
+    it, the same worst case does not — which is exactly why the confirmation
+    screen warns when the key is missing instead of quoting a number and
+    hoping. Both halves are asserted so neither can drift unnoticed.
+    """
     outline = [
         dg.Section(id=i, title=f"Раздел {i}", brief="", complexity="complex")
         for i in range(dg._requested_sections("7000 страниц"))
     ]
-    assert dg._estimate_cost_usd(outline, has_sources=True) < 100
+    original = dg.DEEPSEEK_API_KEY
+    try:
+        dg.DEEPSEEK_API_KEY = "sk-present"
+        with_deepseek = dg._estimate_cost_usd(outline, has_sources=True)
+        dg.DEEPSEEK_API_KEY = ""
+        without_deepseek = dg._estimate_cost_usd(outline, has_sources=True)
+    finally:
+        dg.DEEPSEEK_API_KEY = original
+
+    assert with_deepseek < 100, f"budget blown even with DeepSeek: ${with_deepseek:.2f}"
+    assert without_deepseek > with_deepseek * 2, "DeepSeek must be the cheap path, not a rounding difference"
 
 
 def test_estimate_cost_grows_with_escalation_and_size():
@@ -591,6 +604,23 @@ def test_progress_bar_fills_and_never_overflows():
     # inside the status update of a multi-hour job.
     assert len(dg._progress_bar(0, 0)) == 10
     assert len(dg._progress_bar(99, 10)) == 10
+
+
+def test_estimate_cost_covers_the_model_writing_longer_than_planned():
+    """Measured on the server: a 6-page order came back 11 pages. The estimate
+    says «не больше», so it has to hold when the model overshoots — otherwise
+    the budget promise breaks on a successful run, which is the worst time."""
+    outline = [dg.Section(id=i, title="x", brief="", complexity="complex") for i in range(100)]
+    estimate = dg._estimate_cost_usd(outline, has_sources=True)
+
+    from app.billing.costs import model_cost_usd
+    from model_context import estimate_tokens
+    # What a run actually costs if every section comes out 1.8x the plan.
+    real_input = estimate_tokens("x" * (dg.MAX_CHUNK_CHARS_PER_SECTION + 1200))
+    real_output = estimate_tokens("x" * int(dg.CHUNK_TARGET_CHARS * 1.8))
+    escalated = "deepseek-v4-pro" if dg.DEEPSEEK_API_KEY else dg.ESCALATED_WRITER_MODEL
+    actual = 100 * model_cost_usd(escalated, real_input, real_output)
+    assert estimate >= actual, f"estimate ${estimate:.2f} under-promises the real ${actual:.2f}"
 
 
 def test_apply_replacements_longest_first_prevents_partial_overlap():
