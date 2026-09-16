@@ -673,19 +673,26 @@ async def check_thousands_of_pages_are_planned_in_two_levels():
 
 
 async def check_api_error_text_is_not_written_into_the_document():
-    """Model clients do not raise on an API error — they return the error as
-    ordinary text beginning with «❌». Without a check for that, a wrong model
-    name or a dead key turns every section into an error banner while the run
+    """Model clients do not raise on an API error — they return it as ordinary
+    text, in two shapes: an «❌ …» banner, and the bare placeholder "Нет ответа
+    от модели" that reads like prose. Without a check for both, a wrong model
+    name or a dead key turns every section into one of those while the run
     still reports «Готово» and ships a .docx full of them. This is the exact
     failure a 3000-section run cannot be allowed to hide.
     """
     _set_documents(DOCS)
+    writer_calls: list[str] = []
 
     async def fake_chat(messages, model=None, user_id=None, use_tools=False, use_skills=True, **kwargs):
         content = messages[-1]["content"]
         if model == dg.PLANNER_MODEL and "Построй план" in content:
             return PLAN_JSON, [], "", []
-        return "❌ Ошибка API DeepSeek: Model Not Exist", [], "", []
+        # Alternate the two shapes so neither is the only one exercised.
+        if len(writer_calls) % 2:
+            writer_calls.append("banner")
+            return "❌ Ошибка API DeepSeek: Model Not Exist", [], "", []
+        writer_calls.append("placeholder")
+        return "Нет ответа от модели", [], "", []
 
     import deepseek_client
     dg.get_chat_response = fake_chat
@@ -693,18 +700,17 @@ async def check_api_error_text_is_not_written_into_the_document():
 
     messages, reply = _second_turn()
     summary, files, _, _ = await dg.get_docgen_response(messages, reply, 777, FakeStatus())
+    assert "placeholder" in writer_calls and "banner" in writer_calls, "both failure shapes must be exercised"
+    # The load-bearing assertion: neither shape was accepted as section content.
     assert "Не удалось сгенерировать разделов: 2 из 2" in summary, (
-        f"API error banners were not reported as failures: {summary!r}"
+        f"API failures were not reported as failures: {summary!r}"
     )
     with zipfile.ZipFile(BytesIO(files[0]["bytes"])) as archive:
         document_xml = archive.read("word/document.xml").decode("utf-8", "replace")
     # The reason may appear in the .docx, but only inside the explicit failure
-    # marker — never as ordinary section prose the reader would take for text.
-    assert dg._SECTION_FAILED_PREFIX in document_xml, "failed sections are not marked in the .docx"
-    assert document_xml.count("Model Not Exist") == document_xml.count(dg._SECTION_FAILED_PREFIX), (
-        "an API error text appears in the .docx outside the failure marker"
-    )
-    print("OK: API error banner — counted as a failed section and marked, not passed off as text")
+    # marker — never as prose the reader would take for the document's text.
+    assert document_xml.count(dg._SECTION_FAILED_PREFIX) == 2, "failed sections are not marked in the .docx"
+    print("OK: API failure (banner and bare placeholder) — counted as failed sections, never passed off as text")
 
 
 async def main() -> None:
