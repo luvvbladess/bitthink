@@ -1,10 +1,13 @@
 from app.config import get_settings  # noqa: F401 — adds bot_core to sys.path
 
 from docgen_router import (
+    MAX_CHUNK_CHARS_PER_SECTION,
     Chunk,
+    Section,
     _build_context_block,
     _classify_documents_hint,
     _document_previews,
+    _section_context,
     _select_relevant_chunks,
     _parse_outline_response,
 )
@@ -138,6 +141,22 @@ def test_classify_documents_hint_empty_without_template_like_names():
     ]
 
     assert _classify_documents_hint(chunks) == ""
+
+
+def test_section_context_matches_select_then_build_context_block():
+    chunks = [
+        Chunk(id=0, doc_name="шаблон.docx", title="Гидравлика", text="структура раздела про гидравлику", tokens=frozenset({"гидравлика"}), title_tokens=frozenset({"гидравлика"})),
+        Chunk(id=1, doc_name="данные.xlsx", title="Прочее", text="конкретные цифры", tokens=frozenset({"цифры"}), title_tokens=frozenset({"прочее"})),
+    ]
+    section = Section(id=0, title="Гидравлика", brief="Опиши гидравлику", complexity="simple")
+
+    block = _section_context(section, chunks, "шаблон.docx")
+
+    expected = _build_context_block(
+        _select_relevant_chunks(section.title, section.brief, chunks), MAX_CHUNK_CHARS_PER_SECTION, "шаблон.docx"
+    )
+    assert block == expected
+    assert "Формат по шаблону:" in block
 
 
 def test_document_previews_produces_labeled_blocks_capped_per_doc():

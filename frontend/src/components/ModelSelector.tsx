@@ -205,7 +205,13 @@ export function SearchModeSelector() {
                         ? 1
                         : undefined;
             const lockedHint =
-              mode.id === 'astra' ? 'Нужен Ultra' : mode.id === 'studio' || mode.id === 'computer' || mode.id === 'docgen' ? 'Нужен Pro' : 'Нужен Pro+';
+              mode.id === 'astra'
+                ? 'Нужен Ultra'
+                : mode.id === 'docgen'
+                  ? 'Нужен Creator'
+                  : mode.id === 'studio' || mode.id === 'computer'
+                    ? 'Нужен Pro'
+                    : 'Нужен Pro+';
             return (
               <Box
                 key={mode.id}
