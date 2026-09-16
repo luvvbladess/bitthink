@@ -26,6 +26,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import zipfile
 from io import BytesIO
@@ -603,6 +604,109 @@ async def check_replacement_flow():
     )
 
 
+async def check_thousands_of_pages_are_planned_in_two_levels():
+    """Task 16 — the page target the whole mode exists for.
+
+    One planner answer physically cannot hold a plan of thousands of sections
+    (a plan entry is ~85 tokens, the output cap is 128 000), so a request for
+    5000 pages used to end in truncated JSON and a silent fallback to one
+    section. Here the first turn must really produce thousands of sections via
+    chapters, and a smaller request must really assemble a .docx whose chapter
+    headings survive into the document.
+    """
+    _set_documents(DOCS)
+    chapter_calls: list[str] = []
+    expand_calls: list[str] = []
+
+    def _plan_of(count: int, prefix: str) -> str:
+        items = [
+            {"title": f"{prefix} {i}", "brief": f"Содержание {prefix.lower()} {i}",
+             "complexity": "simple"}
+            for i in range(count)
+        ]
+        return json.dumps({"template_documents": [TEMPLATE_FILE], "sections": items},
+                          ensure_ascii=False)
+
+    async def fake_chat(messages, model=None, user_id=None, use_tools=False, use_skills=True, **kwargs):
+        content = messages[-1]["content"]
+        if "Построй план" in content:
+            chapter_calls.append(content)
+            # Obey the requested chapter count the way a real planner would.
+            asked = int(re.search(r"верни ровно (\d+) глав", content).group(1))
+            return _plan_of(asked, "Глава"), [], "", []
+        if "Распиши одну главу" in content:
+            expand_calls.append(content)
+            asked = int(re.search(r"примерно (\d+) раздел", content).group(1))
+            return _plan_of(asked, "Раздел"), [], "", []
+        return "Текст раздела.", [], "", []
+
+    import deepseek_client
+    dg.get_chat_response = fake_chat
+    deepseek_client.get_deepseek_response = fake_chat
+
+    text, files, _, _ = await dg.get_docgen_response(
+        [], "Сделай документацию на 5000 страниц", 777, FakeStatus()
+    )
+    assert files == [], "phase one must not generate anything"
+    assert chapter_calls, "two-level planning never asked for chapters"
+    planned = int(re.search(r"Разделов: (\d+)", text).group(1))
+    assert planned >= 3000, f"5000 pages must plan thousands of sections, got {planned}"
+    pages = int(re.search(r"примерно (\d+) стр", text).group(1))
+    assert pages >= 4500, f"planned page count fell short of the request: {pages}"
+    cost = float(re.search(r"не больше \$([\d.]+)", text).group(1))
+    assert 0 < cost < 100, f"cost estimate must be shown and under $100, got ${cost}"
+
+    # Smaller request, run end to end: chapters must reach the real .docx.
+    chapter_calls.clear()
+    messages, reply = _second_turn(prompt="Сделай документацию на 300 страниц")
+    summary, files, _, _ = await dg.get_docgen_response(messages, reply, 777, FakeStatus())
+    assert chapter_calls, "the generating turn must plan in two levels as well"
+    assert files and files[0]["bytes"][:2] == b"PK", "two-level run must produce a real .docx"
+    with zipfile.ZipFile(BytesIO(files[0]["bytes"])) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8", "replace")
+    assert "Глава 0" in document_xml, "chapter heading missing from the assembled .docx"
+    assert "Раздел 0" in document_xml, "section heading missing from the assembled .docx"
+    print(
+        f"OK: thousands of pages — 5000 стр. -> {planned} разделов через главы, "
+        f"оценка ${cost:.2f}, главы дошли до .docx"
+    )
+
+
+async def check_api_error_text_is_not_written_into_the_document():
+    """Model clients do not raise on an API error — they return the error as
+    ordinary text beginning with «❌». Without a check for that, a wrong model
+    name or a dead key turns every section into an error banner while the run
+    still reports «Готово» and ships a .docx full of them. This is the exact
+    failure a 3000-section run cannot be allowed to hide.
+    """
+    _set_documents(DOCS)
+
+    async def fake_chat(messages, model=None, user_id=None, use_tools=False, use_skills=True, **kwargs):
+        content = messages[-1]["content"]
+        if model == dg.PLANNER_MODEL and "Построй план" in content:
+            return PLAN_JSON, [], "", []
+        return "❌ Ошибка API DeepSeek: Model Not Exist", [], "", []
+
+    import deepseek_client
+    dg.get_chat_response = fake_chat
+    deepseek_client.get_deepseek_response = fake_chat
+
+    messages, reply = _second_turn()
+    summary, files, _, _ = await dg.get_docgen_response(messages, reply, 777, FakeStatus())
+    assert "Не удалось сгенерировать разделов: 2 из 2" in summary, (
+        f"API error banners were not reported as failures: {summary!r}"
+    )
+    with zipfile.ZipFile(BytesIO(files[0]["bytes"])) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8", "replace")
+    # The reason may appear in the .docx, but only inside the explicit failure
+    # marker — never as ordinary section prose the reader would take for text.
+    assert dg._SECTION_FAILED_PREFIX in document_xml, "failed sections are not marked in the .docx"
+    assert document_xml.count("Model Not Exist") == document_xml.count(dg._SECTION_FAILED_PREFIX), (
+        "an API error text appears in the .docx outside the failure marker"
+    )
+    print("OK: API error banner — counted as a failed section and marked, not passed off as text")
+
+
 async def main() -> None:
     # The retry delays (SECTION_RETRY_DELAYS) are real seconds in production;
     # nothing here is testing timing, so collapse them to keep the self-check
@@ -628,6 +732,8 @@ async def main() -> None:
         await check_multi_archive_templates()
         await check_folder_inside_archive_is_its_own_group()
         await check_replacement_flow()
+        await check_thousands_of_pages_are_planned_in_two_levels()
+        await check_api_error_text_is_not_written_into_the_document()
     finally:
         asyncio.sleep = orig_sleep
     print("OK: docgen pipeline self-check passed")
