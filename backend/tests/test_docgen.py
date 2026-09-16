@@ -569,6 +569,30 @@ def test_short_chapter_plan_still_reaches_the_requested_size():
     assert len(sections) >= target * 0.9, f"order shortfall: {len(sections)} of {target}"
 
 
+def test_progress_line_counts_pages_from_real_text_not_from_the_plan():
+    """A run lasts hours and the user ordered pages, not sections. The pages
+    shown have to come from what was actually written: a model writing shorter
+    than planned must be visible straight away, not at the end."""
+    # Half the sections done, but each one came out half the expected length.
+    written = 50 * (dg.CHUNK_TARGET_CHARS // 2)
+    line = dg._progress_line(done=50, total=100, chars_written=written)
+    assert "раздел 50 из 100" in line
+    assert "50%" in line
+    assert f"готово ~{written // dg.CHARS_PER_PAGE} стр." in line
+    # The target still reflects the plan, so the shortfall is visible as a gap.
+    assert f"из ~{100 * dg.CHUNK_TARGET_CHARS // dg.CHARS_PER_PAGE}" in line
+
+
+def test_progress_bar_fills_and_never_overflows():
+    assert dg._progress_bar(0, 10) == "▱" * 10
+    assert dg._progress_bar(10, 10) == "▰" * 10
+    assert len(dg._progress_bar(3, 10)) == 10
+    # Degenerate inputs must not raise or produce a ragged bar — this runs
+    # inside the status update of a multi-hour job.
+    assert len(dg._progress_bar(0, 0)) == 10
+    assert len(dg._progress_bar(99, 10)) == 10
+
+
 def test_apply_replacements_longest_first_prevents_partial_overlap():
     mapping = {
         "АБВГ.123456.789": "СТАЛО.000000.001",
