@@ -326,3 +326,216 @@ No test is needed for `_plan_outline`'s prompt-string changes or `_write_section
 - `_parse_outline_response`'s new return shape (`Tuple[List[Section], Optional[str]]`) and `_plan_outline`'s matching new return shape must agree exactly — a mismatch here is a silent `ValueError: not enough values to unpack` the first time `_run_docgen` calls `_plan_outline`.
 - The existing `test_build_context_block_respects_char_budget` test must still pass unmodified — if it needed changing, something about backward compatibility broke.
 - Re-confirm the priority-ordering rule (user's words in the prompt beat the filename heuristic) survives in the rewritten prompt text from Change 2 — this was flagged as the single most important thing to get right in Task 9 and applies here too.
+
+**Status:** Task 10 merged. A follow-up verification pass then measured the mode end to end and found it could not reach the promised scale, plus six defects (fixed in `9aa627c`, `6aa3e08`, `77764df`). Measurements from that pass, which Tasks 11-12 build on:
+
+| Stage, at 5000+ pages | Cost | Where it runs |
+|---|---|---|
+| Loading a 48 MB / 24k-page document base into chunks | 11 s, 178 MB RAM | already off-loop |
+| Assembling 10 MB of markdown into .docx | 92 s, 189 MB RAM, linear | already off-loop |
+| Per-section retrieval over a 24k-chunk corpus | **37 ms/section — 126 s cumulative, ~740 ms per batch of 20** | **on the event loop** |
+| `MAX_SECTIONS = 400` × ~3000 chars/section | **~600 pages — 10x short of the requirement** | — |
+
+Volume comes from the *number* of sections, not their length: 3400 sections × 3000 chars ≈ 5100 pages. So no page target is added to the writer prompt — that would invite padding, which the user explicitly does not want, and cost more per call.
+
+---
+
+## Task 11: Scale the mode up without taking the server down
+
+**User's requirement (verbatim intent):** this tariff is creator-only; drop the limits so the mode can generate huge documents; parallelise the load; the guarantee that matters is that if someone drops in a prompt plus archives of data and templates, the AI definitely finished the work and the user got a finished document; and the server must not die. Carefully.
+
+**File:** `backend/app/bot_core/docgen_router.py`, plus two small gating edits elsewhere.
+
+### Change 1 — docgen becomes creator-only
+
+`backend/app/billing/plans.py`: remove `"docgen"` from `PRO_MODELS` (line 37) and add it to the creator list instead:
+```python
+PRO_MODELS = CHEAP_MODELS + ["director", "studio"]
+...
+CREATOR_MODELS = list(ULTRA_MODELS) + ["docgen"]
+```
+Leave `clamp_model`'s existing `docgen` fallback branch alone — it now fires for every non-creator tier, which is the intent.
+
+Creator is `unlimited: True`, so `assert_can_use` (`app/billing/quota.py:297`) and `apply_token_debit` (`:130`) both return early — quota windows stop applying to docgen by construction. Nothing else needs "limits removed".
+
+`frontend/src/components/ModelSelector.tsx`: the `lockedHint` ternary currently groups `docgen` with `studio`/`computer` as "Нужен Pro". Give docgen its own branch reading `'Нужен Creator'`.
+
+### Change 2 — raise the volume ceiling
+
+`MAX_SECTIONS: 400 → 5000`. Not unlimited by explicit decision: a planner that returns 50 000 sections would otherwise start a run lasting days. 5000 sections ≈ 7500 pages, which covers the 5–7 thousand requirement with margin. Keep a comment explaining why the number exists.
+
+### Change 3 — parallelise, and get retrieval off the event loop
+
+- `MAX_PARALLEL_SECTIONS: 5 → 12`. Keep the existing batch structure (it preserves `previous_tail` continuity and makes progress reporting natural) rather than switching to a global semaphore; the cost is that each batch waits for its slowest member, which is an acceptable trade at this size. State the trade-off in a comment so the next reader doesn't "fix" it blindly.
+- In `_write_section`, move the two synchronous CPU steps off the loop:
+  ```python
+  context_block = await asyncio.to_thread(
+      _section_context, section, chunks, template_document
+  )
+  ```
+  with a small sync helper that does what the two lines do today:
+  ```python
+  def _section_context(
+      section: Section, chunks: List[Chunk], template_document: Optional[str]
+  ) -> str:
+      relevant = _select_relevant_chunks(section.title, section.brief, chunks)
+      return _build_context_block(relevant, MAX_CHUNK_CHARS_PER_SECTION, template_document)
+  ```
+  Measured reason: 37 ms × 12 concurrent writers is ~440 ms of event-loop blocking per batch, repeated for hours, which stalls every other request in the process.
+
+### Change 4 — retry each section, because the guarantee is the point
+
+At thousands of calls, transient failures (429, provider timeout, dropped connection) are certain, and today a single one turns into a permanent `[Не удалось сгенерировать раздел: …]` hole. Wrap the model call in a bounded retry:
+
+```python
+SECTION_ATTEMPTS = 3
+SECTION_RETRY_DELAYS = (2, 8)  # seconds before attempts 2 and 3
+```
+
+Restructure `_write_section` so the existing model-dispatch block (the `complexity`-based if/else with its `asyncio.wait_for(..., timeout=120)` calls) is attempted up to `SECTION_ATTEMPTS` times, sleeping `SECTION_RETRY_DELAYS[attempt - 1]` between attempts, and only the last failure produces the placeholder. Log every retry at warning level with the section title and attempt number, so a run that succeeded only after retries is still visible in the logs. Do not retry forever and do not add jitter or further backoff — this is a bulk job, not a latency-sensitive path.
+
+`asyncio.CancelledError` must NOT be retried or swallowed: it is how the user's stop button reaches a running job (`generation_hub.hub.cancel`). Today the bare `except Exception` already lets it through, since `CancelledError` derives from `BaseException`; keep that property — if you catch anything broader while adding retries, the stop button silently stops working.
+
+### Testing
+
+Extend `backend/scripts/selfcheck_docgen.py`:
+- A scenario where the fake model fails a section's first attempt and succeeds on the second: assert the section's text is real content, not a placeholder, and that the summary reports no failed sections. This is the guarantee the user asked for, so it gets a check.
+- A scenario where every attempt fails: assert the placeholder appears, the summary counts it, and `SECTION_ATTEMPTS` calls were made for that section (i.e. retries really happened, not just one try).
+- Keep every existing scenario passing.
+
+Unit tests: `MAX_SECTIONS` is asserted nowhere today; no new pytest is required for constants. Give `_section_context` one plain assert-based test in `backend/tests/test_docgen.py` (same conventions as the rest) since it is a pure function.
+
+### Self-review checklist
+
+- `CancelledError` still propagates out of `_write_section` — verify by reading the except clauses, and say so in the report.
+- The retry loop cannot retry a non-transient error forever: confirm it ends after `SECTION_ATTEMPTS` regardless of the exception type.
+- `frontend/src/components/ModelSelector.tsx` still type-checks (`npx tsc --noEmit`).
+- No other tier gained or lost a mode by accident: grep `PRO_MODELS`/`CREATOR_MODELS` consumers after the edit.
+
+---
+
+## Task 12: Confirm with the user before burning thousands of calls
+
+**User's requirement (verbatim intent):** maybe the AI should ask the user for confirmation before starting — is this really what you want, is this really the knowledge base, are these the templates — so tokens aren't burned for nothing.
+
+Reuses the existing clarify machinery rather than inventing a flow: a mode returns its questions in the `search` slot via `clarify.pack_search`, the frontend renders them as chips (`frontend/src/features/chat/clarify.ts`), and the user's choice comes back as an ordinary user message starting `"Уточнения по задаче:"`, which `clarify.is_clarify_reply` detects. `studio_router.py:82` already uses the same idiom. Constraints of that machinery: **at most 3 questions, 2–6 options each, ≤160 chars per prompt, ≤80 per option** (`clarify.py:10-14`) — exceed them and the question is silently dropped.
+
+**Files:** `backend/app/bot_core/docgen_router.py`, and the one call site in `backend/app/bot_core/handlers/core.py`.
+
+### Change 1 — two-phase entry
+
+`get_docgen_response` regains a `messages` parameter (dropped in Task 9) — needed *only* to recover the original request on the second turn, never for document text, which still comes from `conversation_manager.get_documents`. Signature becomes:
+
+```python
+async def get_docgen_response(
+    messages: List[Dict[str, Any]], user_text: str, user_id: int, status_msg: Any
+) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
+```
+
+Update the call site in `handlers/core.py`'s `if model == "docgen":` branch to pass `messages` again.
+
+Inside, split on the reply:
+```python
+from clarify import is_clarify_reply
+
+if not is_clarify_reply(user_text):
+    return await _confirm_before_generating(user_text, user_id, status_msg)
+return await _run_docgen(...)
+```
+Both phases stay inside the `billing_pool.set("computer")` wrapper.
+
+### Change 2 — phase one: plan, then ask
+
+`_confirm_before_generating(user_text, user_id, status_msg)`:
+1. Load the base and plan exactly as `_run_docgen` does today (one planner call — cheap next to thousands of writer calls, and it buys precise numbers instead of a blind question).
+2. Compose a plain-text answer stating what was found: number of sections, estimated pages (`sections × 3000 / 2000`, stated as approximate), which file was identified as the formatting template (or that none was), and the knowledge-base files. Include the truncated-source warning if `_extract_source_chunks` reported any, and the planner-failure warning if planning fell back.
+3. Return `(text, [], "", pack_search(questions))` with these questions, worded within the char limits:
+   - `"Начинать генерацию? Разделов: N, примерно P страниц"` → options `["Да, начинай", "Нет, отменить"]`
+   - `"Шаблон оформления определён верно?"` → options `["Да", "Шаблона нет, всё это база знаний", "Нет, шаблон другой файл"]` — only when a template was identified; skip this question entirely otherwise (a question about nothing wastes the user's attention).
+4. Generate nothing in this phase.
+
+Define the option labels as module constants (`_CONFIRM_START`, `_CONFIRM_CANCEL`, …) — phase two detects the user's choice by matching these strings in the reply text, so a literal typed twice would silently break the detection.
+
+### Change 3 — phase two: honour the answers
+
+When `is_clarify_reply(user_text)`:
+1. Recover the original request: the last message in `messages` with `role == "user"` whose text is not itself a clarify reply. Fall back to `user_text` if none is found (a conversation that starts with a clarify reply shouldn't crash).
+2. If the reply contains `_CONFIRM_CANCEL`, return a short "Отменил, ничего не генерировал." with no files — before loading anything.
+3. Otherwise run the existing pipeline, and pass the reply text into `_plan_outline` as an extra instruction block (e.g. appended to the prompt as `"Уточнения пользователя: …"`), so answers like "шаблон другой файл" actually change the plan. Asking a question and then ignoring the answer is worse than not asking.
+
+### Testing
+
+Extend `backend/scripts/selfcheck_docgen.py`:
+- First turn (plain prompt) → asserts: no files returned, the `search` slot unpacks via `clarify.unpack_search` to at least one question, the text names the section count and the template file, and **the fake writer was never called** (that is the whole point — no tokens burned).
+- Second turn (`"Уточнения по задаче:\n1. Начинать генерацию? – Да, начинай"`) with the original prompt present in `messages` → asserts a real .docx comes back and the writer ran.
+- Cancel turn (`"… – Нет, отменить"`) → asserts no files, no writer calls, and no planner call either.
+- Keep every existing scenario passing; they now go through the second-turn path, so they need a clarify-reply `user_text` and a `messages` list.
+
+### Self-review checklist
+
+- Every question respects `clarify.py`'s limits (≤3 questions, 2–6 options, ≤160/≤80 chars) — a violated limit means `normalize_questions` drops the question and the user sees nothing to click.
+- The original-request recovery genuinely finds the prompt from before the confirmation, and does not pick up the clarify reply itself.
+- Phase one performs exactly one model call (the planner) and zero writer calls.
+- The `handlers/core.py` call site matches the new signature — nothing else in the repo calls `get_docgen_response`.
+
+---
+
+## Task 13: Many templates, many archives
+
+**User's requirement (verbatim intent):** there can be many template files, and a whole archive of them; the knowledge base likewise may be not one archive but several.
+
+Two independent blockers, both measured:
+
+1. **The template is a single file by construction.** `template_document: Optional[str]` threads through parsing, planning, the writer prompt and the confirmation (see every hit for `template_document`/`template_name` in `docgen_router.py`). A second template file is simply unrepresentable.
+2. **Many files explode the planner prompt.** Measured with 149 files across 5 archives: document previews alone reach **230 801 chars**, plus a 64 059-char chunk catalog — about **300 000 chars ≈ 120 000 tokens** in the one call that is supposed to be cheap. It grows linearly with file count, so a few hundred files would exceed the model's input entirely. `_document_previews` has a per-document budget (1500) but no cap on the number of documents.
+
+Uploading an archive already stores its members as separate documents named `f"{archive}/{inner}"` (see `extract_zip_archive` and the `.zip` branch in `backend/app/api/documents.py`), so "a whole archive of templates" is expressible as a name prefix — no new ingestion work is needed, only the ability to say it.
+
+**Files:** `backend/app/bot_core/docgen_router.py` (all logic), plus its selfcheck and unit tests.
+
+### Change 1 — templates become a set of documents
+
+- `_parse_outline_response`: replace the `template_document` string field with `template_documents`, parsed from a JSON **array** of strings. Accept a bare string too and wrap it in a list (a planner that answers with the old shape must not silently produce "no template"). Return `Tuple[List[Section], List[str]]` — an empty list means "no template", replacing today's `None`.
+- Add `_expand_template_names(names: List[str], chunks: List[Chunk]) -> set[str]`: every returned name that exactly matches a document name selects that document; a name that matches an *archive prefix* (i.e. some document name starts with `f"{name}/"`) selects every member of that archive. Unknown names are dropped. Returns the resolved set of document names. This is what lets the planner answer `"shablony.zip"` instead of enumerating 50 files, and it is also the safety net when it enumerates names that do not exist.
+- `_plan_outline`: ask for `"template_documents": ["точное имя файла или имя архива", …]` (empty array when there is no template), keep the existing priority rule verbatim — the user's own words outrank the filename hint — and add one line telling the planner it may name a whole archive instead of listing its files. Return the expanded set.
+- `_build_context_block(chunks, budget, template_names: set[str] | None)`: membership test becomes `c.doc_name in template_names` instead of `== template_name`. The "Формат по шаблону:" / "Факты из базы знаний:" split, the half-budget rule and the single-sided fallbacks are unchanged in behaviour.
+- `_section_context` and `_write_section` thread the set through; `_run_docgen` passes it to every `_write_section` call.
+
+### Change 2 — bound the planner's context
+
+Add module constants with the measured reason in a comment:
+```python
+PLANNER_PREVIEW_BUDGET = 60_000   # total chars of document previews
+PLANNER_CATALOG_CHUNKS = 400      # chunk titles shown, was an unbounded 2000
+```
+- `_document_previews(chunks, budget_per_doc=1500)` gains a total budget: the per-document share becomes `max(300, min(budget_per_doc, PLANNER_PREVIEW_BUDGET // max(1, number_of_documents)))`. With 149 files that is ~400 chars each — still enough to recognise a template's heading block, and the whole block stays inside the budget instead of reaching 230k chars.
+- Group the previews and the name list **by archive prefix** (the part before the first `/`, or the bare name when there is none), so the planner sees `shablony.zip: 25 файлов` structure rather than 149 flat names. Keep it compact — this replaces, not supplements, the flat list.
+- Cap the chunk catalog at `PLANNER_CATALOG_CHUNKS`. It exists only as a hint about available material; the planner's output never references chunk ids, so a bounded sample is sufficient.
+- After the change, re-measure the same 149-file fixture and put the before/after char counts in the report.
+
+### Change 3 — the confirmation must survive many files
+
+`clarify.py`'s limits are silent: a prompt over 160 chars or an option over 80 is dropped, leaving the user nothing to click. With dozens of templates, naming them in a chip prompt would do exactly that.
+
+- Keep the chip prompts short and count-based: `"Шаблоны определены верно? Файлов: N"`, options unchanged (`_TEMPLATE_CONFIRMED` / `_TEMPLATE_NONE` / `_TEMPLATE_WRONG`).
+- Put the detail in the message **text**, which has no limit: list the template files grouped by archive, and the knowledge-base files the same way, truncating each group's member list after a handful with `… и ещё N` so a 200-file base stays readable.
+- The existing start/cancel question and the fail-safe gate from the previous task are unchanged.
+
+### Testing
+
+`backend/tests/test_docgen.py` (pure functions, plain asserts, no LLM):
+- `_parse_outline_response` with `"template_documents": ["a.docx", "b.docx"]` → both returned; with a bare string → wrapped into a one-element list; with `[]` or the key missing → empty list.
+- `_expand_template_names`: an exact file name selects that file; an archive name selects every `archive/...` member and nothing else; an unknown name is dropped; a name that is both a real file and a prefix of others selects sensibly (state which behaviour you chose in the report).
+- `_build_context_block` with a two-element template set spanning two files → both appear under "Формат по шаблону:", knowledge files under "Факты из базы знаний:".
+- `_document_previews` with many documents → total length within `PLANNER_PREVIEW_BUDGET`, and every document still represented.
+
+`backend/scripts/selfcheck_docgen.py`:
+- A scenario with two template archives and two knowledge archives: the planner fake returns `["shablony_0.zip"]`; assert the writer prompt's "Формат по шаблону:" block cites files from that archive only, that the knowledge block cites the other archives, and that the confirmation text names both groups.
+- Every existing scenario keeps passing; update the ones that assert on the old single-template shape.
+
+### Self-review checklist
+
+- No `Optional[str]` template remnant: grep `template_document` and confirm every site moved to the set/list form, including the confirmation text and `_run_docgen`'s call into `_write_section`.
+- The planner prompt keeps the priority rule (user's words over the filename hint) word for word.
+- Re-measured planner prompt size on the 149-file fixture is reported as a before/after number, not asserted to be "smaller".
+- Confirmation questions still survive `clarify.normalize_questions` at large file counts — run them through it with 200 files and include the output.
