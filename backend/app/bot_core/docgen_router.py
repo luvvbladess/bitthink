@@ -8,7 +8,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from config import DEEPSEEK_API_KEY
 from openai_client import get_chat_response
@@ -28,6 +28,12 @@ MAX_PARALLEL_SECTIONS = 12
 CHUNK_TARGET_CHARS = 3000
 TOP_K_CHUNKS = 6
 MAX_CHUNK_CHARS_PER_SECTION = 12000
+
+# Measured on 149 files across 5 archives: unbounded previews + catalog reached
+# ~300 000 chars (~120 000 tokens) in the planner call, which is supposed to be
+# the cheap one, and grows linearly with file count. These two caps bound it.
+PLANNER_PREVIEW_BUDGET = 60_000   # total chars of document previews
+PLANNER_CATALOG_CHUNKS = 400      # chunk titles shown, was an unbounded 2000
 
 PLANNER_MODEL = "gpt-5.6-terra"
 DEFAULT_WRITER_MODEL = "gpt-5.6-luna"
@@ -162,13 +168,13 @@ def _join_labeled(chunks: List[Chunk], budget: int) -> str:
     return "\n\n".join(parts)
 
 
-def _build_context_block(chunks: List[Chunk], budget: int, template_name: Optional[str] = None) -> str:
+def _build_context_block(chunks: List[Chunk], budget: int, template_names: Optional[Set[str]] = None) -> str:
     if not chunks:
         return ""
-    if not template_name:
+    if not template_names:
         return _join_labeled(chunks, budget)
-    template_chunks = [c for c in chunks if c.doc_name == template_name]
-    knowledge_chunks = [c for c in chunks if c.doc_name != template_name]
+    template_chunks = [c for c in chunks if c.doc_name in template_names]
+    knowledge_chunks = [c for c in chunks if c.doc_name not in template_names]
     if not knowledge_chunks:
         return f"Формат по шаблону:\n{_join_labeled(template_chunks, budget)}"
     if not template_chunks:
@@ -204,7 +210,25 @@ def _classify_documents_hint(chunks: List[Chunk]) -> str:
     )
 
 
+def _archive_of(doc_name: str) -> str:
+    """The part before the first '/', or the bare name when there is none —
+    matches how extract_zip_archive names archive members (f"{archive}/{inner}")."""
+    return doc_name.split("/", 1)[0] if "/" in doc_name else doc_name
+
+
+def _group_by_archive(names: List[str]) -> Dict[str, List[str]]:
+    groups: Dict[str, List[str]] = {}
+    for name in names:
+        groups.setdefault(_archive_of(name), []).append(name)
+    return groups
+
+
 def _document_previews(chunks: List[Chunk], budget_per_doc: int = 1500) -> str:
+    """Grouped by archive prefix so the planner sees 'archive.zip: N файлов'
+    structure instead of a flat wall of names. Every document still gets a
+    preview — the per-document share just shrinks as the file count grows,
+    so the whole block stays within PLANNER_PREVIEW_BUDGET instead of
+    growing unbounded with file count."""
     order: List[str] = []
     bodies: Dict[str, str] = {}
     for c in chunks:
@@ -213,12 +237,19 @@ def _document_previews(chunks: List[Chunk], budget_per_doc: int = 1500) -> str:
             bodies[c.doc_name] = ""
         if len(bodies[c.doc_name]) < budget_per_doc:
             bodies[c.doc_name] += c.text
-    return "\n\n".join(
-        f"--- {name} (начало файла) ---\n{bodies[name][:budget_per_doc]}" for name in order
-    )
+
+    per_doc_budget = max(300, min(budget_per_doc, PLANNER_PREVIEW_BUDGET // max(1, len(order))))
+
+    parts: List[str] = []
+    for archive, members in _group_by_archive(order).items():
+        if len(members) > 1:
+            parts.append(f"=== Архив {archive}: {len(members)} файлов ===")
+        for name in members:
+            parts.append(f"--- {name} (начало файла) ---\n{bodies[name][:per_doc_budget]}")
+    return "\n\n".join(parts)
 
 
-def _parse_outline_response(response_text: str) -> Tuple[List[Section], Optional[str]]:
+def _parse_outline_response(response_text: str) -> Tuple[List[Section], List[str]]:
     cleaned = (response_text or "").strip()
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:json)?\n", "", cleaned)
@@ -226,12 +257,12 @@ def _parse_outline_response(response_text: str) -> Tuple[List[Section], Optional
     try:
         raw = json.loads(cleaned)
     except json.JSONDecodeError:
-        return [], None
+        return [], []
     if not isinstance(raw, dict):
-        return [], None
+        return [], []
     raw_sections = raw.get("sections")
     if not isinstance(raw_sections, list):
-        return [], None
+        return [], []
     sections: List[Section] = []
     for i, item in enumerate(raw_sections):
         if not isinstance(item, dict) or not item.get("title"):
@@ -243,22 +274,52 @@ def _parse_outline_response(response_text: str) -> Tuple[List[Section], Optional
             brief=str(item.get("brief", ""))[:500],
             complexity=complexity,
         ))
-    template_document = raw.get("template_document")
-    template_document = template_document.strip() if isinstance(template_document, str) and template_document.strip() else None
-    return sections[:MAX_SECTIONS], template_document
+    raw_templates = raw.get("template_documents")
+    # A planner that answers with the old singular shape (a bare string) must
+    # not silently produce "no template" — wrap it instead of dropping it.
+    if isinstance(raw_templates, str):
+        raw_templates = [raw_templates]
+    if not isinstance(raw_templates, list):
+        raw_templates = []
+    template_names = [str(n).strip() for n in raw_templates if str(n).strip()]
+    return sections[:MAX_SECTIONS], template_names
+
+
+def _expand_template_names(names: List[str], chunks: List[Chunk]) -> Set[str]:
+    """Resolves planner-named templates to the set of document names they
+    select. An exact match selects that document; a name matching an archive
+    prefix (some document starts with f"{name}/") selects every member of
+    that archive; unknown names are dropped. A name that is both a real file
+    and a prefix of others selects the union of both — nothing named by the
+    planner is silently lost."""
+    all_docs: List[str] = []
+    doc_set: Set[str] = set()
+    for c in chunks:
+        if c.doc_name not in doc_set:
+            doc_set.add(c.doc_name)
+            all_docs.append(c.doc_name)
+
+    resolved: Set[str] = set()
+    for name in names:
+        if name in doc_set:
+            resolved.add(name)
+        prefix = f"{name}/"
+        resolved.update(d for d in all_docs if d.startswith(prefix))
+    return resolved
 
 
 async def _plan_outline(
     user_text: str, chunks: List[Chunk], user_id: int, extra_instruction: str = ""
-) -> Tuple[List[Section], Optional[str], bool]:
-    """Разделы, имя файла-шаблона и флаг «план построить не удалось».
+) -> Tuple[List[Section], Set[str], bool]:
+    """Разделы, набор файлов-шаблонов (может быть пустым) и флаг «план
+    построить не удалось».
 
     Флаг нужен, чтобы молчаливый откат на один раздел «Документ» был виден
     пользователю: без него сбой планировщика выглядит как обычный короткий
     документ, и человек не понимает, почему структура не та, что он просил.
     """
     if chunks:
-        catalog = "\n".join(f"{c.id}: {c.title}" for c in chunks[:2000])
+        catalog = "\n".join(f"{c.id}: {c.title}" for c in chunks[:PLANNER_CATALOG_CHUNKS])
     else:
         catalog = "(исходники не найдены — опирайся только на запрос пользователя)"
 
@@ -268,7 +329,7 @@ async def _plan_outline(
     prompt = (
         "Построй план большого документа по запросу пользователя.\n"
         "Верни СТРОГО JSON-объект без markdown-обёрток и без пояснений, в формате:\n"
-        '{"template_document": "точное имя файла из списка ниже" | null, '
+        '{"template_documents": ["точное имя файла или имя архива из списка ниже", ...] (можно пустой список), '
         '"sections": [{"title": "Название раздела", "brief": "Что должно быть в разделе, 1-3 предложения", '
         '"complexity": "simple" | "complex"}, ...]}.\n'
         "complexity=complex — для расчётов, таблиц с цифрами, юридических формулировок, "
@@ -276,13 +337,15 @@ async def _plan_outline(
         f"Запрос пользователя:\n{user_text}\n\n"
         + (f"Уточнения пользователя: {extra_instruction}\n\n" if extra_instruction else "")
         + f"Заголовки доступных фрагментов исходников (id: заголовок):\n{catalog}\n\n"
-        "template_document — точное имя одного из документов ниже, ТОЛЬКО если запрос пользователя\n"
-        "или подсказка ниже указывают, что этот документ — шаблон оформления (пример структуры для\n"
-        "итогового документа). Слова пользователя в запросе всегда важнее подсказки по имени файла.\n"
-        "Если ни то ни другое не указывает на шаблон, верни template_document: null. Если\n"
-        "template_document задан, построй список разделов, максимально повторяя структуру (заголовки,\n"
-        "их порядок) этого документа, а не придумывай новую; иначе строй план свободно по сути запроса\n"
-        "и остальных материалов.\n\n"
+        "template_documents — точные имена документов ниже (можно несколько), ТОЛЬКО если запрос\n"
+        "пользователя или подсказка ниже указывают, что это шаблон оформления (пример структуры для\n"
+        "итогового документа). Вместо перечисления всех файлов архива можно указать имя самого архива\n"
+        "целиком — тогда шаблоном станут все его файлы.\n"
+        "Слова пользователя в запросе всегда важнее подсказки по имени файла.\n"
+        "Если ничто не указывает на шаблон, верни template_documents: []. Если template_documents\n"
+        "задан, построй список разделов, максимально повторяя структуру (заголовки, их порядок) этих\n"
+        "документов, а не придумывай новую; иначе строй план свободно по сути запроса и остальных\n"
+        "материалов.\n\n"
         f"{classification_hint}\n\n"
         f"Начало каждого документа (для распознавания шаблона):\n{document_previews}"
     )
@@ -294,31 +357,31 @@ async def _plan_outline(
         response_text, _, _, _ = await get_chat_response(
             messages, model=PLANNER_MODEL, user_id=user_id, use_tools=False, use_skills=False,
         )
-        sections, template_document = _parse_outline_response(response_text)
+        sections, template_names_raw = _parse_outline_response(response_text)
         if sections:
-            return sections, template_document, False
+            return sections, _expand_template_names(template_names_raw, chunks), False
         logger.error("docgen outline planning returned no sections: %s", (response_text or "")[:300])
     except Exception as e:
         logger.error(f"docgen outline planning failed: {e}", exc_info=True)
-    return [Section(id=0, title="Документ", brief=user_text[:500], complexity="complex")], None, True
+    return [Section(id=0, title="Документ", brief=user_text[:500], complexity="complex")], set(), True
 
 
 def _section_context(
-    section: Section, chunks: List[Chunk], template_document: Optional[str]
+    section: Section, chunks: List[Chunk], template_names: Optional[Set[str]]
 ) -> str:
     relevant = _select_relevant_chunks(section.title, section.brief, chunks)
-    return _build_context_block(relevant, MAX_CHUNK_CHARS_PER_SECTION, template_document)
+    return _build_context_block(relevant, MAX_CHUNK_CHARS_PER_SECTION, template_names)
 
 
 async def _write_section(
     section: Section, chunks: List[Chunk], previous_tail: str, user_id: int,
-    template_document: Optional[str] = None,
+    template_names: Optional[Set[str]] = None,
 ) -> str:
     # Selecting chunks + building the context block tokenizes/scans the whole
     # corpus per section; at 12 concurrent writers that's real CPU time on the
     # (shared) event loop, so it runs in a thread instead.
     context_block = await asyncio.to_thread(
-        _section_context, section, chunks, template_document
+        _section_context, section, chunks, template_names
     )
 
     prompt_parts = [f"Раздел документа: {section.title}", f"Задача раздела: {section.brief}"]
@@ -442,6 +505,24 @@ def _recover_original_request(messages: List[Dict[str, Any]], user_text: str) ->
     return user_text
 
 
+def _format_grouped_names(names: List[str], max_members: int = 5) -> str:
+    """Names grouped by archive prefix for the confirmation text, which has no
+    length limit — unlike the clarify chip prompts. Each group's member list
+    is truncated after max_members with "… и ещё N" so a 200-file base stays
+    readable instead of listing every file."""
+    if not names:
+        return ""
+    parts = []
+    for archive, members in _group_by_archive(names).items():
+        if len(members) == 1 and members[0] == archive:
+            parts.append(archive)
+            continue
+        shown = [m.split("/", 1)[1] if "/" in m else m for m in members[:max_members]]
+        suffix = f", … и ещё {len(members) - max_members}" if len(members) > max_members else ""
+        parts.append(f"{archive} ({len(members)} файл(ов): {', '.join(shown)}{suffix})")
+    return "; ".join(parts)
+
+
 async def _confirm_before_generating(
     user_text: str, user_id: int, status_msg: Any
 ) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
@@ -453,7 +534,7 @@ async def _confirm_before_generating(
 
     await _update_status(status_msg, "📄 Читаю исходники и строю план документа...")
     chunks, truncated_sources = await asyncio.to_thread(_extract_source_chunks, user_id)
-    outline, template_document, planning_failed = await _plan_outline(user_text, chunks, user_id)
+    outline, template_names, planning_failed = await _plan_outline(user_text, chunks, user_id)
 
     total = len(outline)
     approx_pages = max(1, total * CHUNK_TARGET_CHARS // 2000)
@@ -462,15 +543,18 @@ async def _confirm_before_generating(
     for chunk in chunks:
         if chunk.doc_name not in doc_names:
             doc_names.append(chunk.doc_name)
-    knowledge_names = [n for n in doc_names if n != template_document] if template_document else doc_names
+    knowledge_names = [n for n in doc_names if n not in template_names] if template_names else doc_names
 
     lines = [f"Разделов: {total}, примерно {approx_pages} стр."]
-    if template_document:
-        lines.append(f"Шаблон оформления: {template_document}.")
+    if template_names:
+        lines.append(
+            f"Шаблон оформления ({len(template_names)} файл(ов)): "
+            f"{_format_grouped_names(sorted(template_names))}."
+        )
     else:
         lines.append("Шаблон оформления не определён.")
     lines.append(
-        f"База знаний: {', '.join(knowledge_names)}." if knowledge_names
+        f"База знаний: {_format_grouped_names(knowledge_names)}." if knowledge_names
         else "База знаний: файлы не найдены."
     )
     if truncated_sources:
@@ -487,9 +571,13 @@ async def _confirm_before_generating(
             "options": [_CONFIRM_START, _CONFIRM_CANCEL],
         }
     ]
-    if template_document:
+    if template_names:
         questions_raw.append({
-            "prompt": "Шаблон оформления определён верно?",
+            # Count-based, not name-based: a chip prompt over 160 chars is
+            # silently dropped by clarify.normalize_questions, and naming
+            # dozens of template files here would do exactly that. The detail
+            # goes in `text` above instead, which has no limit.
+            "prompt": f"Шаблоны определены верно? Файлов: {len(template_names)}",
             "options": [_TEMPLATE_CONFIRMED, _TEMPLATE_NONE, _TEMPLATE_WRONG],
         })
     questions = normalize_questions(questions_raw)
@@ -536,7 +624,7 @@ async def _run_docgen(
     # это секунды CPU, которые нельзя держать в event loop — он общий на всех.
     chunks, truncated_sources = await asyncio.to_thread(_extract_source_chunks, user_id)
     no_sources = not chunks
-    outline, template_document, planning_failed = await _plan_outline(user_text, chunks, user_id, extra_instruction)
+    outline, template_names, planning_failed = await _plan_outline(user_text, chunks, user_id, extra_instruction)
 
     total = len(outline)
     if planning_failed:
@@ -553,7 +641,7 @@ async def _run_docgen(
     for batch_start in range(0, total, MAX_PARALLEL_SECTIONS):
         batch = outline[batch_start:batch_start + MAX_PARALLEL_SECTIONS]
         jobs = [
-            _write_section(section, chunks, previous_tail, user_id, template_document)
+            _write_section(section, chunks, previous_tail, user_id, template_names)
             for section in batch
         ]
         results = await asyncio.gather(*jobs)

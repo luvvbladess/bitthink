@@ -67,10 +67,41 @@ DOCS = [
 ]
 
 PLAN_JSON = (
-    '{"template_document": "%s", "sections": ['
+    '{"template_documents": ["%s"], "sections": ['
     '{"title": "Общие положения", "brief": "Назначение и состав", "complexity": "simple"},'
     '{"title": "Требования к энергетической установке", "brief": "Мощность и тяга",'
     ' "complexity": "complex"}]}' % TEMPLATE_FILE
+)
+
+# Multi-archive fixture (Task 13): two archives that look like templates by
+# name, two that look like knowledge. The planner only picks one of the two
+# template archives, so the other must fall through to the knowledge side —
+# this is what exercises _expand_template_names against a real archive prefix
+# instead of a single flat file name.
+ARCHIVE_TEMPLATE_CHOSEN = "shablony_0.zip"
+ARCHIVE_TEMPLATE_OTHER = "shablony_1.zip"
+ARCHIVE_KNOWLEDGE_A = "znaniya_0.zip"
+ARCHIVE_KNOWLEDGE_B = "znaniya_1.zip"
+
+# Exactly TOP_K_CHUNKS (6) documents total, one chunk each (short, no page
+# markers), and a section brief with no keyword overlap with any of them —
+# this keeps _select_relevant_chunks' scoring at zero across the board, so it
+# falls back to "all chunks" instead of silently dropping some archives from
+# the picture (its scored-path returns only positively-scored chunks, which
+# would otherwise hide an entire archive from the assertions below).
+MULTI_ARCHIVE_DOCS = [
+    {"filename": f"{ARCHIVE_TEMPLATE_CHOSEN}/форма1.docx", "content": "Один. Два. Три."},
+    {"filename": f"{ARCHIVE_TEMPLATE_CHOSEN}/форма2.docx", "content": "Четыре. Пять. Шесть."},
+    {"filename": f"{ARCHIVE_TEMPLATE_OTHER}/форма1.docx", "content": "Семь. Восемь. Девять."},
+    {"filename": f"{ARCHIVE_KNOWLEDGE_A}/данные1.xlsx", "content": "Десять. Одиннадцать."},
+    {"filename": f"{ARCHIVE_KNOWLEDGE_A}/данные2.xlsx", "content": "Двенадцать. Тринадцать."},
+    {"filename": f"{ARCHIVE_KNOWLEDGE_B}/данные1.xlsx", "content": "Четырнадцать. Пятнадцать."},
+]
+MULTI_ARCHIVE_PROMPT = "Собери документ по материалам из архивов"
+MULTI_ARCHIVE_PLAN_JSON = (
+    '{"template_documents": ["%s"], "sections": ['
+    '{"title": "Общий раздел", "brief": "Обзорный текст без цифр", "complexity": "simple"}]}'
+    % ARCHIVE_TEMPLATE_CHOSEN
 )
 
 ORIGINAL_PROMPT = f"Сделай ИТТ по шаблону {TEMPLATE_FILE}"
@@ -376,6 +407,54 @@ async def check_truncation_marker_on_a_chunk_boundary():
     print("OK: truncation marker — found on every chunk boundary, no false positive on similar prose")
 
 
+async def check_multi_archive_templates():
+    """Task 13: many template files as a whole archive, and a knowledge base
+    spread across several archives. The planner names only one of two
+    template-shaped archives; the other archive must fall through to the
+    knowledge side rather than vanishing or being wrongly treated as
+    template — and the confirmation text (phase one) must name both groups."""
+    _set_documents(MULTI_ARCHIVE_DOCS)
+
+    # Phase one: confirmation text must name both the chosen template archive
+    # and at least one of the knowledge archives.
+    _install_fakes(MULTI_ARCHIVE_PLAN_JSON)
+    text, files, _, search = await dg.get_docgen_response([], MULTI_ARCHIVE_PROMPT, 777, FakeStatus())
+    assert files == [], "phase one must not generate anything"
+    assert ARCHIVE_TEMPLATE_CHOSEN in text, f"chosen template archive missing from confirmation text: {text!r}"
+    assert ARCHIVE_KNOWLEDGE_A in text or ARCHIVE_KNOWLEDGE_B in text, (
+        f"knowledge archives missing from confirmation text: {text!r}"
+    )
+
+    # Phase two: the writer prompt must split template vs knowledge along
+    # exactly the resolved archive membership, not the raw planner names.
+    writer_prompts, _, _ = _install_fakes(MULTI_ARCHIVE_PLAN_JSON)
+    messages, reply = _second_turn(MULTI_ARCHIVE_PROMPT)
+    summary, files, _, _ = await dg.get_docgen_response(messages, reply, 777, FakeStatus())
+
+    assert files and files[0]["bytes"][:2] == b"PK", "multi-archive run must still produce a .docx"
+    labelled = [p for p in writer_prompts if "Формат по шаблону:" in p and "Факты из базы знаний:" in p]
+    assert labelled, "no writer prompt separated template from knowledge sources"
+    prompt = labelled[0]
+    template_at = prompt.index("Формат по шаблону:")
+    knowledge_at = prompt.index("Факты из базы знаний:")
+    template_block = prompt[template_at:knowledge_at]
+    knowledge_block = prompt[knowledge_at:]
+
+    assert f"[{ARCHIVE_TEMPLATE_CHOSEN}/" in template_block, (
+        f"chosen template archive's files missing from the template block: {template_block!r}"
+    )
+    assert f"{ARCHIVE_TEMPLATE_OTHER}/" not in template_block, (
+        f"unselected template-shaped archive leaked into the template block: {template_block!r}"
+    )
+    assert f"{ARCHIVE_TEMPLATE_OTHER}/" in knowledge_block, (
+        f"unselected template-shaped archive did not fall through to the knowledge block: {knowledge_block!r}"
+    )
+    assert (f"{ARCHIVE_KNOWLEDGE_A}/" in knowledge_block) or (f"{ARCHIVE_KNOWLEDGE_B}/" in knowledge_block), (
+        f"knowledge archives missing from the knowledge block: {knowledge_block!r}"
+    )
+    print("OK: multi-archive templates — only the chosen archive is the template, others fall through to knowledge, confirmation names both groups")
+
+
 async def main() -> None:
     # The retry delays (SECTION_RETRY_DELAYS) are real seconds in production;
     # nothing here is testing timing, so collapse them to keep the self-check
@@ -398,6 +477,7 @@ async def main() -> None:
         await check_cancel_generates_nothing()
         await check_skipped_questions_do_not_start_generation()
         await check_truncation_marker_on_a_chunk_boundary()
+        await check_multi_archive_templates()
     finally:
         asyncio.sleep = orig_sleep
     print("OK: docgen pipeline self-check passed")
