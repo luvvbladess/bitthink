@@ -282,7 +282,7 @@ async def get_smart_response(
         # существует этот режим.
         from docgen_router import get_docgen_response
 
-        return await get_docgen_response(user_text, user_id, status_msg)
+        return await get_docgen_response(messages, user_text, user_id, status_msg)
 
     messages = await reduce_heavy_context(messages, user_text, status_msg, user_id=user_id, model=model)
     from model_context import fit_for_mode, search_hop_messages

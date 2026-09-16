@@ -46,6 +46,15 @@ _SECTION_FAILED_PREFIX = "[Не удалось сгенерировать раз
 # тексте документа и оболгать его как усечённый.
 _PAGES_TRUNCATED_RE = re.compile(r"Прочитал первые \d+")
 
+# Confirmation chip labels (Task 12). Phase two matches these exact strings in
+# the clarify reply text to detect the user's choice — a literal retyped
+# elsewhere instead of importing these constants would silently break that.
+_CONFIRM_START = "Да, начинай"
+_CONFIRM_CANCEL = "Нет, отменить"
+_TEMPLATE_CONFIRMED = "Да"
+_TEMPLATE_NONE = "Шаблона нет, всё это база знаний"
+_TEMPLATE_WRONG = "Нет, шаблон другой файл"
+
 
 @dataclass
 class Chunk:
@@ -240,7 +249,7 @@ def _parse_outline_response(response_text: str) -> Tuple[List[Section], Optional
 
 
 async def _plan_outline(
-    user_text: str, chunks: List[Chunk], user_id: int
+    user_text: str, chunks: List[Chunk], user_id: int, extra_instruction: str = ""
 ) -> Tuple[List[Section], Optional[str], bool]:
     """Разделы, имя файла-шаблона и флаг «план построить не удалось».
 
@@ -265,7 +274,8 @@ async def _plan_outline(
         "complexity=complex — для расчётов, таблиц с цифрами, юридических формулировок, "
         "технических требований с точными значениями. Остальное — simple.\n\n"
         f"Запрос пользователя:\n{user_text}\n\n"
-        f"Заголовки доступных фрагментов исходников (id: заголовок):\n{catalog}\n\n"
+        + (f"Уточнения пользователя: {extra_instruction}\n\n" if extra_instruction else "")
+        + f"Заголовки доступных фрагментов исходников (id: заголовок):\n{catalog}\n\n"
         "template_document — точное имя одного из документов ниже, ТОЛЬКО если запрос пользователя\n"
         "или подсказка ниже указывают, что этот документ — шаблон оформления (пример структуры для\n"
         "итогового документа). Слова пользователя в запросе всегда важнее подсказки по имени файла.\n"
@@ -392,23 +402,118 @@ async def _update_status(status_msg: Any, text: str) -> None:
 
 
 async def get_docgen_response(
+    messages: List[Dict[str, Any]],
     user_text: str,
     user_id: int,
     status_msg: Any,
 ) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
+    """Two-phase entry (Task 12): a first turn plans and asks for confirmation
+    before any writer call runs; only a clarify reply on a later turn actually
+    generates. At up to 5000 sections a run is thousands of model calls and
+    hours of wall time, so starting one on the wrong knowledge base or the
+    wrong template file by mistake is expensive — this makes that mistake
+    cheap to catch before it burns anything."""
     from app.billing.quota import billing_pool
+    from clarify import is_clarify_reply
 
     token = billing_pool.set("computer")
     try:
-        return await _run_docgen(user_text, user_id, status_msg)
+        if not is_clarify_reply(user_text):
+            return await _confirm_before_generating(user_text, user_id, status_msg)
+        return await _run_docgen_after_confirmation(messages, user_text, user_id, status_msg)
     finally:
         billing_pool.reset(token)
+
+
+def _recover_original_request(messages: List[Dict[str, Any]], user_text: str) -> str:
+    """The last user message that isn't itself a clarify reply — i.e. the
+    request from before the confirmation question was asked. Falls back to
+    user_text so a conversation that somehow starts with a clarify reply
+    doesn't crash."""
+    from clarify import is_clarify_reply
+
+    for message in reversed(messages or []):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = str(message.get("content") or "")
+        if is_clarify_reply(content):
+            continue
+        return content
+    return user_text
+
+
+async def _confirm_before_generating(
+    user_text: str, user_id: int, status_msg: Any
+) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
+    """Phase one: plan, then ask — never write a single section. One planner
+    call is cheap next to the thousands of writer calls it would otherwise
+    green-light blindly, and it buys precise numbers for the question instead
+    of a blind "are you sure?"."""
+    from clarify import normalize_questions, pack_search
+
+    await _update_status(status_msg, "📄 Читаю исходники и строю план документа...")
+    chunks, truncated_sources = await asyncio.to_thread(_extract_source_chunks, user_id)
+    outline, template_document, planning_failed = await _plan_outline(user_text, chunks, user_id)
+
+    total = len(outline)
+    approx_pages = max(1, total * CHUNK_TARGET_CHARS // 2000)
+
+    doc_names: List[str] = []
+    for chunk in chunks:
+        if chunk.doc_name not in doc_names:
+            doc_names.append(chunk.doc_name)
+    knowledge_names = [n for n in doc_names if n != template_document] if template_document else doc_names
+
+    lines = [f"Разделов: {total}, примерно {approx_pages} стр."]
+    if template_document:
+        lines.append(f"Шаблон оформления: {template_document}.")
+    else:
+        lines.append("Шаблон оформления не определён.")
+    lines.append(
+        f"База знаний: {', '.join(knowledge_names)}." if knowledge_names
+        else "База знаний: файлы не найдены."
+    )
+    if truncated_sources:
+        lines.append(
+            f"Прочитаны не целиком: {', '.join(truncated_sources)}. Загрузите их заново в режиме «Документы»."
+        )
+    if planning_failed:
+        lines.append("План построить не удалось — запасной вариант: один раздел на весь документ.")
+    text = "\n".join(lines)
+
+    questions_raw = [
+        {
+            "prompt": f"Начинать генерацию? Разделов: {total}, примерно {approx_pages} страниц",
+            "options": [_CONFIRM_START, _CONFIRM_CANCEL],
+        }
+    ]
+    if template_document:
+        questions_raw.append({
+            "prompt": "Шаблон оформления определён верно?",
+            "options": [_TEMPLATE_CONFIRMED, _TEMPLATE_NONE, _TEMPLATE_WRONG],
+        })
+    questions = normalize_questions(questions_raw)
+    return text, [], "", pack_search(questions)
+
+
+async def _run_docgen_after_confirmation(
+    messages: List[Dict[str, Any]], user_text: str, user_id: int, status_msg: Any
+) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
+    """Phase two: honour the answers. Cancel exits before anything is loaded
+    or planned; otherwise the original request is recovered and the reply
+    itself is threaded into planning so an answer like "шаблон другой файл"
+    actually changes the plan instead of being asked for and then ignored."""
+    if _CONFIRM_CANCEL in user_text:
+        return "Отменил, ничего не генерировал.", [], "", []
+    original_request = _recover_original_request(messages, user_text)
+    return await _run_docgen(original_request, user_id, status_msg, extra_instruction=user_text)
 
 
 async def _run_docgen(
     user_text: str,
     user_id: int,
     status_msg: Any,
+    extra_instruction: str = "",
 ) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
     """Режим Документы: план -> параллельная генерация разделов -> сборка в .docx."""
     await _update_status(status_msg, "📄 Читаю исходники и строю план документа...")
@@ -416,7 +521,7 @@ async def _run_docgen(
     # это секунды CPU, которые нельзя держать в event loop — он общий на всех.
     chunks, truncated_sources = await asyncio.to_thread(_extract_source_chunks, user_id)
     no_sources = not chunks
-    outline, template_document, planning_failed = await _plan_outline(user_text, chunks, user_id)
+    outline, template_document, planning_failed = await _plan_outline(user_text, chunks, user_id, extra_instruction)
 
     total = len(outline)
     if planning_failed:
