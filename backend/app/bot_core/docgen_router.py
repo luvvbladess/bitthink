@@ -603,6 +603,18 @@ def _parse_replacements(text: str) -> Dict[str, str]:
         if right.lower() in _KEEP_AS_IS:
             continue
         result[left] = right
+    # Одинокая строка из одних цифр («100000 -> 120000») подходит под форму
+    # номера документа, но в переписке про сметы и сроки встречается сама по
+    # себе. Согласием она быть не может: рядом должна стоять хотя бы ещё одна
+    # замена или значение с узнаваемой формой — фамилия, организация, дата,
+    # децимальный номер. Заполненный список из таблицы всегда такой.
+    if len(result) == 1:
+        lone = next(iter(result))
+        recognisable = any(
+            pattern.fullmatch(lone) for pattern, _ in _CANDIDATE_PATTERNS if pattern is not _DOC_NUMBER_RE
+        )
+        if not recognisable:
+            return {}
     return result
 
 
