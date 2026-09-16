@@ -539,3 +539,54 @@ PLANNER_CATALOG_CHUNKS = 400      # chunk titles shown, was an unbounded 2000
 - The planner prompt keeps the priority rule (user's words over the filename hint) word for word.
 - Re-measured planner prompt size on the 149-file fixture is reported as a before/after number, not asserted to be "smaller".
 - Confirmation questions still survive `clarify.normalize_questions` at large file counts — run them through it with 200 files and include the output.
+
+---
+
+## Task 14: 900-page files, and folders inside archives
+
+**User's requirement (verbatim intent):** the test archive contains files of about 900 pages, and folders nested inside the archive have to be recognised too.
+
+Both are real gaps, and the measurements below were taken on this checkout — use them, do not re-derive.
+
+### Change A — let a big file through, end to end
+
+A 900-page file is cheap to read and currently loses 78% of itself. Measured on a generated 900-page text PDF: **2 292 190 chars extracted in 1.2 s, peak 9 MB RAM**; at today's caps only 509 374 chars survive. Four separate gates cut it, and they must all move together or the file still gets truncated somewhere:
+
+| Gate | Now | New | Why |
+|---|---|---|---|
+| `MAX_PDF_PAGES_EXTENDED` | 200 | 1200 | 900 pages plus margin |
+| `MAX_EXTRACT_CHARS_EXTENDED` | 800 000 | 3 000 000 | 900 pages measured at 2.29M chars |
+| `MAX_PDF_BYTES` | 20 MB, flat | add `MAX_PDF_BYTES_EXTENDED = 100 MB` | a big PDF is rejected outright before page limits even apply; this gate is not currently mode-aware, so thread `extended_limits` into the check at `document_parser.py:250` |
+| upload size in `documents.py` | 20 MB for both the file and the `.zip` branch | 100 MB when docgen is the active mode | `frontend/nginx.conf:10` already allows `client_max_body_size 100M`, so this needs no infrastructure change — verified |
+
+Also raise, for the extended path only, `MAX_ARCHIVE_ENTRIES` (200 → 2000) and `MAX_ARCHIVE_UNPACKED_BYTES` (200 MB → 1 GB): a knowledge base of many 900-page files hits both. Keep the non-extended values exactly as they are — those guards protect every other mode from zip bombs, and docgen is creator-only.
+
+OCR cost does not scale with this: `MAX_IMAGES_PER_PDF = 8` caps vision calls per PDF regardless of page count. A 900-page *scanned* PDF therefore still yields almost nothing — state that in the report as a known limit rather than pretending otherwise.
+
+### Change B — a total-corpus ceiling, because Change A removes the accidental one
+
+Until now the per-file caps were what kept the corpus small. Measured with the new caps: **50 files × 900 pages = 118 MB of text → 57 500 chunks, 21.8 s, 420 MB RAM**. That is fine; 200 such files would be ~1.7 GB, which is not. Raising the per-file limits without a total ceiling turns "the server must not die" into luck.
+
+Add `MAX_SOURCE_CHARS_TOTAL = 150_000_000` (~150 MB of text, ~530 MB RAM by the measurement above) to `docgen_router.py`. In `_extract_source_chunks`, stop adding documents once the accumulated character count would exceed it, and return the names of the documents that did not fit alongside the truncated ones. `_run_docgen` and `_confirm_before_generating` must name them in their text the same way truncated sources are named — a document silently missing from a 5000-page generation is exactly the kind of failure this mode has been hardened against all along.
+
+### Change C — folders inside an archive are their own group
+
+`_archive_of` (`docgen_router.py`) splits on the **first** `/`, so every folder inside `arhiv.zip` collapses into one group. A user who puts templates in `arhiv.zip/shablony/` and sources in `arhiv.zip/baza/` gives the planner one undifferentiated pile — it cannot name the template folder because it never sees that folders exist. (Extraction itself is fine: `extract_zip_archive` already stores nested members as `arhiv.zip/shablony/formy/forma1.docx` — verified.)
+
+- Group by the **containing folder** instead: everything before the last `/`, or the bare name when there is none. Rename `_archive_of`/`_group_by_archive` to say what they now do (e.g. `_folder_of`/`_group_by_folder`) and update the docstrings — a name that lies about the grouping unit is how this kind of bug survives review.
+- `_expand_template_names` already resolves any prefix, so naming a folder works with no change — add a unit test proving `arhiv.zip/shablony` selects exactly that folder's files (including deeper subfolders) and nothing from `arhiv.zip/baza`.
+- The planner prompt must say it may name an archive, a folder inside one, or a single file. Keep the priority rule ("Слова пользователя в запросе всегда важнее подсказки по имени файла") word for word.
+- The preview/confirmation grouping follows automatically, so the planner now sees `arhiv.zip/shablony: 40 файлов` next to `arhiv.zip/baza: 120 файлов`.
+
+### Testing
+
+`backend/tests/test_docgen.py`: folder grouping (nested paths group by their own folder, bare names still group alone); `_expand_template_names` selecting a folder including its subfolders; the corpus ceiling stopping at the limit and reporting the skipped names.
+
+`backend/scripts/selfcheck_docgen.py`: a scenario with one archive holding two folders — templates in one, knowledge in the other, planner names the folder — asserting the writer's "Формат по шаблону" block cites only that folder and the confirmation names both groups. Keep all existing scenarios passing.
+
+### Self-review checklist
+
+- Every one of the four gates in Change A actually moves for docgen and stays put for other modes — trace `extended_limits` into each, including the `MAX_PDF_BYTES` check that was not previously mode-aware.
+- The corpus ceiling reports what it dropped; it must not silently shorten the base.
+- Grouping rename left no caller referring to the old names, and no docstring still claiming "part before the first /".
+- Re-measure a 900-page PDF end to end through `extract_text_from_file(..., extended_limits=True)` and report the extracted character count — it should be ~2.29M, not ~509k.
