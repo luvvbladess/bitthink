@@ -422,6 +422,29 @@ def test_parse_replacements_ignores_prose_that_merely_contains_an_arrow():
         assert dg._parse_replacements(prose) == {}, f"prose parsed as a replacement list: {prose!r}"
 
 
+def test_parse_replacements_lone_number_line_is_not_consent():
+    """A digits-only pair matches the document-number shape, but «100000 ->
+    120000» is also how a budget or a deadline gets discussed in passing. On
+    its own it is not the filled-in table, so it must not read as consent."""
+    for prose in (
+        "100000 -> 120000",
+        "смета:\n100000 -> 120000",
+        "бюджет 100000 -> 120000 и сроки",
+    ):
+        assert dg._parse_replacements(prose) == {}, f"lone number parsed as consent: {prose!r}"
+
+    # The same line inside a real list still parses: one recognisable
+    # neighbour is enough to tell the table from the aside.
+    assert dg._parse_replacements(
+        "100000 -> 120000\nЗаказчик: ООО «Ромашка» → ООО «Вектор»"
+    ) == {"100000": "120000", "ООО «Ромашка»": "ООО «Вектор»"}
+
+    # A lone pair with a recognisable shape is a table of one, not an aside.
+    assert dg._parse_replacements("АБВГ.123456.789 -> ЖЗИК.987654.321") == {
+        "АБВГ.123456.789": "ЖЗИК.987654.321"
+    }
+
+
 def test_apply_replacements_longest_first_prevents_partial_overlap():
     mapping = {
         "АБВГ.123456.789": "СТАЛО.000000.001",
