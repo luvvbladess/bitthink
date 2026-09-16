@@ -590,3 +590,76 @@ Add `MAX_SOURCE_CHARS_TOTAL = 150_000_000` (~150 MB of text, ~530 MB RAM by the 
 - The corpus ceiling reports what it dropped; it must not silently shorten the base.
 - Grouping rename left no caller referring to the old names, and no docstring still claiming "part before the first /".
 - Re-measure a 900-page PDF end to end through `extract_text_from_file(..., extended_limits=True)` and report the extracted character count — it should be ~2.29M, not ~509k.
+
+---
+
+## Task 15: «Было → стало» — заменить чужие реквизиты до генерации, а не после
+
+**Customer's requirement (verbatim intent, relayed by the user):** in the examples, things like decimal designations, the company name, developers' surnames and the customer's name repeat across every document, and they all change in a new set. Before generating, the AI should ask "this value repeats — what will it be in the new files?", as a «было → стало» list like the one used in norm control, so it doesn't generate a pile of garbage that has to be find-replaced afterwards.
+
+**Decisions already taken with the user (do not re-litigate):**
+- Replacements are supplied in **one message**, as a filled «было → стало» list. Chips cannot do this: `clarify.py` allows at most 3 questions whose answers are pre-set buttons, and there can be 10-20 values.
+- A detected value the user leaves blank becomes a **visible placeholder** `[УКАЗАТЬ: <название>]` in the document. The worst outcome is a foreign customer's name silently surviving into 5000 pages.
+- Candidates are searched **across all sources, including the knowledge base** — in this domain the knowledge base is often a previous project's document set, where the same requisites appear. This raises the risk of proposing to replace genuine technical data, so candidate selection must favour identity-like values and the user's review of the list is the safety net.
+
+**File:** `backend/app/bot_core/docgen_router.py`, plus its tests and selfcheck.
+
+### Change 1 — find the repeating requisites
+
+Add `_find_replacement_candidates(chunks) -> List[Tuple[str, str]]` returning `(value, label)` pairs, bounded by a new `MAX_REPLACEMENT_CANDIDATES = 25`:
+
+- Regex candidates over the corpus: decimal designations (`[А-ЯЁ]{4}\.\d{6}\.\d{3}`), organisation names in guillemets (`«…»`), ФИО in the `Иванов И.И.` shape, dates (`дд.мм.гггг`), and long digit runs that look like document/contract numbers. **Never** propose ГОСТ/ОСТ/ТУ references — those are standards, not requisites; exclude them explicitly.
+- Keep only values occurring in **at least two different documents** (`chunk.doc_name`) — a requisite repeats across the example set, a one-off number in a single table does not. That frequency rule is what keeps genuine technical data out of the list.
+- Rank by how many documents contain them, take the top `MAX_REPLACEMENT_CANDIDATES`.
+- Then one cheap labelling call on `DEFAULT_WRITER_MODEL` (not the planner): give it only the candidate list — never the corpus — and ask it to return, as JSON, which are project-specific requisites that would change in a new document, each with a short Russian label ("Заказчик", "Децимальный номер", "Разработал"). Drop anything it does not return. Guard it the same way `_parse_outline_response` is guarded: unparseable answer → fall back to the regex candidates with generic labels, never an exception.
+
+The whole scan runs in the thread that already loads the corpus — it is pure CPU over text already in memory. Do not add a second pass over the documents.
+
+### Change 2 — show the table, accept the filled answer
+
+In `_confirm_before_generating`, when candidates exist, append to the message text (which has no length limit, unlike the chips):
+
+```
+Это повторяется в примерах — укажите, чем заменить в новых файлах:
+
+Заказчик: ООО «Ромашка» → 
+Децимальный номер: АБВГ.123456.789 → 
+Разработал: Иванов И.И. → 
+
+Ответьте этим же списком, дописав значения справа.
+Пустая строка — поставлю метку [УКАЗАТЬ: …]. Напишите «как есть», если менять не нужно.
+```
+
+Phase-two entry must now recognise **two** shapes of confirmation, because a filled list is an ordinary message, not a chip reply — without this the mode would re-ask forever:
+- a clarify chip reply (today's `is_clarify_reply` path), and
+- a message that parses as at least one replacement line.
+
+Add `_parse_replacements(text) -> Dict[str, str]`: accepts `→`, `->` and `::=` as the separator (the last one is what `backend/app/api/documents.py`'s existing `/edit-docx` norm-control endpoint already uses — same idea, same syntax); the part before an optional `«название»:` prefix is stripped; an empty right side maps the value to `""` meaning "placeholder"; `как есть` / `=` on the right means "keep unchanged" and the pair is dropped from the mapping entirely. Returns `{было: стало}`.
+
+The fail-safe gate from Task 12 stays: a message that is neither a chip start nor a parseable replacement list still does **not** start generation.
+
+### Change 3 — apply them, deterministically
+
+Two places, because the model cannot be trusted to copy values exactly across thousands of calls:
+1. In `_section_context`, apply the mapping to the assembled context block, so the writer sees the *new* values and writes them naturally.
+2. After assembly in `_run_docgen`, sweep the finished markdown with the same mapping before the .docx conversion. This is the part that actually guarantees no old requisite survives — deterministic, independent of the model.
+
+`_apply_replacements(text, mapping) -> str`: plain `str.replace` per pair, longest value first (so a decimal designation is not half-replaced by a shorter overlapping candidate). An empty replacement value becomes `[УКАЗАТЬ: <label>]`.
+
+Report in the summary how many distinct requisites were replaced and how many became placeholders — the engineer needs to know what to fill in before the document goes out.
+
+### Testing
+
+`backend/tests/test_docgen.py`:
+- `_parse_replacements` on all three separators, on a line with a `«название»:` prefix, on an empty right side (→ placeholder), on `как есть` (→ absent from the mapping), and on a message with no separators at all (→ empty dict, so it is not mistaken for a confirmation).
+- `_apply_replacements`: longest-first ordering actually prevents a partial overlap; an empty value produces `[УКАЗАТЬ: …]`.
+- `_find_replacement_candidates`: a decimal designation present in two documents is proposed; one present in a single document is not; a `ГОСТ 2.105-95` reference is never proposed.
+
+`backend/scripts/selfcheck_docgen.py`: a scenario where the first turn lists candidates, the second turn replies with a filled list, and the assembled .docx contains the new value and **not** the old one — that last assertion is the whole feature.
+
+### Self-review checklist
+
+- A filled replacement list starts generation; a message that is neither that nor a chip reply still does not (Task 12's gate intact).
+- The labelling call receives only the candidate list, never document text, and its failure degrades to regex labels rather than raising.
+- The final sweep runs on the assembled markdown before `convert_markdown_to_docx`, not after.
+- ГОСТ/ОСТ/ТУ references are excluded from candidates — verify with a test, not by inspection.
