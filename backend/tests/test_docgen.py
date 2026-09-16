@@ -445,6 +445,93 @@ def test_parse_replacements_lone_number_line_is_not_consent():
     }
 
 
+def test_requested_sections_reads_the_page_target():
+    """Without this the planner sizes the document by feel — a request for
+    5000 pages produced a few dozen sections and the user never learned why."""
+    assert dg._requested_sections("напиши документацию на 5000 страниц") == 3334
+    assert dg._requested_sections("документ на 5 тыс. страниц") == 3334
+    assert dg._requested_sections("7к страниц") == 4667
+    assert dg._requested_sections("сделай 300 разделов") == 300
+
+
+def test_requested_sections_takes_the_upper_bound_of_a_range():
+    # «5-7 тысяч страниц» — under-delivering on a stated range is the worse
+    # error here: the run is confirmed before it starts, so too big is visible.
+    assert dg._requested_sections("нужен документ 5-7 тысяч страниц") == 4667
+
+
+def test_requested_sections_needs_a_unit_word():
+    assert dg._requested_sections("пояснительная записка по ГОСТ 19.201-78") is None
+    assert dg._requested_sections("сгенерируй документацию по этой базе") is None
+    assert dg._requested_sections("страница 5 шаблона важна") is None
+
+
+def test_requested_sections_clamped_to_max_sections():
+    assert dg._requested_sections("нужно 100000 страниц") == dg.MAX_SECTIONS
+
+
+def test_estimate_cost_stays_under_the_hundred_dollar_budget():
+    """The mode's stated budget: 5-7 thousand pages for under $100. Worst
+    realistic case — every section escalated — must still fit, otherwise the
+    confirmation screen is promising something the run cannot keep."""
+    outline = [
+        dg.Section(id=i, title=f"Раздел {i}", brief="", complexity="complex")
+        for i in range(dg._requested_sections("7000 страниц"))
+    ]
+    assert dg._estimate_cost_usd(outline, has_sources=True) < 100
+
+
+def test_estimate_cost_grows_with_escalation_and_size():
+    simple = [dg.Section(id=i, title="x", brief="", complexity="simple") for i in range(100)]
+    complex_ = [dg.Section(id=i, title="x", brief="", complexity="complex") for i in range(100)]
+    assert dg._estimate_cost_usd(complex_, True) > dg._estimate_cost_usd(simple, True)
+    assert dg._estimate_cost_usd(simple, True) > dg._estimate_cost_usd(simple, False)
+    assert dg._estimate_cost_usd(simple[:50], True) < dg._estimate_cost_usd(simple, True)
+
+
+def test_chapter_count_never_exceeds_max_sections():
+    # MAX_CHAPTERS x SECTIONS_PER_CHAPTER must stay equal to MAX_SECTIONS:
+    # a drift here either caps the mode below its promise or blows past the
+    # ceiling that keeps a run from lasting days.
+    assert dg.MAX_CHAPTERS * dg.SECTIONS_PER_CHAPTER == dg.MAX_SECTIONS
+
+
+def test_runaway_chapter_plan_does_not_fire_an_expansion_call_per_chapter():
+    """A planner that answers with far more chapters than it was asked for
+    used to cost one expansion call each, and the sections beyond the ceiling
+    were then thrown away anyway — money spent on output nobody sees."""
+    import asyncio as _asyncio
+
+    expansions = []
+
+    async def fake_plan(user_text, chunks, user_id, extra_instruction="", want_count=None, as_chapters=False):
+        assert as_chapters and want_count
+        chapters = [
+            dg.Section(id=i, title=f"Глава {i}", brief="", complexity="simple")
+            for i in range(want_count * 10)  # runaway: ten times what was asked
+        ]
+        return chapters, set(), False
+
+    async def fake_expand(chapter, user_text, catalog, per_chapter, user_id):
+        expansions.append(chapter.title)
+        return [dg.Section(id=0, title=f"{chapter.title}.1", brief="", complexity="simple")]
+
+    orig_plan, orig_expand = dg._plan_outline, dg._expand_chapter
+    dg._plan_outline, dg._expand_chapter = fake_plan, fake_expand
+    try:
+        sections, _, failed = _asyncio.run(
+            dg._plan_document("документ на 5000 страниц", [], 1)
+        )
+    finally:
+        dg._plan_outline, dg._expand_chapter = orig_plan, orig_expand
+
+    assert not failed
+    expected_chapters = -(-dg._requested_sections("5000 страниц") // dg.SECTIONS_PER_CHAPTER)
+    assert len(expansions) == expected_chapters, (
+        f"expanded {len(expansions)} chapters, asked for {expected_chapters}"
+    )
+
+
 def test_apply_replacements_longest_first_prevents_partial_overlap():
     mapping = {
         "АБВГ.123456.789": "СТАЛО.000000.001",
