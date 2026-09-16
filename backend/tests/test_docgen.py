@@ -409,6 +409,19 @@ def test_parse_replacements_no_separator_returns_empty_dict():
     assert dg._parse_replacements("Просто обычное сообщение без разделителей.") == {}
 
 
+def test_parse_replacements_ignores_prose_that_merely_contains_an_arrow():
+    """A non-empty mapping is taken as consent to start generating, so prose
+    with a stray arrow must not produce one — otherwise an ordinary chat
+    message costs thousands of model calls. The left side has to look like a
+    requisite, the same shapes the table offered in the first place."""
+    for prose in (
+        "я думаю -> надо переделать раздел",
+        "давай так: сначала план -> потом текст",
+        "сроки сдвинулись ::= перенеси на май",
+    ):
+        assert dg._parse_replacements(prose) == {}, f"prose parsed as a replacement list: {prose!r}"
+
+
 def test_apply_replacements_longest_first_prevents_partial_overlap():
     mapping = {
         "АБВГ.123456.789": "СТАЛО.000000.001",
