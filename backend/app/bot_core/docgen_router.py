@@ -370,7 +370,10 @@ async def _write_section(
                     "docgen section '%s' attempt %d/%d failed, retrying: %s",
                     section.title, attempt, SECTION_ATTEMPTS, e,
                 )
-                await asyncio.sleep(SECTION_RETRY_DELAYS[attempt - 1])
+                # Clamped, not indexed directly: raising SECTION_ATTEMPTS without
+                # extending the delays tuple would otherwise IndexError here — in
+                # the one code path whose whole job is surviving failures.
+                await asyncio.sleep(SECTION_RETRY_DELAYS[min(attempt, len(SECTION_RETRY_DELAYS)) - 1])
             else:
                 logger.error(
                     f"docgen section '{section.title}' failed after {SECTION_ATTEMPTS} attempts: {e}",
