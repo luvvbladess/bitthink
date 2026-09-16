@@ -331,6 +331,29 @@ async def check_cancel_generates_nothing():
     print("OK: cancel — nothing generated, no writer call, no planner call")
 
 
+async def check_skipped_questions_do_not_start_generation():
+    """The clarify card is shared across modes and has a "Пропустить" button
+    bound to Enter. Skipping every question sends "Уточнения пропущены…", which
+    is a clarify reply carrying neither the start nor the cancel label. Treating
+    the absence of cancel as consent would launch thousands of model calls on a
+    single accidental keypress, so the gate requires the start label explicitly."""
+    _set_documents(DOCS)
+    writer_prompts, pools_seen, _ = _install_fakes(PLAN_JSON)
+
+    skip_reply = "Уточнения пропущены. Действуй по здравому смыслу."
+    assert clarify.is_clarify_reply(skip_reply), "fixture no longer matches the skip shape clarify.py accepts"
+    assert dg._CONFIRM_START not in skip_reply and dg._CONFIRM_CANCEL not in skip_reply
+
+    messages, reply = _second_turn(reply=skip_reply)
+    summary, files, _, _ = await dg.get_docgen_response(messages, reply, 777, FakeStatus())
+
+    assert files == [], f"a skipped confirmation must generate nothing, got files: {files!r}"
+    assert not writer_prompts, "a skipped confirmation must not call the writer"
+    assert not pools_seen, f"a skipped confirmation must not call the planner either, got: {pools_seen!r}"
+    assert dg._CONFIRM_START in summary, f"the reply should tell the user which button starts it: {summary}"
+    print("OK: skipped questions — no generation, and the user is told which button starts it")
+
+
 async def check_truncation_marker_on_a_chunk_boundary():
     """The notice is ~60 chars and the chunker slices at a fixed width, so for
     PDFs (whose page labels are stripped before slicing) the marker regularly
@@ -373,6 +396,7 @@ async def main() -> None:
         await check_first_turn_asks_and_never_writes()
         await check_second_turn_generates()
         await check_cancel_generates_nothing()
+        await check_skipped_questions_do_not_start_generation()
         await check_truncation_marker_on_a_chunk_boundary()
     finally:
         asyncio.sleep = orig_sleep

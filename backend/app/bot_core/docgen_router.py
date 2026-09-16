@@ -499,12 +499,27 @@ async def _confirm_before_generating(
 async def _run_docgen_after_confirmation(
     messages: List[Dict[str, Any]], user_text: str, user_id: int, status_msg: Any
 ) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
-    """Phase two: honour the answers. Cancel exits before anything is loaded
-    or planned; otherwise the original request is recovered and the reply
-    itself is threaded into planning so an answer like "шаблон другой файл"
-    actually changes the plan instead of being asked for and then ignored."""
-    if _CONFIRM_CANCEL in user_text:
-        return "Отменил, ничего не генерировал.", [], "", []
+    """Phase two: honour the answers. Anything short of an explicit start exits
+    before anything is loaded or planned; otherwise the original request is
+    recovered and the reply itself is threaded into planning so an answer like
+    "шаблон другой файл" actually changes the plan instead of being asked for
+    and then ignored.
+
+    The gate requires _CONFIRM_START rather than merely the absence of
+    _CONFIRM_CANCEL, because the clarify card is a shared component with a
+    "Пропустить" button bound to Enter: skipping every question sends
+    "Уточнения пропущены…", which is a clarify reply containing neither label.
+    Treating that as consent would launch thousands of model calls on one
+    accidental keypress — exactly what this confirmation exists to prevent.
+    """
+    if _CONFIRM_START not in user_text:
+        if _CONFIRM_CANCEL in user_text:
+            return "Отменил, ничего не генерировал.", [], "", []
+        return (
+            "Не начинаю: подтверждение не получено. Нажмите «"
+            f"{_CONFIRM_START}», если документ нужно сгенерировать.",
+            [], "", [],
+        )
     original_request = _recover_original_request(messages, user_text)
     return await _run_docgen(original_request, user_id, status_msg, extra_instruction=user_text)
 
