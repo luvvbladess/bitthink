@@ -37,6 +37,7 @@ sys.path.insert(0, str(BACKEND_DIR))
 # openai_client builds its client at import time and refuses to load without a key.
 os.environ.setdefault("OPENAI_API_KEY", "sk-selfcheck-dummy")
 
+import clarify  # noqa: E402
 import docgen_router as dg  # noqa: E402
 from app.billing.quota import billing_pool  # noqa: E402
 
@@ -71,6 +72,27 @@ PLAN_JSON = (
     '{"title": "Требования к энергетической установке", "brief": "Мощность и тяга",'
     ' "complexity": "complex"}]}' % TEMPLATE_FILE
 )
+
+ORIGINAL_PROMPT = f"Сделай ИТТ по шаблону {TEMPLATE_FILE}"
+# Built from the module's own option constants, not retyped literals — a
+# retyped literal here would defeat the exact point of check_first_turn.
+CONFIRM_REPLY_START = f"Уточнения по задаче:\n1. Начинать генерацию? – {dg._CONFIRM_START}"
+CONFIRM_REPLY_CANCEL = f"Уточнения по задаче:\n1. Начинать генерацию? – {dg._CONFIRM_CANCEL}"
+
+
+def _second_turn(prompt: str = ORIGINAL_PROMPT, reply: str = CONFIRM_REPLY_START):
+    """The (messages, user_text) pair get_docgen_response now expects on the
+    turn after confirmation. Shaped like the real conversation history
+    (original request, then the confirmation question, then the clarify
+    reply as the current — already-persisted — last message) so the recovery
+    logic is actually exercised skipping the reply, not just handed a
+    single-message shortcut."""
+    messages = [
+        {"role": "user", "content": prompt},
+        {"role": "assistant", "content": "Разделов: 2, примерно 3 стр. Начинать генерацию?"},
+        {"role": "user", "content": reply},
+    ]
+    return messages, reply
 
 
 class FakeStatus:
@@ -134,9 +156,8 @@ async def check_happy_path():
     writer_prompts, pools_seen, _ = _install_fakes(PLAN_JSON)
     status = FakeStatus()
 
-    summary, files, _, _ = await dg.get_docgen_response(
-        f"Сделай ИТТ по шаблону {TEMPLATE_FILE}", 777, status
-    )
+    messages, reply = _second_turn()
+    summary, files, _, _ = await dg.get_docgen_response(messages, reply, 777, status)
 
     assert len(files) == 1, f"expected exactly one file, got {files!r}"
     payload = files[0]["bytes"]
@@ -171,7 +192,8 @@ async def check_no_sources():
     _set_documents([])
     writer_prompts, _, _ = _install_fakes(PLAN_JSON)
 
-    summary, files, _, _ = await dg.get_docgen_response("Напиши регламент", 777, FakeStatus())
+    messages, reply = _second_turn("Напиши регламент")
+    summary, files, _, _ = await dg.get_docgen_response(messages, reply, 777, FakeStatus())
 
     assert files and files[0]["bytes"][:2] == b"PK", "no-sources run must still produce a .docx"
     assert "не найдены" in summary, f"user was not told the sources are missing: {summary}"
@@ -183,7 +205,8 @@ async def check_planning_failure_is_reported():
     _set_documents(DOCS)
     _install_fakes("это не json")
 
-    summary, files, _, _ = await dg.get_docgen_response("Сделай ИТТ", 777, FakeStatus())
+    messages, reply = _second_turn("Сделай ИТТ")
+    summary, files, _, _ = await dg.get_docgen_response(messages, reply, 777, FakeStatus())
 
     assert files and files[0]["bytes"][:2] == b"PK", "must still produce a .docx on planner failure"
     assert "План разделов построить не удалось" in summary, (
@@ -196,7 +219,8 @@ async def check_failed_sections_are_reported():
     _set_documents(DOCS)
     _, _, attempt_counts = _install_fakes(PLAN_JSON, writer_fails=True)
 
-    summary, files, _, _ = await dg.get_docgen_response("Сделай ИТТ", 777, FakeStatus())
+    messages, reply = _second_turn("Сделай ИТТ")
+    summary, files, _, _ = await dg.get_docgen_response(messages, reply, 777, FakeStatus())
 
     assert files and files[0]["bytes"][:2] == b"PK", "must still produce a .docx when sections fail"
     assert "Не удалось сгенерировать разделов: 2 из 2" in summary, (
@@ -215,7 +239,8 @@ async def check_section_retry_recovers():
     _set_documents(DOCS)
     writer_prompts, _, attempt_counts = _install_fakes(PLAN_JSON, fail_first_attempt=True)
 
-    summary, files, _, _ = await dg.get_docgen_response("Сделай ИТТ", 777, FakeStatus())
+    messages, reply = _second_turn("Сделай ИТТ")
+    summary, files, _, _ = await dg.get_docgen_response(messages, reply, 777, FakeStatus())
 
     assert files and files[0]["bytes"][:2] == b"PK", "must still produce a .docx after a retried section"
     assert dg._SECTION_FAILED_PREFIX not in summary, f"a recovered section left a placeholder trace: {summary}"
@@ -239,7 +264,8 @@ async def check_truncated_sources_are_reported():
     ])
     _install_fakes(PLAN_JSON)
 
-    summary, files, _, _ = await dg.get_docgen_response("Сделай ИТТ", 777, FakeStatus())
+    messages, reply = _second_turn("Сделай ИТТ")
+    summary, files, _, _ = await dg.get_docgen_response(messages, reply, 777, FakeStatus())
 
     assert files and files[0]["bytes"][:2] == b"PK"
     assert "Прочитаны не целиком" in summary, (
@@ -250,6 +276,59 @@ async def check_truncated_sources_are_reported():
         f"an untruncated file was wrongly reported as truncated: {summary}"
     )
     print("OK: truncated sources — named in the summary, with what to do about it")
+
+
+async def check_first_turn_asks_and_never_writes():
+    """The whole point of phase one: a plain prompt (not a clarify reply) must
+    plan and ask, and burn nothing on the writer — thousands of writer calls
+    is exactly the cost this confirmation step exists to gate."""
+    _set_documents(DOCS)
+    writer_prompts, pools_seen, _ = _install_fakes(PLAN_JSON)
+    status = FakeStatus()
+
+    text, files, _, search = await dg.get_docgen_response([], ORIGINAL_PROMPT, 777, status)
+
+    assert files == [], f"phase one must generate nothing, got files: {files!r}"
+    assert not writer_prompts, "phase one called the writer — it must plan and ask, not generate"
+    assert len(pools_seen) == 1, f"phase one must make exactly one model call (the planner), got {pools_seen!r}"
+    questions = clarify.unpack_search(search)
+    assert questions, f"phase one must return at least one confirmation question, got search={search!r}"
+    assert "2" in text, f"section count missing from the confirmation text: {text!r}"
+    assert TEMPLATE_FILE in text, f"template file missing from the confirmation text: {text!r}"
+    print("OK: first turn — plans and asks for confirmation, writer never called")
+
+
+async def check_second_turn_generates():
+    """A confirmed reply, with the original request recovered from messages,
+    must run the real pipeline — asking a question and then not honouring
+    'yes' would be worse than not asking."""
+    _set_documents(DOCS)
+    writer_prompts, _, _ = _install_fakes(PLAN_JSON)
+    status = FakeStatus()
+
+    messages, reply = _second_turn()
+    summary, files, _, _ = await dg.get_docgen_response(messages, reply, 777, status)
+
+    assert files and files[0]["bytes"][:2] == b"PK", "confirmed second turn must produce a real .docx"
+    assert writer_prompts, "confirmed second turn must call the writer"
+    print("OK: second turn — confirmation reply generates a real .docx, writer ran")
+
+
+async def check_cancel_generates_nothing():
+    """Cancel must exit before loading or planning anything — not just before
+    the writer. pools_seen records every model call (planner included), so an
+    empty list here proves get_chat_response was never invoked at all."""
+    _set_documents(DOCS)
+    writer_prompts, pools_seen, _ = _install_fakes(PLAN_JSON)
+    status = FakeStatus()
+
+    messages, reply = _second_turn(reply=CONFIRM_REPLY_CANCEL)
+    summary, files, _, _ = await dg.get_docgen_response(messages, reply, 777, status)
+
+    assert files == [], f"cancel must generate nothing, got files: {files!r}"
+    assert not writer_prompts, "cancel must not call the writer"
+    assert not pools_seen, f"cancel must not call the planner either, got calls: {pools_seen!r}"
+    print("OK: cancel — nothing generated, no writer call, no planner call")
 
 
 async def check_truncation_marker_on_a_chunk_boundary():
@@ -291,6 +370,9 @@ async def main() -> None:
         await check_failed_sections_are_reported()
         await check_section_retry_recovers()
         await check_truncated_sources_are_reported()
+        await check_first_turn_asks_and_never_writes()
+        await check_second_turn_generates()
+        await check_cancel_generates_nothing()
         await check_truncation_marker_on_a_chunk_boundary()
     finally:
         asyncio.sleep = orig_sleep
