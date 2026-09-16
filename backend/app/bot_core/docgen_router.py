@@ -593,6 +593,13 @@ def _parse_replacements(text: str) -> Dict[str, str]:
             left = left.strip()
         if not left:
             continue
+        # Левая часть обязана иметь форму реквизита — того же вида, по которому
+        # значение и попало в предложенный список. Иначе обычная фраза со
+        # стрелкой («я думаю -> надо переделать») разбирается как непустой
+        # список замен, а непустой список означает «запускай»: одно случайное
+        # сообщение стоило бы тысяч вызовов модели.
+        if not any(pattern.fullmatch(left) for pattern, _ in _CANDIDATE_PATTERNS):
+            continue
         if right.lower() in _KEEP_AS_IS:
             continue
         result[left] = right
