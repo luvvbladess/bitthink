@@ -366,3 +366,130 @@ def test_document_previews_names_every_archive_even_without_a_preview():
 
     for a in range(PLANNER_PREVIEW_GROUPS + 5):
         assert f"архив{a}.zip" in previews, f"архив{a}.zip missing from previews entirely"
+
+
+# Task 15 — «было → стало»: find repeating requisites, parse a filled reply,
+# apply it deterministically.
+
+def test_parse_replacements_accepts_arrow_separator():
+    assert dg._parse_replacements("АБВГ.123456.789 → АБВГ.999999.001") == {
+        "АБВГ.123456.789": "АБВГ.999999.001"
+    }
+
+
+def test_parse_replacements_accepts_ascii_arrow_separator():
+    assert dg._parse_replacements("Иванов И.И. -> Петров П.П.") == {"Иванов И.И.": "Петров П.П."}
+
+
+def test_parse_replacements_accepts_coloneq_separator():
+    # ::= is what app/api/documents.py's /edit-docx norm-control endpoint
+    # already parses — same idea, same syntax.
+    assert dg._parse_replacements("ООО «Ромашка» ::= ООО «Новый заказчик»") == {
+        "ООО «Ромашка»": "ООО «Новый заказчик»"
+    }
+
+
+def test_parse_replacements_strips_label_prefix():
+    assert dg._parse_replacements("Заказчик: ООО «Ромашка» → ООО «Новый заказчик»") == {
+        "ООО «Ромашка»": "ООО «Новый заказчик»"
+    }
+
+
+def test_parse_replacements_empty_right_side_means_placeholder():
+    assert dg._parse_replacements("Заказчик: ООО «Ромашка» → ") == {"ООО «Ромашка»": ""}
+
+
+def test_parse_replacements_kak_est_drops_the_pair():
+    assert dg._parse_replacements("Заказчик: ООО «Ромашка» → как есть") == {}
+
+
+def test_parse_replacements_no_separator_returns_empty_dict():
+    # Not mistaken for a confirmation: Task 12's fail-safe gate relies on
+    # this returning falsy for an ordinary message.
+    assert dg._parse_replacements("Просто обычное сообщение без разделителей.") == {}
+
+
+def test_parse_replacements_ignores_prose_that_merely_contains_an_arrow():
+    """A non-empty mapping is taken as consent to start generating, so prose
+    with a stray arrow must not produce one — otherwise an ordinary chat
+    message costs thousands of model calls. The left side has to look like a
+    requisite, the same shapes the table offered in the first place."""
+    for prose in (
+        "я думаю -> надо переделать раздел",
+        "давай так: сначала план -> потом текст",
+        "сроки сдвинулись ::= перенеси на май",
+    ):
+        assert dg._parse_replacements(prose) == {}, f"prose parsed as a replacement list: {prose!r}"
+
+
+def test_parse_replacements_lone_number_line_is_not_consent():
+    """A digits-only pair matches the document-number shape, but «100000 ->
+    120000» is also how a budget or a deadline gets discussed in passing. On
+    its own it is not the filled-in table, so it must not read as consent."""
+    for prose in (
+        "100000 -> 120000",
+        "смета:\n100000 -> 120000",
+        "бюджет 100000 -> 120000 и сроки",
+    ):
+        assert dg._parse_replacements(prose) == {}, f"lone number parsed as consent: {prose!r}"
+
+    # The same line inside a real list still parses: one recognisable
+    # neighbour is enough to tell the table from the aside.
+    assert dg._parse_replacements(
+        "100000 -> 120000\nЗаказчик: ООО «Ромашка» → ООО «Вектор»"
+    ) == {"100000": "120000", "ООО «Ромашка»": "ООО «Вектор»"}
+
+    # A lone pair with a recognisable shape is a table of one, not an aside.
+    assert dg._parse_replacements("АБВГ.123456.789 -> ЖЗИК.987654.321") == {
+        "АБВГ.123456.789": "ЖЗИК.987654.321"
+    }
+
+
+def test_apply_replacements_longest_first_prevents_partial_overlap():
+    mapping = {
+        "АБВГ.123456.789": "СТАЛО.000000.001",
+        "123456": "999999",
+    }
+    text = "Документ АБВГ.123456.789, отдельно упомянут номер 123456."
+
+    result = dg._apply_replacements(text, mapping)
+
+    assert "СТАЛО.000000.001" in result
+    assert "999999" in result
+    assert "123456" not in result, f"old value survived a partial overlap: {result!r}"
+
+
+def test_apply_replacements_empty_value_becomes_placeholder():
+    mapping = {"ООО «Ромашка»": ""}
+    text = "Заказчик: ООО «Ромашка»."
+
+    result = dg._apply_replacements(text, mapping)
+
+    assert "ООО «Ромашка»" not in result
+    assert "[УКАЗАТЬ: Организация]" in result
+
+
+def test_find_replacement_candidates_needs_two_documents():
+    chunks = [
+        Chunk(id=0, doc_name="a.docx", title="t", text="Изделие АБВГ.123456.789 испытано.", tokens=frozenset()),
+        Chunk(id=1, doc_name="b.docx", title="t", text="См. АБВГ.123456.789 в приложении.", tokens=frozenset()),
+        Chunk(id=2, doc_name="a.docx", title="t", text="Разовый номер АБВГ.999999.999 только здесь.", tokens=frozenset()),
+    ]
+
+    candidates = dg._find_replacement_candidates(chunks)
+    values = [v for v, _ in candidates]
+
+    assert "АБВГ.123456.789" in values, "a designation in two documents must be proposed"
+    assert "АБВГ.999999.999" not in values, "a designation in a single document must not be proposed"
+
+
+def test_find_replacement_candidates_never_proposes_gost_reference():
+    chunks = [
+        Chunk(id=0, doc_name="a.docx", title="t", text="Материал по ГОСТ 123456-99 применяется.", tokens=frozenset()),
+        Chunk(id=1, doc_name="b.docx", title="t", text="Материал по ГОСТ 123456-99 применяется здесь же.", tokens=frozenset()),
+    ]
+
+    candidates = dg._find_replacement_candidates(chunks)
+    values = [v for v, _ in candidates]
+
+    assert not any("123456" in v for v in values), f"a ГОСТ reference leaked into candidates: {values!r}"
