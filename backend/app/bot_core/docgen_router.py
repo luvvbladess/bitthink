@@ -61,6 +61,12 @@ ESCALATED_WRITER_MODEL = "gpt-5.6-terra"
 # страниц упирался в оборванный JSON и молча откатывался на один раздел.
 SINGLE_CALL_SECTION_LIMIT = 150
 SECTIONS_PER_CHAPTER = 25
+# Модель редко возвращает ровно столько глав, сколько попросили, а обычно
+# меньше. Если держать 25 разделов на главу как жёсткий потолок, тридцать глав
+# вместо ста тридцати дают 750 разделов вместо 3350 — заказ не выполнен. При
+# нехватке глав разбор одной главы растягивается до этого числа: 100 разделов
+# в JSON — это ~8500 токенов, что свободно помещается в ответ.
+MAX_SECTIONS_PER_EXPANSION = 100
 MAX_CHAPTERS = MAX_SECTIONS // SECTIONS_PER_CHAPTER  # 200 глав x 25 = MAX_SECTIONS
 CHAPTER_CATALOG_CHUNKS = 80  # заголовков исходников в вызове на разбор одной главы
 
@@ -614,7 +620,7 @@ async def _plan_document(
     # сверх лимита всё равно отрезаются в самом конце — деньги за них уже
     # были бы потрачены.
     chapters = chapters[:chapter_count]
-    per_chapter = min(SECTIONS_PER_CHAPTER, max(1, -(-target // len(chapters))))
+    per_chapter = min(MAX_SECTIONS_PER_EXPANSION, max(1, -(-target // len(chapters))))
     catalog = "\n".join(f"{c.id}: {c.title}" for c in chunks[:CHAPTER_CATALOG_CHUNKS])
     sections: List[Section] = []
     # Те же батчи, что и у разделов: сотни одновременных вызовов положили бы и
