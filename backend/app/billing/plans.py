@@ -34,11 +34,13 @@ CHEAP_MODELS = [
     "deepseek-v4-flash",
 ]
 
-PRO_MODELS = CHEAP_MODELS + ["director", "studio", "docgen"]
+PRO_MODELS = CHEAP_MODELS + ["director", "studio"]
 PROPLUS_MODELS = PRO_MODELS + ["gpt-5.6-terra"]
 ULTRA_MODELS = PROPLUS_MODELS + ["gpt-5.6-sol", "gpt-5.6-sol-pro", "gpt-6-astra"]
 # Creator is the internal unlimited seat. It must never lag behind Ultra.
-CREATOR_MODELS = list(ULTRA_MODELS)
+# docgen (режим «Документы») is creator-only: a single run can take hours and
+# generate thousands of model calls, so it stays off every paid, quota-bound tier.
+CREATOR_MODELS = list(ULTRA_MODELS) + ["docgen"]
 
 
 TIER_ALIASES = {

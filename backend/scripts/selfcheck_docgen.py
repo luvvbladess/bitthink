@@ -81,18 +81,30 @@ class FakeStatus:
         self.texts.append(text)
 
 
-def _install_fakes(plan_response: str, writer_fails: bool = False):
-    """Returns (writer_prompts, pools_seen); both fill up as the run proceeds."""
+def _install_fakes(plan_response: str, writer_fails: bool = False, fail_first_attempt: bool = False):
+    """Returns (writer_prompts, pools_seen, attempt_counts); all fill up as the run proceeds.
+
+    writer_fails: every writer call for every section fails (tests that retry
+    is bounded and the placeholder still appears).
+    fail_first_attempt: each section's first attempt fails, subsequent ones
+    succeed (tests that a transient failure is recovered by retry).
+    attempt_counts: prompt content -> number of writer calls made for that
+    section so far, keyed by content since each section has a distinct prompt.
+    """
     writer_prompts: list[str] = []
     pools_seen: list[str] = []
+    attempt_counts: dict[str, int] = {}
 
     async def fake_chat(messages, model=None, user_id=None, use_tools=False, use_skills=True, **kwargs):
         pools_seen.append(billing_pool.get())
         content = messages[-1]["content"]
         if model == dg.PLANNER_MODEL and "Построй план" in content:
             return plan_response, [], "", []
+        attempt_counts[content] = attempt_counts.get(content, 0) + 1
         if writer_fails:
             raise RuntimeError("модель недоступна")
+        if fail_first_attempt and attempt_counts[content] == 1:
+            raise RuntimeError("модель временно недоступна")
         writer_prompts.append(content)
         return "Текст раздела. Мощность 2500 кВт.", [], "", []
 
@@ -103,7 +115,7 @@ def _install_fakes(plan_response: str, writer_fails: bool = False):
 
     dg.get_chat_response = fake_chat
     deepseek_client.get_deepseek_response = fake_deepseek
-    return writer_prompts, pools_seen
+    return writer_prompts, pools_seen, attempt_counts
 
 
 def _set_documents(docs):
@@ -114,7 +126,7 @@ def _set_documents(docs):
 
 async def check_happy_path():
     _set_documents(DOCS)
-    writer_prompts, pools_seen = _install_fakes(PLAN_JSON)
+    writer_prompts, pools_seen, _ = _install_fakes(PLAN_JSON)
     status = FakeStatus()
 
     summary, files, _, _ = await dg.get_docgen_response(
@@ -152,7 +164,7 @@ async def check_happy_path():
 
 async def check_no_sources():
     _set_documents([])
-    writer_prompts, _ = _install_fakes(PLAN_JSON)
+    writer_prompts, _, _ = _install_fakes(PLAN_JSON)
 
     summary, files, _, _ = await dg.get_docgen_response("Напиши регламент", 777, FakeStatus())
 
@@ -177,7 +189,7 @@ async def check_planning_failure_is_reported():
 
 async def check_failed_sections_are_reported():
     _set_documents(DOCS)
-    _install_fakes(PLAN_JSON, writer_fails=True)
+    _, _, attempt_counts = _install_fakes(PLAN_JSON, writer_fails=True)
 
     summary, files, _, _ = await dg.get_docgen_response("Сделай ИТТ", 777, FakeStatus())
 
@@ -185,7 +197,32 @@ async def check_failed_sections_are_reported():
     assert "Не удалось сгенерировать разделов: 2 из 2" in summary, (
         f"failed sections were not reported to the user: {summary}"
     )
-    print("OK: failed sections — counted and reported, document still assembled")
+    assert attempt_counts and all(count == dg.SECTION_ATTEMPTS for count in attempt_counts.values()), (
+        f"expected every failing section to be retried exactly SECTION_ATTEMPTS times, got {attempt_counts}"
+    )
+    print("OK: failed sections — retried SECTION_ATTEMPTS times each, counted and reported, document still assembled")
+
+
+async def check_section_retry_recovers():
+    """A transient failure on attempt 1 must be invisible in the final result:
+    real text, no placeholder, no failure counted in the summary — this is the
+    'the user definitely got a finished document' guarantee from the brief."""
+    _set_documents(DOCS)
+    writer_prompts, _, attempt_counts = _install_fakes(PLAN_JSON, fail_first_attempt=True)
+
+    summary, files, _, _ = await dg.get_docgen_response("Сделай ИТТ", 777, FakeStatus())
+
+    assert files and files[0]["bytes"][:2] == b"PK", "must still produce a .docx after a retried section"
+    assert dg._SECTION_FAILED_PREFIX not in summary, f"a recovered section left a placeholder trace: {summary}"
+    assert "Не удалось сгенерировать" not in summary, f"summary wrongly reported a failed section: {summary}"
+    assert len(writer_prompts) == 2, f"expected both sections to eventually succeed, got {len(writer_prompts)}"
+    assert attempt_counts and all(count == 2 for count in attempt_counts.values()), (
+        f"expected exactly 2 attempts (fail once, then succeed) per section, got {attempt_counts}"
+    )
+    with zipfile.ZipFile(BytesIO(files[0]["bytes"])) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8", "replace")
+    assert "2500" in document_xml, "recovered section text is missing from the .docx"
+    print("OK: section retry — first-attempt failure recovered silently, real content, no failure reported")
 
 
 async def check_truncated_sources_are_reported():
@@ -233,12 +270,25 @@ async def check_truncation_marker_on_a_chunk_boundary():
 
 
 async def main() -> None:
-    await check_happy_path()
-    await check_no_sources()
-    await check_planning_failure_is_reported()
-    await check_failed_sections_are_reported()
-    await check_truncated_sources_are_reported()
-    await check_truncation_marker_on_a_chunk_boundary()
+    # The retry delays (SECTION_RETRY_DELAYS) are real seconds in production;
+    # nothing here is testing timing, so collapse them to keep the self-check
+    # fast. dg imports the same asyncio module object, so this patches both.
+    orig_sleep = asyncio.sleep
+
+    async def instant_sleep(_seconds):
+        await orig_sleep(0)
+
+    asyncio.sleep = instant_sleep
+    try:
+        await check_happy_path()
+        await check_no_sources()
+        await check_planning_failure_is_reported()
+        await check_failed_sections_are_reported()
+        await check_section_retry_recovers()
+        await check_truncated_sources_are_reported()
+        await check_truncation_marker_on_a_chunk_boundary()
+    finally:
+        asyncio.sleep = orig_sleep
     print("OK: docgen pipeline self-check passed")
 
 

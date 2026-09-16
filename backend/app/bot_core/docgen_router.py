@@ -15,8 +15,16 @@ from openai_client import get_chat_response
 
 logger = logging.getLogger(__name__)
 
-MAX_SECTIONS = 400
-MAX_PARALLEL_SECTIONS = 5
+# Not unlimited by design: a planner that returns a runaway outline (tens of
+# thousands of sections) would otherwise start a run lasting days with no way
+# back. 5000 sections is ~7500 pages, which covers the 5-7 thousand page
+# requirement with margin.
+MAX_SECTIONS = 5000
+# Batches (not a global semaphore) so previous_tail continuity and progress
+# reporting stay simple; the trade-off is each batch waits for its slowest
+# member. Acceptable at this concurrency — do not "fix" this into a semaphore
+# without re-checking that trade-off still holds.
+MAX_PARALLEL_SECTIONS = 12
 CHUNK_TARGET_CHARS = 3000
 TOP_K_CHUNKS = 6
 MAX_CHUNK_CHARS_PER_SECTION = 12000
@@ -24,6 +32,12 @@ MAX_CHUNK_CHARS_PER_SECTION = 12000
 PLANNER_MODEL = "gpt-5.6-terra"
 DEFAULT_WRITER_MODEL = "gpt-5.6-luna"
 ESCALATED_WRITER_MODEL = "gpt-5.6-terra"
+
+# Transient failures (429, provider timeout, dropped connection) are certain
+# at thousands of calls. Bounded, no jitter/backoff growth: this is a bulk
+# job, not a latency-sensitive path.
+SECTION_ATTEMPTS = 3
+SECTION_RETRY_DELAYS = (2, 8)  # seconds before attempts 2 and 3
 
 _TOKEN_RE = re.compile(r"[a-zA-Zа-яА-ЯёЁ0-9]{3,}")
 _PAGE_MARKER = re.compile(r"\n---\s*Страница\s+\d+\s*---\n")
@@ -279,12 +293,23 @@ async def _plan_outline(
     return [Section(id=0, title="Документ", brief=user_text[:500], complexity="complex")], None, True
 
 
+def _section_context(
+    section: Section, chunks: List[Chunk], template_document: Optional[str]
+) -> str:
+    relevant = _select_relevant_chunks(section.title, section.brief, chunks)
+    return _build_context_block(relevant, MAX_CHUNK_CHARS_PER_SECTION, template_document)
+
+
 async def _write_section(
     section: Section, chunks: List[Chunk], previous_tail: str, user_id: int,
     template_document: Optional[str] = None,
 ) -> str:
-    relevant = _select_relevant_chunks(section.title, section.brief, chunks)
-    context_block = _build_context_block(relevant, MAX_CHUNK_CHARS_PER_SECTION, template_document)
+    # Selecting chunks + building the context block tokenizes/scans the whole
+    # corpus per section; at 12 concurrent writers that's real CPU time on the
+    # (shared) event loop, so it runs in a thread instead.
+    context_block = await asyncio.to_thread(
+        _section_context, section, chunks, template_document
+    )
 
     prompt_parts = [f"Раздел документа: {section.title}", f"Задача раздела: {section.brief}"]
     if context_block:
@@ -306,34 +331,52 @@ async def _write_section(
         {"role": "user", "content": prompt},
     ]
 
-    try:
-        if section.complexity == "complex":
-            if DEEPSEEK_API_KEY:
-                from deepseek_client import get_deepseek_response
-                text, _, _, _ = await asyncio.wait_for(
-                    get_deepseek_response(
-                        messages, model="deepseek-v4-pro", user_id=user_id, use_tools=False,
-                    ),
-                    timeout=120,
-                )
+    # asyncio.CancelledError is a BaseException, not an Exception, so it is
+    # never caught below — it passes straight through the retry loop and out
+    # of this function. That is required: it's how the user's stop button
+    # (generation_hub.hub.cancel) reaches a running job. Do not widen this
+    # except clause.
+    last_error: Optional[Exception] = None
+    for attempt in range(1, SECTION_ATTEMPTS + 1):
+        try:
+            if section.complexity == "complex":
+                if DEEPSEEK_API_KEY:
+                    from deepseek_client import get_deepseek_response
+                    text, _, _, _ = await asyncio.wait_for(
+                        get_deepseek_response(
+                            messages, model="deepseek-v4-pro", user_id=user_id, use_tools=False,
+                        ),
+                        timeout=120,
+                    )
+                else:
+                    text, _, _, _ = await asyncio.wait_for(
+                        get_chat_response(
+                            messages, model=ESCALATED_WRITER_MODEL, user_id=user_id, use_tools=False, use_skills=False,
+                        ),
+                        timeout=120,
+                    )
             else:
                 text, _, _, _ = await asyncio.wait_for(
                     get_chat_response(
-                        messages, model=ESCALATED_WRITER_MODEL, user_id=user_id, use_tools=False, use_skills=False,
+                        messages, model=DEFAULT_WRITER_MODEL, user_id=user_id, use_tools=False, use_skills=False,
                     ),
                     timeout=120,
                 )
-        else:
-            text, _, _, _ = await asyncio.wait_for(
-                get_chat_response(
-                    messages, model=DEFAULT_WRITER_MODEL, user_id=user_id, use_tools=False, use_skills=False,
-                ),
-                timeout=120,
-            )
-        return text.strip()
-    except Exception as e:
-        logger.error(f"docgen section '{section.title}' failed: {e}", exc_info=True)
-        return f"{_SECTION_FAILED_PREFIX}: {str(e)[:200]}]"
+            return text.strip()
+        except Exception as e:
+            last_error = e
+            if attempt < SECTION_ATTEMPTS:
+                logger.warning(
+                    "docgen section '%s' attempt %d/%d failed, retrying: %s",
+                    section.title, attempt, SECTION_ATTEMPTS, e,
+                )
+                await asyncio.sleep(SECTION_RETRY_DELAYS[attempt - 1])
+            else:
+                logger.error(
+                    f"docgen section '{section.title}' failed after {SECTION_ATTEMPTS} attempts: {e}",
+                    exc_info=True,
+                )
+    return f"{_SECTION_FAILED_PREFIX}: {str(last_error)[:200]}]"
 
 
 async def _update_status(status_msg: Any, text: str) -> None:
