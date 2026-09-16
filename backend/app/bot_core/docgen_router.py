@@ -53,6 +53,21 @@ PLANNER_MODEL = "gpt-5.6-terra"
 DEFAULT_WRITER_MODEL = "gpt-5.6-luna"
 ESCALATED_WRITER_MODEL = "gpt-5.6-terra"
 
+# Одним ответом план на тысячи разделов физически не помещается: элемент плана
+# в JSON — это ~85 токенов (замерено), а потолок вывода планировщика 128 000
+# токенов, то есть ~1500 разделов в идеале и заметно меньше на практике.
+# Поэтому выше этого порога план строится в два уровня: сначала главы, затем
+# каждая глава параллельно расписывается на разделы. Без этого запрос на 5000
+# страниц упирался в оборванный JSON и молча откатывался на один раздел.
+SINGLE_CALL_SECTION_LIMIT = 150
+SECTIONS_PER_CHAPTER = 25
+MAX_CHAPTERS = MAX_SECTIONS // SECTIONS_PER_CHAPTER  # 200 глав x 25 = MAX_SECTIONS
+CHAPTER_CATALOG_CHUNKS = 80  # заголовков исходников в вызове на разбор одной главы
+
+# Столько символов раздела приходится на страницу .docx: этим же числом
+# считается «примерно N стр.» в подтверждении.
+CHARS_PER_PAGE = 2000
+
 # Transient failures (429, provider timeout, dropped connection) are certain
 # at thousands of calls. Bounded, no jitter/backoff growth: this is a bulk
 # job, not a latency-sensitive path.
@@ -60,6 +75,13 @@ SECTION_ATTEMPTS = 3
 SECTION_RETRY_DELAYS = (2, 8)  # seconds before attempts 2 and 3
 
 _TOKEN_RE = re.compile(r"[a-zA-Zа-яА-ЯёЁ0-9]{3,}")
+# «5000 страниц», «5 000 стр.», «5-7 тысяч страниц», «300 разделов». Единица
+# измерения обязательна: голое число в запросе объёмом не является.
+_SIZE_REQUEST_RE = re.compile(
+    r"(\d[\d\s]{0,9}?)\s*(?:[-–—]\s*(\d[\d\s]{0,9}?)\s*)?"
+    r"(тыс\.?|тысяч[иа]?|к)?\s*(страниц\w*|стр\.|раздел\w*)",
+    re.IGNORECASE,
+)
 _PAGE_MARKER = re.compile(r"\n---\s*Страница\s+\d+\s*---\n")
 _SECTION_FAILED_PREFIX = "[Не удалось сгенерировать раздел"
 # Число в маркере обязательно: без него подстрока может встретиться в самом
@@ -122,10 +144,40 @@ class Section:
     title: str
     brief: str
     complexity: str  # "simple" | "complex"
+    chapter: str = ""  # заголовок главы при двухуровневом плане, иначе пусто
 
 
 def _tokenize(text: str) -> set:
     return {t.lower() for t in _TOKEN_RE.findall(text or "")}
+
+
+def _requested_sections(text: str) -> Optional[int]:
+    """Сколько разделов заказал пользователь, если он назвал объём.
+
+    Планировщик сам по себе строит план «на глазок» — обычно это десятки
+    разделов, то есть несколько десятков страниц. Человек, который просит
+    документ на 5000 страниц, получал именно это и никак не узнавал, почему.
+    Объём из запроса («5000 страниц», «5-7 тысяч страниц», «300 разделов»)
+    становится целью для планировщика; из диапазона берётся верхняя граница.
+    Возвращает None, если объём не назван — тогда поведение прежнее.
+    """
+    best = 0
+    for m in _SIZE_REQUEST_RE.finditer(text or ""):
+        low, high, scale, unit = m.group(1), m.group(2), m.group(3), m.group(4)
+        multiplier = 1000 if scale else 1
+        value = 0
+        for raw in (low, high):
+            if not raw:
+                continue
+            value = max(value, int(re.sub(r"\D", "", raw) or 0) * multiplier)
+        if unit.lower().startswith("раздел"):
+            sections = value
+        else:
+            sections = -(-value * CHARS_PER_PAGE // CHUNK_TARGET_CHARS)
+        best = max(best, sections)
+    if best <= 0:
+        return None
+    return min(best, MAX_SECTIONS)
 
 
 def _split_into_chunks(doc_name: str, text: str, start_id: int) -> List[Chunk]:
@@ -401,7 +453,12 @@ def _expand_template_names(names: List[str], chunks: List[Chunk]) -> Set[str]:
 
 
 async def _plan_outline(
-    user_text: str, chunks: List[Chunk], user_id: int, extra_instruction: str = ""
+    user_text: str,
+    chunks: List[Chunk],
+    user_id: int,
+    extra_instruction: str = "",
+    want_count: Optional[int] = None,
+    as_chapters: bool = False,
 ) -> Tuple[List[Section], Set[str], bool]:
     """Разделы, набор файлов-шаблонов (может быть пустым) и флаг «план
     построить не удалось».
@@ -418,9 +475,22 @@ async def _plan_outline(
     classification_hint = _classify_documents_hint(chunks)
     document_previews = _document_previews(chunks)
 
+    if as_chapters:
+        size_instruction = (
+            f"Это оглавление ОЧЕНЬ большого документа: верни ровно {want_count} глав верхнего "
+            f"уровня, каждую из которых потом распишут на {SECTIONS_PER_CHAPTER} разделов. "
+            "В title — название главы, в brief — что в неё входит, чтобы разделы не пересекались "
+            "между главами.\n"
+        )
+    elif want_count:
+        size_instruction = f"Пользователю нужен объём примерно в {want_count} раздел(ов) — столько и верни.\n"
+    else:
+        size_instruction = ""
+
     prompt = (
         "Построй план большого документа по запросу пользователя.\n"
-        "Верни СТРОГО JSON-объект без markdown-обёрток и без пояснений, в формате:\n"
+        + size_instruction
+        + "Верни СТРОГО JSON-объект без markdown-обёрток и без пояснений, в формате:\n"
         '{"template_documents": ["точное имя файла или имя архива из списка ниже", ...] (можно пустой список), '
         '"sections": [{"title": "Название раздела", "brief": "Что должно быть в разделе, 1-3 предложения", '
         '"complexity": "simple" | "complex"}, ...]}.\n'
@@ -457,6 +527,114 @@ async def _plan_outline(
     except Exception as e:
         logger.error(f"docgen outline planning failed: {e}", exc_info=True)
     return [Section(id=0, title="Документ", brief=user_text[:500], complexity="complex")], set(), True
+
+
+async def _expand_chapter(
+    chapter: Section, user_text: str, catalog: str, per_chapter: int, user_id: int
+) -> List[Section]:
+    """Одна глава -> её разделы. Отдельный дешёвый вызов на главу: только так
+    план на тысячи разделов вообще помещается в ответы модели.
+
+    Вход намеренно маленький (запрос, глава и короткий каталог заголовков, без
+    превью документов) — таких вызовов сотни, и полный контекст планировщика
+    в каждом стоил бы дороже, чем сама генерация текста.
+
+    Провал вызова не теряет главу: она возвращается одним разделом, то есть
+    документ становится короче, но не дырявым.
+    """
+    prompt = (
+        f"Распиши одну главу большого документа на разделы.\n"
+        f"Верни СТРОГО JSON-объект без markdown-обёрток: "
+        '{"sections": [{"title": "...", "brief": "Что должно быть в разделе, 1-3 предложения", '
+        '"complexity": "simple" | "complex"}, ...]}.\n'
+        f"Нужно примерно {per_chapter} раздел(ов), только по этой главе, без пересечений с другими.\n"
+        "complexity=complex — для расчётов, таблиц с цифрами, юридических формулировок, "
+        "технических требований с точными значениями. Остальное — simple.\n\n"
+        f"Запрос пользователя:\n{user_text}\n\n"
+        f"Глава: {chapter.title}\n"
+        f"Что входит в главу: {chapter.brief}\n\n"
+        f"Заголовки доступных фрагментов исходников:\n{catalog}"
+    )
+    messages = [
+        {"role": "system", "content": "Ты планировщик документов. Отвечаешь только валидным JSON-объектом."},
+        {"role": "user", "content": prompt},
+    ]
+    try:
+        response_text, _, _, _ = await asyncio.wait_for(
+            get_chat_response(
+                messages, model=DEFAULT_WRITER_MODEL, user_id=user_id, use_tools=False, use_skills=False,
+            ),
+            timeout=120,
+        )
+        sections, _ = _parse_outline_response(response_text)
+    except Exception as e:
+        logger.warning("docgen chapter '%s' expansion failed: %s", chapter.title, e)
+        sections = []
+    if not sections:
+        logger.warning("docgen chapter '%s' produced no sections, kept as one", chapter.title)
+        return [Section(id=0, title=chapter.title, brief=chapter.brief,
+                        complexity=chapter.complexity, chapter=chapter.title)]
+    for section in sections[:per_chapter]:
+        section.chapter = chapter.title
+    return sections[:per_chapter]
+
+
+async def _plan_document(
+    user_text: str,
+    chunks: List[Chunk],
+    user_id: int,
+    extra_instruction: str = "",
+    status_msg: Any = None,
+) -> Tuple[List[Section], Set[str], bool]:
+    """План документа: один вызов на небольшой документ, два уровня на большой.
+
+    Порог — SINGLE_CALL_SECTION_LIMIT: выше него один ответ планировщика
+    физически не вмещает план (см. комментарий к константе), поэтому сначала
+    строятся главы, а потом они параллельно расписываются на разделы.
+    """
+    target = _requested_sections(f"{user_text}\n{extra_instruction}")
+    if not target or target <= SINGLE_CALL_SECTION_LIMIT:
+        return await _plan_outline(user_text, chunks, user_id, extra_instruction, want_count=target)
+
+    chapter_count = min(MAX_CHAPTERS, -(-target // SECTIONS_PER_CHAPTER))
+    chapters, template_names, planning_failed = await _plan_outline(
+        user_text, chunks, user_id, extra_instruction,
+        want_count=chapter_count, as_chapters=True,
+    )
+    if planning_failed or not chapters:
+        return chapters, template_names, True
+
+    # Планировщик может вернуть глав больше, чем просили. Без этого среза
+    # каждая лишняя глава стоила бы отдельного вызова на разбор, а разделы
+    # сверх лимита всё равно отрезаются в самом конце — деньги за них уже
+    # были бы потрачены.
+    chapters = chapters[:chapter_count]
+    per_chapter = min(SECTIONS_PER_CHAPTER, max(1, -(-target // len(chapters))))
+    catalog = "\n".join(f"{c.id}: {c.title}" for c in chunks[:CHAPTER_CATALOG_CHUNKS])
+    sections: List[Section] = []
+    # Те же батчи, что и у разделов: сотни одновременных вызовов положили бы и
+    # провайдера, и сервер, ради плана, который всё равно ждут целиком.
+    for batch_start in range(0, len(chapters), MAX_PARALLEL_SECTIONS):
+        batch = chapters[batch_start:batch_start + MAX_PARALLEL_SECTIONS]
+        results = await asyncio.gather(*[
+            _expand_chapter(chapter, user_text, catalog, per_chapter, user_id) for chapter in batch
+        ])
+        for chapter_sections in results:
+            sections.extend(chapter_sections)
+        # Сотня с лишним вызовов — это минуты; без отчёта о ходе режим выглядит
+        # зависшим ровно в той фазе, где пользователь ещё ничего не подтвердил.
+        await _update_status(
+            status_msg,
+            f"📄 Планирую: глава {min(batch_start + MAX_PARALLEL_SECTIONS, len(chapters))} "
+            f"из {len(chapters)}, разделов уже {len(sections)}...",
+        )
+    for i, section in enumerate(sections):
+        section.id = i
+    logger.info(
+        "docgen two-level plan: %d chapters -> %d sections (target %d)",
+        len(chapters), len(sections), target,
+    )
+    return sections[:MAX_SECTIONS], template_names, False
 
 
 def _find_replacement_candidates(chunks: List[Chunk]) -> List[Tuple[str, str]]:
@@ -717,7 +895,15 @@ async def _write_section(
                     ),
                     timeout=120,
                 )
-            return text.strip()
+            # Клиенты моделей не бросают исключение на ошибке API — они
+            # возвращают её текстом с «❌» в начале. Без этой проверки такой
+            # баннер становится телом раздела: повтор не срабатывает, раздел
+            # считается удачным, и прогон на тысячи разделов рапортует
+            # «Готово», собрав документ из сообщений об ошибке.
+            stripped = text.strip()
+            if not stripped or stripped.startswith("❌"):
+                raise RuntimeError(stripped[:200] or "пустой ответ модели")
+            return stripped
         except Exception as e:
             last_error = e
             if attempt < SECTION_ATTEMPTS:
@@ -817,6 +1003,31 @@ def _format_grouped_names(names: List[str], max_members: int = 5) -> str:
     return "; ".join(parts)
 
 
+def _estimate_cost_usd(outline: List[Section], has_sources: bool) -> float:
+    """Верхняя оценка счёта за прогон, в долларах.
+
+    Считается по потолкам, а не по среднему: вход раздела берётся как полный
+    MAX_CHUNK_CHARS_PER_SECTION плюс служебная часть промпта, выход — как
+    целый раздел. Реальный счёт выходит меньше, и это правильная сторона
+    ошибки для числа, по которому человек решает, запускать ли прогон на
+    тысячи вызовов. Повторы после сбоев (SECTION_ATTEMPTS) сюда не входят:
+    они редки и не меняют порядок величины.
+    """
+    from app.billing.costs import model_cost_usd
+    from model_context import estimate_tokens
+
+    context_chars = MAX_CHUNK_CHARS_PER_SECTION if has_sources else 0
+    input_tokens = estimate_tokens("x" * (context_chars + 1200))
+    output_tokens = estimate_tokens("x" * CHUNK_TARGET_CHARS)
+    escalated_model = "deepseek-v4-pro" if DEEPSEEK_API_KEY else ESCALATED_WRITER_MODEL
+
+    total = 0.0
+    for section in outline:
+        model = escalated_model if section.complexity == "complex" else DEFAULT_WRITER_MODEL
+        total += model_cost_usd(model, input_tokens, output_tokens)
+    return total
+
+
 async def _confirm_before_generating(
     user_text: str, user_id: int, status_msg: Any
 ) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
@@ -828,12 +1039,15 @@ async def _confirm_before_generating(
 
     await _update_status(status_msg, "📄 Читаю исходники и строю план документа...")
     chunks, truncated_sources, skipped_sources = await asyncio.to_thread(_extract_source_chunks, user_id)
-    outline, template_names, planning_failed = await _plan_outline(user_text, chunks, user_id)
+    outline, template_names, planning_failed = await _plan_document(
+        user_text, chunks, user_id, status_msg=status_msg
+    )
     candidates = await asyncio.to_thread(_find_replacement_candidates, chunks)
     candidates = await _label_replacement_candidates(candidates, user_id)
 
     total = len(outline)
-    approx_pages = max(1, total * CHUNK_TARGET_CHARS // 2000)
+    approx_pages = max(1, total * CHUNK_TARGET_CHARS // CHARS_PER_PAGE)
+    approx_cost = _estimate_cost_usd(outline, has_sources=bool(chunks))
 
     doc_names: List[str] = []
     for chunk in chunks:
@@ -841,7 +1055,14 @@ async def _confirm_before_generating(
             doc_names.append(chunk.doc_name)
     knowledge_names = [n for n in doc_names if n not in template_names] if template_names else doc_names
 
-    lines = [f"Разделов: {total}, примерно {approx_pages} стр."]
+    lines = [
+        f"Разделов: {total}, примерно {approx_pages} стр.",
+        f"Оценка стоимости API: не больше ${approx_cost:.2f} (по потолку контекста на раздел)."
+        + (
+            " Сложные разделы пишет DeepSeek." if DEEPSEEK_API_KEY
+            else f" DEEPSEEK_API_KEY не задан, сложные разделы пойдут на {ESCALATED_WRITER_MODEL} — дороже в разы."
+        ),
+    ]
     if template_names:
         lines.append(
             f"Шаблон оформления ({len(template_names)} файл(ов)): "
@@ -945,7 +1166,9 @@ async def _run_docgen(
     # это секунды CPU, которые нельзя держать в event loop — он общий на всех.
     chunks, truncated_sources, skipped_sources = await asyncio.to_thread(_extract_source_chunks, user_id)
     no_sources = not chunks
-    outline, template_names, planning_failed = await _plan_outline(user_text, chunks, user_id, extra_instruction)
+    outline, template_names, planning_failed = await _plan_document(
+        user_text, chunks, user_id, extra_instruction, status_msg=status_msg
+    )
 
     total = len(outline)
     if planning_failed:
@@ -974,9 +1197,16 @@ async def _run_docgen(
         await _update_status(status_msg, f"📄 Раздел {done} из {total}...")
 
     await _update_status(status_msg, "📄 Собираю итоговый .docx...")
-    full_markdown = "\n\n".join(
-        f"## {section.title}\n\n{text}" for section, text in zip(outline, section_texts)
-    )
+    # Заголовок главы выводится один раз, при смене — иначе двухуровневый план
+    # собрался бы в плоскую простыню из тысяч равноправных разделов.
+    parts: List[str] = []
+    current_chapter = ""
+    for section, text in zip(outline, section_texts):
+        if section.chapter and section.chapter != current_chapter:
+            current_chapter = section.chapter
+            parts.append(f"# {current_chapter}")
+        parts.append(f"## {section.title}\n\n{text}")
+    full_markdown = "\n\n".join(parts)
     # Deterministic final sweep (Task 15): the model cannot be trusted to
     # copy values exactly across thousands of calls, so this — not the
     # per-section context replacement above — is what actually guarantees no
