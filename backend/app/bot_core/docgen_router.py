@@ -74,6 +74,12 @@ CHAPTER_CATALOG_CHUNKS = 80  # заголовков исходников в вы
 # считается «примерно N стр.» в подтверждении.
 CHARS_PER_PAGE = 2000
 
+# Модель пишет длиннее, чем предполагает план. Замерено живым прогоном на
+# сервере: заказ на 6 страниц дал 11, то есть ~1.8 длины раздела. Оценка
+# стоимости обещает «не больше», поэтому закладывает этот перелёт с запасом —
+# иначе обещание про бюджет нарушается ровно на успешном прогоне.
+SECTION_OVERSHOOT = 2
+
 # Transient failures (429, provider timeout, dropped connection) are certain
 # at thousands of calls. Bounded, no jitter/backoff growth: this is a bulk
 # job, not a latency-sensitive path.
@@ -1053,7 +1059,7 @@ def _estimate_cost_usd(outline: List[Section], has_sources: bool) -> float:
 
     context_chars = MAX_CHUNK_CHARS_PER_SECTION if has_sources else 0
     input_tokens = estimate_tokens("x" * (context_chars + 1200))
-    output_tokens = estimate_tokens("x" * CHUNK_TARGET_CHARS)
+    output_tokens = estimate_tokens("x" * CHUNK_TARGET_CHARS * SECTION_OVERSHOOT)
     escalated_model = "deepseek-v4-pro" if DEEPSEEK_API_KEY else ESCALATED_WRITER_MODEL
 
     total = 0.0
