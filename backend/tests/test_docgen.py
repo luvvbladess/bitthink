@@ -532,6 +532,43 @@ def test_runaway_chapter_plan_does_not_fire_an_expansion_call_per_chapter():
     )
 
 
+def test_short_chapter_plan_still_reaches_the_requested_size():
+    """The planner usually returns fewer chapters than it was asked for. With
+    a hard 25-sections-per-chapter ceiling that alone would turn a 3350-section
+    order into 750 — so a short chapter list makes each chapter carry more."""
+    import asyncio as _asyncio
+
+    asked_per_chapter = []
+
+    async def fake_plan(user_text, chunks, user_id, extra_instruction="", want_count=None, as_chapters=False):
+        # A third of what was asked for — a realistic shortfall, not a failure.
+        chapters = [
+            dg.Section(id=i, title=f"Глава {i}", brief="", complexity="simple")
+            for i in range(max(1, want_count // 3))
+        ]
+        return chapters, set(), False
+
+    async def fake_expand(chapter, user_text, catalog, per_chapter, user_id):
+        asked_per_chapter.append(per_chapter)
+        return [
+            dg.Section(id=0, title=f"{chapter.title}.{i}", brief="", complexity="simple")
+            for i in range(per_chapter)
+        ]
+
+    orig_plan, orig_expand = dg._plan_outline, dg._expand_chapter
+    dg._plan_outline, dg._expand_chapter = fake_plan, fake_expand
+    try:
+        sections, _, failed = _asyncio.run(dg._plan_document("документ на 5000 страниц", [], 1))
+    finally:
+        dg._plan_outline, dg._expand_chapter = orig_plan, orig_expand
+
+    target = dg._requested_sections("5000 страниц")
+    assert not failed
+    assert max(asked_per_chapter) > dg.SECTIONS_PER_CHAPTER, "a short chapter list must widen each chapter"
+    assert max(asked_per_chapter) <= dg.MAX_SECTIONS_PER_EXPANSION
+    assert len(sections) >= target * 0.9, f"order shortfall: {len(sections)} of {target}"
+
+
 def test_apply_replacements_longest_first_prevents_partial_overlap():
     mapping = {
         "АБВГ.123456.789": "СТАЛО.000000.001",
