@@ -14,6 +14,9 @@ from docx.shared import Cm, RGBColor
 from docx.oxml.shared import OxmlElement
 from docx.oxml.ns import qn
 from htmldocx import HtmlToDocx
+import logging
+
+logger = logging.getLogger(__name__)
 
 def create_list_numbering(doc, is_bullet=False):
     """
@@ -670,3 +673,31 @@ def convert_markdown_to_docx(markdown_text: str, base_template_bytes: Optional[b
     file_stream.seek(0)
     
     return file_stream.read()
+
+
+def blank_copy_of_template(template_bytes: bytes) -> Optional[bytes]:
+    """Шаблон без его собственного текста: стили, поля, колонтитулы и нумерация
+    остаются, содержимое убирается.
+
+    convert_markdown_to_docx открывает базовый шаблон как документ и дописывает
+    новый текст в конец — вместе со всем текстом примера. Для оформления «как в
+    исходнике» нужна именно пустая заготовка: иначе каждый из десяти новых
+    документов начинался бы с чужого ИТТ целиком.
+
+    Последний <w:sectPr> в теле хранит поля страницы и привязку колонтитулов,
+    поэтому он единственный переживает очистку. Возвращает None, если файл
+    не открылся как .docx — вызывающий тогда просто работает без шаблона.
+    """
+    try:
+        doc = Document(io.BytesIO(template_bytes))
+        body = doc.element.body
+        for child in list(body):
+            # sectPr — не содержимое, а настройки страницы этого раздела.
+            if not child.tag.endswith("}sectPr"):
+                body.remove(child)
+        buffer = io.BytesIO()
+        doc.save(buffer)
+        return buffer.getvalue()
+    except Exception as e:
+        logger.warning("Не удалось подготовить шаблон оформления: %s", e)
+        return None

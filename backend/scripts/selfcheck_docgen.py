@@ -195,11 +195,12 @@ def _install_fakes(plan_response: str, writer_fails: bool = False, fail_first_at
         content = messages[-1]["content"]
         if model == dg.PLANNER_MODEL and "Построй план" in content:
             return plan_response, [], "", []
-        # Keyed by the prompt's first line ("Раздел документа: <название>") rather
-        # than the whole prompt: two differently-titled sections can otherwise only
+        # Keyed by the prompt's "Раздел документа: <название>" line rather than
+        # the whole prompt: two differently-titled sections can otherwise only
         # be told apart by their retrieved context, and a same-titled pair would
-        # merge their counts and hide a broken retry loop.
-        key = content.splitlines()[0]
+        # merge their counts and hide a broken retry loop. Not the first line —
+        # that one now carries the user's requirements, identical everywhere.
+        key = next((l for l in content.splitlines() if l.startswith("Раздел документа:")), content[:80])
         attempt_counts[key] = attempt_counts.get(key, 0) + 1
         if writer_fails:
             raise RuntimeError("модель недоступна")
@@ -723,6 +724,92 @@ async def check_api_error_text_is_not_written_into_the_document():
     print("OK: API failure (banner and bare placeholder) — counted as failed sections, never passed off as text")
 
 
+async def check_many_documents_with_template_formatting():
+    """The customer's actual complaint: ten ИТТ arrived as one file in default
+    Word styles. Both halves are load-bearing here — separate files packed into
+    one archive, and formatting inherited from the example .docx rather than
+    merely resembling it. The template's own text must NOT come along: the
+    blank base keeps styles, margins and headers and drops the content.
+    """
+    import tempfile
+    from pathlib import Path
+    from app.config import get_settings
+    from docx import Document
+    from docx_generator import convert_markdown_to_docx
+    import document_parser
+
+    original_upload_dir = get_settings().UPLOAD_DIR
+    get_settings().UPLOAD_DIR = Path(tempfile.mkdtemp())
+    try:
+        # A real .docx acting as the customer's example, with a recognisable
+        # sentence that must never appear in the generated documents.
+        template_docx = convert_markdown_to_docx(
+            "## ИТТ на ледокол" + chr(10) + chr(10) + "Текст чужого примера, попасть в новые файлы не должен."
+        )
+        template_name = "Пример оформления.zip/ИТТ_ледокол.docx"
+        document_parser.store_source_docx(4242, template_name, template_docx)
+
+        _set_documents([
+            {"filename": template_name, "content": "ИСХОДНЫЕ ТЕХНИЧЕСКИЕ ТРЕБОВАНИЯ. Общие сведения."},
+            {"filename": "База.zip/узлы.docx", "content": "Узел А мощность 2500 кВт. Узел Б тяга 45 тонн."},
+        ])
+        names = [f"ИТТ на узел {i}" for i in range(1, 11)]
+        plan = json.dumps({"template_documents": [template_name], "sections": [
+            {"title": f"Раздел {j}", "brief": "по существу", "complexity": "simple", "document": name}
+            for name in names for j in (1, 2)
+        ]}, ensure_ascii=False)
+
+        writer_prompts = []
+
+        def prompt_has(prompt):
+            return prompt_text in prompt
+
+        async def fake_chat(messages, model=None, user_id=None, use_tools=False, use_skills=True, **kwargs):
+            content = messages[-1]["content"]
+            if "Построй план" in content:
+                return plan, [], "", []
+            writer_prompts.append(content)
+            return "Текст раздела по существу.", [], "", []
+
+        import deepseek_client
+        dg.get_chat_response = fake_chat
+        deepseek_client.get_deepseek_response = fake_chat
+
+        prompt = "Сделай 10 ИТТ на разные узлы по образцу"
+        prompt_text = prompt
+        text, files, _, _ = await dg.get_docgen_response([], prompt, 4242, FakeStatus())
+        assert files == [], "phase one must not generate anything"
+        assert "Документов: 10" in text, f"confirmation must state the document count: {text[:200]!r}"
+
+        reply = "Уточнения по задаче:" + chr(10) + "1. Начинать генерацию? - " + dg._CONFIRM_START
+        messages = [{"role": "user", "content": prompt},
+                    {"role": "assistant", "content": text},
+                    {"role": "user", "content": reply}]
+        summary, files, _, _ = await dg.get_docgen_response(messages, reply, 4242, FakeStatus())
+
+        assert len(files) == 1 and files[0]["filename"].endswith(".zip"), (
+            f"many documents must arrive as one archive: {[f['filename'] for f in files]}"
+        )
+        assert "Оформление взято из файла-шаблона" in summary, summary
+        with zipfile.ZipFile(BytesIO(files[0]["bytes"])) as archive:
+            members = archive.namelist()
+            assert len(members) == 10, f"expected 10 documents, got {len(members)}: {members}"
+            first = Document(BytesIO(archive.read(members[0])))
+            body = chr(10).join(p.text for p in first.paragraphs)
+        assert "Текст чужого примера" not in body, "the template's own text leaked into a generated document"
+        assert "Раздел 1" in body, f"generated content missing: {body[:200]!r}"
+        # The writer used to see only its section brief, so the user's own
+        # requirements reached none of the thousands of calls that write the text.
+        assert any(prompt.startswith("Требования пользователя") and prompt_has(prompt)
+                   for prompt in writer_prompts), "the user's instruction never reached the writer"
+        assert len(first.styles) == len(Document(BytesIO(template_docx)).styles), (
+            "generated document did not inherit the template's styles"
+        )
+        print("OK: many documents — 10 файлов в одном архиве, оформление из шаблона, текст примера не просочился")
+    finally:
+        get_settings().UPLOAD_DIR = original_upload_dir
+
+
 async def main() -> None:
     # The retry delays (SECTION_RETRY_DELAYS) are real seconds in production;
     # nothing here is testing timing, so collapse them to keep the self-check
@@ -750,6 +837,7 @@ async def main() -> None:
         await check_replacement_flow()
         await check_thousands_of_pages_are_planned_in_two_levels()
         await check_api_error_text_is_not_written_into_the_document()
+        await check_many_documents_with_template_formatting()
     finally:
         asyncio.sleep = orig_sleep
     print("OK: docgen pipeline self-check passed")

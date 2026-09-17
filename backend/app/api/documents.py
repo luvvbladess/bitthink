@@ -188,6 +188,11 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="Could not extract text from file")
 
     await repo.add_document(user_id, filename, text, conv_id=conversation_id)
+    # Оригинал .docx нужен режиму «Документы» как основа оформления: из базы
+    # доступен только извлечённый текст, по нему стили не восстановить.
+    from document_parser import store_source_docx
+
+    await asyncio.to_thread(store_source_docx, bot_user_id, filename, contents)
     msg = await repo.add_message(
         user_id,
         "user",

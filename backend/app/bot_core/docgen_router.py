@@ -4,6 +4,7 @@
 с эскалацией по сложности, собирает единый .docx.
 """
 import asyncio
+import io
 import json
 import logging
 import re
@@ -162,6 +163,7 @@ class Section:
     brief: str
     complexity: str  # "simple" | "complex"
     chapter: str = ""  # заголовок главы при двухуровневом плане, иначе пусто
+    document: str = ""  # название отдельного файла, если заказано несколько документов
 
 
 def _tokenize(text: str) -> set:
@@ -428,6 +430,7 @@ def _parse_outline_response(response_text: str) -> Tuple[List[Section], List[str
             title=str(item["title"])[:200],
             brief=str(item.get("brief", ""))[:500],
             complexity=complexity,
+            document=str(item.get("document", ""))[:200].strip(),
         ))
     raw_templates = raw.get("template_documents")
     # A planner that answers with the old singular shape (a bare string) must
@@ -506,11 +509,18 @@ async def _plan_outline(
 
     prompt = (
         "Построй план большого документа по запросу пользователя.\n"
+        "ГЛАВНОЕ ПРАВИЛО: запрос пользователя — это техническое задание, а не пожелание. "
+        "Если он назвал количество документов, их перечень или структуру — выполняй буквально, "
+        "не добавляя своего и не сокращая.\n"
         + size_instruction
         + "Верни СТРОГО JSON-объект без markdown-обёрток и без пояснений, в формате:\n"
         '{"template_documents": ["точное имя файла или имя архива из списка ниже", ...] (можно пустой список), '
         '"sections": [{"title": "Название раздела", "brief": "Что должно быть в разделе, 1-3 предложения", '
-        '"complexity": "simple" | "complex"}, ...]}.\n'
+        '"complexity": "simple" | "complex", "document": "название отдельного файла"}, ...]}.\n'
+        "document — заполняй ТОЛЬКО если пользователь просит НЕСКОЛЬКО отдельных документов "
+        "(например «сделай 10 ИТТ на разные узлы»). Тогда у каждого раздела стоит название того "
+        "документа, к которому он относится, и разделы одного документа идут подряд. "
+        "Если нужен один документ — оставь document пустым у всех разделов.\n"
         "complexity=complex — для расчётов, таблиц с цифрами, юридических формулировок, "
         "технических требований с точными значениями. Остальное — simple.\n\n"
         f"Запрос пользователя:\n{user_text}\n\n"
@@ -854,6 +864,7 @@ async def _write_section(
     section: Section, chunks: List[Chunk], previous_tail: str, user_id: int,
     template_names: Optional[Set[str]] = None,
     replacements: Optional[Dict[str, str]] = None,
+    user_request: str = "",
 ) -> str:
     # Selecting chunks + building the context block tokenizes/scans the whole
     # corpus per section; at 12 concurrent writers that's real CPU time on the
@@ -862,7 +873,18 @@ async def _write_section(
         _section_context, section, chunks, template_names, replacements
     )
 
-    prompt_parts = [f"Раздел документа: {section.title}", f"Задача раздела: {section.brief}"]
+    prompt_parts = []
+    # Писатель раздела видел только задачу раздела, а не то, что просил
+    # пользователь. На тысяче вызовов это значит, что его требования —
+    # к стилю, составу, терминам — не доходят ни до одного из них.
+    if user_request:
+        prompt_parts.append(
+            "Требования пользователя ко всей работе (выполнять буквально, они важнее "
+            f"общих соображений):\n{user_request[:2000]}"
+        )
+    if section.document:
+        prompt_parts.append(f"Документ: {section.document}")
+    prompt_parts += [f"Раздел документа: {section.title}", f"Задача раздела: {section.brief}"]
     if context_block:
         prompt_parts.append(f"Релевантные фрагменты исходников:\n{context_block}")
     if previous_tail:
@@ -1044,6 +1066,78 @@ def _format_grouped_names(names: List[str], max_members: int = 5) -> str:
     return "; ".join(parts)
 
 
+def _template_base_bytes(user_id: int, template_names: Set[str]) -> Optional[bytes]:
+    """Пустая заготовка из файла-шаблона: стили, поля и колонтитулы исходника
+    без его текста. None — если шаблон не .docx или не сохранился.
+
+    Оформление — половина требования к режиму: документ по ГОСТу, набранный
+    дефолтными стилями Word, заказчик не примет, как бы верен ни был текст.
+    """
+    from document_parser import load_source_docx
+    from docx_generator import blank_copy_of_template
+
+    for name in sorted(template_names):
+        if not name.lower().endswith(".docx"):
+            continue
+        data = load_source_docx(user_id, name)
+        if not data:
+            continue
+        blank = blank_copy_of_template(data)
+        if blank:
+            logger.info("docgen: оформление взято из шаблона %s", name)
+            return blank
+    return None
+
+
+def _document_filename(title: str, used: Set[str]) -> str:
+    """Имя файла из названия документа: без разделителей пути и без совпадений."""
+    clean = re.sub(r'[\\/:*?"<>|]+', " ", title or "").strip()
+    clean = re.sub(r"\s+", " ", clean)[:120] or "Документ"
+    candidate = f"{clean}.docx"
+    index = 2
+    while candidate.lower() in used:
+        candidate = f"{clean} ({index}).docx"
+        index += 1
+    used.add(candidate.lower())
+    return candidate
+
+
+def _group_by_document(
+    outline: List[Section], section_texts: List[str]
+) -> List[Tuple[str, str]]:
+    """(название документа, markdown) для каждого отдельного файла.
+
+    Пока планировщик не проставил document, всё собирается в один файл — так
+    режим вёл себя всегда. Заголовок главы печатается один раз при смене:
+    иначе двухуровневый план стал бы плоской простынёй.
+    """
+    # Ключ — название документа, порядок — по первому появлению. Собирать
+    # подряд идущие разделы было бы короче, но стоит планировщику перемешать
+    # разделы двух документов — и вместо десяти файлов выходит двадцать,
+    # половина с дописанным «(2)» в имени.
+    parts_by_document: Dict[str, List[str]] = {}
+    chapter_by_document: Dict[str, str] = {}
+    for section, text in zip(outline, section_texts):
+        parts = parts_by_document.setdefault(section.document, [])
+        if section.chapter and chapter_by_document.get(section.document) != section.chapter:
+            chapter_by_document[section.document] = section.chapter
+            parts.append(f"# {section.chapter}")
+        parts.append(f"## {section.title}\n\n{text}")
+    return [(title, "\n\n".join(parts)) for title, parts in parts_by_document.items()]
+
+
+def _zip_documents(files: List[Dict[str, Any]], archive_name: str = "Документы.zip") -> Dict[str, Any]:
+    """Несколько .docx одним архивом — десять отдельных вложений в переписке
+    выглядят как десять сообщений, а скачивать их нужно вместе."""
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for item in files:
+            archive.writestr(item["filename"], item["bytes"])
+    return {"filename": archive_name, "bytes": buffer.getvalue()}
+
+
 def _estimate_cost_usd(outline: List[Section], has_sources: bool) -> float:
     """Верхняя оценка счёта за прогон, в долларах.
 
@@ -1096,8 +1190,11 @@ async def _confirm_before_generating(
             doc_names.append(chunk.doc_name)
     knowledge_names = [n for n in doc_names if n not in template_names] if template_names else doc_names
 
+    planned_documents = len({s.document for s in outline if s.document}) or 1
     lines = [
-        f"Разделов: {total}, примерно {approx_pages} стр.",
+        (f"Документов: {planned_documents}, разделов: {total}, примерно {approx_pages} стр."
+         if planned_documents > 1
+         else f"Разделов: {total}, примерно {approx_pages} стр."),
         f"Оценка стоимости API: не больше ${approx_cost:.2f} (по потолку контекста на раздел)."
         + (
             " Сложные разделы пишет DeepSeek." if DEEPSEEK_API_KEY
@@ -1226,7 +1323,8 @@ async def _run_docgen(
     for batch_start in range(0, total, MAX_PARALLEL_SECTIONS):
         batch = outline[batch_start:batch_start + MAX_PARALLEL_SECTIONS]
         jobs = [
-            _write_section(section, chunks, previous_tail, user_id, template_names, replacements)
+            _write_section(section, chunks, previous_tail, user_id, template_names,
+                           replacements, user_request=user_text)
             for section in batch
         ]
         results = await asyncio.gather(*jobs)
@@ -1242,34 +1340,52 @@ async def _run_docgen(
         await _update_status(status_msg, _progress_line(done, total, chars_written))
 
     await _update_status(status_msg, "📄 Собираю итоговый .docx...")
-    # Заголовок главы выводится один раз, при смене — иначе двухуровневый план
-    # собрался бы в плоскую простыню из тысяч равноправных разделов.
-    parts: List[str] = []
-    current_chapter = ""
-    for section, text in zip(outline, section_texts):
-        if section.chapter and section.chapter != current_chapter:
-            current_chapter = section.chapter
-            parts.append(f"# {current_chapter}")
-        parts.append(f"## {section.title}\n\n{text}")
-    full_markdown = "\n\n".join(parts)
-    # Deterministic final sweep (Task 15): the model cannot be trusted to
-    # copy values exactly across thousands of calls, so this — not the
-    # per-section context replacement above — is what actually guarantees no
-    # old requisite survives. Runs on the assembled markdown, before the
-    # .docx conversion, so it covers text the writer produced on its own too.
-    full_markdown = _apply_replacements(full_markdown, replacements)
+    documents = _group_by_document(outline, section_texts)
+    # Оформление берётся из файла-шаблона, который планировщик уже определил:
+    # текст по ГОСТу, набранный дефолтными стилями Word, заказчику не годится.
+    template_bytes = await asyncio.to_thread(_template_base_bytes, user_id, template_names)
 
     from docx_generator import convert_markdown_to_docx
+    files: List[Dict[str, Any]] = []
+    used_names: Set[str] = set()
+    full_markdown = ""
     try:
-        docx_bytes = await asyncio.to_thread(convert_markdown_to_docx, full_markdown)
+        for title, markdown_text in documents:
+            # Deterministic final sweep (Task 15): the model cannot be trusted
+            # to copy values exactly across thousands of calls, so this — not
+            # the per-section context replacement above — is what actually
+            # guarantees no old requisite survives. Runs on the assembled
+            # markdown, before the .docx conversion, so it covers text the
+            # writer produced on its own too.
+            markdown_text = _apply_replacements(markdown_text, replacements)
+            full_markdown += markdown_text
+            docx_bytes = await asyncio.to_thread(
+                convert_markdown_to_docx, markdown_text, template_bytes
+            )
+            files.append({
+                "filename": _document_filename(title or "Документ", used_names),
+                "bytes": docx_bytes,
+            })
     except Exception as e:
         logger.error(f"docgen docx assembly failed: {e}", exc_info=True)
         return f"Не удалось собрать документ: {str(e)[:200]}", [], "", []
 
-    summary = (
-        f"Готово. Документ из {total} раздел(ов), примерно "
-        f"{max(1, len(full_markdown) // CHARS_PER_PAGE)} стр. — файл во вложении."
-    )
+    approx_pages = max(1, len(full_markdown) // CHARS_PER_PAGE)
+    if len(files) > 1:
+        summary = (
+            f"Готово. Документов: {len(files)}, разделов: {total}, примерно {approx_pages} стр. "
+            "Все файлы — в архиве во вложении."
+        )
+    else:
+        summary = (
+            f"Готово. Документ из {total} раздел(ов), примерно {approx_pages} стр. — файл во вложении."
+        )
+    if template_bytes:
+        summary += " Оформление взято из файла-шаблона."
+    else:
+        summary += (
+            " Оформление — стандартное: файла-шаблона в формате .docx среди исходников не нашлось."
+        )
     if no_sources:
         summary += " Исходники не найдены — документ написан по одному промпту."
     if planning_failed:
@@ -1293,5 +1409,8 @@ async def _run_docgen(
             summary += f" Заменено реквизитов: {replaced_count}."
         if placeholder_count:
             summary += f" Оставлены метки [УКАЗАТЬ: …] вместо не указанных значений: {placeholder_count}."
-    files = [{"filename": "Документ.docx", "bytes": docx_bytes}]
+    # Десять отдельных вложений в переписке — десять карточек, которые качают
+    # по одной. Когда документов больше одного, отдаётся архив.
+    if len(files) > 1:
+        files = [_zip_documents(files)]
     return summary, files, "", []
