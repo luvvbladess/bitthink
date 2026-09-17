@@ -1173,6 +1173,84 @@ def test_template_own_style_wins_over_measured_formatting():
     assert normal.font.size == Pt(11)
 
 
+def _template_without_style(style_id: str) -> bytes:
+    """A .docx whose styles.xml has no definition for that style — exactly what
+    a customer template looks like when it never used bullet lists."""
+    import re as _re
+    import zipfile as _zipfile
+    from docx import Document as _Document
+
+    source = io.BytesIO()
+    _Document().save(source)
+    out = io.BytesIO()
+    with _zipfile.ZipFile(io.BytesIO(source.getvalue())) as zin, \
+            _zipfile.ZipFile(out, "w", _zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename == "word/styles.xml":
+                data = _re.sub(
+                    r'<w:style [^>]*w:styleId="%s".*?</w:style>' % style_id, "",
+                    data.decode("utf-8"), flags=_re.S,
+                ).encode("utf-8")
+            zout.writestr(item, data)
+    return out.getvalue()
+
+
+def test_template_without_list_styles_still_renders_lists():
+    """The customer's finished documents contained raw markdown («- Заказчик –
+    ООО …») because htmldocx builds <ul> with 'List Bullet' and <ol> with
+    'List Number'. Neither was in the backfill list, so a template that never
+    used lists crashed the conversion on the document's first bullet."""
+    from docx import Document as _Document
+    from docx_generator import (
+        blank_copy_of_template, convert_markdown_to_docx, CONVERSION_FAILED_MARKER,
+    )
+
+    for style_id in ("ListBullet", "ListNumber"):
+        blank = blank_copy_of_template(_template_without_style(style_id))
+        result = convert_markdown_to_docx(
+            "## Раздел\n\n- Заказчик – ООО «РЭО»\n- Разработчик – ООО «БИТ»\n\n1. первый\n2. второй",
+            base_template_bytes=blank,
+        )
+        paragraphs = [(p.style.name, p.text.strip()) for p in _Document(io.BytesIO(result)).paragraphs
+                      if p.text.strip()]
+        texts = [text for _, text in paragraphs]
+        assert not any(CONVERSION_FAILED_MARKER in text for text in texts), (style_id, paragraphs)
+        assert not any(text.startswith("- ") for text in texts), f"raw markdown survived: {paragraphs}"
+        assert any("Заказчик" in text for text in texts), paragraphs
+
+
+def test_preflight_reads_the_document_not_the_zip_bytes():
+    """The guard searched the .docx BYTES for the failure marker — but a .docx
+    is a zip, so the compressed text never matched and the guard answered «the
+    template is fine» every single time. That is why a broken template reached
+    the customer."""
+    import docgen_router
+    from docx import Document as _Document
+    from docx_generator import CONVERSION_FAILED_MARKER
+
+    real_convert = docgen_router.convert_markdown_to_docx if hasattr(
+        docgen_router, "convert_markdown_to_docx") else None
+
+    def broken_convert(markdown_text, base_template_bytes=None):
+        doc = _Document()
+        doc.add_paragraph(CONVERSION_FAILED_MARKER)
+        doc.add_paragraph(markdown_text)
+        buffer = io.BytesIO()
+        doc.save(buffer)
+        return buffer.getvalue()
+
+    import docx_generator
+    original = docx_generator.convert_markdown_to_docx
+    docx_generator.convert_markdown_to_docx = broken_convert
+    try:
+        source = io.BytesIO()
+        _Document().save(source)
+        assert dg._template_renders_cleanly(source.getvalue()) is False
+    finally:
+        docx_generator.convert_markdown_to_docx = original
+
+
 def test_apply_replacements_longest_first_prevents_partial_overlap():
     mapping = {
         "АБВГ.123456.789": "СТАЛО.000000.001",

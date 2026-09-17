@@ -1621,13 +1621,22 @@ def _template_renders_cleanly(blank_template: bytes) -> bool:
     """
     from docx_generator import convert_markdown_to_docx, CONVERSION_FAILED_MARKER
 
-    probe = "## Проверка заголовка\n\nАбзац.\n\n- пункт списка\n- второй пункт"
+    probe = "## Проверка заголовка\n\nАбзац.\n\n- пункт списка\n- второй пункт\n\n1. первый\n2. второй"
     try:
         result = convert_markdown_to_docx(probe, base_template_bytes=blank_template)
+        # Именно текстом документа, а не поиском по байтам: .docx — это zip,
+        # внутри него текст сжат, и подстрока в архиве не находится никогда.
+        # Из-за этого предохранитель отвечал «шаблон годен» всегда, и заказчик
+        # получил документы с сырым markdown вместо текста.
+        from docx import Document
+
+        body = "\n".join(p.text for p in Document(io.BytesIO(result)).paragraphs)
     except Exception as e:
         logger.warning("docgen: пробная сборка по шаблону не удалась: %s", e)
         return False
-    return CONVERSION_FAILED_MARKER.encode("utf-8") not in result
+    if CONVERSION_FAILED_MARKER in body:
+        return False
+    return "Проверка заголовка" in body and "пункт списка" in body
 
 
 def _document_filename(title: str, used: Set[str]) -> str:
