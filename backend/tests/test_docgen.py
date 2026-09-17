@@ -1251,6 +1251,36 @@ def test_preflight_reads_the_document_not_the_zip_bytes():
         docx_generator.convert_markdown_to_docx = original
 
 
+def test_every_heading_is_black_with_and_without_a_template():
+    """A business document has no blue headings. python-docx defines Heading N
+    in accent blue, so both paths must force black: the run level wins over
+    the style, and injected styles must not carry the colour in either."""
+    from docx import Document as _Document
+    from docx.shared import RGBColor
+    from docx_generator import blank_copy_of_template, convert_markdown_to_docx
+
+    markdown_text = "## ИСХОДНЫЕ ТЕХНИЧЕСКИЕ ТРЕБОВАНИЯ\n\nТекст.\n\n### Подраздел\n\n- пункт"
+    source = io.BytesIO()
+    _Document().save(source)
+    blank = blank_copy_of_template(_template_without_style("Heading2"))
+
+    for label, template in (("без шаблона", None), ("по шаблону", blank)):
+        document = _Document(io.BytesIO(convert_markdown_to_docx(markdown_text, base_template_bytes=template)))
+        for paragraph in document.paragraphs:
+            for run in paragraph.runs:
+                if not run.text.strip():
+                    continue
+                assert run.font.color is not None and run.font.color.rgb == RGBColor(0, 0, 0), (
+                    f"{label}: {paragraph.style.name} run is {run.font.color.rgb}: {run.text[:40]!r}"
+                )
+
+    # And the style injected into a customer template brings no colour of its own.
+    injected = _Document(io.BytesIO(blank)).styles["Heading 2"]
+    assert injected.font.color is None or injected.font.color.type is None, (
+        "the backfilled heading style carried python-docx's blue into the template"
+    )
+
+
 def test_apply_replacements_longest_first_prevents_partial_overlap():
     mapping = {
         "АБВГ.123456.789": "СТАЛО.000000.001",
