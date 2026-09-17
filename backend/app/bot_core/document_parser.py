@@ -6,6 +6,7 @@ import io
 import re
 import logging
 import base64
+import hashlib
 import asyncio
 import zipfile
 import xml.etree.ElementTree as ET
@@ -498,6 +499,60 @@ async def extract_text_from_zip_document(file_data: bytes, file_name: str) -> Op
     return await asyncio.to_thread(_extract)
 
 
+# Оформление нового документа берётся из файла-шаблона, а из загрузки в базу
+# попадает только извлечённый текст — по нему шрифты, поля, колонтитулы и
+# нумерацию не восстановить. Поэтому сам .docx кладётся на диск рядом: режим
+# «Документы» открывает его как основу, и оформление получается ровно как в
+# исходнике, а не «похожим». Только .docx (единственный формат, годный в
+# основу для Word) и только до этого размера — гигабайтные базы знаний
+# дублировать на диск незачем.
+MAX_STORED_SOURCE_BYTES = 15 * 1024 * 1024
+
+
+def _source_store_dir(user_id) -> Optional[Path]:
+    if user_id is None:
+        return None
+    from app.config import get_settings
+
+    return get_settings().UPLOAD_DIR / "docgen_sources" / str(user_id)
+
+
+def _source_store_path(user_id, doc_name: str) -> Optional[Path]:
+    directory = _source_store_dir(user_id)
+    if directory is None:
+        return None
+    digest = hashlib.sha1(doc_name.encode("utf-8")).hexdigest()
+    return directory / f"{digest}.docx"
+
+
+def store_source_docx(user_id, doc_name: str, data: bytes) -> None:
+    """Кладёт исходный .docx рядом с извлечённым текстом. Тихо пропускает всё
+    остальное: это удобство для оформления, а не часть загрузки — падение
+    здесь не должно ронять приём документа."""
+    if not doc_name.lower().endswith(".docx") or len(data) > MAX_STORED_SOURCE_BYTES:
+        return
+    path = _source_store_path(user_id, doc_name)
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    except Exception as e:
+        logger.warning("Не удалось сохранить исходник %s для оформления: %s", doc_name, e)
+
+
+def load_source_docx(user_id, doc_name: str) -> Optional[bytes]:
+    """Байты исходного .docx, если он сохранялся. None — если нет."""
+    path = _source_store_path(user_id, doc_name)
+    if path is None or not path.is_file():
+        return None
+    try:
+        return path.read_bytes()
+    except Exception as e:
+        logger.warning("Не удалось прочитать исходник %s: %s", doc_name, e)
+        return None
+
+
 async def extract_zip_archive(file_data: bytes, archive_name: str, user_id: int = None, extended_limits: bool = False) -> list[tuple[str, str]]:
     """Разворачивает .zip и извлекает текст из каждого файла внутри через уже
     существующий extract_text_from_file — никакой новой логики парсинга форматов.
@@ -540,7 +595,9 @@ async def extract_zip_archive(file_data: bytes, archive_name: str, user_id: int 
     for name, data in entries:
         text = await extract_text_from_file(data, name, user_id=user_id, extended_limits=extended_limits)
         if text:
-            results.append((f"{archive_name}/{name}", text))
+            stored_name = f"{archive_name}/{name}"
+            results.append((stored_name, text))
+            await asyncio.to_thread(store_source_docx, user_id, stored_name, data)
     return results
 
 

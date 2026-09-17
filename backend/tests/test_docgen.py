@@ -1,5 +1,7 @@
 from app.config import get_settings  # noqa: F401 — adds bot_core to sys.path
 
+import io
+
 import docgen_router as dg
 from docgen_router import (
     MAX_CHUNK_CHARS_PER_SECTION,
@@ -621,6 +623,63 @@ def test_estimate_cost_covers_the_model_writing_longer_than_planned():
     escalated = "deepseek-v4-pro" if dg.DEEPSEEK_API_KEY else dg.ESCALATED_WRITER_MODEL
     actual = 100 * model_cost_usd(escalated, real_input, real_output)
     assert estimate >= actual, f"estimate ${estimate:.2f} under-promises the real ${actual:.2f}"
+
+
+def _sections(*pairs):
+    return [
+        dg.Section(id=i, title=title, brief="", complexity="simple", document=document)
+        for i, (title, document) in enumerate(pairs)
+    ]
+
+
+def test_sections_without_a_document_stay_one_file():
+    """The old behaviour, and still the common case: nothing asked for several
+    documents, so nothing gets split."""
+    outline = _sections(("Раздел 1", ""), ("Раздел 2", ""))
+    groups = dg._group_by_document(outline, ["текст один", "текст два"])
+    assert len(groups) == 1
+    assert groups[0][0] == ""
+    assert "текст один" in groups[0][1] and "текст два" in groups[0][1]
+
+
+def test_each_document_becomes_its_own_file():
+    outline = _sections(("Общие сведения", "ИТТ на ПЛК"), ("Требования", "ИТТ на ПЛК"),
+                        ("Общие сведения", "ИТТ на шкаф"))
+    groups = dg._group_by_document(outline, ["а", "б", "в"])
+    assert [title for title, _ in groups] == ["ИТТ на ПЛК", "ИТТ на шкаф"]
+    assert "а" in groups[0][1] and "б" in groups[0][1]
+    assert "в" in groups[1][1] and "а" not in groups[1][1]
+
+
+def test_interleaved_sections_do_not_split_a_document_in_two():
+    """The planner is asked to keep a document's sections together, but it is a
+    model. Grouping by position would turn ten documents into twenty files,
+    half of them named «… (2)» — worse than useless to the customer."""
+    outline = _sections(("Р1", "Документ А"), ("Р1", "Документ Б"), ("Р2", "Документ А"))
+    groups = dg._group_by_document(outline, ["а1", "б1", "а2"])
+    assert len(groups) == 2, f"interleaving split a document: {[t for t, _ in groups]}"
+    assert "а1" in groups[0][1] and "а2" in groups[0][1]
+
+
+def test_document_filename_is_safe_and_unique():
+    used = set()
+    assert dg._document_filename("ИТТ на ПЛК", used) == "ИТТ на ПЛК.docx"
+    # Path separators in a model-supplied title must not escape into a path.
+    assert dg._document_filename("узел/подузел: часть 1", used) == "узел подузел часть 1.docx"
+    assert dg._document_filename("ИТТ на ПЛК", used) == "ИТТ на ПЛК (2).docx"
+    assert dg._document_filename("", used) == "Документ.docx"
+
+
+def test_many_documents_are_packed_into_one_archive():
+    """Ten separate attachments are ten cards to download one by one; the user
+    asked for an archive."""
+    import zipfile
+    files = [{"filename": f"Док {i}.docx", "bytes": b"PK-fake-%d" % i} for i in range(3)]
+    packed = dg._zip_documents(files)
+    assert packed["filename"].endswith(".zip")
+    with zipfile.ZipFile(io.BytesIO(packed["bytes"])) as archive:
+        assert archive.namelist() == ["Док 0.docx", "Док 1.docx", "Док 2.docx"]
+        assert archive.read("Док 1.docx") == b"PK-fake-1"
 
 
 def test_apply_replacements_longest_first_prevents_partial_overlap():
