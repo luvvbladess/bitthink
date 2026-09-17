@@ -1125,6 +1125,54 @@ def test_plain_start_and_marker_start_are_different_orders():
     assert len(dg._CONFIRM_START_PLACEHOLDERS) <= MAX_OPTION_CHARS
 
 
+def test_hand_formatted_template_still_sets_the_font():
+    """Engineering examples are usually formatted by hand — select all, Times
+    New Roman 14 — not through styles. That formatting lives on the runs and
+    disappears with them when the body is cleared, so the generated document
+    came out in the default font while the example was set by ГОСТ. The
+    dominant direct format is promoted into Normal before the body goes."""
+    from docx import Document as _Document
+    from docx.shared import Pt
+    from docx_generator import blank_copy_of_template, convert_markdown_to_docx
+
+    doc = _Document()
+    for text in ("Первый абзац примера.", "Второй абзац примера."):
+        paragraph = doc.add_paragraph(text)
+        paragraph.runs[0].font.name = "Times New Roman"
+        paragraph.runs[0].font.size = Pt(14)
+    source = io.BytesIO()
+    doc.save(source)
+
+    blank = blank_copy_of_template(source.getvalue())
+    normal = _Document(io.BytesIO(blank)).styles["Normal"]
+    assert normal.font.name == "Times New Roman", normal.font.name
+    assert normal.font.size == Pt(14), normal.font.size
+
+    result = _Document(io.BytesIO(convert_markdown_to_docx("Текст.", base_template_bytes=blank)))
+    assert result.styles["Normal"].font.name == "Times New Roman"
+
+
+def test_template_own_style_wins_over_measured_formatting():
+    """A template that defines Normal properly must keep it: the measurement
+    is a fallback for hand formatting, not a second opinion."""
+    from docx import Document as _Document
+    from docx.shared import Pt
+    from docx_generator import blank_copy_of_template
+
+    doc = _Document()
+    doc.styles["Normal"].font.name = "Arial"
+    doc.styles["Normal"].font.size = Pt(11)
+    paragraph = doc.add_paragraph("Абзац, набранный другим шрифтом вручную.")
+    paragraph.runs[0].font.name = "Times New Roman"
+    paragraph.runs[0].font.size = Pt(20)
+    source = io.BytesIO()
+    doc.save(source)
+
+    normal = _Document(io.BytesIO(blank_copy_of_template(source.getvalue()))).styles["Normal"]
+    assert normal.font.name == "Arial", "measurement overrode the template's own style"
+    assert normal.font.size == Pt(11)
+
+
 def test_apply_replacements_longest_first_prevents_partial_overlap():
     mapping = {
         "АБВГ.123456.789": "СТАЛО.000000.001",
