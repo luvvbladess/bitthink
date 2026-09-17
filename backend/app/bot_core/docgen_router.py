@@ -1642,6 +1642,9 @@ def _template_renders_cleanly(blank_template: bytes) -> bool:
 def _document_filename(title: str, used: Set[str]) -> str:
     """Имя файла из названия документа: без разделителей пути и без совпадений."""
     clean = re.sub(r'[\\/:*?"<>|]+', " ", title or "").strip()
+    # Планировщик нередко называет документ вместе с расширением («ИТТ_ПЛК.docx»),
+    # и файл выходил «ИТТ_ПЛК.docx.docx».
+    clean = re.sub(r"\.(docx?|pdf|txt|rtf|odt)$", "", clean, flags=re.IGNORECASE).strip()
     clean = re.sub(r"\s+", " ", clean)[:120] or "Документ"
     candidate = f"{clean}.docx"
     index = 2
