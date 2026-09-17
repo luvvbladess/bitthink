@@ -75,6 +75,10 @@ MAX_CHAPTERS = MAX_SECTIONS // SECTIONS_PER_CHAPTER  # 200 глав x 25 = MAX_S
 # Отдельный потолок на число файлов: 1000 документов — это 1000 «глав» плана,
 # а не 1000×25 разделов одного тома. MAX_CHAPTERS резал бы такой заказ до 200.
 MAX_DOCUMENTS = MAX_SECTIONS
+# Сколько разделов просить на документ, когда объём не назван. ИТТ — это общие
+# сведения, объект автоматизации, назначение, технические требования,
+# комплектность, документация, приёмка, гарантии: восемь и есть типовой состав.
+DEFAULT_SECTIONS_PER_DOCUMENT = 8
 CHAPTER_CATALOG_CHUNKS = 80  # заголовков исходников в вызове на разбор одной главы
 
 # Столько символов раздела приходится на страницу .docx: этим же числом
@@ -1049,11 +1053,15 @@ async def _plan_as_documents(
                 document=title,
             ))
     else:
-        as_chapters = documents_wanted > SINGLE_CALL_SECTION_LIMIT
+        # Всегда сначала перечень документов, а не плоский список разделов.
+        # На заказе «все 10 документов» плоский список отдавал число файлов на
+        # усмотрение модели: она вернула разделы всего двух документов из
+        # десяти. Перечислить десять названий — задача, которую модель
+        # выполняет надёжно, а дальше каждый документ раскрывается отдельно.
         want = min(documents_wanted, MAX_DOCUMENTS)
         chapters, template_names, failed = await _plan_outline(
             user_text, chunks, user_id, extra_instruction,
-            want_count=want, as_chapters=as_chapters, as_documents=True,
+            want_count=want, as_chapters=True, as_documents=True,
         )
         if failed or not chapters:
             return chapters, template_names, True
@@ -1064,12 +1072,17 @@ async def _plan_as_documents(
             if not chapter.document:
                 chapter.document = chapter.title
 
-    per_doc = 1
+    # Без указанного объёма документ получал ОДИН раздел: в готовых ИТТ было
+    # по три заголовка на файл. Документ такого рода — это несколько разделов
+    # (общие сведения, назначение, требования, комплектность, приёмка), и
+    # столько и запрашивается по умолчанию.
     if target_sections:
         per_doc = min(
             MAX_SECTIONS_PER_EXPANSION,
             max(1, -(-min(target_sections, MAX_SECTIONS) // max(1, len(chapters)))),
         )
+    else:
+        per_doc = DEFAULT_SECTIONS_PER_DOCUMENT
     if per_doc <= 1:
         for i, chapter in enumerate(chapters):
             chapter.id = i
