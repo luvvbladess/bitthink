@@ -629,6 +629,13 @@ def convert_markdown_to_docx(markdown_text: str, base_template_bytes: Optional[b
         doc = Document(io.BytesIO(base_template_bytes))
     else:
         doc = Document()
+    # Здесь, а не только в blank_copy_of_template: шаблон пользователя
+    # приходит сюда напрямую ещё из api/documents.py и services/chat_service.py,
+    # и там ровно так же не хватало стиля списка.
+    try:
+        _ensure_required_styles(doc)
+    except Exception as e:
+        logger.warning("Не удалось восполнить стили документа: %s", e)
     new_parser = HtmlToDocx()
     
     # 3. Парсим HTML и добавляем в документ
@@ -699,7 +706,10 @@ _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 # всё равно сообщает, что оформление взято из шаблона.
 _REQUIRED_STYLE_NAMES = (
     "Heading 1", "Heading 2", "Heading 3", "Heading 4", "Heading 5", "Heading 6",
-    "List Paragraph", "Normal", "Table Grid",
+    # htmldocx верстает <ul> стилем List Bullet, а <ol> — List Number. Их
+    # отсутствие в шаблоне ронял конвертацию на первом же списке: заказчик
+    # получил документ с сырым markdown («- Заказчик – ООО ...») вместо текста.
+    "List Bullet", "List Number", "List Paragraph", "Normal", "Table Grid",
 )
 
 
