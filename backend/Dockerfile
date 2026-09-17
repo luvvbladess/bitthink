@@ -13,6 +13,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Старый формат .doc: только LibreOffice превращает его в .docx с сохранением
+# шрифтов, полей, колонтитулов и таблиц, а без этого присланный образец
+# оформления в .doc остаётся набором слов и шаблоном служить не может.
+# Замерено на настоящем ИТТ: +375 МБ к образу, 1.08 с на файл. Код работает и
+# без пакета — тогда .doc читается как текст, без оформления.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libreoffice-writer-nogui \
+    fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
