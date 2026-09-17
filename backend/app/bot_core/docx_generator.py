@@ -755,6 +755,29 @@ def _ensure_required_styles(doc) -> None:
     logger.info("В шаблон оформления добавлены недостающие стили: %s", ", ".join(missing))
 
 
+def _ensure_default_paragraph_style(doc) -> None:
+    """Помечает Normal стилем по умолчанию, если в шаблоне не помечен никто.
+
+    LibreOffice при конвертации .doc не ставит w:default ни одному стилю. Из-за
+    этого обычные абзацы остаются вообще без стиля: Word берёт для них
+    docDefaults и игнорирует и шрифт, и размер, и интервалы шаблона. В готовом
+    ИТТ так оказались 32 абзаца из 164.
+    """
+    styles_root = doc.styles.element
+    tag = f"{{{_W_NS}}}style"
+    default_attr = f"{{{_W_NS}}}default"
+    type_attr = f"{{{_W_NS}}}type"
+    id_attr = f"{{{_W_NS}}}styleId"
+    paragraph_styles = [el for el in styles_root.findall(tag) if el.get(type_attr) == "paragraph"]
+    if any(el.get(default_attr) == "1" for el in paragraph_styles):
+        return
+    for el in paragraph_styles:
+        if (el.get(id_attr) or "").lower() in ("normal", "standard"):
+            el.set(default_attr, "1")
+            logger.info("Стиль %s помечен как стиль абзаца по умолчанию", el.get(id_attr))
+            return
+
+
 def _normalize_heading_styles(doc) -> None:
     """Заголовок не может быть мельче основного текста и другим шрифтом.
 
@@ -820,17 +843,21 @@ def _promote_direct_formatting(doc) -> None:
     from collections import Counter
 
     names, sizes, indents, spacings, aligns = Counter(), Counter(), Counter(), Counter(), Counter()
+    body_chars = 0
     for paragraph in doc.paragraphs:
         if not paragraph.text.strip():
             continue
         style_name = (paragraph.style.name or "").lower() if paragraph.style else ""
         if style_name.startswith(("heading", "title", "заголовок")):
             continue
+        body_chars += len(paragraph.text)
         for run in paragraph.runs:
+            # Вес — в символах, а не в числе прогонов: одна подпись под
+            # таблицей не должна перевешивать страницы основного текста.
             if run.font.name:
-                names[run.font.name] += 1
+                names[run.font.name] += len(run.text)
             if run.font.size:
-                sizes[run.font.size] += 1
+                sizes[run.font.size] += len(run.text)
         fmt = paragraph.paragraph_format
         if fmt.first_line_indent is not None:
             indents[fmt.first_line_indent] += 1
@@ -840,9 +867,26 @@ def _promote_direct_formatting(doc) -> None:
             aligns[fmt.alignment] += 1
 
     normal = doc.styles["Normal"]
-    if normal.font.name is None and names:
+    # Замер побеждает стиль, если им набрано большинство текста примера.
+    # Проверено на конвертированном из .doc ИТТ: Normal там формально 10 pt,
+    # а 96% символов набраны прямым форматированием в 14 pt — и документы
+    # выходили целиком мелкими, потому что «стиль важнее» держало 10 pt.
+    majority = max(1, body_chars // 2)
+
+    def _dominant(counter):
+        if not counter:
+            return None
+        value, weight = counter.most_common(1)[0]
+        return value if weight >= majority else None
+
+    dominant_name, dominant_size = _dominant(names), _dominant(sizes)
+    if dominant_name is not None:
+        normal.font.name = dominant_name
+    elif normal.font.name is None and names:
         normal.font.name = names.most_common(1)[0][0]
-    if normal.font.size is None and sizes:
+    if dominant_size is not None:
+        normal.font.size = dominant_size
+    elif normal.font.size is None and sizes:
         normal.font.size = sizes.most_common(1)[0][0]
     fmt = normal.paragraph_format
     if fmt.first_line_indent is None and indents:
@@ -890,6 +934,7 @@ def blank_copy_of_template(template_bytes: bytes) -> Optional[bytes]:
                 body.remove(child)
 
         _ensure_required_styles(doc)
+        _ensure_default_paragraph_style(doc)
         buffer = io.BytesIO()
         doc.save(buffer)
         return buffer.getvalue()

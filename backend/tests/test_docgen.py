@@ -1152,25 +1152,77 @@ def test_hand_formatted_template_still_sets_the_font():
     assert result.styles["Normal"].font.name == "Times New Roman"
 
 
-def test_template_own_style_wins_over_measured_formatting():
-    """A template that defines Normal properly must keep it: the measurement
-    is a fallback for hand formatting, not a second opinion."""
+def test_measured_body_formatting_beats_a_vestigial_style():
+    """Reversed on evidence from the customer's real file. A .doc example
+    converted by LibreOffice declares Normal at 10pt while 96% of its text is
+    directly formatted at 14pt — the size a reader actually sees. Treating the
+    style as authoritative produced whole documents in 10pt, so the measured
+    majority now wins."""
     from docx import Document as _Document
     from docx.shared import Pt
     from docx_generator import blank_copy_of_template
 
     doc = _Document()
-    doc.styles["Normal"].font.name = "Arial"
-    doc.styles["Normal"].font.size = Pt(11)
-    paragraph = doc.add_paragraph("Абзац, набранный другим шрифтом вручную.")
-    paragraph.runs[0].font.name = "Times New Roman"
-    paragraph.runs[0].font.size = Pt(20)
+    doc.styles["Normal"].font.size = Pt(10)  # vestigial, as in the converted file
+    for _ in range(6):
+        paragraph = doc.add_paragraph("Основной текст примера, набранный прямым форматированием. " * 3)
+        paragraph.runs[0].font.size = Pt(14)
     source = io.BytesIO()
     doc.save(source)
 
     normal = _Document(io.BytesIO(blank_copy_of_template(source.getvalue()))).styles["Normal"]
-    assert normal.font.name == "Arial", "measurement overrode the template's own style"
-    assert normal.font.size == Pt(11)
+    assert normal.font.size == Pt(14), f"vestigial 10pt won: {normal.font.size}"
+
+
+def test_a_minority_of_direct_formatting_does_not_override_the_style():
+    """The flip side: one oddly formatted line must not redefine the body."""
+    from docx import Document as _Document
+    from docx.shared import Pt
+    from docx_generator import blank_copy_of_template
+
+    doc = _Document()
+    doc.styles["Normal"].font.size = Pt(14)
+    for _ in range(6):
+        doc.add_paragraph("Обычный абзац по стилю, без прямого форматирования. " * 3)
+    odd = doc.add_paragraph("Мелкая подпись")
+    odd.runs[0].font.size = Pt(8)
+    source = io.BytesIO()
+    doc.save(source)
+
+    normal = _Document(io.BytesIO(blank_copy_of_template(source.getvalue()))).styles["Normal"]
+    assert normal.font.size == Pt(14), f"a caption redefined the body: {normal.font.size}"
+
+
+def test_template_without_a_default_style_still_formats_plain_paragraphs():
+    """LibreOffice marks no style as the paragraph default, so plain paragraphs
+    came out with no style at all — 32 of 164 in the delivered ИТТ — and Word
+    formatted them from docDefaults, ignoring the template entirely."""
+    import re as _re
+    import zipfile as _zipfile
+    from docx import Document as _Document
+    from docx.shared import Pt
+    from docx_generator import blank_copy_of_template, convert_markdown_to_docx
+
+    doc = _Document()
+    doc.styles["Normal"].font.name = "Times New Roman"
+    doc.styles["Normal"].font.size = Pt(14)
+    doc.add_paragraph("Текст примера.")
+    source = io.BytesIO()
+    doc.save(source)
+    stripped = io.BytesIO()
+    with _zipfile.ZipFile(io.BytesIO(source.getvalue())) as zin,             _zipfile.ZipFile(stripped, "w", _zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename == "word/styles.xml":
+                data = _re.sub(r'\s+w:default="1"', "", data.decode("utf-8")).encode("utf-8")
+            zout.writestr(item, data)
+
+    blank = blank_copy_of_template(stripped.getvalue())
+    built = _Document(io.BytesIO(convert_markdown_to_docx("Просто абзац текста.", base_template_bytes=blank)))
+    styled = [p for p in built.paragraphs if p.text.strip()]
+    assert styled, "nothing was written"
+    for paragraph in styled:
+        assert paragraph.style is not None, f"paragraph has no style: {paragraph.text[:40]!r}"
 
 
 def _template_without_style(style_id: str) -> bytes:
@@ -1349,6 +1401,54 @@ def test_document_filename_does_not_double_the_extension():
     assert dg._document_filename("ИТТ_Подсистема_сбора_данных.docx", used) == "ИТТ_Подсистема_сбора_данных.docx"
     assert dg._document_filename("Отчёт.DOC", set()) == "Отчёт.docx"
     assert dg._document_filename("ИТТ на ПЛК", set()) == "ИТТ на ПЛК.docx"
+
+
+def test_ten_requested_documents_are_planned_as_ten():
+    """«Все 10 документов» came back as two. The plan was one flat list of
+    sections, so how many files it covered was left to the model; asking for a
+    list of ten titles first is a task a model does reliably. And with no page
+    target each document used to get a single section — the delivered ИТТ had
+    three headings."""
+    import asyncio as _asyncio
+
+    asked_documents = []
+    expanded = []
+
+    async def fake_plan(user_text, chunks, user_id, extra_instruction="",
+                        want_count=None, as_chapters=False, as_documents=False):
+        assert as_documents and as_chapters, "documents must be planned as a list first"
+        asked_documents.append(want_count)
+        titles = [f"ИТТ на узел {i}" for i in range(want_count)]
+        return (
+            [dg.Section(id=i, title=t, brief="", complexity="complex", document=t)
+             for i, t in enumerate(titles)],
+            set(), False,
+        )
+
+    async def fake_expand(chapter, user_text, catalog, per_chapter, user_id):
+        expanded.append((chapter.document, per_chapter))
+        return [
+            dg.Section(id=j, title=f"Раздел {j}", brief="", complexity="simple",
+                       document=chapter.document)
+            for j in range(per_chapter)
+        ]
+
+    orig_plan, orig_expand = dg._plan_outline, dg._expand_chapter
+    dg._plan_outline, dg._expand_chapter = fake_plan, fake_expand
+    try:
+        sections, _, failed = _asyncio.run(
+            dg._plan_document("сделай все 10 документов на разные узлы", [], 1)
+        )
+    finally:
+        dg._plan_outline, dg._expand_chapter = orig_plan, orig_expand
+
+    assert not failed
+    assert asked_documents == [10], asked_documents
+    documents = {s.document for s in sections}
+    assert len(documents) == 10, f"{len(documents)} documents instead of 10"
+    per_doc = {count for _, count in expanded}
+    assert per_doc == {dg.DEFAULT_SECTIONS_PER_DOCUMENT}, per_doc
+    assert len(sections) == 10 * dg.DEFAULT_SECTIONS_PER_DOCUMENT
 
 
 def test_apply_replacements_longest_first_prevents_partial_overlap():
