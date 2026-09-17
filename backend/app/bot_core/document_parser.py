@@ -529,7 +529,16 @@ def store_source_docx(user_id, doc_name: str, data: bytes) -> None:
     """Кладёт исходный .docx рядом с извлечённым текстом. Тихо пропускает всё
     остальное: это удобство для оформления, а не часть загрузки — падение
     здесь не должно ронять приём документа."""
-    if not doc_name.lower().endswith(".docx") or len(data) > MAX_STORED_SOURCE_BYTES:
+    lower = doc_name.lower()
+    if len(data) > MAX_STORED_SOURCE_BYTES:
+        return
+    if lower.endswith(".doc"):
+        # Присланный образец в старом формате тоже должен работать как шаблон,
+        # а открыть основой можно только .docx — поэтому кладём конвертацию.
+        data = convert_doc_to_docx(data, doc_name)
+        if not data:
+            return
+    elif not lower.endswith(".docx"):
         return
     path = _source_store_path(user_id, doc_name)
     if path is None:
@@ -631,6 +640,54 @@ _DOC_TEXT_RUN_RE = re.compile(
     r"[А-Яа-яЁёA-Za-z0-9 \-—–.,;:()«»\"'/№%°±\n\t]+"
 )
 
+# LibreOffice конвертирует .doc в .docx с сохранением шрифтов, полей,
+# колонтитулов и таблиц — проверено на настоящем ИТТ: Times New Roman 14,
+# поля 2.0/2.25, колонтитул «ИТТ.3262-026 Страница 6 из 6», 1.08 с на файл.
+# Без него .doc остаётся только текстом: как шаблон оформления не годится.
+DOC_CONVERT_TIMEOUT = 120
+
+
+def _soffice_binary() -> Optional[str]:
+    import shutil
+
+    for name in ("soffice", "libreoffice"):
+        path = shutil.which(name)
+        if path:
+            return path
+    return None
+
+
+def convert_doc_to_docx(file_data: bytes, file_name: str = "source.doc") -> Optional[bytes]:
+    """.doc -> .docx через LibreOffice. None, если конвертера нет или не вышло.
+
+    Нужна не только для текста: только .docx можно открыть как основу
+    оформления, поэтому без этой конвертации присланный .doc-образец
+    оставался лишь источником слов, но не формата.
+    """
+    binary = _soffice_binary()
+    if not binary:
+        return None
+    import subprocess
+    import tempfile
+
+    try:
+        with tempfile.TemporaryDirectory() as work:
+            source = Path(work) / "source.doc"
+            source.write_bytes(file_data)
+            # -env:UserInstallation обязателен: без своего профиля параллельные
+            # запуски LibreOffice конфликтуют за общий и молча ничего не делают.
+            subprocess.run(
+                [binary, "--headless", f"-env:UserInstallation=file://{work}/profile",
+                 "--convert-to", "docx", "--outdir", work, str(source)],
+                capture_output=True, timeout=DOC_CONVERT_TIMEOUT, check=False,
+            )
+            produced = Path(work) / "source.docx"
+            if produced.is_file() and produced.stat().st_size > 0:
+                return produced.read_bytes()
+    except Exception as e:
+        logger.warning("Не удалось конвертировать %s из .doc: %s", file_name, e)
+    return None
+
 
 async def extract_text_from_doc(file_data: bytes, extended_limits: bool = False) -> str:
     """Текст из старого .doc (Word 97-2003).
@@ -648,6 +705,12 @@ async def extract_text_from_doc(file_data: bytes, extended_limits: bool = False)
     отсутствия разбора таблицы кусков, и она заметно лучше, чем ничего.
     """
     max_chars = MAX_EXTRACT_CHARS_EXTENDED if extended_limits else MAX_EXTRACT_CHARS
+
+    # Если LibreOffice есть, текст берётся из конвертированного .docx: там
+    # верный порядок абзацев и содержимое таблиц, чего скан по UTF-16 не даёт.
+    converted = await asyncio.to_thread(convert_doc_to_docx, file_data)
+    if converted:
+        return await extract_text_from_docx(converted, extended_limits=extended_limits)
 
     def _extract() -> str:
         raw = file_data.decode("utf-16-le", errors="ignore")

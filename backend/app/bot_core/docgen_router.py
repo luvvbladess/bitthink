@@ -419,7 +419,7 @@ def _seed_document_titles(
     if requested < 2:
         return None
     knowledge = [n for n in knowledge_names if n not in (template_names or set())]
-    templates = [n for n in sorted(template_names or ()) if n.lower().endswith(".docx")]
+    templates = [n for n in sorted(template_names or ()) if n.lower().endswith((".docx", ".doc"))]
     if len(knowledge) == requested:
         return [(_file_stem(n) or n, n) for n in knowledge]
     if len(templates) == requested:
@@ -439,7 +439,7 @@ def _assign_templates(
     «ИТТ_ПЛК.docx», а если шаблоны названы forma1/forma2 — тот, в чьём начале
     речь про ПЛК, а не про насос.
     """
-    templates = [n for n in sorted(template_names or ()) if n.lower().endswith(".docx")]
+    templates = [n for n in sorted(template_names or ()) if n.lower().endswith((".docx", ".doc"))]
     unique_titles: List[str] = []
     seen: Set[str] = set()
     for title in titles:
@@ -1586,7 +1586,9 @@ def _template_blanks(user_id: int, template_names: Set[str]) -> Dict[str, bytes]
 
     blanks: Dict[str, bytes] = {}
     for name in sorted(template_names):
-        if not name.lower().endswith(".docx"):
+        # .doc тоже годится: в хранилище оформления он лежит уже
+        # сконвертированным в .docx (document_parser.store_source_docx).
+        if not name.lower().endswith((".docx", ".doc")):
             continue
         data = load_source_docx(user_id, name)
         if not data:
