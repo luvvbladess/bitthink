@@ -17,6 +17,7 @@ const pulse = keyframes`
 
 function inferKind(line: string): Kind {
   const t = line.toLowerCase();
+  if (/^📄/.test(line.trim())) return 'think';
   if (/ищу|поиск|search/.test(t)) return 'search';
   if (/открываю|читаю|сайт|http|\.\w{2,}/.test(t)) return 'browse';
   if (/почт|письм|gmail/.test(t)) return 'mail';

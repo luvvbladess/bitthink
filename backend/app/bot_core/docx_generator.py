@@ -386,13 +386,17 @@ def auto_size_table_columns(doc):
                 trPr.append(OxmlElement('w:cantSplit'))
 
 
-def fix_monospace_fonts(doc):
+def fix_monospace_fonts(doc, preserve_color: bool = False):
     """
     Защитный пост-процессинг: htmldocx форсирует моноширинный шрифт (Courier New и т.п.)
     для <code>/<pre> блоков. Если де-фенсинг на этапе Markdown не сработал (например,
     LLM указал язык у блока, хотя текст внутри не код), документ всё равно выглядит
     "рваным" по шрифтам. Здесь убираем явный moноширинный шрифт у runs, чтобы они
     наследовали обычный шрифт абзаца/стиля.
+
+    preserve_color: when the document is built on a customer template, do not
+    force every run to black — GOST forms often use coloured running heads,
+    field labels and table tints that would otherwise be wiped.
     """
     MONOSPACE_FONTS = {"Courier New", "Consolas", "Lucida Console", "Courier", "Monaco", "Menlo"}
 
@@ -409,7 +413,8 @@ def fix_monospace_fonts(doc):
                 if re.fullmatch(r'```(?:text|txt|markdown|md)?', r.text.strip(), re.IGNORECASE):
                     r.text = ""
                     continue
-                r.font.color.rgb = RGBColor(0, 0, 0)
+                if not preserve_color:
+                    r.font.color.rgb = RGBColor(0, 0, 0)
                 if r.font.name in MONOSPACE_FONTS:
                     clear_run_font(r)
 
@@ -648,8 +653,9 @@ def convert_markdown_to_docx(markdown_text: str, base_template_bytes: Optional[b
         print(f"Table column sizing warning: {e}")
 
     # 4c. Защитная очистка моноширинных шрифтов от ложных code-блоков
+    preserve_template = bool(base_template_bytes)
     try:
-        fix_monospace_fonts(doc)
+        fix_monospace_fonts(doc, preserve_color=preserve_template)
     except Exception as e:
         print(f"Monospace font fix warning: {e}")
 
@@ -666,11 +672,15 @@ def convert_markdown_to_docx(markdown_text: str, base_template_bytes: Optional[b
         print(f"List fix warning: {e}")
 
     # 7. Выравнивание: заголовки по центру, списки по левому краю,
-    # обычный текст по ширине с красной строкой
-    try:
-        apply_paragraph_formatting(doc)
-    except Exception as e:
-        print(f"Paragraph alignment warning: {e}")
+    # обычный текст по ширине с красной строкой. Skip when a customer
+    # template is the base — GOST forms already define alignment, first-line
+    # indent and heading placement, and overriding them is how "оформление
+    # по шаблону" used to come out as a generic Word document.
+    if not preserve_template:
+        try:
+            apply_paragraph_formatting(doc)
+        except Exception as e:
+            print(f"Paragraph alignment warning: {e}")
 
     # 6. Сохраняем в байты
     file_stream = io.BytesIO()

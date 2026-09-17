@@ -29,6 +29,9 @@ MAX_PARALLEL_SECTIONS = 12
 CHUNK_TARGET_CHARS = 3000
 TOP_K_CHUNKS = 6
 MAX_CHUNK_CHARS_PER_SECTION = 12000
+# First heading + start of each source file: enough to tell «ПЛК» from «насос»
+# when filenames are forma1/данные2. No model call — already in RAM.
+DIGEST_CHARS = 700
 
 # Raising the per-file extraction caps (document_parser.MAX_*_EXTENDED) removes
 # the only thing that used to keep the total corpus small by accident. Measured
@@ -69,6 +72,9 @@ SECTIONS_PER_CHAPTER = 25
 # в JSON — это ~8500 токенов, что свободно помещается в ответ.
 MAX_SECTIONS_PER_EXPANSION = 100
 MAX_CHAPTERS = MAX_SECTIONS // SECTIONS_PER_CHAPTER  # 200 глав x 25 = MAX_SECTIONS
+# Отдельный потолок на число файлов: 1000 документов — это 1000 «глав» плана,
+# а не 1000×25 разделов одного тома. MAX_CHAPTERS резал бы такой заказ до 200.
+MAX_DOCUMENTS = MAX_SECTIONS
 CHAPTER_CATALOG_CHUNKS = 80  # заголовков исходников в вызове на разбор одной главы
 
 # Столько символов раздела приходится на страницу .docx: этим же числом
@@ -95,6 +101,12 @@ _SIZE_REQUEST_RE = re.compile(
     r"(тыс\.?|тысяч[иа]?|к)?\s*(страниц\w*|стр\.|раздел\w*)",
     re.IGNORECASE,
 )
+# «1000 документов», «10 документов». Не «документацию»: это один том, не N файлов.
+_DOC_COUNT_RE = re.compile(
+    r"(\d[\d\s]{0,9}?)\s*(?:[-–—]\s*(\d[\d\s]{0,9}?)\s*)?"
+    r"(тыс\.?|тысяч[иа]?|к)?\s*документ(?:ов|а|ы)?\b",
+    re.IGNORECASE,
+)
 # Заглушки, которыми клиенты моделей отвечают вместо содержимого, когда
 # ответа не было: openai_client.py:573,668 и deepseek_client.py:265,345
 # возвращают их как обычный текст, не поднимая исключения.
@@ -111,6 +123,12 @@ _PAGES_TRUNCATED_RE = re.compile(r"Прочитал первые \d+")
 # elsewhere instead of importing these constants would silently break that.
 _CONFIRM_START = "Да, начинай"
 _CONFIRM_CANCEL = "Нет, отменить"
+# Третий вариант появляется только когда есть что заменять. «Да, начинай»
+# означает буквально «начинай»: значения из примеров остаются как есть.
+# Метки [УКАЗАТЬ: …] — отдельное решение: на 5000 страниц их двадцать пять
+# штук, и человек, нажавший главную кнопку просто чтобы посмотреть результат,
+# такого не заказывал.
+_CONFIRM_START_PLACEHOLDERS = "Начинай, поставь метки"
 _TEMPLATE_CONFIRMED = "Да"
 _TEMPLATE_NONE = "Шаблона нет, всё это база знаний"
 _TEMPLATE_WRONG = "Нет, шаблон другой файл"
@@ -144,6 +162,17 @@ _CANDIDATE_PATTERNS: List[Tuple[re.Pattern, str]] = [
 
 _REPLACEMENT_LINE_RE = re.compile(r"^(?P<left>.*?)(?:::=|→|->)(?P<right>.*)$")
 _KEEP_AS_IS = ("как есть", "=")
+
+# Words that appear in almost every GOST form and would otherwise glue
+# unrelated files together when matching by digest.
+_DIGEST_STOP = frozenset({
+    "требования", "исходные", "технические", "документ", "раздел", "общие",
+    "положения", "форма", "шаблон", "образец", "лист", "утверждаю",
+    "согласовано", "таблица", "приложение", "гост", "заказчик", "разработчик",
+    "наименование", "обозначение", "содержание", "введение", "данные",
+    "файл", "архив", "страница", "the", "and", "for", "sheet", "page",
+    "для", "или", "при", "как", "что", "этот", "этой", "этого",
+})
 
 
 @dataclass
@@ -197,6 +226,313 @@ def _requested_sections(text: str) -> Optional[int]:
     if best <= 0:
         return None
     return min(best, MAX_SECTIONS)
+
+
+def _requested_documents(text: str) -> Optional[int]:
+    """Сколько отдельных файлов заказал пользователь.
+
+    «5000 страниц» — объём одного документа. «1000 документов» — тысяча файлов.
+    Без этого планировщик либо строил один том, либо упирался в MAX_CHAPTERS=200.
+    """
+    best = 0
+    for m in _DOC_COUNT_RE.finditer(text or ""):
+        low, high, scale = m.group(1), m.group(2), m.group(3)
+        multiplier = 1000 if scale else 1
+        value = 0
+        for raw in (low, high):
+            if not raw:
+                continue
+            value = max(value, int(re.sub(r"\D", "", raw) or 0) * multiplier)
+        best = max(best, value)
+    if best <= 0:
+        return None
+    return min(best, MAX_DOCUMENTS)
+
+
+def _unique_doc_names(chunks: List[Chunk]) -> List[str]:
+    seen: List[str] = []
+    for chunk in chunks:
+        if chunk.doc_name not in seen:
+            seen.append(chunk.doc_name)
+    return seen
+
+
+def _file_stem(name: str) -> str:
+    """Имя файла без пути и расширения: «архив.zip/ИТТ_ПЛК.docx» → «ИТТ ПЛК»."""
+    base = (name or "").replace("\\", "/").rsplit("/", 1)[-1]
+    base = re.sub(r"\.[^.]+$", "", base)
+    return re.sub(r"[_\-]+", " ", base).strip()
+
+
+def _name_score(query: str, candidate: str) -> int:
+    """Насколько имя шаблона/исходника относится к названию итогового документа.
+
+    Точное совпадение стемов, вхождение одной строки в другую, пересечение
+    токенов. Ноль — нет связи: тогда этот файл не должен попасть в чужой документ.
+    """
+    q = _file_stem(query).lower()
+    c = _file_stem(candidate).lower()
+    if not q or not c:
+        return 0
+    if q == c:
+        return 1000
+    if q in c or c in q:
+        return 100 + min(len(q), len(c))
+    qt = _tokenize(q) | _tokenize(query.replace("/", " ").replace("\\", " "))
+    ct = _tokenize(c) | _tokenize(candidate.replace("/", " ").replace("\\", " ").replace(".", " "))
+    if not qt or not ct:
+        return 0
+    overlap = len(qt & ct)
+    if not overlap:
+        return 0
+    return overlap * 10 + (3 if overlap == len(qt) else 0)
+
+
+def _file_digests(chunks: List[Chunk]) -> Dict[str, str]:
+    """Краткое содержание каждого исходника: заголовок и начало файла.
+
+    Считается по уже прочитанным чанкам, без вызова модели — на тысяче файлов
+    это дешевле любой суммаризации и достаточно, чтобы отличить ПЛК от насоса,
+    когда файлы названы forma1.docx / данные2.xlsx.
+    """
+    parts: Dict[str, List[str]] = {}
+    used: Dict[str, int] = {}
+    for chunk in chunks:
+        n = used.get(chunk.doc_name, 0)
+        if n >= DIGEST_CHARS:
+            continue
+        bits = parts.setdefault(chunk.doc_name, [])
+        if not bits and chunk.title:
+            bits.append(chunk.title.strip())
+            n += len(chunk.title)
+        take = (chunk.text or "")[: max(0, DIGEST_CHARS - n)]
+        if take:
+            bits.append(take)
+            n += len(take)
+        used[chunk.doc_name] = n
+    return {name: " ".join(bits)[:DIGEST_CHARS] for name, bits in parts.items()}
+
+
+def _common_digest_tokens(digests: Dict[str, str]) -> Set[str]:
+    """Токены, которые есть у большинства файлов, плюс стоп-слова ГОСТ.
+
+    Без этого «требования» и «раздел» склеивали бы все шаблоны между собой.
+    """
+    common = set(_DIGEST_STOP)
+    if len(digests) < 3:
+        return common
+    df: Dict[str, int] = {}
+    for text in digests.values():
+        for token in set(_tokenize(text)):
+            df[token] = df.get(token, 0) + 1
+    threshold = max(3, (len(digests) + 1) // 2)
+    common.update(token for token, count in df.items() if count >= threshold)
+    return common
+
+
+def _digest_snippet(text: str, limit: int = 400) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()[:limit]
+
+
+def _match_score(
+    query: str,
+    candidate_name: str,
+    candidate_digest: str = "",
+    query_digest: str = "",
+    common: Optional[Set[str]] = None,
+) -> int:
+    """Имя плюс краткое содержание. Имя побеждает при равенстве; содержание
+    спасает, когда файлы названы forma1 / данные2, а тема видна только из текста.
+    """
+    score = _name_score(query, candidate_name)
+    common = common if common is not None else set(_DIGEST_STOP)
+    query_tokens = (_tokenize(query) | _tokenize(query_digest)) - common
+    cand_tokens = (
+        _tokenize(_file_stem(candidate_name)) | _tokenize(candidate_digest)
+    ) - common
+    overlap = len(query_tokens & cand_tokens)
+    if overlap:
+        score += overlap * 8
+    body_q = _tokenize(query_digest) - common
+    body_c = _tokenize(candidate_digest) - common
+    body_overlap = len(body_q & body_c)
+    if body_overlap:
+        score += body_overlap * 5
+    return score
+
+
+def _title_texts_for_matching(
+    outline: List[Section],
+    digests: Dict[str, str],
+    template_names: Optional[Set[str]],
+) -> Dict[str, str]:
+    """Текст, с которым сравниваем шаблон: название документа, брифы разделов
+    и выжимка той базы знаний, которая уже совпала по имени."""
+    buckets: Dict[str, List[str]] = {}
+    for section in outline:
+        if not section.document:
+            continue
+        bucket = buckets.setdefault(section.document, [])
+        if section.title:
+            bucket.append(section.title)
+        if section.brief:
+            bucket.append(section.brief)
+    knowledge = [name for name in digests if name not in (template_names or set())]
+    result: Dict[str, str] = {title: " ".join(parts) for title, parts in buckets.items()}
+    for title, text in list(result.items()):
+        extras = [
+            digests[name] for name in knowledge
+            if digests.get(name) and _name_score(title, name) > 0
+        ]
+        if extras:
+            result[title] = text + " " + " ".join(extras)
+    return result
+
+
+def _heuristic_template_names(chunks: List[Chunk]) -> Set[str]:
+    """Файлы, которые по пути/имени выглядят как шаблоны оформления.
+
+    Нужно до вызова планировщика: чтобы из архива «шаблоны.zip» + «знания.zip»
+    сразу понять, какие .docx — формы, а какие — база, и сопоставить их
+    по именам без LLM, который тысячу названий всё равно обрежет.
+    """
+    hit: Set[str] = set()
+    for name in _unique_doc_names(chunks):
+        if _TEMPLATE_NAME_RE.search(name) or _TEMPLATE_NAME_RE.search(_folder_of(name)):
+            hit.add(name)
+    return hit
+
+
+def _seed_document_titles(
+    requested: int,
+    knowledge_names: List[str],
+    template_names: Set[str],
+) -> Optional[List[Tuple[str, str]]]:
+    """Если в архивах уже лежит по файлу на каждый итоговый документ — не
+    просить планировщик выдумать тысячу названий: он потеряет большую часть.
+
+    База знаний — обычная единица работы (каждый xlsx/docx → свой выходной
+    файл). Столько же шаблонов — запасной вариант: папка ГОСТовских форм и
+    одна общая база. Возвращает (название, исходный файл) — файл нужен, чтобы
+    подтянуть его краткое содержание в бриф и в сопоставление шаблона.
+    """
+    if requested < 2:
+        return None
+    knowledge = [n for n in knowledge_names if n not in (template_names or set())]
+    templates = [n for n in sorted(template_names or ()) if n.lower().endswith(".docx")]
+    if len(knowledge) == requested:
+        return [(_file_stem(n) or n, n) for n in knowledge]
+    if len(templates) == requested:
+        return [(_file_stem(n) or n, n) for n in templates]
+    return None
+
+
+def _assign_templates(
+    titles: List[str],
+    template_names: Set[str],
+    digests: Optional[Dict[str, str]] = None,
+    title_texts: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
+    """Название итогового документа → файл-шаблон. Уникально, пока шаблонов хватает.
+
+    Сначала имя файла, затем краткое содержание: «ИТТ на ПЛК» забирает
+    «ИТТ_ПЛК.docx», а если шаблоны названы forma1/forma2 — тот, в чьём начале
+    речь про ПЛК, а не про насос.
+    """
+    templates = [n for n in sorted(template_names or ()) if n.lower().endswith(".docx")]
+    unique_titles: List[str] = []
+    seen: Set[str] = set()
+    for title in titles:
+        key = title or ""
+        if key not in seen:
+            seen.add(key)
+            unique_titles.append(key)
+    if not templates or not unique_titles:
+        return {}
+    if len(templates) == 1:
+        return {title: templates[0] for title in unique_titles}
+
+    digests = digests or {}
+    title_texts = title_texts or {}
+    common = _common_digest_tokens(digests) if digests else set(_DIGEST_STOP)
+    pairs: List[Tuple[int, str, str]] = []
+    for title in unique_titles:
+        extra = title_texts.get(title, "")
+        for tmpl in templates:
+            score = _match_score(title, tmpl, digests.get(tmpl, ""), extra, common)
+            if score:
+                pairs.append((score, title, tmpl))
+    pairs.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    assigned: Dict[str, str] = {}
+    used_tmpl: Set[str] = set()
+    for _, title, tmpl in pairs:
+        if title in assigned or tmpl in used_tmpl:
+            continue
+        assigned[title] = tmpl
+        used_tmpl.add(tmpl)
+    leftover_titles = [t for t in unique_titles if t not in assigned]
+    leftover_tmpls = [m for m in templates if m not in used_tmpl]
+    for title, tmpl in zip(leftover_titles, leftover_tmpls):
+        assigned[title] = tmpl
+        used_tmpl.add(tmpl)
+    fallback = templates[0]
+    for title in unique_titles:
+        assigned.setdefault(title, fallback)
+    return assigned
+
+
+def _scope_chunks_for_section(
+    section: Section,
+    chunks: List[Chunk],
+    template_names: Optional[Set[str]],
+    assigned_templates: Optional[Dict[str, str]] = None,
+    digests: Optional[Dict[str, str]] = None,
+) -> Tuple[List[Chunk], Set[str]]:
+    """Фрагменты и шаблон, которые относятся к этому разделу, а не ко всему заказу.
+
+    Имя файла плюс краткое содержание: «данные1.xlsx» про ПЛК попадёт в документ
+    про ПЛК, даже если в названии нет «ПЛК». Нет пересечения — оставляем всю
+    базу (лучше общий контекст, чем пустой файл), но чужие шаблоны отсекаем.
+    """
+    templates = set(template_names or ())
+    knowledge_names = {c.doc_name for c in chunks if c.doc_name not in templates}
+    chosen = None
+    if section.document and assigned_templates:
+        chosen = assigned_templates.get(section.document)
+    templates_for_section: Set[str] = {chosen} if chosen else templates
+
+    related_knowledge = knowledge_names
+    if section.document and knowledge_names:
+        digests = digests or {}
+        common = _common_digest_tokens(digests) if digests else set(_DIGEST_STOP)
+        query = " ".join(
+            part for part in (section.document, section.title, section.brief) if part
+        )
+        extra = (digests.get(chosen, "") if chosen else "") + " " + query
+        scored = [
+            (
+                name,
+                _match_score(query, name, digests.get(name, ""), extra, common),
+            )
+            for name in knowledge_names
+        ]
+        positive = [(name, score) for name, score in scored if score > 0]
+        if positive:
+            best = max(score for _, score in positive)
+            # Shared boilerplate («уникальный маркер», «требования») даёт слабый
+            # ненулевой счёт сразу нескольким файлам. Держим только тех, кто
+            # рядом с лучшим совпадением, иначе чужая база просачивается в документ.
+            # min(..., best) обязателен: при слабом лучшем совпадении (счёт 13
+            # против порога 16) фильтр отсекал ВСЮ базу знаний, и раздел уходил
+            # писаться по одному шаблону, без единого факта. Причём полное
+            # отсутствие совпадения сохраняло базу целиком — то есть намёк на
+            # тему делал результат хуже, чем его отсутствие.
+            floor = min(max(best * 0.5, 16), best)
+            related_knowledge = {name for name, score in positive if score >= floor}
+
+    allow = related_knowledge | templates_for_section
+    scoped = [c for c in chunks if c.doc_name in allow]
+    return (scoped or chunks), templates_for_section
 
 
 def _split_into_chunks(doc_name: str, text: str, start_id: int) -> List[Chunk]:
@@ -314,7 +650,16 @@ def _build_context_block(chunks: List[Chunk], budget: int, template_names: Optio
     return f"Формат по шаблону:\n{template_block}\n\nФакты из базы знаний:\n{knowledge_block}"
 
 
-_TEMPLATE_NAME_RE = re.compile(r"(?i)(шаблон|образец|форма|бланк|пример|template|form|sample)")
+# Отрицательный lookbehind обязателен: без него «форма» находится внутри
+# «ин-форма-ции», и архив «База информации для наполнения.zip» целиком
+# уезжает в шаблоны. База знаний тогда пуста, а разделы пишутся без фактов —
+# проверено на реальных именах архивов заказчика. Множественное число
+# («Формы», «Образцы») тоже должно опознаваться, поэтому окончания
+# перечислены, а не отброшены.
+_TEMPLATE_NAME_RE = re.compile(
+    r"(?<![а-яёa-z])(шаблон|образ(?:ец|цы|цов|цам)|форм[аыу]?|бланк|пример|template|form|sample|shablon)",
+    re.IGNORECASE,
+)
 
 
 def _classify_documents_hint(chunks: List[Chunk]) -> str:
@@ -479,6 +824,7 @@ async def _plan_outline(
     extra_instruction: str = "",
     want_count: Optional[int] = None,
     as_chapters: bool = False,
+    as_documents: bool = False,
 ) -> Tuple[List[Section], Set[str], bool]:
     """Разделы, набор файлов-шаблонов (может быть пустым) и флаг «план
     построить не удалось».
@@ -495,12 +841,26 @@ async def _plan_outline(
     classification_hint = _classify_documents_hint(chunks)
     document_previews = _document_previews(chunks)
 
-    if as_chapters:
+    if as_documents and as_chapters:
+        size_instruction = (
+            f"Это перечень отдельных документов: верни ровно {want_count} документов. "
+            "Каждый элемент — отдельный файл, не глава одного тома. "
+            "В title — название документа (оно же станет именем файла), в brief — что в нём должно быть. "
+            "document заполни тем же названием, что title.\n"
+        )
+    elif as_documents:
+        size_instruction = (
+            f"Пользователю нужно ровно {want_count} отдельных документов — столько и верни. "
+            "У каждого раздела заполни document названием файла, к которому он относится; "
+            "разделы одного документа идут подряд.\n"
+        )
+    elif as_chapters:
         size_instruction = (
             f"Это оглавление ОЧЕНЬ большого документа: верни ровно {want_count} глав верхнего "
             f"уровня, каждую из которых потом распишут на {SECTIONS_PER_CHAPTER} разделов. "
             "В title — название главы, в brief — что в неё входит, чтобы разделы не пересекались "
-            "между главами.\n"
+            "между главами. Если нужны несколько отдельных документов — у каждой главы заполни "
+            "document названием файла, к которому она относится: разделы главы унаследуют его.\n"
         )
     elif want_count:
         size_instruction = f"Пользователю нужен объём примерно в {want_count} раздел(ов) — столько и верни.\n"
@@ -518,9 +878,11 @@ async def _plan_outline(
         '"sections": [{"title": "Название раздела", "brief": "Что должно быть в разделе, 1-3 предложения", '
         '"complexity": "simple" | "complex", "document": "название отдельного файла"}, ...]}.\n'
         "document — заполняй ТОЛЬКО если пользователь просит НЕСКОЛЬКО отдельных документов "
-        "(например «сделай 10 ИТТ на разные узлы»). Тогда у каждого раздела стоит название того "
-        "документа, к которому он относится, и разделы одного документа идут подряд. "
+        "(например «сделай 10 ИТТ на разные узлы» или «1000 документов»). Тогда у каждого раздела "
+        "стоит название того документа, к которому он относится, и разделы одного документа идут подряд. "
         "Если нужен один документ — оставь document пустым у всех разделов.\n"
+        "Если шаблонов оформления несколько, каждому итоговому файлу соответствует ОДИН шаблон "
+        "с похожим именем; факты бери только из исходников этой же темы, не смешивай базы разных узлов.\n"
         "complexity=complex — для расчётов, таблиц с цифрами, юридических формулировок, "
         "технических требований с точными значениями. Остальное — simple.\n\n"
         f"Запрос пользователя:\n{user_text}\n\n"
@@ -600,10 +962,122 @@ async def _expand_chapter(
     if not sections:
         logger.warning("docgen chapter '%s' produced no sections, kept as one", chapter.title)
         return [Section(id=0, title=chapter.title, brief=chapter.brief,
-                        complexity=chapter.complexity, chapter=chapter.title)]
-    for section in sections[:per_chapter]:
+                        complexity=chapter.complexity, chapter=chapter.title,
+                        document=chapter.document)]
+    inherited = sections[:per_chapter]
+    for section in inherited:
         section.chapter = chapter.title
-    return sections[:per_chapter]
+        # The chapter-level plan is where "10 separate documents of 5000 pages"
+        # is decided; expansion JSON has no `document` field, so without this
+        # stamp a two-level run silently collapses back into one file.
+        section.document = chapter.document
+    return inherited
+
+
+async def _expand_chapters(
+    chapters: List[Section],
+    target_sections: int,
+    user_text: str,
+    chunks: List[Chunk],
+    user_id: int,
+    status_msg: Any,
+    template_names: Set[str],
+    chapter_cap: int,
+) -> Tuple[List[Section], Set[str], bool]:
+    """Расписывает список глав/документов на разделы. chapter_cap — сколько
+    глав реально разбирать: для одного тома это MAX_CHAPTERS, для N файлов —
+    MAX_DOCUMENTS, иначе заказ на 1000 документов обрезался бы до 200."""
+    if not chapters:
+        return chapters, template_names, True
+    chapters = chapters[:chapter_cap]
+    per_chapter = min(MAX_SECTIONS_PER_EXPANSION, max(1, -(-target_sections // len(chapters))))
+    catalog = "\n".join(f"{c.id}: {c.title}" for c in chunks[:CHAPTER_CATALOG_CHUNKS])
+    sections: List[Section] = []
+    for batch_start in range(0, len(chapters), MAX_PARALLEL_SECTIONS):
+        batch = chapters[batch_start:batch_start + MAX_PARALLEL_SECTIONS]
+        results = await asyncio.gather(*[
+            _expand_chapter(chapter, user_text, catalog, per_chapter, user_id) for chapter in batch
+        ])
+        for chapter_sections in results:
+            sections.extend(chapter_sections)
+        planned = min(batch_start + MAX_PARALLEL_SECTIONS, len(chapters))
+        await _update_status(
+            status_msg,
+            f"📄 План: {_progress_bar(planned, len(chapters))} глава {planned} из {len(chapters)}, "
+            f"разделов уже {len(sections)}",
+        )
+    for i, section in enumerate(sections):
+        section.id = i
+    logger.info(
+        "docgen two-level plan: %d chapters -> %d sections (target %d)",
+        len(chapters), len(sections), target_sections,
+    )
+    return sections[:MAX_SECTIONS], template_names, False
+
+
+async def _plan_as_documents(
+    user_text: str,
+    chunks: List[Chunk],
+    user_id: int,
+    extra_instruction: str,
+    status_msg: Any,
+    documents_wanted: int,
+    target_sections: Optional[int],
+) -> Tuple[List[Section], Set[str], bool]:
+    """План на N отдельных файлов: имена из архивов, если они уже лежат
+    по файлу на документ, иначе — один вызов планировщика на перечень."""
+    heuristic = _heuristic_template_names(chunks)
+    knowledge_names = [n for n in _unique_doc_names(chunks) if n not in heuristic]
+    seed = _seed_document_titles(documents_wanted, knowledge_names, heuristic)
+    template_names: Set[str] = set(heuristic)
+    digests = _file_digests(chunks)
+
+    if seed:
+        chapters = []
+        for i, (title, source) in enumerate(seed):
+            snippet = _digest_snippet(digests.get(source, ""))
+            brief = (
+                f"Документ «{title}». Кратко по исходнику: {snippet}"
+                if snippet else
+                f"Полный документ «{title}» по относящимся исходникам этой темы."
+            )
+            chapters.append(Section(
+                id=i,
+                title=title,
+                brief=brief,
+                complexity="complex",
+                document=title,
+            ))
+    else:
+        as_chapters = documents_wanted > SINGLE_CALL_SECTION_LIMIT
+        want = min(documents_wanted, MAX_DOCUMENTS)
+        chapters, template_names, failed = await _plan_outline(
+            user_text, chunks, user_id, extra_instruction,
+            want_count=want, as_chapters=as_chapters, as_documents=True,
+        )
+        if failed or not chapters:
+            return chapters, template_names, True
+        chapters = chapters[:want]
+        if heuristic:
+            template_names = template_names | heuristic
+        for chapter in chapters:
+            if not chapter.document:
+                chapter.document = chapter.title
+
+    per_doc = 1
+    if target_sections:
+        per_doc = min(
+            MAX_SECTIONS_PER_EXPANSION,
+            max(1, -(-min(target_sections, MAX_SECTIONS) // max(1, len(chapters)))),
+        )
+    if per_doc <= 1:
+        for i, chapter in enumerate(chapters):
+            chapter.id = i
+        return chapters, template_names, False
+    return await _expand_chapters(
+        chapters, len(chapters) * per_doc, user_text, chunks, user_id,
+        status_msg, template_names, chapter_cap=MAX_DOCUMENTS,
+    )
 
 
 async def _plan_document(
@@ -618,8 +1092,19 @@ async def _plan_document(
     Порог — SINGLE_CALL_SECTION_LIMIT: выше него один ответ планировщика
     физически не вмещает план (см. комментарий к константе), поэтому сначала
     строятся главы, а потом они параллельно расписываются на разделы.
+
+    «N документов» — отдельная ветка: это N файлов, а не N разделов одного тома.
     """
-    target = _requested_sections(f"{user_text}\n{extra_instruction}")
+    combined = f"{user_text}\n{extra_instruction}"
+    documents_wanted = _requested_documents(combined)
+    target = _requested_sections(combined)
+
+    if documents_wanted and documents_wanted > 1:
+        return await _plan_as_documents(
+            user_text, chunks, user_id, extra_instruction, status_msg,
+            documents_wanted, target,
+        )
+
     if not target or target <= SINGLE_CALL_SECTION_LIMIT:
         return await _plan_outline(user_text, chunks, user_id, extra_instruction, want_count=target)
 
@@ -635,34 +1120,10 @@ async def _plan_document(
     # каждая лишняя глава стоила бы отдельного вызова на разбор, а разделы
     # сверх лимита всё равно отрезаются в самом конце — деньги за них уже
     # были бы потрачены.
-    chapters = chapters[:chapter_count]
-    per_chapter = min(MAX_SECTIONS_PER_EXPANSION, max(1, -(-target // len(chapters))))
-    catalog = "\n".join(f"{c.id}: {c.title}" for c in chunks[:CHAPTER_CATALOG_CHUNKS])
-    sections: List[Section] = []
-    # Те же батчи, что и у разделов: сотни одновременных вызовов положили бы и
-    # провайдера, и сервер, ради плана, который всё равно ждут целиком.
-    for batch_start in range(0, len(chapters), MAX_PARALLEL_SECTIONS):
-        batch = chapters[batch_start:batch_start + MAX_PARALLEL_SECTIONS]
-        results = await asyncio.gather(*[
-            _expand_chapter(chapter, user_text, catalog, per_chapter, user_id) for chapter in batch
-        ])
-        for chapter_sections in results:
-            sections.extend(chapter_sections)
-        # Сотня с лишним вызовов — это минуты; без отчёта о ходе режим выглядит
-        # зависшим ровно в той фазе, где пользователь ещё ничего не подтвердил.
-        planned = min(batch_start + MAX_PARALLEL_SECTIONS, len(chapters))
-        await _update_status(
-            status_msg,
-            f"📄 План: {_progress_bar(planned, len(chapters))} глава {planned} из {len(chapters)}, "
-            f"разделов уже {len(sections)}",
-        )
-    for i, section in enumerate(sections):
-        section.id = i
-    logger.info(
-        "docgen two-level plan: %d chapters -> %d sections (target %d)",
-        len(chapters), len(sections), target,
+    return await _expand_chapters(
+        chapters, target, user_text, chunks, user_id, status_msg, template_names,
+        chapter_cap=chapter_count,
     )
-    return sections[:MAX_SECTIONS], template_names, False
 
 
 def _find_replacement_candidates(chunks: List[Chunk]) -> List[Tuple[str, str]]:
@@ -773,21 +1234,24 @@ async def _label_replacement_candidates(
     return candidates
 
 
-def _parse_replacements(text: str) -> Dict[str, str]:
-    """Parses a filled «было → стало» reply (Task 15) into {было: стало}.
+def _replacement_table(text: str) -> Tuple[Dict[str, str], bool]:
+    """Parses a filled «было → стало» reply (Task 15).
+
+    Returns (mapping, is_table). mapping is {было: стало}; an empty справа
+    value maps to "" (placeholder later), and "как есть" / "=" drops that
+    pair so the old value is kept. is_table is True when the message is
+    shaped like the confirmation table — even if every row was "как есть"
+    and the mapping is therefore empty. The phase-two gate needs that
+    distinction: _parse_replacements returning {} used to mean both "keep
+    everything" and "this is ordinary prose", so a filled table of «как есть»
+    re-asked confirmation forever instead of starting.
+
     Accepts →, -> and ::= as the separator — the last is what
-    app/api/documents.py's /edit-docx norm-control endpoint already uses for
-    the same idea. A line may carry an optional "Метка: " prefix before the
-    было value (as shown in the confirmation table); it is stripped. An empty
-    справа value means "no answer given" -> maps to "" (placeholder later).
-    "как есть" or a bare "=" on the right means "keep unchanged", so that
-    pair is dropped from the mapping rather than replacing a value with
-    itself. A line with none of the three separators is ignored — a message
-    with no separators anywhere returns an empty dict, which is exactly what
-    keeps a stray sentence from being mistaken for a confirmation (Task 12's
-    gate relies on this).
+    app/api/documents.py's /edit-docx norm-control endpoint already uses.
+    A line may carry an optional "Метка: " prefix before the было value.
     """
-    result: Dict[str, str] = {}
+    mapping: Dict[str, str] = {}
+    recognised: List[str] = []
     for line in (text or "").splitlines():
         match = _REPLACEMENT_LINE_RE.match(line.strip())
         if not match:
@@ -806,22 +1270,48 @@ def _parse_replacements(text: str) -> Dict[str, str]:
         # сообщение стоило бы тысяч вызовов модели.
         if not any(pattern.fullmatch(left) for pattern, _ in _CANDIDATE_PATTERNS):
             continue
+        recognised.append(left)
         if right.lower() in _KEEP_AS_IS:
             continue
-        result[left] = right
+        mapping[left] = right
     # Одинокая строка из одних цифр («100000 -> 120000») подходит под форму
     # номера документа, но в переписке про сметы и сроки встречается сама по
     # себе. Согласием она быть не может: рядом должна стоять хотя бы ещё одна
     # замена или значение с узнаваемой формой — фамилия, организация, дата,
     # децимальный номер. Заполненный список из таблицы всегда такой.
-    if len(result) == 1:
-        lone = next(iter(result))
+    if len(recognised) == 1:
+        lone = recognised[0]
         recognisable = any(
             pattern.fullmatch(lone) for pattern, _ in _CANDIDATE_PATTERNS if pattern is not _DOC_NUMBER_RE
         )
         if not recognisable:
-            return {}
-    return result
+            return {}, False
+    return mapping, bool(recognised)
+
+
+def _parse_replacements(text: str) -> Dict[str, str]:
+    mapping, _ = _replacement_table(text)
+    return mapping
+
+
+def _replacements_offered_in(messages: List[Dict[str, Any]]) -> Dict[str, str]:
+    """The last assistant message's «было → стало» table, with empty
+    right-hand sides. Used when the user starts via the «Да, начинай» chip
+    instead of filling the list: empty cells become [УКАЗАТЬ: …] placeholders,
+    which is what Task 15 promised for a blank answer. Without this, chip-start
+    left foreign customer names in the finished 5000 pages — the worst outcome
+    the table exists to prevent.
+
+    Only the last assistant message is considered, so an older confirmation
+    in the same chat cannot leak its table into a later run that had no
+    candidates of its own.
+    """
+    for message in reversed(messages or []):
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        mapping, is_table = _replacement_table(str(message.get("content") or ""))
+        return mapping if is_table else {}
+    return {}
 
 
 def _label_for_value(value: str) -> str:
@@ -854,9 +1344,14 @@ def _apply_replacements(text: str, mapping: Optional[Dict[str, str]]) -> str:
 def _section_context(
     section: Section, chunks: List[Chunk], template_names: Optional[Set[str]],
     replacements: Optional[Dict[str, str]] = None,
+    assigned_templates: Optional[Dict[str, str]] = None,
+    digests: Optional[Dict[str, str]] = None,
 ) -> str:
-    relevant = _select_relevant_chunks(section.title, section.brief, chunks)
-    block = _build_context_block(relevant, MAX_CHUNK_CHARS_PER_SECTION, template_names)
+    scoped, templates_for_section = _scope_chunks_for_section(
+        section, chunks, template_names, assigned_templates, digests,
+    )
+    relevant = _select_relevant_chunks(section.title, section.brief, scoped)
+    block = _build_context_block(relevant, MAX_CHUNK_CHARS_PER_SECTION, templates_for_section)
     return _apply_replacements(block, replacements) if replacements else block
 
 
@@ -865,12 +1360,15 @@ async def _write_section(
     template_names: Optional[Set[str]] = None,
     replacements: Optional[Dict[str, str]] = None,
     user_request: str = "",
+    assigned_templates: Optional[Dict[str, str]] = None,
+    digests: Optional[Dict[str, str]] = None,
 ) -> str:
     # Selecting chunks + building the context block tokenizes/scans the whole
     # corpus per section; at 12 concurrent writers that's real CPU time on the
     # (shared) event loop, so it runs in a thread instead.
     context_block = await asyncio.to_thread(
-        _section_context, section, chunks, template_names, replacements
+        _section_context, section, chunks, template_names, replacements,
+        assigned_templates, digests,
     )
 
     prompt_parts = []
@@ -884,6 +1382,16 @@ async def _write_section(
         )
     if section.document:
         prompt_parts.append(f"Документ: {section.document}")
+        tmpl = (assigned_templates or {}).get(section.document)
+        if tmpl:
+            prompt_parts.append(
+                f"Оформление этого файла берётся из шаблона «{tmpl}». "
+                "Структуру повторяй по нему; факты — только из исходников этой же темы, "
+                "не из соседних документов заказа."
+            )
+            snippet = _digest_snippet((digests or {}).get(tmpl, ""), 280)
+            if snippet:
+                prompt_parts.append(f"Кратко о шаблоне этого файла: {snippet}")
     prompt_parts += [f"Раздел документа: {section.title}", f"Задача раздела: {section.brief}"]
     if context_block:
         prompt_parts.append(f"Релевантные фрагменты исходников:\n{context_block}")
@@ -1017,7 +1525,7 @@ async def get_docgen_response(
         # reply, so without this check phase two would never be reached and
         # the mode would re-ask forever. is_clarify_reply(user_text) still
         # covers the chip path (including "skipped") unchanged.
-        if not is_clarify_reply(user_text) and not _parse_replacements(user_text):
+        if not is_clarify_reply(user_text) and not _replacement_table(user_text)[1]:
             return await _confirm_before_generating(user_text, user_id, status_msg)
         return await _run_docgen_after_confirmation(messages, user_text, user_id, status_msg)
     finally:
@@ -1041,7 +1549,7 @@ def _recover_original_request(messages: List[Dict[str, Any]], user_text: str) ->
         if not isinstance(message, dict) or message.get("role") != "user":
             continue
         content = str(message.get("content") or "")
-        if is_clarify_reply(content) or _parse_replacements(content):
+        if is_clarify_reply(content) or _replacement_table(content)[1]:
             continue
         return content
     return user_text
@@ -1066,16 +1574,17 @@ def _format_grouped_names(names: List[str], max_members: int = 5) -> str:
     return "; ".join(parts)
 
 
-def _template_base_bytes(user_id: int, template_names: Set[str]) -> Optional[bytes]:
-    """Пустая заготовка из файла-шаблона: стили, поля и колонтитулы исходника
-    без его текста. None — если шаблон не .docx или не сохранился.
+def _template_blanks(user_id: int, template_names: Set[str]) -> Dict[str, bytes]:
+    """Пустые заготовки по каждому .docx-шаблону: стили, поля, колонтитулы
+    исходника без его текста. Негодные файлы пропускаются.
 
-    Оформление — половина требования к режиму: документ по ГОСТу, набранный
-    дефолтными стилями Word, заказчик не примет, как бы верен ни был текст.
+    Ключ — имя файла-шаблона, чтобы сборка могла выдать каждому итоговому
+    документу свою форму, а не первый попавшийся .docx на весь заказ.
     """
     from document_parser import load_source_docx
     from docx_generator import blank_copy_of_template
 
+    blanks: Dict[str, bytes] = {}
     for name in sorted(template_names):
         if not name.lower().endswith(".docx"):
             continue
@@ -1085,10 +1594,18 @@ def _template_base_bytes(user_id: int, template_names: Set[str]) -> Optional[byt
         blank = blank_copy_of_template(data)
         if blank and _template_renders_cleanly(blank):
             logger.info("docgen: оформление взято из шаблона %s", name)
-            return blank
-        if blank:
+            blanks[name] = blank
+        elif blank:
             logger.warning("docgen: шаблон %s не годится как основа, оформление стандартное", name)
-    return None
+    return blanks
+
+
+def _template_base_bytes(user_id: int, template_names: Set[str]) -> Optional[bytes]:
+    """Одна заготовка — для пробы и для заказа с единственным шаблоном."""
+    blanks = _template_blanks(user_id, template_names)
+    if not blanks:
+        return None
+    return next(iter(blanks.values()))
 
 
 def _template_renders_cleanly(blank_template: bytes) -> bool:
@@ -1230,6 +1747,18 @@ async def _confirm_before_generating(
             f"Шаблон оформления ({len(template_names)} файл(ов)): "
             f"{_format_grouped_names(sorted(template_names))}."
         )
+        planned_titles = list(dict.fromkeys(s.document for s in outline if s.document))
+        if planned_titles and len(template_names) > 1:
+            digests = _file_digests(chunks)
+            title_texts = _title_texts_for_matching(outline, digests, template_names)
+            assigned = _assign_templates(
+                planned_titles, template_names, digests=digests, title_texts=title_texts,
+            )
+            matched = sum(1 for title in planned_titles if assigned.get(title))
+            lines.append(
+                f"Каждому документу — свой шаблон по имени и содержанию файла "
+                f"({matched} из {len(planned_titles)} сопоставлено)."
+            )
     else:
         lines.append("Шаблон оформления не определён.")
     lines.append(
@@ -1256,12 +1785,20 @@ async def _confirm_before_generating(
         lines.append("")
         lines.append("Ответьте этим же списком, дописав значения справа.")
         lines.append("Пустая строка — поставлю метку [УКАЗАТЬ: …]. Напишите «как есть», если менять не нужно.")
+        lines.append(
+            f"Кнопка «{_CONFIRM_START}» оставит эти значения как в примерах; "
+            f"«{_CONFIRM_START_PLACEHOLDERS}» — подставит вместо них метки [УКАЗАТЬ: …]."
+        )
     text = "\n".join(lines)
 
+    start_options = [_CONFIRM_START]
+    if candidates:
+        start_options.append(_CONFIRM_START_PLACEHOLDERS)
+    start_options.append(_CONFIRM_CANCEL)
     questions_raw = [
         {
             "prompt": f"Начинать генерацию? Разделов: {total}, примерно {approx_pages} страниц",
-            "options": [_CONFIRM_START, _CONFIRM_CANCEL],
+            "options": start_options,
         }
     ]
     if template_names:
@@ -1300,8 +1837,10 @@ async def _run_docgen_after_confirmation(
     including a chip reply that is neither start nor cancel — still refuses,
     keeping Task 12's fail-safe intact.
     """
-    replacements = _parse_replacements(user_text)
-    if _CONFIRM_START not in user_text and not replacements:
+    replacements, table_reply = _replacement_table(user_text)
+    wants_placeholders = _CONFIRM_START_PLACEHOLDERS in user_text
+    started = wants_placeholders or _CONFIRM_START in user_text
+    if not started and not table_reply:
         if _CONFIRM_CANCEL in user_text:
             return "Отменил, ничего не генерировал.", [], "", []
         return (
@@ -1309,6 +1848,12 @@ async def _run_docgen_after_confirmation(
             f"{_CONFIRM_START}», если документ нужно сгенерировать.",
             [], "", [],
         )
+    # Только по отдельной кнопке: пустые ячейки таблицы превращаются в метки
+    # [УКАЗАТЬ: …]. «Да, начинай» значит «начинай», а не «замени двадцать пять
+    # реквизитов на метки» — заполненный список остаётся третьим, самым
+    # точным способом сказать, чем именно их заменить.
+    if wants_placeholders and not table_reply:
+        replacements = _replacements_offered_in(messages)
     original_request = _recover_original_request(messages, user_text)
     return await _run_docgen(
         original_request, user_id, status_msg, extra_instruction=user_text, replacements=replacements
@@ -1342,20 +1887,35 @@ async def _run_docgen(
     await _update_status(status_msg, plan_status)
 
     section_texts: List[str] = [""] * total
-    previous_tail = ""
+    digests = _file_digests(chunks)
+    title_texts = _title_texts_for_matching(outline, digests, template_names)
+    assigned = _assign_templates(
+        [section.document for section in outline if section.document],
+        template_names,
+        digests=digests,
+        title_texts=title_texts,
+    )
+    tails: Dict[str, str] = {}
+    last_global_tail = ""
     done = 0
     for batch_start in range(0, total, MAX_PARALLEL_SECTIONS):
         batch = outline[batch_start:batch_start + MAX_PARALLEL_SECTIONS]
         jobs = [
-            _write_section(section, chunks, previous_tail, user_id, template_names,
-                           replacements, user_request=user_text)
+            _write_section(
+                section, chunks,
+                tails.get(section.document, "") if section.document else last_global_tail,
+                user_id, template_names, replacements,
+                user_request=user_text, assigned_templates=assigned, digests=digests,
+            )
             for section in batch
         ]
         results = await asyncio.gather(*jobs)
         for offset, text in enumerate(results):
             section_texts[batch_start + offset] = text
-        if results and results[-1] and not results[-1].startswith(_SECTION_FAILED_PREFIX):
-            previous_tail = results[-1][-500:]
+            if text and not text.startswith(_SECTION_FAILED_PREFIX):
+                last_global_tail = text[-500:]
+                if batch[offset].document:
+                    tails[batch[offset].document] = last_global_tail
         done += len(batch)
         chars_written = sum(
             len(text) for text in section_texts
@@ -1365,13 +1925,18 @@ async def _run_docgen(
 
     await _update_status(status_msg, "📄 Собираю итоговый .docx...")
     documents = _group_by_document(outline, section_texts)
-    # Оформление берётся из файла-шаблона, который планировщик уже определил:
-    # текст по ГОСТу, набранный дефолтными стилями Word, заказчику не годится.
-    template_bytes = await asyncio.to_thread(_template_base_bytes, user_id, template_names)
+    blanks = await asyncio.to_thread(_template_blanks, user_id, template_names)
+    file_assigned = _assign_templates(
+        [title for title, _ in documents],
+        set(blanks) or template_names,
+        digests=digests,
+        title_texts=title_texts,
+    )
 
     from docx_generator import convert_markdown_to_docx
     files: List[Dict[str, Any]] = []
     used_names: Set[str] = set()
+    used_templates: Set[str] = set()
     full_markdown = ""
     try:
         for title, markdown_text in documents:
@@ -1383,6 +1948,13 @@ async def _run_docgen(
             # writer produced on its own too.
             markdown_text = _apply_replacements(markdown_text, replacements)
             full_markdown += markdown_text
+            tmpl_name = file_assigned.get(title or "")
+            template_bytes = blanks.get(tmpl_name) if tmpl_name else None
+            if template_bytes is None and len(blanks) == 1:
+                template_bytes = next(iter(blanks.values()))
+                tmpl_name = next(iter(blanks))
+            if template_bytes and tmpl_name:
+                used_templates.add(tmpl_name)
             docx_bytes = await asyncio.to_thread(
                 convert_markdown_to_docx, markdown_text, template_bytes
             )
@@ -1404,8 +1976,11 @@ async def _run_docgen(
         summary = (
             f"Готово. Документ из {total} раздел(ов), примерно {approx_pages} стр. — файл во вложении."
         )
-    if template_bytes:
-        summary += " Оформление взято из файла-шаблона."
+    if used_templates:
+        if len(used_templates) > 1:
+            summary += f" Оформление: каждому документу свой шаблон ({len(used_templates)} шт.)."
+        else:
+            summary += " Оформление взято из файла-шаблона."
     else:
         summary += (
             " Оформление — стандартное: файла-шаблона в формате .docx среди исходников не нашлось."

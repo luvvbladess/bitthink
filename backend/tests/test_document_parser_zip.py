@@ -30,6 +30,34 @@ def test_extract_zip_archive_reads_supported_files_and_skips_junk():
     assert "Техническое задание" in dict(results)["archive.zip/spec.txt"]
 
 
+def test_extract_zip_archive_normalizes_windows_backslash_paths():
+    """Some Windows zip tools store 'shablony\\forma.txt' instead of '/'.
+    Folder grouping in docgen splits on '/', so a backslash would hide the
+    template folder from the planner.
+
+    ZipInfo() itself rewrites os.sep to '/' on Windows, so the filename is
+    assigned after construction to keep the backslash the way a foreign
+    zip tool would have stored it.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for raw_name, body in (
+            ("shablony\\forma.txt", "Шаблон формы".encode("utf-8")),
+            ("baza\\otchet.txt", "База знаний".encode("utf-8")),
+        ):
+            info = zipfile.ZipInfo("placeholder.txt")
+            info.filename = raw_name
+            zf.writestr(info, body)
+    zip_bytes = buf.getvalue()
+
+    results = asyncio.run(extract_zip_archive(zip_bytes, "arhiv.zip", user_id=None))
+    names = [name for name, _ in results]
+
+    assert "arhiv.zip/shablony/forma.txt" in names
+    assert "arhiv.zip/baza/otchet.txt" in names
+    assert not any("\\" in name for name in names)
+
+
 def test_extract_zip_archive_empty_zip_returns_empty_list():
     zip_bytes = _make_zip({})
 

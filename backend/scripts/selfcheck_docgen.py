@@ -605,6 +605,98 @@ async def check_replacement_flow():
     )
 
 
+async def check_two_kinds_of_chip_start_are_distinct():
+    """Two different intentions used to share one button. «Да, начинай» means
+    start — the example values stay as they are, because someone pressing the
+    primary button to see a result did not order twenty-five [УКАЗАТЬ: …]
+    markers across 5000 pages. Replacing them with markers is its own button,
+    and a filled list remains the precise third way to say what they become.
+    """
+    _set_documents(REPL_DOCS)
+
+    async def fake_chat(messages, model=None, user_id=None, use_tools=False, use_skills=True, **kwargs):
+        content = messages[-1]["content"]
+        if model == dg.PLANNER_MODEL and "Построй план" in content:
+            return REPL_PLAN_JSON, [], "", []
+        if "Вот значения, повторяющиеся" in content:
+            values = [v for v in content.split("Значения:" + chr(10), 1)[1].splitlines() if v.strip()]
+            items = [{"value": v, "label": "Реквизит"} for v in values]
+            return json.dumps({"items": items}, ensure_ascii=False), [], "", []
+        return f"Текст раздела. Реквизит {OLD_DESIGNATION}, заказчик {OLD_ORG}.", [], "", []
+
+    import deepseek_client
+
+    dg.get_chat_response = fake_chat
+    deepseek_client.get_deepseek_response = fake_chat
+
+    confirmation, files, _, search = await dg.get_docgen_response([], REPL_PROMPT, 777, FakeStatus())
+    assert files == []
+    assert "→" in confirmation
+    offered = clarify.unpack_search(search)
+    labels = [option for question in offered for option in question.get("options", [])]
+    assert dg._CONFIRM_START in labels and dg._CONFIRM_START_PLACEHOLDERS in labels, labels
+
+    async def run(chip: str) -> tuple[str, str]:
+        messages, reply = _second_turn(REPL_PROMPT, f"Уточнения по задаче:{chr(10)}1. Начинать генерацию? – {chip}")
+        messages[1] = {"role": "assistant", "content": confirmation}
+        summary, out, _, _ = await dg.get_docgen_response(messages, reply, 777, FakeStatus())
+        assert out and out[0]["bytes"][:2] == b"PK", chip
+        with zipfile.ZipFile(BytesIO(out[0]["bytes"])) as archive:
+            return summary, archive.read("word/document.xml").decode("utf-8", "replace")
+
+    summary_as_is, xml_as_is = await run(dg._CONFIRM_START)
+    assert OLD_DESIGNATION in xml_as_is, "«Да, начинай» must leave the example values alone"
+    assert "УКАЗАТЬ" not in xml_as_is, "«Да, начинай» must not insert placeholders"
+    assert "Оставлены метки" not in summary_as_is, summary_as_is
+
+    summary_marked, xml_marked = await run(dg._CONFIRM_START_PLACEHOLDERS)
+    assert OLD_DESIGNATION not in xml_marked, "the marker button left the old designation in the .docx"
+    assert OLD_ORG not in xml_marked, "the marker button left the old organisation in the .docx"
+    assert "УКАЗАТЬ" in xml_marked, "empty confirmation cells did not become placeholders"
+    assert "Оставлены метки" in summary_marked, summary_marked
+    print("OK: two kinds of start — «как есть» keeps the values, the marker button replaces them")
+
+
+async def check_kak_est_table_starts_and_keeps_old_values():
+    """A filled table of «как есть» is consent to start, and must not replace
+    anything — the user said keep the old values."""
+    _set_documents(REPL_DOCS)
+
+    async def fake_chat(messages, model=None, user_id=None, use_tools=False, use_skills=True, **kwargs):
+        content = messages[-1]["content"]
+        if model == dg.PLANNER_MODEL and "Построй план" in content:
+            return REPL_PLAN_JSON, [], "", []
+        if "Вот значения, повторяющиеся" in content:
+            return json.dumps({"items": [
+                {"value": OLD_DESIGNATION, "label": "Децимальный номер"},
+                {"value": OLD_ORG, "label": "Заказчик"},
+            ]}, ensure_ascii=False), [], "", []
+        return f"Текст раздела. Реквизит {OLD_DESIGNATION}, заказчик {OLD_ORG}.", [], "", []
+
+    import deepseek_client
+
+    dg.get_chat_response = fake_chat
+    deepseek_client.get_deepseek_response = fake_chat
+
+    reply = (
+        f"Децимальный номер: {OLD_DESIGNATION} → как есть\n"
+        f"Организация: {OLD_ORG} → как есть\n"
+    )
+    messages = [
+        {"role": "user", "content": REPL_PROMPT},
+        {"role": "assistant", "content": "таблица замен"},
+        {"role": "user", "content": reply},
+    ]
+    summary, files, _, _ = await dg.get_docgen_response(messages, reply, 777, FakeStatus())
+    assert files and files[0]["bytes"][:2] == b"PK", "kak-est table must start generation, not re-ask"
+    with zipfile.ZipFile(BytesIO(files[0]["bytes"])) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8", "replace")
+    assert OLD_DESIGNATION in document_xml
+    assert OLD_ORG in document_xml
+    assert "УКАЗАТЬ" not in document_xml
+    print("OK: kak-est table starts generation and keeps the old requisites")
+
+
 async def check_thousands_of_pages_are_planned_in_two_levels():
     """Task 16 — the page target the whole mode exists for.
 
@@ -810,6 +902,110 @@ async def check_many_documents_with_template_formatting():
         get_settings().UPLOAD_DIR = original_upload_dir
 
 
+async def check_per_document_template_and_knowledge():
+    """The real 1000-doc case, shrunk to two: each output file must inherit
+    ITS template's header and ONLY its own knowledge facts. One shared
+    template + a global chunk search used to mix both."""
+    import tempfile
+    from pathlib import Path
+    from app.config import get_settings
+    from docx import Document
+    import document_parser
+
+    def _template_with_header(header: str, body: str) -> bytes:
+        doc = Document()
+        doc.sections[0].header.paragraphs[0].text = header
+        doc.add_paragraph(body)
+        buf = BytesIO()
+        doc.save(buf)
+        return buf.getvalue()
+
+    original_upload_dir = get_settings().UPLOAD_DIR
+    get_settings().UPLOAD_DIR = Path(tempfile.mkdtemp())
+    try:
+        plc_tmpl = "шаблоны.zip/ИТТ_ПЛК.docx"
+        pump_tmpl = "шаблоны.zip/ИТТ_насос.docx"
+        plc_kb = "знания.zip/ПЛК.xlsx"
+        pump_kb = "знания.zip/насос.xlsx"
+        document_parser.store_source_docx(
+            4242, plc_tmpl, _template_with_header("HEADER_PLC", "чужой текст ПЛК"),
+        )
+        document_parser.store_source_docx(
+            4242, pump_tmpl, _template_with_header("HEADER_PUMP", "чужой текст насоса"),
+        )
+        _set_documents([
+            {"filename": plc_tmpl, "content": "Форма ИТТ на ПЛК. Раздел требования."},
+            {"filename": pump_tmpl, "content": "Форма ИТТ на насос. Раздел требования."},
+            {"filename": plc_kb, "content": "Контроллер ПЛК, ток пять ампер уникальный маркер плк."},
+            {"filename": pump_kb, "content": "Насос центробежный, напор двенадцать метров уникальный маркер насос."},
+        ])
+        writer_prompts = []
+
+        async def fake_chat(messages, model=None, user_id=None, use_tools=False, use_skills=True, **kwargs):
+            content = messages[-1]["content"]
+            if "Построй план" in content:
+                raise AssertionError("matching archive members must not call the planner")
+            writer_prompts.append(content)
+            if "ток пять ампер" in content:
+                return "Требование: ток пять ампер.", [], "", []
+            if "напор двенадцать метров" in content:
+                return "Требование: напор двенадцать метров.", [], "", []
+            return "Текст раздела без фактов своей базы.", [], "", []
+
+        import deepseek_client
+        dg.get_chat_response = fake_chat
+        deepseek_client.get_deepseek_response = fake_chat
+
+        prompt = "сделай 2 документа по шаблонам"
+        text, files, _, _ = await dg.get_docgen_response([], prompt, 4242, FakeStatus())
+        assert files == [], "phase one must not generate anything"
+        assert "Документов: 2" in text, f"confirmation must state two documents: {text[:300]!r}"
+        assert "свой шаблон" in text, f"confirmation must say templates are matched per file: {text[:400]!r}"
+
+        reply = "Уточнения по задаче:" + chr(10) + "1. Начинать генерацию? - " + dg._CONFIRM_START
+        messages = [
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": text},
+            {"role": "user", "content": reply},
+        ]
+        summary, files, _, _ = await dg.get_docgen_response(messages, reply, 4242, FakeStatus())
+        assert len(files) == 1 and files[0]["filename"].endswith(".zip"), files
+        assert "свой шаблон" in summary or "Оформление" in summary, summary
+
+        with zipfile.ZipFile(BytesIO(files[0]["bytes"])) as archive:
+            members = archive.namelist()
+            assert len(members) == 2, members
+            by_name = {name: Document(BytesIO(archive.read(name))) for name in members}
+
+        plc_file = next(doc for name, doc in by_name.items() if "ПЛК" in name or "плк" in name.lower())
+        pump_file = next(doc for name, doc in by_name.items() if "насос" in name.lower())
+        plc_header = plc_file.sections[0].header.paragraphs[0].text
+        pump_header = pump_file.sections[0].header.paragraphs[0].text
+        plc_body = "\n".join(p.text for p in plc_file.paragraphs)
+        pump_body = "\n".join(p.text for p in pump_file.paragraphs)
+
+        assert "HEADER_PLC" in plc_header, f"PLC file lost its template header: {plc_header!r}"
+        assert "HEADER_PUMP" in pump_header, f"pump file lost its template header: {pump_header!r}"
+        assert "HEADER_PUMP" not in plc_header
+        assert "HEADER_PLC" not in pump_header
+        assert "ток пять ампер" in plc_body, f"PLC knowledge missing: {plc_body[:300]!r}"
+        assert "напор двенадцать метров" in pump_body, f"pump knowledge missing: {pump_body[:300]!r}"
+        assert "напор двенадцать метров" not in plc_body
+        assert "ток пять ампер" not in pump_body
+        assert "чужой текст" not in plc_body and "чужой текст" not in pump_body
+
+        plc_prompts = [p for p in writer_prompts if "Документ: ПЛК" in p]
+        pump_prompts = [p for p in writer_prompts if "Документ: насос" in p]
+        assert plc_prompts and pump_prompts, f"writer did not see per-document titles: {writer_prompts[:2]!r}"
+        assert any("ток пять ампер" in p for p in plc_prompts)
+        assert all("напор двенадцать метров" not in p for p in plc_prompts)
+        assert any("напор двенадцать метров" in p for p in pump_prompts)
+        assert all("ток пять ампер" not in p for p in pump_prompts)
+        print("OK: per-document templates — каждый файл со своим колонтитулом и своей базой, без чужих фактов")
+    finally:
+        get_settings().UPLOAD_DIR = original_upload_dir
+
+
 async def main() -> None:
     # The retry delays (SECTION_RETRY_DELAYS) are real seconds in production;
     # nothing here is testing timing, so collapse them to keep the self-check
@@ -835,9 +1031,12 @@ async def main() -> None:
         await check_multi_archive_templates()
         await check_folder_inside_archive_is_its_own_group()
         await check_replacement_flow()
+        await check_two_kinds_of_chip_start_are_distinct()
+        await check_kak_est_table_starts_and_keeps_old_values()
         await check_thousands_of_pages_are_planned_in_two_levels()
         await check_api_error_text_is_not_written_into_the_document()
         await check_many_documents_with_template_formatting()
+        await check_per_document_template_and_knowledge()
     finally:
         asyncio.sleep = orig_sleep
     print("OK: docgen pipeline self-check passed")
