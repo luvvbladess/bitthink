@@ -847,10 +847,12 @@ async def _plan_outline(
 
     if as_documents and as_chapters:
         size_instruction = (
-            f"Это перечень отдельных документов: верни ровно {want_count} документов. "
-            "Каждый элемент — отдельный файл, не глава одного тома. "
-            "В title — название документа (оно же станет именем файла), в brief — что в нём должно быть. "
-            "document заполни тем же названием, что title.\n"
+            f"Это перечень отдельных документов: верни ровно {want_count} элементов, "
+            f"и все {want_count} названий должны быть разными. "
+            "Каждый элемент — отдельный файл, не глава одного тома и не раздел. "
+            "В title — название документа (оно же станет именем файла), в brief — что в нём "
+            "должно быть. Поле document в этом ответе не нужно, оставь его пустым: "
+            "именем файла станет title.\n"
         )
     elif as_documents:
         size_instruction = (
@@ -1019,6 +1021,19 @@ async def _expand_chapters(
     return sections[:MAX_SECTIONS], template_names, False
 
 
+def _dedupe_by_title(chapters: List[Section]) -> List[Section]:
+    """Разные документы с одинаковым названием схлопнулись бы в один файл."""
+    unique: List[Section] = []
+    seen: Set[str] = set()
+    for chapter in chapters:
+        key = chapter.title.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(chapter)
+    return unique
+
+
 DOCUMENT_TOP_UP_ATTEMPTS = 2
 
 
@@ -1120,15 +1135,23 @@ async def _plan_as_documents(
         )
         if failed or not chapters:
             return chapters, template_names, True
+        # Дубли убираются ДО добора: иначе недостача считается по списку с
+        # повторами, добор просит слишком мало, и файлов выходит меньше заказа.
+        chapters = _dedupe_by_title(chapters)
         chapters = await _top_up_documents(
             chapters, want, user_text, chunks, user_id, extra_instruction,
         )
         chapters = chapters[:want]
         if heuristic:
             template_names = template_names | heuristic
+        # Имя документа здесь — всегда его название, что бы модель ни положила
+        # в поле document. В промпте про это поле сказано дважды, и вторая
+        # формулировка описывает его как «документ, к которому относится
+        # раздел»: модель то заполняла его названием (10 документов), то
+        # раскладывала десять названий по двум документам — из 80 разделов
+        # выходило 2 файла вместо 10. Выбора тут быть не должно.
         for chapter in chapters:
-            if not chapter.document:
-                chapter.document = chapter.title
+            chapter.document = chapter.title
 
     # Без указанного объёма документ получал ОДИН раздел: в готовых ИТТ было
     # по три заголовка на файл. Документ такого рода — это несколько разделов
