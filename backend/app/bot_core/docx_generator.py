@@ -326,7 +326,12 @@ def auto_size_table_columns(doc):
             else:
                 weight = max_len
 
-            weights.append(max(weight, 4))
+            # Узкий столбец с длинным заголовком Word переносит по слогам:
+            # «Версия/редакция» превращалось в «В ерсия/ редак ция». Столбец
+            # обязан вмещать самое длинное слово своей шапки целиком.
+            header = texts[0] if texts else ""
+            longest_word = max((len(w) for w in re.split(r"[\s/]+", header) if w), default=0)
+            weights.append(max(weight, longest_word, 4))
 
         # Применяем ограничения min/max и нормализуем
         total = sum(weights)
@@ -636,8 +641,9 @@ def convert_markdown_to_docx(markdown_text: str, base_template_bytes: Optional[b
     # и там ровно так же не хватало стиля списка.
     try:
         _ensure_required_styles(doc)
+        _normalize_heading_styles(doc)
     except Exception as e:
-        logger.warning("Не удалось восполнить стили документа: %s", e)
+        logger.warning("Не удалось привести стили документа: %s", e)
     new_parser = HtmlToDocx()
     
     # 3. Парсим HTML и добавляем в документ
@@ -667,6 +673,13 @@ def convert_markdown_to_docx(markdown_text: str, base_template_bytes: Optional[b
         fix_monospace_fonts(doc)
     except Exception as e:
         print(f"Monospace font fix warning: {e}")
+
+    # 4d. Ячейки таблиц — по левому краю, даже когда остальное оформление
+    # берётся из шаблона: выключка по ширине рвёт узкие столбцы по слогам.
+    try:
+        _left_align_table_cells(doc)
+    except Exception as e:
+        print(f"Table cell alignment warning: {e}")
 
     # 5. Удаляем пустые пункты списков (артефакты конвертации)
     try:
@@ -740,6 +753,57 @@ def _ensure_required_styles(doc) -> None:
             color.getparent().remove(color)
         target.append(injected)
     logger.info("В шаблон оформления добавлены недостающие стили: %s", ", ".join(missing))
+
+
+def _normalize_heading_styles(doc) -> None:
+    """Заголовок не может быть мельче основного текста и другим шрифтом.
+
+    Замерено на реальном шаблоне ИТТ: его Heading 1 задан 12 pt при тексте
+    14 pt, а Heading 2 и 3 не определены вовсе и подставляются со стандартными
+    13 pt и чужой гарнитурой. В готовом документе заголовки выходили мельче
+    текста и не Times — это то, что заказчик увидел первым.
+
+    Семейство берётся у Normal, размер — не меньше Normal с прибавкой по
+    уровню. Явно больший размер, заданный шаблоном, не трогается.
+    """
+    from docx.shared import Pt
+
+    normal = doc.styles["Normal"]
+    base_name = normal.font.name
+    base_size = normal.font.size or Pt(14)
+    bumps = {"Heading 1": 2, "Heading 2": 1, "Heading 3": 0,
+             "Heading 4": 0, "Heading 5": 0, "Heading 6": 0}
+    for name, bump in bumps.items():
+        try:
+            style = doc.styles[name]
+        except KeyError:
+            continue
+        wanted = Pt(base_size.pt + bump)
+        if style.font.size is None or style.font.size < wanted:
+            style.font.size = wanted
+        if base_name and style.font.name is None:
+            style.font.name = base_name
+        if style.font.bold is None:
+            style.font.bold = True
+
+
+def _left_align_table_cells(doc) -> None:
+    """Ячейки таблиц — по левому краю, без выключки по ширине.
+
+    Выключка правильна для абзацев текста и разрушительна в узкой ячейке:
+    «Версия/редакция» растягивалось на строки «В ерсия/ редак ция», а «3.2.7»
+    разрывалось надвое. Ячейки наследуют выравнивание из Normal, куда оно
+    попадает вместе с оформлением шаблона, поэтому его надо снимать здесь.
+    """
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    if paragraph.paragraph_format.alignment in (None, WD_ALIGN_PARAGRAPH.JUSTIFY):
+                        paragraph.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                    paragraph.paragraph_format.first_line_indent = Cm(0)
 
 
 def _promote_direct_formatting(doc) -> None:

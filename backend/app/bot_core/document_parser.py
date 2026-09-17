@@ -627,6 +627,47 @@ async def extract_zip_archive(file_data: bytes, archive_name: str, user_id: int 
     return results
 
 
+_DOC_TEXT_RUN_RE = re.compile(
+    r"[А-Яа-яЁёA-Za-z0-9 \-—–.,;:()«»\"'/№%°±\n\t]+"
+)
+
+
+async def extract_text_from_doc(file_data: bytes, extended_limits: bool = False) -> str:
+    """Текст из старого .doc (Word 97-2003).
+
+    Раньше .doc возвращал None, и файл выбрасывался целиком: из пяти
+    присланных примеров ИТТ система видела один, потому что остальные были
+    в этом формате. Библиотек для OLE в образе нет, а новая зависимость
+    потребовала бы пересборки — но Word 97+ хранит текст в UTF-16LE внутри
+    контейнера, и его достаточно вычитать напрямую.
+
+    Берутся только длинные последовательности печатных символов, где больше
+    половины знаков — буквы: так отсекается двоичный мусор вокруг текста.
+    Замерено на реальных ИТТ: 5.7-12.2 тыс. символов с файла, читаемо.
+    Порядок абзацев в сложных документах может нарушаться — это цена
+    отсутствия разбора таблицы кусков, и она заметно лучше, чем ничего.
+    """
+    max_chars = MAX_EXTRACT_CHARS_EXTENDED if extended_limits else MAX_EXTRACT_CHARS
+
+    def _extract() -> str:
+        raw = file_data.decode("utf-16-le", errors="ignore")
+        parts = []
+        for match in _DOC_TEXT_RUN_RE.finditer(raw):
+            piece = match.group(0)
+            if len(piece) < 30:
+                continue
+            letters = sum(ch.isalpha() for ch in piece)
+            if letters / len(piece) < 0.5:
+                continue
+            parts.append(re.sub(r"[ \t]+", " ", piece).strip())
+        text = "\n".join(parts)
+        if len(text) > max_chars:
+            text = text[:max_chars] + TEXT_TRUNCATED_NOTICE
+        return text
+
+    return await asyncio.to_thread(_extract)
+
+
 async def extract_text_from_rtf(file_data: bytes) -> str:
     text = await extract_text_from_txt(file_data)
     text = re.sub(r"\\'[0-9a-fA-F]{2}", " ", text)
@@ -660,6 +701,8 @@ async def extract_text_from_file(file_data: bytes, file_name: str, status_callba
 
     if suffix == '.docx':
         return await extract_text_from_docx(file_data, extended_limits=extended_limits)
+    elif suffix == '.doc':
+        return await extract_text_from_doc(file_data, extended_limits=extended_limits)
     elif suffix == '.pdf':
         return await extract_text_from_pdf(file_data, status_callback=status_callback, user_id=user_id, extended_limits=extended_limits)
     elif suffix in {'.xlsx', '.xls'}:

@@ -1281,6 +1281,76 @@ def test_every_heading_is_black_with_and_without_a_template():
     )
 
 
+def test_headings_are_never_smaller_than_the_body_text():
+    """Measured on the customer's real ИТТ template: it defines Heading 1 at
+    12pt over a 14pt body and has no Heading 2 or 3 at all, so the generated
+    documents came out with headings smaller than their text and in another
+    typeface — the first thing the customer noticed."""
+    from docx import Document as _Document
+    from docx.shared import Pt
+    from docx_generator import blank_copy_of_template, convert_markdown_to_docx
+
+    doc = _Document()
+    doc.styles["Normal"].font.name = "Times New Roman"
+    doc.styles["Normal"].font.size = Pt(14)
+    doc.styles["Heading 1"].font.size = Pt(12)  # smaller than the body, as in the real file
+    doc.add_paragraph("Текст примера.")
+    source = io.BytesIO()
+    doc.save(source)
+
+    blank = blank_copy_of_template(source.getvalue())
+    built = _Document(io.BytesIO(convert_markdown_to_docx("# А\n\n## Б\n\n### В\n\nТекст.",
+                                                          base_template_bytes=blank)))
+    normal_size = built.styles["Normal"].font.size
+    for name in ("Heading 1", "Heading 2", "Heading 3"):
+        style = built.styles[name]
+        assert style.font.size >= normal_size, f"{name} is {style.font.size.pt}pt under {normal_size.pt}pt body"
+        assert style.font.name == "Times New Roman", f"{name} uses {style.font.name}"
+
+
+def test_table_cells_are_not_justified():
+    """A template's justified body formatting is promoted into Normal, and
+    table cells inherit it — «Версия/редакция» then wrapped as «В ерсия/ редак
+    ция» and «3.2.7» broke in half."""
+    from docx import Document as _Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Pt
+    from docx_generator import blank_copy_of_template, convert_markdown_to_docx
+
+    doc = _Document()
+    paragraph = doc.add_paragraph("Текст примера, выключенный по ширине.")
+    paragraph.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    paragraph.runs[0].font.name = "Times New Roman"
+    paragraph.runs[0].font.size = Pt(14)
+    source = io.BytesIO()
+    doc.save(source)
+    blank = blank_copy_of_template(source.getvalue())
+
+    table_markdown = (
+        "| № | Наименование | Версия/редакция |\n|---|---|---|\n"
+        "| 1 | СПО «Операторская станция» | 3.2.7 |\n"
+    )
+    built = _Document(io.BytesIO(convert_markdown_to_docx(table_markdown, base_template_bytes=blank)))
+    assert built.tables, "the table did not survive conversion"
+    table = built.tables[0]
+    for row in table.rows:
+        for cell in row.cells:
+            for cell_paragraph in cell.paragraphs:
+                assert cell_paragraph.paragraph_format.alignment == WD_ALIGN_PARAGRAPH.LEFT, (
+                    f"cell is {cell_paragraph.paragraph_format.alignment}: {cell.text!r}"
+                )
+    # The narrow column must still fit the longest word of its own header.
+    widths = [c.width.cm for c in table.columns if c.width]
+    assert widths and min(widths) > 0.9, widths
+
+
+def test_document_filename_does_not_double_the_extension():
+    used = set()
+    assert dg._document_filename("ИТТ_Подсистема_сбора_данных.docx", used) == "ИТТ_Подсистема_сбора_данных.docx"
+    assert dg._document_filename("Отчёт.DOC", set()) == "Отчёт.docx"
+    assert dg._document_filename("ИТТ на ПЛК", set()) == "ИТТ на ПЛК.docx"
+
+
 def test_apply_replacements_longest_first_prevents_partial_overlap():
     mapping = {
         "АБВГ.123456.789": "СТАЛО.000000.001",
