@@ -1451,6 +1451,76 @@ def test_ten_requested_documents_are_planned_as_ten():
     assert len(sections) == 10 * dg.DEFAULT_SECTIONS_PER_DOCUMENT
 
 
+def test_short_document_list_is_topped_up():
+    """Measured on the real order: the same request over the same archives
+    returned ten document titles once and two another time. «Верни ровно 10»
+    stays a request, so the shortfall is filled by asking again for only the
+    remainder — the model then has to invent far less."""
+    import asyncio as _asyncio
+
+    requested = []
+
+    async def fake_plan(user_text, chunks, user_id, extra_instruction="",
+                        want_count=None, as_chapters=False, as_documents=False):
+        requested.append(want_count)
+        start = sum(requested[:-1])
+        titles = [f"ИТТ на узел {start + i}" for i in range(2 if len(requested) == 1 else want_count)]
+        return (
+            [dg.Section(id=i, title=t, brief="", complexity="complex", document=t)
+             for i, t in enumerate(titles)],
+            set(), False,
+        )
+
+    async def fake_expand(chapter, user_text, catalog, per_chapter, user_id):
+        return [dg.Section(id=0, title="Раздел", brief="", complexity="simple",
+                           document=chapter.document)]
+
+    orig_plan, orig_expand = dg._plan_outline, dg._expand_chapter
+    dg._plan_outline, dg._expand_chapter = fake_plan, fake_expand
+    try:
+        sections, _, failed = _asyncio.run(
+            dg._plan_document("сделай все 10 документов", [], 1)
+        )
+    finally:
+        dg._plan_outline, dg._expand_chapter = orig_plan, orig_expand
+
+    assert not failed
+    assert requested[0] == 10, requested
+    assert requested[1] == 8, f"the top-up must ask for the remainder only: {requested}"
+    assert len({s.document for s in sections}) == 10, sorted({s.document for s in sections})
+
+
+def test_top_up_gives_up_instead_of_looping():
+    """A model that keeps repeating the same two titles must not spin: the
+    top-up is bounded and the shortfall is reported rather than retried."""
+    import asyncio as _asyncio
+
+    calls = []
+
+    async def stubborn_plan(user_text, chunks, user_id, extra_instruction="",
+                            want_count=None, as_chapters=False, as_documents=False):
+        calls.append(want_count)
+        return (
+            [dg.Section(id=i, title=f"ИТТ на узел {i}", brief="", complexity="complex",
+                        document=f"ИТТ на узел {i}") for i in range(2)],
+            set(), False,
+        )
+
+    async def fake_expand(chapter, user_text, catalog, per_chapter, user_id):
+        return [dg.Section(id=0, title="Раздел", brief="", complexity="simple",
+                           document=chapter.document)]
+
+    orig_plan, orig_expand = dg._plan_outline, dg._expand_chapter
+    dg._plan_outline, dg._expand_chapter = stubborn_plan, fake_expand
+    try:
+        sections, _, failed = _asyncio.run(dg._plan_document("сделай все 10 документов", [], 1))
+    finally:
+        dg._plan_outline, dg._expand_chapter = orig_plan, orig_expand
+
+    assert len(calls) == 1 + dg.DOCUMENT_TOP_UP_ATTEMPTS, calls
+    assert len({s.document for s in sections}) == 2
+
+
 def test_apply_replacements_longest_first_prevents_partial_overlap():
     mapping = {
         "АБВГ.123456.789": "СТАЛО.000000.001",

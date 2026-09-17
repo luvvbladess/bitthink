@@ -1019,6 +1019,61 @@ async def _expand_chapters(
     return sections[:MAX_SECTIONS], template_names, False
 
 
+DOCUMENT_TOP_UP_ATTEMPTS = 2
+
+
+async def _top_up_documents(
+    chapters: List[Section],
+    want: int,
+    user_text: str,
+    chunks: List[Chunk],
+    user_id: int,
+    extra_instruction: str,
+) -> List[Section]:
+    """Дозапрашивает названия документов, если список пришёл короче заказа.
+
+    Замерено на реальном заказе «все 10 документов»: один и тот же запрос на
+    одних и тех же архивах давал то 10 названий, то 2. Просьба «верни ровно 10»
+    остаётся просьбой, поэтому недостача добирается отдельными вызовами — уже
+    зная, что есть, модели остаётся придумать только остаток.
+    """
+    for _ in range(DOCUMENT_TOP_UP_ATTEMPTS):
+        missing = want - len(chapters)
+        if missing <= 0:
+            return chapters
+        have = "; ".join(c.title for c in chapters)
+        logger.warning(
+            "docgen: планировщик вернул %d документов из %d, дозапрашиваю %d",
+            len(chapters), want, missing,
+        )
+        extra, _, failed = await _plan_outline(
+            user_text, chunks, user_id,
+            extra_instruction=(
+                f"{extra_instruction}\nУже запланированы документы: {have}. "
+                f"Верни ТОЛЬКО ещё {missing} других документов на другие узлы, "
+                "не повторяя перечисленные."
+            ),
+            want_count=missing, as_chapters=True, as_documents=True,
+        )
+        if failed or not extra:
+            break
+        known = {c.title.strip().lower() for c in chapters}
+        for section in extra:
+            title = section.title.strip()
+            if not title or title.lower() in known:
+                continue
+            known.add(title.lower())
+            section.document = section.document or title
+            chapters.append(section)
+            if len(chapters) >= want:
+                break
+    if len(chapters) < want:
+        logger.error(
+            "docgen: заказано %d документов, в плане осталось %d", want, len(chapters)
+        )
+    return chapters
+
+
 async def _plan_as_documents(
     user_text: str,
     chunks: List[Chunk],
@@ -1065,6 +1120,9 @@ async def _plan_as_documents(
         )
         if failed or not chapters:
             return chapters, template_names, True
+        chapters = await _top_up_documents(
+            chapters, want, user_text, chunks, user_id, extra_instruction,
+        )
         chapters = chapters[:want]
         if heuristic:
             template_names = template_names | heuristic
@@ -1759,10 +1817,20 @@ async def _confirm_before_generating(
     knowledge_names = [n for n in doc_names if n not in template_names] if template_names else doc_names
 
     planned_documents = len({s.document for s in outline if s.document}) or 1
+    requested_documents = _requested_documents(user_text)
     lines = [
         (f"Документов: {planned_documents}, разделов: {total}, примерно {approx_pages} стр."
          if planned_documents > 1
          else f"Разделов: {total}, примерно {approx_pages} стр."),
+    ]
+    # Недостача видна до запуска, а не после: иначе человек узнаёт о ней,
+    # открыв архив на два файла вместо десяти.
+    if requested_documents and planned_documents < requested_documents:
+        lines.append(
+            f"Заказано документов: {requested_documents}, в плане только {planned_documents}. "
+            "Отмените и переформулируйте перечень, если нужны все."
+        )
+    lines += [
         f"Оценка стоимости API: не больше ${approx_cost:.2f} (по потолку контекста на раздел)."
         + (
             " Сложные разделы пишет DeepSeek." if DEEPSEEK_API_KEY
