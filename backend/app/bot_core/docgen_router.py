@@ -1083,10 +1083,34 @@ def _template_base_bytes(user_id: int, template_names: Set[str]) -> Optional[byt
         if not data:
             continue
         blank = blank_copy_of_template(data)
-        if blank:
+        if blank and _template_renders_cleanly(blank):
             logger.info("docgen: оформление взято из шаблона %s", name)
             return blank
+        if blank:
+            logger.warning("docgen: шаблон %s не годится как основа, оформление стандартное", name)
     return None
+
+
+def _template_renders_cleanly(blank_template: bytes) -> bool:
+    """Проверяет заготовку одним пробным документом до того, как по ней будут
+    собраны все файлы.
+
+    convert_markdown_to_docx на сбое htmldocx не падает, а кладёт в документ
+    СЫРОЙ markdown («## Заголовок», «- пункт») и возвращает валидный .docx.
+    Заказчик получил бы десять таких файлов, а сводка сообщила бы, что
+    оформление взято из шаблона. Один пробный прогон на весь заказ — это
+    ничто рядом с тысячами вызовов модели, а отличает он катастрофу от
+    просто стандартного оформления.
+    """
+    from docx_generator import convert_markdown_to_docx, CONVERSION_FAILED_MARKER
+
+    probe = "## Проверка заголовка\n\nАбзац.\n\n- пункт списка\n- второй пункт"
+    try:
+        result = convert_markdown_to_docx(probe, base_template_bytes=blank_template)
+    except Exception as e:
+        logger.warning("docgen: пробная сборка по шаблону не удалась: %s", e)
+        return False
+    return CONVERSION_FAILED_MARKER.encode("utf-8") not in result
 
 
 def _document_filename(title: str, used: Set[str]) -> str:
