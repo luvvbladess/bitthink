@@ -18,6 +18,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Текст этого абзаца — признак того, что htmldocx не справился и в документ
+# лёг сырой markdown. Вызывающий код ищет его, чтобы не выдать такой файл
+# пользователю за готовый.
+CONVERSION_FAILED_MARKER = "Ошибка при конвертации форматирования. Исходный текст:"
+
 def create_list_numbering(doc, is_bullet=False):
     """
     Создает полностью новый вложенный (multilevel) шаблон нумерации.
@@ -627,7 +632,7 @@ def convert_markdown_to_docx(markdown_text: str, base_template_bytes: Optional[b
     except Exception as e:
         # В случае ошибки добавляем текст как есть
         print(f"HTMLDOCX CRITICAL ERROR: {e}")
-        doc.add_paragraph("Ошибка при конвертации форматирования. Исходный текст:")
+        doc.add_paragraph(CONVERSION_FAILED_MARKER)
         doc.add_paragraph(markdown_text)
     
     # 4. Добавляем границы таблиц
@@ -675,6 +680,40 @@ def convert_markdown_to_docx(markdown_text: str, base_template_bytes: Optional[b
     return file_stream.read()
 
 
+_W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+# Стили, которыми htmldocx размечает результат. Если шаблон заказчика их не
+# определяет — а минимальный шаблон обычно определяет только свои — htmldocx
+# бросает "no style with name 'Heading 2'", convert_markdown_to_docx уходит в
+# аварийную ветку и кладёт в документ СЫРОЙ markdown. Молча: сводка при этом
+# всё равно сообщает, что оформление взято из шаблона.
+_REQUIRED_STYLE_NAMES = (
+    "Heading 1", "Heading 2", "Heading 3", "Heading 4", "Heading 5", "Heading 6",
+    "List Paragraph", "Normal", "Table Grid",
+)
+
+
+def _ensure_required_styles(doc) -> None:
+    """Доносит в шаблон недостающие определения стилей из стандартного шаблона
+    python-docx. Собственные стили шаблона не трогаются — дописываются только
+    отсутствующие, поэтому оформление остаётся исходным."""
+    import copy
+
+    have = {style.name for style in doc.styles}
+    missing = [name for name in _REQUIRED_STYLE_NAMES if name not in have]
+    if not missing:
+        return
+    default_styles = Document().styles
+    target = doc.styles.element
+    for name in missing:
+        try:
+            source = default_styles[name].element
+        except KeyError:
+            continue
+        target.append(copy.deepcopy(source))
+    logger.info("В шаблон оформления добавлены недостающие стили: %s", ", ".join(missing))
+
+
 def blank_copy_of_template(template_bytes: bytes) -> Optional[bytes]:
     """Шаблон без его собственного текста: стили, поля, колонтитулы и нумерация
     остаются, содержимое убирается.
@@ -689,12 +728,25 @@ def blank_copy_of_template(template_bytes: bytes) -> Optional[bytes]:
     не открылся как .docx — вызывающий тогда просто работает без шаблона.
     """
     try:
+        import copy
+
         doc = Document(io.BytesIO(template_bytes))
         body = doc.element.body
+
+        # Настройки страницы берём у ПЕРВОГО раздела, а не у последнего.
+        # У шаблона с альбомным приложением в конце последний sectPr
+        # альбомный — и весь новый документ выходил бы альбомным.
+        sect_prs = body.findall(f".//{{{_W_NS}}}sectPr")
+        body_sect_pr = body.find(f"{{{_W_NS}}}sectPr")
+        if sect_prs and body_sect_pr is not None and sect_prs[0] is not body_sect_pr:
+            body.replace(body_sect_pr, copy.deepcopy(sect_prs[0]))
+
         for child in list(body):
             # sectPr — не содержимое, а настройки страницы этого раздела.
             if not child.tag.endswith("}sectPr"):
                 body.remove(child)
+
+        _ensure_required_styles(doc)
         buffer = io.BytesIO()
         doc.save(buffer)
         return buffer.getvalue()

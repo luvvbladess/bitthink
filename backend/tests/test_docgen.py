@@ -682,6 +682,75 @@ def test_many_documents_are_packed_into_one_archive():
         assert archive.read("Док 1.docx") == b"PK-fake-1"
 
 
+def _docx_with_landscape_appendix() -> bytes:
+    from docx import Document as _Document
+    from docx.enum.section import WD_ORIENT
+
+    doc = _Document()
+    doc.add_paragraph("Основная часть")
+    appendix = doc.add_section()
+    appendix.orientation = WD_ORIENT.LANDSCAPE
+    appendix.page_width, appendix.page_height = appendix.page_height, appendix.page_width
+    doc.add_paragraph("Приложение")
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    return buffer.getvalue()
+
+
+def test_template_page_setup_comes_from_the_first_section():
+    """A template whose last section is a landscape appendix used to make the
+    whole generated document landscape — the final sectPr is the one python-docx
+    hands over, and it belongs to the appendix, not to the body."""
+    from docx import Document as _Document
+    from docx.enum.section import WD_ORIENT
+    from docx_generator import blank_copy_of_template
+
+    blank = blank_copy_of_template(_docx_with_landscape_appendix())
+    sections = _Document(io.BytesIO(blank)).sections
+    assert len(sections) == 1
+    assert sections[0].orientation == WD_ORIENT.PORTRAIT, "inherited the appendix, not the body"
+
+
+def test_template_without_heading_style_still_renders_formatted_text():
+    """The catastrophic case: htmldocx raises on a missing style, and
+    convert_markdown_to_docx then writes RAW markdown into the document and
+    returns it as a valid .docx — so the customer gets «## Заголовок» as body
+    text while the summary claims the template was applied."""
+    import re as _re
+    import zipfile as _zipfile
+    from docx import Document as _Document
+    from docx_generator import (
+        blank_copy_of_template, convert_markdown_to_docx, CONVERSION_FAILED_MARKER,
+    )
+
+    source = io.BytesIO()
+    _Document().save(source)
+    stripped = io.BytesIO()
+    with _zipfile.ZipFile(io.BytesIO(source.getvalue())) as zin, \
+            _zipfile.ZipFile(stripped, "w", _zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename == "word/styles.xml":
+                data = _re.sub(
+                    r'<w:style [^>]*w:styleId="Heading2".*?</w:style>', "",
+                    data.decode("utf-8"), flags=_re.S,
+                ).encode("utf-8")
+            zout.writestr(item, data)
+
+    blank = blank_copy_of_template(stripped.getvalue())
+    result = convert_markdown_to_docx("## Заголовок\n\nТекст.", base_template_bytes=blank)
+    paragraphs = [(p.style.name, p.text.strip()) for p in _Document(io.BytesIO(result)).paragraphs
+                  if p.text.strip()]
+    assert not any(CONVERSION_FAILED_MARKER in text for _, text in paragraphs), paragraphs
+    assert ("Heading 2", "Заголовок") in paragraphs, paragraphs
+
+
+def test_unrenderable_template_is_refused_rather_than_shipped():
+    """If a template still cannot render, standard formatting is the right
+    answer — ten documents of raw markdown is not."""
+    assert dg._template_renders_cleanly(b"not a docx at all") is False
+
+
 def test_apply_replacements_longest_first_prevents_partial_overlap():
     mapping = {
         "АБВГ.123456.789": "СТАЛО.000000.001",
