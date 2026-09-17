@@ -1521,6 +1521,79 @@ def test_top_up_gives_up_instead_of_looping():
     assert len({s.document for s in sections}) == 2
 
 
+def test_document_names_come_from_titles_not_from_the_model_field():
+    """The delivered run: the confirmation said ten documents and the archive
+    held two, with the same eighty sections. The planner had returned ten
+    titles but filled `document` with only two names — the prompt describes
+    that field twice, once as "the document this section belongs to" — so the
+    eighty sections grouped into two files. The name is the title, full stop."""
+    import asyncio as _asyncio
+
+    async def fake_plan(user_text, chunks, user_id, extra_instruction="",
+                        want_count=None, as_chapters=False, as_documents=False):
+        # Ten distinct titles, but `document` collapsed onto two values.
+        return (
+            [dg.Section(id=i, title=f"ИТТ на узел {i}", brief="",
+                        complexity="complex", document=f"Сборный том {i % 2}")
+             for i in range(want_count)],
+            set(), False,
+        )
+
+    async def fake_expand(chapter, user_text, catalog, per_chapter, user_id):
+        return [
+            dg.Section(id=j, title=f"Раздел {j}", brief="", complexity="simple",
+                       document=chapter.document)
+            for j in range(per_chapter)
+        ]
+
+    orig_plan, orig_expand = dg._plan_outline, dg._expand_chapter
+    dg._plan_outline, dg._expand_chapter = fake_plan, fake_expand
+    try:
+        sections, _, _ = _asyncio.run(dg._plan_document("сделай все 10 документов", [], 1))
+    finally:
+        dg._plan_outline, dg._expand_chapter = orig_plan, orig_expand
+
+    documents = {s.document for s in sections}
+    assert len(documents) == 10, f"collapsed into {len(documents)}: {sorted(documents)}"
+    assert all(d.startswith("ИТТ на узел") for d in documents), sorted(documents)
+    groups = dg._group_by_document(sections, ["текст"] * len(sections))
+    assert len(groups) == 10, f"{len(groups)} files instead of 10"
+
+
+def test_duplicate_titles_do_not_silently_reduce_the_count():
+    """Two identical titles would land in one file, so the list is deduplicated
+    and topped up to the requested number instead."""
+    import asyncio as _asyncio
+
+    rounds = []
+
+    async def fake_plan(user_text, chunks, user_id, extra_instruction="",
+                        want_count=None, as_chapters=False, as_documents=False):
+        rounds.append(want_count)
+        if len(rounds) == 1:
+            titles = ["ИТТ на ПЛК", "ИТТ на ПЛК", "ИТТ на шкаф"]  # a duplicate
+        else:
+            titles = [f"ИТТ на прочий узел {i}" for i in range(want_count)]
+        return (
+            [dg.Section(id=i, title=t, brief="", complexity="complex", document="")
+             for i, t in enumerate(titles)],
+            set(), False,
+        )
+
+    async def fake_expand(chapter, user_text, catalog, per_chapter, user_id):
+        return [dg.Section(id=0, title="Раздел", brief="", complexity="simple",
+                           document=chapter.document)]
+
+    orig_plan, orig_expand = dg._plan_outline, dg._expand_chapter
+    dg._plan_outline, dg._expand_chapter = fake_plan, fake_expand
+    try:
+        sections, _, _ = _asyncio.run(dg._plan_document("нужно 5 документов", [], 1))
+    finally:
+        dg._plan_outline, dg._expand_chapter = orig_plan, orig_expand
+
+    assert len({s.document for s in sections}) == 5, sorted({s.document for s in sections})
+
+
 def test_apply_replacements_longest_first_prevents_partial_overlap():
     mapping = {
         "АБВГ.123456.789": "СТАЛО.000000.001",
