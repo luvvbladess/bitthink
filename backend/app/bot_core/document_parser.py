@@ -541,6 +541,27 @@ def store_source_docx(user_id, doc_name: str, data: bytes) -> None:
         logger.warning("Не удалось сохранить исходник %s для оформления: %s", doc_name, e)
 
 
+def drop_source_docx(user_id, doc_names) -> int:
+    """Убирает сохранённые оригиналы удалённых документов.
+
+    Без этого каждый перезалитый архив оставляет свои .docx на диске навсегда:
+    до 15 МБ на файл, и чистить их некому. Удаляются только те файлы, которые
+    store_source_docx сам и создавал — путь считается от doc_name, ничего
+    другого в этой папке нет.
+    """
+    removed = 0
+    for doc_name in doc_names or ():
+        path = _source_store_path(user_id, doc_name)
+        if path is None or not path.is_file():
+            continue
+        try:
+            path.unlink()
+            removed += 1
+        except OSError as e:
+            logger.warning("Не удалось убрать оригинал %s: %s", doc_name, e)
+    return removed
+
+
 def load_source_docx(user_id, doc_name: str) -> Optional[bytes]:
     """Байты исходного .docx, если он сохранялся. None — если нет."""
     path = _source_store_path(user_id, doc_name)
@@ -568,26 +589,31 @@ async def extract_zip_archive(file_data: bytes, archive_name: str, user_id: int 
             for info in archive.infolist():
                 if info.is_dir():
                     continue
-                path = Path(info.filename)
-                if path.name.startswith(".") or "__MACOSX" in path.parts:
+                # ZIP spec uses '/', but some Windows tools store backslashes.
+                # Without this, arhiv.zip/shablony/forma.docx collapses into one
+                # group named "arhiv.zip/shablony\\forma.docx" and the planner
+                # cannot tell template folders from knowledge folders.
+                name = info.filename.replace("\\", "/").lstrip("/")
+                path = Path(name)
+                if not name or path.name.startswith(".") or "__MACOSX" in path.parts:
                     continue
-                entries_info.append(info)
+                entries_info.append((info, name))
             if len(entries_info) > max_entries:
                 raise ValueError(f"Архив содержит больше {max_entries} файлов")
-            total_declared = sum(info.file_size for info in entries_info)
+            total_declared = sum(info.file_size for info, _name in entries_info)
             if total_declared > max_unpacked:
                 raise ValueError(
                     f"Архив распаковывается больше чем в {max_unpacked // (1024 * 1024)} МБ"
                 )
             total_read = 0
-            for info in entries_info:
+            for info, name in entries_info:
                 data = archive.read(info.filename)
                 total_read += len(data)
                 if total_read > max_unpacked:
                     raise ValueError(
                         f"Архив распаковывается больше чем в {max_unpacked // (1024 * 1024)} МБ"
                     )
-                entries.append((info.filename, data))
+                entries.append((name, data))
         return entries
 
     entries = await asyncio.to_thread(_list_entries)

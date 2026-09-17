@@ -205,7 +205,21 @@ async def upload_document(
 
 @router.delete("/{filename}")
 async def delete_document(filename: str, user_id: str = Depends(get_current_user)):
+    # Имена собираются ДО удаления: у архива удаляются и все его файлы, а
+    # какие именно это были, потом уже не узнать. Оригиналы .docx лежат на
+    # диске отдельно от базы, и без этой уборки остаются там навсегда.
+    from document_parser import drop_source_docx
+
+    bot_user_id = await repo.ensure_user(user_id)
+    doomed = [
+        str(doc.get("filename") or "")
+        for doc in (await repo.get_documents(user_id) or [])
+        if str(doc.get("filename") or "") == filename
+        or str(doc.get("filename") or "").startswith(f"{filename}/")
+    ]
     ok = await repo.remove_document(user_id, filename)
+    if ok and doomed:
+        await asyncio.to_thread(drop_source_docx, bot_user_id, doomed)
     attachment = await repo.remove_attachment(user_id, filename)
     if attachment and attachment.get("url"):
         upload_root = get_settings().UPLOAD_DIR.resolve()

@@ -10,6 +10,7 @@ export interface AttachmentInfo {
   url?: string;
   canvas?: boolean;
   files?: AttachmentInfo[];
+  note?: string;
 }
 
 interface Props extends AttachmentInfo {
@@ -32,7 +33,7 @@ function formatSize(bytes?: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
 }
 
-export function DocumentAttachment({ name, size, status, type, url, onRemoveFromContext }: Props) {
+export function DocumentAttachment({ name, size, status, type, url, note, onRemoveFromContext }: Props) {
   const Icon = iconForFile(name);
   const isImage = type === 'image';
   const canDownload = status === 'done' && !!url && type !== 'image';
@@ -80,7 +81,7 @@ export function DocumentAttachment({ name, size, status, type, url, onRemoveFrom
         </Box>
         <Box sx={{ fontSize: '0.6875rem', color: 'text.muted' }}>
           {status === 'uploading' && 'Загрузка...'}
-          {status === 'done' && `${isImage ? 'Изображение' : canDownload ? 'Скачать' : 'Документ'}${formatSize(size) ? ` · ${formatSize(size)}` : ''}`}
+          {status === 'done' && `${isImage ? 'Изображение' : note || (canDownload ? 'Скачать' : 'Документ')}${formatSize(size) ? ` · ${formatSize(size)}` : ''}`}
           {status === 'error' && 'Ошибка загрузки'}
         </Box>
       </Box>

@@ -111,6 +111,7 @@ export default function ChatPage() {
   const generatingIds = Object.keys(jobs).filter((id) => jobs[id]?.thinking);
   const { data: models } = useQuery({ queryKey: ['models'], queryFn: () => apiFetch('/models'), staleTime: 10_000 });
   const isStudio = models?.selected === 'studio';
+  const isDocgen = models?.selected === 'docgen';
   const canvasSource = useMemo(() => findStudioCanvas(displayMessages), [displayMessages]);
   const patchJob = (convId: string | undefined, patch: LiveJobPatch) => {
     if (!convId) return;
@@ -694,7 +695,7 @@ export default function ChatPage() {
     // Persist in selection order so cards never reshuffle after a refresh.
     // There is no artificial file-count limit; progress stays visible for long batches.
     const UPLOAD_CONCURRENCY = 3;
-    const UPLOAD_TIMEOUT_MS = 180_000;
+    const UPLOAD_TIMEOUT_MS = isDocgen ? 600_000 : 180_000;
     let lastError: string | undefined;
     let finished = 0;
 
@@ -1005,7 +1006,7 @@ export default function ChatPage() {
           onRegenerate={handleRegenerate}
           onEditMessage={handleEditMessage}
           onEditImage={
-            isStudio
+            isStudio || isDocgen
               ? undefined
               : (url) => {
                   setForcedEditUrl(url);

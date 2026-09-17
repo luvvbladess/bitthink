@@ -4,7 +4,7 @@ import { File as FileIcon, PaperPlaneRight, Paperclip, Microphone, Stop, X } fro
 import { apiFormData } from '@/api/client';
 import { ReasoningEffortSelector, SearchModeSelector, useIsComputer, useSelectedModel } from '@/components/ModelSelector';
 import { composerIconBtnSx, composerShellSx } from '@/theme/effects';
-import { PILOT_LABEL } from '@/constants/modes';
+import { DOCGEN_LABEL, PILOT_LABEL } from '@/constants/modes';
 
 interface Props {
   onSend: (text: string, files?: File[], mode?: 'chat' | 'image') => Promise<boolean | void> | boolean | void;
@@ -95,6 +95,7 @@ export function MessageInput({
   const isComputer = useIsComputer();
   const selectedModel = useSelectedModel();
   const isStudio = selectedModel === 'studio';
+  const isDocgen = selectedModel === 'docgen';
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -190,12 +191,12 @@ export function MessageInput({
           : 'Голосовой ввод';
 
   useEffect(() => {
-    if (imageModeRequest > 0) setImageMode(true);
-  }, [imageModeRequest]);
+    if (imageModeRequest > 0 && !isStudio && !isDocgen) setImageMode(true);
+  }, [imageModeRequest, isStudio, isDocgen]);
 
   useEffect(() => {
-    if (isStudio) setImageMode(false);
-  }, [isStudio]);
+    if (isStudio || isDocgen) setImageMode(false);
+  }, [isStudio, isDocgen]);
 
   const pendingImages = pendingFiles.filter((file) => file.type.startsWith('image/'));
   const editingImage = imageMode && (pendingImages.length > 0 || Boolean(editSourceUrl));
@@ -234,7 +235,7 @@ export function MessageInput({
         ...(imageMode && !isComputer && {
           borderColor: 'var(--bt-line)',
         }),
-        ...(isComputer && {
+        ...((isComputer || isDocgen) && {
           animation: 'none',
           borderColor: 'primary.main',
           boxShadow: 'var(--bt-composer-shadow-focus)',
@@ -308,20 +309,24 @@ export function MessageInput({
           editingImage
             ? 'Что изменить на этой картинке?'
             : pendingFiles.length
-              ? isStudio
-                ? 'Соберите по файлам: образец стиля и ТЗ...'
-                : 'Спросите о прикреплённых файлах...'
-              : isComputer
-                ? 'Сделайте что угодно...'
-                : selectedModel === 'studio'
-                  ? 'Образец PPTX и ТЗ или опишите слайды...'
-                  : selectedModel === 'kimi-k2.6'
-                    ? 'Что найти прямо сейчас?'
-                    : selectedModel === 'gpt-6-astra'
-                      ? 'Код, договор или задачу в песочницу...'
-                      : selectedModel === 'gpt-5.6-sol' || selectedModel === 'gpt-5.6-terra'
-                        ? 'Какую тему разобрать с источниками?'
-                        : 'Спросите что угодно...'
+              ? isDocgen
+                ? 'Какой документ собрать по этим файлам?'
+                : isStudio
+                  ? 'Соберите по файлам: образец стиля и ТЗ...'
+                  : 'Спросите о прикреплённых файлах...'
+              : isDocgen
+                ? 'Прикрепите шаблоны и данные, затем опишите документ...'
+                : isComputer
+                  ? 'Сделайте что угодно...'
+                  : selectedModel === 'studio'
+                    ? 'Образец PPTX и ТЗ или опишите слайды...'
+                    : selectedModel === 'kimi-k2.6'
+                      ? 'Что найти прямо сейчас?'
+                      : selectedModel === 'gpt-6-astra'
+                        ? 'Код, договор или задачу в песочницу...'
+                        : selectedModel === 'gpt-5.6-sol' || selectedModel === 'gpt-5.6-terra'
+                          ? 'Какую тему разобрать с источниками?'
+                          : 'Спросите что угодно...'
         }
         fullWidth
         multiline
@@ -486,7 +491,7 @@ export function MessageInput({
     </Box>
       <Box
         sx={{
-          display: isComputer || isStudio || imageMode ? 'block' : { xs: 'none', sm: 'block' },
+          display: isComputer || isStudio || isDocgen || imageMode ? 'block' : { xs: 'none', sm: 'block' },
           mt: 0.7,
           px: 0.75,
           fontSize: '0.75rem',
@@ -497,6 +502,8 @@ export function MessageInput({
       >
         {editingImage
           ? 'Опишите правку. Картинка останется в этой беседе'
+          : isDocgen
+            ? `${DOCGEN_LABEL}: большой .docx по вашим файлам. Перед запуском спросит подтверждение`
           : isStudio
             ? 'Готовый макет на холсте правится чатом. Можно прикрепить образец PPTX или PDF и файл ТЗ'
           : isComputer

@@ -405,6 +405,57 @@ def test_parse_replacements_kak_est_drops_the_pair():
     assert dg._parse_replacements("Заказчик: ООО «Ромашка» → как есть") == {}
 
 
+def test_replacement_table_kak_est_is_still_consent_to_start():
+    """A table of «как есть» used to look identical to ordinary prose
+    (_parse_replacements is {} for both), so the mode re-asked confirmation
+    instead of generating. The table shape itself is consent."""
+    mapping, is_table = dg._replacement_table(
+        "Заказчик: ООО «Ромашка» → как есть\n"
+        "Децимальный номер: АБВГ.123456.789 → как есть"
+    )
+    assert mapping == {}
+    assert is_table is True
+
+
+def test_replacement_table_prose_and_lone_number_are_not_consent():
+    for prose in (
+        "Просто обычное сообщение без разделителей.",
+        "я думаю -> надо переделать раздел",
+        "100000 -> 120000",
+    ):
+        mapping, is_table = dg._replacement_table(prose)
+        assert mapping == {}
+        assert is_table is False, f"prose counted as a replacement table: {prose!r}"
+
+
+def test_marker_button_takes_empty_cells_from_the_confirmation_as_placeholders():
+    confirmation = (
+        "Разделов: 2, примерно 3 стр.\n"
+        "Заказчик: ООО «Ромашка» → \n"
+        "Децимальный номер: АБВГ.123456.789 → \n"
+    )
+    messages = [
+        {"role": "user", "content": "сделай документ"},
+        {"role": "assistant", "content": confirmation},
+        {"role": "user", "content": f"Уточнения по задаче:\n1. Начинать генерацию? – {dg._CONFIRM_START}"},
+    ]
+    offered = dg._replacements_offered_in(messages)
+    assert offered == {"ООО «Ромашка»": "", "АБВГ.123456.789": ""}
+    swept = dg._apply_replacements("Заказчик ООО «Ромашка», номер АБВГ.123456.789.", offered)
+    assert "ООО «Ромашка»" not in swept
+    assert "АБВГ.123456.789" not in swept
+    assert "[УКАЗАТЬ:" in swept
+
+
+def test_replacements_offered_in_uses_only_the_last_assistant_message():
+    messages = [
+        {"role": "assistant", "content": "Заказчик: ООО «Ромашка» → \n"},
+        {"role": "user", "content": "другой запрос"},
+        {"role": "assistant", "content": "Разделов: 2, примерно 3 стр. Шаблон оформления не определён."},
+    ]
+    assert dg._replacements_offered_in(messages) == {}
+
+
 def test_parse_replacements_no_separator_returns_empty_dict():
     # Not mistaken for a confirmation: Task 12's fail-safe gate relies on
     # this returning falsy for an ordinary message.
@@ -470,6 +521,237 @@ def test_requested_sections_needs_a_unit_word():
 
 def test_requested_sections_clamped_to_max_sections():
     assert dg._requested_sections("нужно 100000 страниц") == dg.MAX_SECTIONS
+
+
+def test_requested_documents_reads_file_count_not_pages():
+    assert dg._requested_documents("сделай 1000 документов по шаблонам") == 1000
+    assert dg._requested_documents("нужно 10 документов") == 10
+    assert dg._requested_documents("2к документов") == 2000
+    # «документацию» is one volume, not N files.
+    assert dg._requested_documents("напиши документацию на 5000 страниц") is None
+    assert dg._requested_documents("сделай ИТТ по шаблону") is None
+
+
+def test_requested_documents_clamped_to_max_documents():
+    assert dg._requested_documents("миллион документов") is None
+    assert dg._requested_documents("100000 документов") == dg.MAX_DOCUMENTS
+
+
+def test_assign_templates_matches_by_name_uniquely():
+    titles = ["ИТТ на ПЛК", "ИТТ на насос"]
+    templates = {"шаблоны.zip/ИТТ_ПЛК.docx", "шаблоны.zip/ИТТ_насос.docx"}
+    assigned = dg._assign_templates(titles, templates)
+    assert assigned["ИТТ на ПЛК"].endswith("ИТТ_ПЛК.docx")
+    assert assigned["ИТТ на насос"].endswith("ИТТ_насос.docx")
+    assert assigned["ИТТ на ПЛК"] != assigned["ИТТ на насос"]
+
+
+def test_assign_templates_one_template_is_shared():
+    assigned = dg._assign_templates(["А", "Б"], {"форма.docx"})
+    assert assigned["А"] == assigned["Б"] == "форма.docx"
+
+
+def test_assign_templates_matches_by_digest_when_names_differ():
+    """forma1/forma2 say nothing; the start of each file does."""
+    titles = ["ИТТ на ПЛК", "ИТТ на насос"]
+    templates = {"шаблоны.zip/форма1.docx", "шаблоны.zip/форма2.docx"}
+    digests = {
+        "шаблоны.zip/форма1.docx": "Исходные требования на программируемый контроллер ПЛК Siemens",
+        "шаблоны.zip/форма2.docx": "Исходные требования на центробежный насос насосной станции",
+    }
+    title_texts = {
+        "ИТТ на ПЛК": "контроллер ПЛК ток пять ампер Siemens",
+        "ИТТ на насос": "центробежный насос напор двенадцать метров",
+    }
+    assigned = dg._assign_templates(titles, templates, digests=digests, title_texts=title_texts)
+    assert assigned["ИТТ на ПЛК"].endswith("форма1.docx")
+    assert assigned["ИТТ на насос"].endswith("форма2.docx")
+
+
+def test_scope_chunks_uses_digest_when_filenames_are_generic():
+    chunks = [
+        Chunk(id=0, doc_name="шаблоны.zip/форма1.docx", title="ИТТ",
+              text="требования на контроллер ПЛК Siemens",
+              tokens=frozenset({"требования", "контроллер", "плк", "siemens"}),
+              title_tokens=frozenset({"итт"})),
+        Chunk(id=1, doc_name="шаблоны.zip/форма2.docx", title="ИТТ",
+              text="требования на центробежный насос станции",
+              tokens=frozenset({"требования", "центробежный", "насос", "станции"}),
+              title_tokens=frozenset({"итт"})),
+        Chunk(id=2, doc_name="знания.zip/данные1.xlsx", title="данные",
+              text="контроллер ПЛК Siemens ток пять ампер",
+              tokens=frozenset({"контроллер", "плк", "siemens", "ток", "пять", "ампер"}),
+              title_tokens=frozenset({"данные"})),
+        Chunk(id=3, doc_name="знания.zip/данные2.xlsx", title="данные",
+              text="центробежный насос напор двенадцать метров",
+              tokens=frozenset({"центробежный", "насос", "напор", "двенадцать", "метров"}),
+              title_tokens=frozenset({"данные"})),
+    ]
+    templates = {"шаблоны.zip/форма1.docx", "шаблоны.zip/форма2.docx"}
+    digests = dg._file_digests(chunks)
+    assigned = dg._assign_templates(
+        ["ИТТ на ПЛК", "ИТТ на насос"], templates,
+        digests=digests,
+        title_texts={
+            "ИТТ на ПЛК": digests["знания.zip/данные1.xlsx"],
+            "ИТТ на насос": digests["знания.zip/данные2.xlsx"],
+        },
+    )
+    section = Section(
+        id=0, title="Требования", brief="ток", complexity="simple", document="ИТТ на ПЛК",
+    )
+    scoped, tmpl_set = dg._scope_chunks_for_section(
+        section, chunks, templates, assigned, digests=digests,
+    )
+    names = {c.doc_name for c in scoped}
+    assert assigned["ИТТ на ПЛК"].endswith("форма1.docx")
+    assert "шаблоны.zip/форма1.docx" in names
+    assert "шаблоны.zip/форма2.docx" not in names
+    assert "знания.zip/данные1.xlsx" in names
+    assert "знания.zip/данные2.xlsx" not in names
+    assert tmpl_set == {"шаблоны.zip/форма1.docx"}
+
+
+def test_file_digests_take_title_and_start_without_a_model():
+    chunks = [
+        Chunk(id=0, doc_name="a.docx", title="Контроллер ПЛК", text="A" * 2000, tokens=frozenset()),
+        Chunk(id=1, doc_name="a.docx", title="хвост", text="B" * 2000, tokens=frozenset()),
+        Chunk(id=2, doc_name="b.docx", title="Насос", text="напор", tokens=frozenset()),
+    ]
+    digests = dg._file_digests(chunks)
+    assert "Контроллер ПЛК" in digests["a.docx"]
+    assert "A" in digests["a.docx"]
+    assert "B" not in digests["a.docx"], "digest must stay at the start of the file"
+    assert len(digests["a.docx"]) <= dg.DIGEST_CHARS
+    assert "Насос" in digests["b.docx"]
+
+
+def test_seed_document_titles_from_matching_knowledge_count():
+    knowledge = [f"знания.zip/узел_{i}.xlsx" for i in range(10)]
+    templates = {f"шаблоны.zip/форма_{i}.docx" for i in range(10)}
+    titles = dg._seed_document_titles(10, knowledge, templates)
+    assert titles is not None
+    assert len(titles) == 10
+    assert "узел 0" in titles[0][0]
+    assert titles[0][1].endswith("узел_0.xlsx")
+
+
+def test_seed_document_titles_none_when_counts_do_not_match():
+    knowledge = [f"знания.zip/узел_{i}.xlsx" for i in range(3)]
+    templates = {f"шаблоны.zip/форма_{i}.docx" for i in range(2)}
+    assert dg._seed_document_titles(10, knowledge, templates) is None
+
+
+def test_scope_chunks_keeps_only_related_knowledge_and_own_template():
+    chunks = [
+        Chunk(id=0, doc_name="шаблоны.zip/ПЛК.docx", title="t",
+              text="структура ПЛК", tokens=frozenset({"структура"}), title_tokens=frozenset()),
+        Chunk(id=1, doc_name="шаблоны.zip/насос.docx", title="t",
+              text="структура насоса", tokens=frozenset({"структура"}), title_tokens=frozenset()),
+        Chunk(id=2, doc_name="знания.zip/ПЛК.xlsx", title="t",
+              text="ток 5А", tokens=frozenset({"ток"}), title_tokens=frozenset()),
+        Chunk(id=3, doc_name="знания.zip/насос.xlsx", title="t",
+              text="напор 10 м", tokens=frozenset({"напор"}), title_tokens=frozenset()),
+    ]
+    templates = {"шаблоны.zip/ПЛК.docx", "шаблоны.zip/насос.docx"}
+    assigned = dg._assign_templates(["ИТТ на ПЛК", "ИТТ на насос"], templates)
+    section = Section(id=0, title="Требования", brief="ток", complexity="simple", document="ИТТ на ПЛК")
+    scoped, tmpl_set = dg._scope_chunks_for_section(section, chunks, templates, assigned)
+    names = {c.doc_name for c in scoped}
+    assert "шаблоны.zip/ПЛК.docx" in names
+    assert "шаблоны.zip/насос.docx" not in names
+    assert "знания.zip/ПЛК.xlsx" in names
+    assert "знания.zip/насос.xlsx" not in names
+    assert tmpl_set == {"шаблоны.zip/ПЛК.docx"}
+
+
+def test_section_context_does_not_mix_foreign_knowledge():
+    chunks = [
+        Chunk(id=0, doc_name="шаблоны.zip/ПЛК.docx", title="ПЛК",
+              text="форма ПЛК", tokens=frozenset({"форма", "плк"}), title_tokens=frozenset({"плк"})),
+        Chunk(id=1, doc_name="знания.zip/ПЛК.xlsx", title="ПЛК",
+              text="ток пять ампер уникальный факт плк",
+              tokens=frozenset({"ток", "пять", "ампер", "уникальный", "факт", "плк"}),
+              title_tokens=frozenset({"плк"})),
+        Chunk(id=2, doc_name="знания.zip/насос.xlsx", title="насос",
+              text="напор двенадцать метров чужой факт насос",
+              tokens=frozenset({"напор", "двенадцать", "метров", "чужой", "факт", "насос"}),
+              title_tokens=frozenset({"насос"})),
+    ]
+    templates = {"шаблоны.zip/ПЛК.docx"}
+    assigned = {"ИТТ на ПЛК": "шаблоны.zip/ПЛК.docx"}
+    section = Section(id=0, title="Требования к ПЛК", brief="ток", complexity="simple", document="ИТТ на ПЛК")
+    block = _section_context(section, chunks, templates, assigned_templates=assigned)
+    assert "ток пять ампер" in block
+    assert "напор двенадцать метров" not in block
+
+
+def test_plan_seeds_one_file_per_matching_archive_member():
+    """A 10-document order with 10 knowledge files must not wait on the planner
+    to invent ten titles — that is how a 1000-file archive used to collapse."""
+    import asyncio as _asyncio
+
+    chunks = []
+    for i in range(10):
+        chunks.append(Chunk(
+            id=i, doc_name=f"шаблоны.zip/узел_{i}.docx", title="t",
+            text="форма", tokens=frozenset(), title_tokens=frozenset(),
+        ))
+        chunks.append(Chunk(
+            id=100 + i, doc_name=f"знания.zip/узел_{i}.xlsx", title="t",
+            text="цифры", tokens=frozenset(), title_tokens=frozenset(),
+        ))
+
+    called = []
+
+    async def fake_plan(*args, **kwargs):
+        called.append(1)
+        return [dg.Section(id=0, title="не должно", brief="", complexity="simple")], set(), False
+
+    orig = dg._plan_outline
+    dg._plan_outline = fake_plan
+    try:
+        sections, templates, failed = _asyncio.run(
+            dg._plan_document("сделай 10 документов по шаблонам", chunks, 1)
+        )
+    finally:
+        dg._plan_outline = orig
+
+    assert not failed
+    assert not called, "matching archive members must seed the plan without the LLM"
+    assert len({s.document for s in sections}) == 10
+    assert len(templates) == 10
+
+
+def test_template_formatting_is_not_overridden_when_template_is_used():
+    """apply_paragraph_formatting centres headings and adds a 1.25cm first-line
+    indent — GOST templates already define both, and forcing them is how the
+    generated files stopped looking like the uploaded form."""
+    from docx import Document as _Document
+    from docx_generator import blank_copy_of_template, convert_markdown_to_docx
+
+    source = _Document()
+    source.sections[0].header.paragraphs[0].text = "HEADER_PLC"
+    buf = io.BytesIO()
+    source.save(buf)
+    blank = blank_copy_of_template(buf.getvalue())
+    with_template = convert_markdown_to_docx(
+        "## Заголовок\n\nОбычный абзац текста документа.", base_template_bytes=blank,
+    )
+    out = _Document(io.BytesIO(with_template))
+    assert "HEADER_PLC" in out.sections[0].header.paragraphs[0].text
+    body = [p for p in out.paragraphs if p.text.strip() == "Обычный абзац текста документа."]
+    assert body
+    indent = body[0].paragraph_format.first_line_indent
+    assert indent is None or indent == 0, f"template body got a forced first-line indent: {indent}"
+
+    without = convert_markdown_to_docx("## Заголовок\n\nОбычный абзац текста документа.")
+    plain = _Document(io.BytesIO(without))
+    plain_body = [p for p in plain.paragraphs if p.text.strip() == "Обычный абзац текста документа."]
+    assert plain_body
+    # Default path still applies a first-line indent; the exact EMU value is
+    # the 1.25cm we set plus whatever htmldocx already wrote.
+    assert plain_body[0].paragraph_format.first_line_indent
 
 
 def test_deepseek_is_what_keeps_the_run_inside_the_hundred_dollar_budget():
@@ -582,6 +864,31 @@ def test_short_chapter_plan_still_reaches_the_requested_size():
     assert max(asked_per_chapter) > dg.SECTIONS_PER_CHAPTER, "a short chapter list must widen each chapter"
     assert max(asked_per_chapter) <= dg.MAX_SECTIONS_PER_EXPANSION
     assert len(sections) >= target * 0.9, f"order shortfall: {len(sections)} of {target}"
+
+
+def test_expand_chapter_keeps_the_document_name():
+    """A two-level plan for «10 отдельных ИТТ на 5000 страниц» decides the
+    file split on the chapter list. Expansion JSON has no `document` field,
+    so without copying it from the chapter every file collapses into one."""
+    import asyncio as _asyncio
+
+    async def fake_chat(messages, model=None, user_id=None, use_tools=False, use_skills=False, **kwargs):
+        return '{"sections": [{"title": "Общие сведения", "brief": "состав", "complexity": "simple"}]}', [], "", []
+
+    orig = dg.get_chat_response
+    dg.get_chat_response = fake_chat
+    try:
+        chapter = dg.Section(
+            id=0, title="ИТТ на ПЛК", brief="требования к ПЛК",
+            complexity="simple", document="ИТТ на ПЛК",
+        )
+        sections = _asyncio.run(dg._expand_chapter(chapter, "сделай 10 ИТТ на 5000 страниц", "", 3, 1))
+    finally:
+        dg.get_chat_response = orig
+
+    assert sections
+    assert all(s.document == "ИТТ на ПЛК" for s in sections)
+    assert all(s.chapter == "ИТТ на ПЛК" for s in sections)
 
 
 def test_progress_line_counts_pages_from_real_text_not_from_the_plan():
@@ -749,6 +1056,73 @@ def test_unrenderable_template_is_refused_rather_than_shipped():
     """If a template still cannot render, standard formatting is the right
     answer — ten documents of raw markdown is not."""
     assert dg._template_renders_cleanly(b"not a docx at all") is False
+
+
+def test_knowledge_archive_is_not_mistaken_for_templates():
+    """«База ин-ФОРМА-ции для наполнения.zip» — the customer's real archive
+    name — matched the template stem «форма» as a substring, so the entire
+    knowledge base was classified as formatting samples. Every section then
+    wrote with zero facts, silently, while the template block looked fine."""
+    knowledge = "База информации для наполнения.zip/узел1.docx"
+    template = "Пример оформления.zip/ИТТ_ледокол.docx"
+    assert not dg._TEMPLATE_NAME_RE.search(knowledge), "knowledge archive read as a template"
+    assert dg._TEMPLATE_NAME_RE.search(template), "real template no longer recognised"
+
+    chunks = [
+        dg.Chunk(id=0, doc_name=template, title="", text="ИСХОДНЫЕ ТЕХНИЧЕСКИЕ ТРЕБОВАНИЯ"),
+        dg.Chunk(id=1, doc_name=knowledge, title="", text="ПЛК мощность 2500 кВт"),
+    ]
+    assert dg._heuristic_template_names(chunks) == {template}
+
+
+def test_template_stems_cover_plural_folder_names():
+    # «Образцы» / «Формы» are at least as common as the singular forms on a
+    # customer's disk, and neither contains the singular stem.
+    for name in ("Образцы.zip/f.docx", "Формы.zip/f.docx", "ГОСТ формы.zip/f.docx",
+                 "Шаблоны.zip/f.docx", "Бланки.zip/f.docx"):
+        assert dg._TEMPLATE_NAME_RE.search(name), name
+
+
+def test_weak_knowledge_match_does_not_drop_the_whole_base():
+    """The cutoff was non-monotonic: a best score of 13 against a floor of 16
+    emptied the knowledge set, so the section saw only its template — while a
+    section with NO match at all kept every file. A hint about the topic made
+    the outcome strictly worse."""
+    def chunk(i, doc, text):
+        return dg.Chunk(id=i, doc_name=doc, title="", text=text,
+                        tokens=frozenset(dg._tokenize(text)), title_tokens=frozenset())
+
+    template = "f1.docx"
+    chunks = [
+        chunk(0, template, "Общие положения требования раздел"),
+        chunk(1, "d1.xlsx", "подача 120 кубометров напор 45 метров агрегат"),
+        chunk(2, "d2.xlsx", "мощность 2500 киловатт частота 50 герц"),
+        chunk(3, "d3.xlsx", "температура 80 градусов давление 16 бар"),
+    ]
+    digests = dg._file_digests(chunks)
+    section = dg.Section(id=0, title="Сведения", brief="агрегат",
+                         complexity="simple", document="Первый")
+    scoped, _ = dg._scope_chunks_for_section(
+        section, chunks, {template}, {"Первый": template}, digests,
+    )
+    names = {c.doc_name for c in scoped}
+    assert "d1.xlsx" in names, f"the best-matching knowledge file was dropped: {sorted(names)}"
+
+
+def test_plain_start_and_marker_start_are_different_orders():
+    """Two intentions, two buttons. Pressing the primary «Да, начинай» to see a
+    result must not silently replace twenty-five requisites with [УКАЗАТЬ: …]
+    across the finished files; asking for the markers is a separate click."""
+    assert dg._CONFIRM_START != dg._CONFIRM_START_PLACEHOLDERS
+    # Neither label may contain the other, or the gate's substring checks
+    # would read one click as the other.
+    assert dg._CONFIRM_START not in dg._CONFIRM_START_PLACEHOLDERS
+    assert dg._CONFIRM_START_PLACEHOLDERS not in dg._CONFIRM_START
+    # Both must fit the clarify chip limit, or normalize_questions drops the
+    # whole question and the confirmation card loses its start button.
+    from clarify import MAX_OPTION_CHARS
+
+    assert len(dg._CONFIRM_START_PLACEHOLDERS) <= MAX_OPTION_CHARS
 
 
 def test_apply_replacements_longest_first_prevents_partial_overlap():

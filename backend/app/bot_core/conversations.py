@@ -915,12 +915,20 @@ class ConversationManager:
         if not conv or not hasattr(conv, 'documents'):
             return False
         
-        for i, doc in enumerate(conv.documents):
-            if doc.get('filename') == filename:
-                conv.documents.pop(i)
-                self._save_user_data(user_id)
-                return True
-        return False
+        kept = []
+        removed = False
+        prefix = f"{filename}/"
+        for doc in conv.documents:
+            name = str(doc.get("filename") or "")
+            if name == filename or name.startswith(prefix):
+                removed = True
+                continue
+            kept.append(doc)
+        if not removed:
+            return False
+        conv.documents = kept
+        self._save_user_data(user_id)
+        return True
     
     def clear_documents(self, user_id: Union[int, str], conv_id: Optional[str] = None) -> bool:
         """Очищает список документов в конкретной беседе или активной"""

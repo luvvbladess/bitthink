@@ -149,7 +149,7 @@ export function SearchModeSelector() {
           overflow: 'hidden',
         }}
       >
-        <ActiveIcon size={18} weight={selectedMode.id === 'computer' || selectedMode.id === 'studio' || selectedMode.id === 'astra' ? 'fill' : 'bold'} />
+        <ActiveIcon size={18} weight={selectedMode.id === 'computer' || selectedMode.id === 'studio' || selectedMode.id === 'astra' || selectedMode.id === 'docgen' ? 'fill' : 'bold'} />
         <Box component="span" sx={{ display: { xs: 'none', sm: 'inline' } }}>{selectedMode.label}</Box>
         <Box component="span" sx={{ display: { xs: 'none', sm: 'inline-flex' }, flexShrink: 0, lineHeight: 0 }}>
           <CaretDown size={14} weight="bold" />

@@ -1,9 +1,10 @@
 export type FollowUpChip = { label: string; text: string };
-export type FollowUpMode = 'auto' | 'computer' | 'studio' | 'search' | 'research' | 'astra';
+export type FollowUpMode = 'auto' | 'computer' | 'studio' | 'search' | 'research' | 'astra' | 'docgen';
 
 export function followUpMode(selected?: string | null): FollowUpMode {
   if (selected === 'director') return 'computer';
   if (selected === 'studio') return 'studio';
+  if (selected === 'docgen') return 'docgen';
   if (selected === 'gpt-6-astra') return 'astra';
   if (selected === 'kimi-k2.6') return 'search';
   if (selected === 'gpt-5.6-sol' || selected === 'gpt-5.6-sol-pro' || selected === 'gpt-5.6-terra') {
@@ -36,6 +37,11 @@ export function followUpChips(
       { label: 'Другой стиль', text: 'Тот же материал, но другой визуальный мир. Не переписывай смысл.' },
       { label: 'Поправь слайд', text: 'Поправь текущий макет на холсте, не собирай заново. Напиши, какой слайд и что изменить.' },
     ];
+  }
+
+  if (mode === 'docgen') {
+    // A follow-up chip here would launch another multi-hour, thousand-call run.
+    return [];
   }
 
   if (/скил|запомни как скил|добавь скил|мои скил/.test(user)) {

@@ -13,7 +13,7 @@ import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/api/client';
 import { CaretDown, CaretUp, Desktop, Presentation } from '@phosphor-icons/react';
 import { useSelectModel } from '@/components/ModelSelector';
-import { PILOT_LABEL, STUDIO_LABEL } from '@/constants/modes';
+import { DOCGEN_LABEL, PILOT_LABEL, STUDIO_LABEL } from '@/constants/modes';
 import { BrandMark } from '@/components/BrandMark';
 import { followUpChips, followUpMode } from './followUps';
 
@@ -63,6 +63,12 @@ const STUDIO_SUGGESTIONS = [
   { label: 'Пичч запуска', text: 'Собери презентацию запуска умной кофейни в центре: свой визуальный язык, живые кадры, не шаблон из буллетов.' },
   { label: 'Лендинг', text: 'Собери лендинг умной кофейни: hero, меню и бронь. Свой визуальный язык, не шаблон SaaS.' },
   { label: 'Инфографика', text: 'Собери одноэкранную инфографику: путь зерна от фермы до чашки. Свой макет, не ряд одинаковых карточек.' },
+];
+
+const DOCGEN_SUGGESTIONS = [
+  { label: 'По шаблону', text: 'Собери документ по шаблону из прикреплённых файлов. Остальные файлы — база знаний, не меняй структуру шаблона.' },
+  { label: 'Комплект', text: 'Сделай отдельные документы по каждому шаблону, данные возьми из прикреплённых архивов.' },
+  { label: 'Большой том', text: 'Собери полный документ по прикреплённым материалам. Перед генерацией покажи план и спроси подтверждение.' },
 ];
 
 const suggestionChipSx = {
@@ -128,10 +134,17 @@ export function ChatWindow({
   const { data: models } = useQuery({ queryKey: ['models'], queryFn: () => apiFetch('/models') });
   const isComputer = models?.selected === 'director';
   const isStudio = models?.selected === 'studio';
+  const isDocgen = models?.selected === 'docgen';
   const computerAvailable = Boolean(models?.computerAvailable);
   const studioAvailable = Boolean(models?.studioAvailable);
   const selectModel = useSelectModel();
-  const suggestions = isStudio ? STUDIO_SUGGESTIONS : isComputer ? COMPUTER_SUGGESTIONS : SUGGESTIONS;
+  const suggestions = isDocgen
+    ? DOCGEN_SUGGESTIONS
+    : isStudio
+      ? STUDIO_SUGGESTIONS
+      : isComputer
+        ? COMPUTER_SUGGESTIONS
+        : SUGGESTIONS;
   const nextChips = !thinking
     ? followUpChips(lastUserText, lastAssistantText, followUpMode(models?.selected), hasCanvas)
     : [];
@@ -305,17 +318,32 @@ export function ChatWindow({
                   {STUDIO_LABEL} включена
                 </Box>
               )}
+              {isDocgen && (
+                <Box
+                  sx={{
+                    color: 'primary.light',
+                    fontSize: '0.8125rem',
+                    fontWeight: 600,
+                    letterSpacing: '-0.01em',
+                    mb: 0.75,
+                  }}
+                >
+                  {DOCGEN_LABEL} включены
+                </Box>
+              )}
               <Box sx={{ fontSize: { xs: '1.5rem', md: '1.85rem' }, fontWeight: 600, letterSpacing: '-0.035em', mb: 0.75, lineHeight: 1.15, textWrap: 'balance', color: 'text.primary' }}>
-                {isStudio ? 'Что визуализируем?' : isComputer ? 'Над чем поработаем?' : 'С чего начнём?'}
+                {isDocgen ? 'Что собрать?' : isStudio ? 'Что визуализируем?' : isComputer ? 'Над чем поработаем?' : 'С чего начнём?'}
               </Box>
               <Box sx={{ color: 'text.secondary', mb: 2.25, fontSize: '0.9375rem', mx: 'auto', maxWidth: '40ch', lineHeight: 1.5 }}>
-                {isStudio
-                  ? 'Прикрепите образец PPTX и ТЗ — повторит стиль и соберёт слайды. Или опишите картинку и макет.'
-                  : isComputer
-                    ? 'Напишите задачу своими словами. Сам откроет сайт, почту или сервер.'
-                    : 'Обычный чат отвечает текстом. Студия рисует картинки и макеты на холсте.'}
+                {isDocgen
+                  ? 'Прикрепите шаблоны и архивы с данными — соберёт .docx. Перед генерацией покажет план и спросит подтверждение.'
+                  : isStudio
+                    ? 'Прикрепите образец PPTX и ТЗ — повторит стиль и соберёт слайды. Или опишите картинку и макет.'
+                    : isComputer
+                      ? 'Напишите задачу своими словами. Сам откроет сайт, почту или сервер.'
+                      : 'Обычный чат отвечает текстом. Студия рисует картинки и макеты на холсте.'}
               </Box>
-              {!isComputer && !isStudio && studioAvailable && (
+              {!isComputer && !isStudio && !isDocgen && studioAvailable && (
                 <Box
                   component="button"
                   type="button"
@@ -374,7 +402,7 @@ export function ChatWindow({
                   </Box>
                 </Box>
               )}
-              {!isComputer && computerAvailable && (
+              {!isComputer && !isDocgen && computerAvailable && (
                 <Box
                   component="button"
                   type="button"
