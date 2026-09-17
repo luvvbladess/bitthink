@@ -386,7 +386,7 @@ def auto_size_table_columns(doc):
                 trPr.append(OxmlElement('w:cantSplit'))
 
 
-def fix_monospace_fonts(doc, preserve_color: bool = False):
+def fix_monospace_fonts(doc):
     """
     Защитный пост-процессинг: htmldocx форсирует моноширинный шрифт (Courier New и т.п.)
     для <code>/<pre> блоков. Если де-фенсинг на этапе Markdown не сработал (например,
@@ -394,9 +394,12 @@ def fix_monospace_fonts(doc, preserve_color: bool = False):
     "рваным" по шрифтам. Здесь убираем явный moноширинный шрифт у runs, чтобы они
     наследовали обычный шрифт абзаца/стиля.
 
-    preserve_color: when the document is built on a customer template, do not
-    force every run to black — GOST forms often use coloured running heads,
-    field labels and table tints that would otherwise be wiped.
+    Цвет текста всегда чёрный, в том числе при работе по шаблону. Исключение
+    для шаблонов тут было, и оно ничего не защищало: обход идёт только по телу
+    документа и ячейкам таблиц, а цветные элементы рамки ГОСТ живут в
+    колонтитулах, куда эта функция не заходит вовсе. Зато без принудительного
+    чёрного заголовки выходили синими — таким их определяет стандартный стиль
+    Heading, и в деловом документе это брак.
     """
     MONOSPACE_FONTS = {"Courier New", "Consolas", "Lucida Console", "Courier", "Monaco", "Menlo"}
 
@@ -413,8 +416,7 @@ def fix_monospace_fonts(doc, preserve_color: bool = False):
                 if re.fullmatch(r'```(?:text|txt|markdown|md)?', r.text.strip(), re.IGNORECASE):
                     r.text = ""
                     continue
-                if not preserve_color:
-                    r.font.color.rgb = RGBColor(0, 0, 0)
+                r.font.color.rgb = RGBColor(0, 0, 0)
                 if r.font.name in MONOSPACE_FONTS:
                     clear_run_font(r)
 
@@ -662,7 +664,7 @@ def convert_markdown_to_docx(markdown_text: str, base_template_bytes: Optional[b
     # 4c. Защитная очистка моноширинных шрифтов от ложных code-блоков
     preserve_template = bool(base_template_bytes)
     try:
-        fix_monospace_fonts(doc, preserve_color=preserve_template)
+        fix_monospace_fonts(doc)
     except Exception as e:
         print(f"Monospace font fix warning: {e}")
 
@@ -730,7 +732,13 @@ def _ensure_required_styles(doc) -> None:
             source = default_styles[name].element
         except KeyError:
             continue
-        target.append(copy.deepcopy(source))
+        injected = copy.deepcopy(source)
+        # У стандартных Heading в python-docx цвет синий (accent1). Подставить
+        # такой стиль в шаблон заказчика — это самому принести в деловой
+        # документ синие заголовки, которых там быть не должно.
+        for color in injected.findall(f".//{{{_W_NS}}}color"):
+            color.getparent().remove(color)
+        target.append(injected)
     logger.info("В шаблон оформления добавлены недостающие стили: %s", ", ".join(missing))
 
 
