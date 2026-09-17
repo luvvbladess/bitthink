@@ -724,6 +724,53 @@ def _ensure_required_styles(doc) -> None:
     logger.info("В шаблон оформления добавлены недостающие стили: %s", ", ".join(missing))
 
 
+def _promote_direct_formatting(doc) -> None:
+    """Переносит прямое форматирование тела шаблона в стиль Normal.
+
+    Инженерные документы обычно оформлены не стилями, а руками: выделили всё,
+    поставили Times New Roman 14, интервал и отступ первой строки. Такое
+    форматирование живёт на самих абзацах и исчезает вместе с ними при
+    очистке — новый документ выходил дефолтным Calibri 11, хотя пример был
+    по ГОСТу. Здесь берётся преобладающее значение по телу шаблона и
+    записывается в Normal, но только то, чего стиль не задаёт сам:
+    настоящий стиль шаблона всегда важнее замера по абзацам.
+    """
+    from collections import Counter
+
+    names, sizes, indents, spacings, aligns = Counter(), Counter(), Counter(), Counter(), Counter()
+    for paragraph in doc.paragraphs:
+        if not paragraph.text.strip():
+            continue
+        style_name = (paragraph.style.name or "").lower() if paragraph.style else ""
+        if style_name.startswith(("heading", "title", "заголовок")):
+            continue
+        for run in paragraph.runs:
+            if run.font.name:
+                names[run.font.name] += 1
+            if run.font.size:
+                sizes[run.font.size] += 1
+        fmt = paragraph.paragraph_format
+        if fmt.first_line_indent is not None:
+            indents[fmt.first_line_indent] += 1
+        if fmt.line_spacing is not None:
+            spacings[fmt.line_spacing] += 1
+        if fmt.alignment is not None:
+            aligns[fmt.alignment] += 1
+
+    normal = doc.styles["Normal"]
+    if normal.font.name is None and names:
+        normal.font.name = names.most_common(1)[0][0]
+    if normal.font.size is None and sizes:
+        normal.font.size = sizes.most_common(1)[0][0]
+    fmt = normal.paragraph_format
+    if fmt.first_line_indent is None and indents:
+        fmt.first_line_indent = indents.most_common(1)[0][0]
+    if fmt.line_spacing is None and spacings:
+        fmt.line_spacing = spacings.most_common(1)[0][0]
+    if fmt.alignment is None and aligns:
+        fmt.alignment = aligns.most_common(1)[0][0]
+
+
 def blank_copy_of_template(template_bytes: bytes) -> Optional[bytes]:
     """Шаблон без его собственного текста: стили, поля, колонтитулы и нумерация
     остаются, содержимое убирается.
@@ -742,6 +789,10 @@ def blank_copy_of_template(template_bytes: bytes) -> Optional[bytes]:
 
         doc = Document(io.BytesIO(template_bytes))
         body = doc.element.body
+
+        # Строго до очистки: прямое форматирование живёт на самих абзацах и
+        # исчезнет вместе с ними.
+        _promote_direct_formatting(doc)
 
         # Настройки страницы берём у ПЕРВОГО раздела, а не у последнего.
         # У шаблона с альбомным приложением в конце последний sectPr
