@@ -61,7 +61,7 @@ async def push_status(kind: str, detail: str) -> None:
 async def announce_tool(name: str, args: Optional[dict] = None) -> None:
     args = args or {}
     if name in ("web_search", "$web_search"):
-        q = str(args.get("query") or args.get("q") or "").strip()
+        q = str(args.get("query") or args.get("q") or args.get("text_query") or "").strip()
         await push_status("search", q or "Ищу в интернете")
     elif name == "image_search":
         filename = str(args.get("filename") or "").strip()

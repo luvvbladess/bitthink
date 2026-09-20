@@ -253,7 +253,28 @@ async def _fetch_via_ru_proxy(session: aiohttp.ClientSession, url: str) -> Tuple
         return -1, ""
 
 
-async def fetch_url_content(url: str) -> Tuple[str, str]:
+def _is_fetch_failure(text: str) -> bool:
+    stripped = (text or "").lstrip()
+    return stripped.startswith(("[Ошибка", "[Страница пуста", "[Невозможно прочитать"))
+
+
+async def _recover_with_kimi_fetch(url: str) -> str:
+    try:
+        from kimi_web_search import kimi_fetch
+
+        fetched = await kimi_fetch(url)
+        markdown = (fetched or {}).get("markdown") or ""
+        if not markdown.strip():
+            return ""
+        if len(markdown) > MAX_CONTENT_PER_URL:
+            return markdown[:MAX_CONTENT_PER_URL] + "\n\n[...текст обрезан...]"
+        return markdown
+    except Exception as exc:
+        logger.info("Kimi fetch fallback failed for %s: %s", url, exc)
+        return ""
+
+
+async def _fetch_url_content_local(url: str) -> Tuple[str, str]:
     """
     Скачивает и очищает контент одной URL.
     При ошибке 403 (гео-блокировка) пробует альтернативные источники.
@@ -305,6 +326,16 @@ async def fetch_url_content(url: str) -> Tuple[str, str]:
     except Exception as e:
         logger.error(f"Error fetching {url}: {e}")
         return url, f"[Ошибка загрузки: {str(e)[:100]}]"
+
+
+async def fetch_url_content(url: str, *, use_kimi_fallback: bool = True) -> Tuple[str, str]:
+    """Fetch a page locally, then fall back to Kimi URL Fetch if scraping failed."""
+    fetched_url, text = await _fetch_url_content_local(url)
+    if use_kimi_fallback and _is_fetch_failure(text):
+        recovered = await _recover_with_kimi_fetch(url)
+        if recovered:
+            return fetched_url or url, recovered
+    return fetched_url, text
 
 
 async def process_urls_in_text(text: str) -> str:

@@ -21,22 +21,67 @@ logger = logging.getLogger(__name__)
 client = AsyncOpenAI(api_key=KIMI_API_KEY, base_url="https://api.moonshot.ai/v1") if KIMI_API_KEY else None
 
 WEB_SEARCH_TOOL_KIMI = {
-    "type": "builtin_function",
-    "function": {"name": "$web_search"},
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": (
+            "Search the live web. Use for news, prices, dates, people, versions, "
+            "and anything that may have changed. Write a specific query with an "
+            "entity, the current year, and a qualifier. One information need per call. "
+            "Do not retry with synonym rewrites of the same query."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query text",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum results, 1-20. Default 8.",
+                },
+            },
+            "required": ["query"],
+        },
+    },
 }
 
+BROWSE_PAGE_TOOL_KIMI = {
+    "type": "function",
+    "function": {
+        "name": "browse_page",
+        "description": (
+            "Fetch a known URL as Markdown. Use after search when a snippet is not "
+            "enough to verify a number, quote, or full article."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "http(s) URL to read",
+                },
+            },
+            "required": ["url"],
+        },
+    },
+}
+
+KIMI_SEARCH_TOOLS = [WEB_SEARCH_TOOL_KIMI, BROWSE_PAGE_TOOL_KIMI]
+
 # System prompt for the dedicated Kimi web-search mode.
-# Kimi has a NATIVE builtin $web_search tool. We only need to force it to use the web
-# and to surface the sources it found in the final answer so we can show them in the UI.
+# Search/fetch run through Kimi's standalone REST tools; we return structured
+# passages to the model and collect sources for the UI panel.
 KIMI_WEB_SEARCH_SYSTEM_PROMPT = (
     "Ты исследователь с прямым доступом к интернету. "
-    "Для новостей, цен, дат, должностей, версий и всего, что могло измениться, сразу вызывай $web_search. "
+    "Для новостей, цен, дат, должностей, версий и всего, что могло измениться, сразу вызывай web_search. "
     "Не спрашивай разрешения и не объявляй вслух, что сейчас ищешь. "
     "Вечные определения можно без поиска. "
     "Запросы короткие и разные: один факт – один запрос, не склеивай пять тем. "
     "В запросах указывай текущий год, не прошлый. "
     "Обычный факт – 1–2 поиска; сравнение или обзор – 4–8; глубокая тема – больше, пока каждый кусок ответа на чём-то стоит. "
-    "Сниппет – не доказательство спорной цифры. "
+    "Сниппет – не доказательство спорной цифры: открой страницу через browse_page. "
     "После поиска отвечай на русском, с конкретными фактами и датами. "
     "Закрой задачу: как применить, ограничение, что проверить. Не обрывай тизером «могу подробнее». "
     "В основном тексте не ставь URL, Markdown-ссылки или маркеры цитат [1], [2]. "
@@ -46,6 +91,79 @@ KIMI_WEB_SEARCH_SYSTEM_PROMPT = (
     "[2] Название источника — https://example.com/page2\n"
     "Не выдумывай URL. Если факт не удалось проверить, напиши об этом."
 )
+
+
+def _parse_tool_args(raw: Any) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _merge_ui_sources(*batches: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    merged: List[Dict[str, str]] = []
+    seen = set()
+    for batch in batches:
+        for item in batch or []:
+            summary = (item.get("summary") or "").strip()
+            url = summary.splitlines()[0] if summary else ""
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            merged.append(item)
+    return merged
+
+
+async def _execute_kimi_tool(
+    name: str,
+    arguments: Dict[str, Any],
+    *,
+    user_id: int | None = None,
+    research: bool = False,
+) -> tuple[str, List[Dict[str, str]]]:
+    """Run a Kimi tool locally via REST search/fetch. Returns (content, ui sources)."""
+    from kimi_web_search import (
+        format_results_for_model,
+        kimi_fetch,
+        kimi_search_pro,
+        to_ui_sources,
+    )
+
+    if name in {"web_search", "$web_search"}:
+        query = str(arguments.get("query") or arguments.get("text_query") or arguments.get("q") or "").strip()
+        default_limit = 12 if research else 8
+        limit = arguments.get("limit", default_limit)
+        results = await kimi_search_pro(
+            query,
+            limit=limit,
+            timeout_seconds=12,
+            user_id=user_id,
+        )
+        return format_results_for_model(results), to_ui_sources(results)
+
+    if name == "browse_page":
+        url = str(arguments.get("url") or "").strip()
+        fetched = await kimi_fetch(url, user_id=user_id)
+        if fetched and fetched.get("markdown"):
+            title = fetched.get("title") or url
+            markdown = fetched["markdown"][:12000]
+            source = {"query": title, "summary": fetched.get("url") or url}
+            return f"{title}\nURL: {fetched.get('url') or url}\n\n{markdown}", [source]
+        try:
+            from web_scraper import fetch_url_content
+
+            fetched_url, text = await fetch_url_content(url, use_kimi_fallback=False)
+        except Exception as exc:
+            return f"Не удалось открыть страницу: {exc}", []
+        source = {"query": fetched_url or url, "summary": fetched_url or url}
+        return f"URL: {fetched_url}\n\n{text}", [source]
+
+    return f"Неизвестный инструмент: {name}", []
 
 
 def _search_today_note() -> str:
@@ -76,8 +194,42 @@ def _clean_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     return cleaned
 
 
+async def _append_tool_results(
+    current_messages: List[Dict[str, Any]],
+    tool_calls: Any,
+    *,
+    user_id: int | None = None,
+    research: bool = False,
+) -> List[Dict[str, str]]:
+    collected: List[Dict[str, str]] = []
+    for tc in tool_calls:
+        parsed = _parse_tool_args(getattr(tc.function, "arguments", "") or "")
+        try:
+            from status_feed import announce_tool
+
+            await announce_tool(tc.function.name, parsed)
+        except Exception:
+            pass
+        content, ui_sources = await _execute_kimi_tool(
+            tc.function.name,
+            parsed,
+            user_id=user_id,
+            research=research,
+        )
+        collected.extend(ui_sources)
+        current_messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "name": tc.function.name,
+                "content": content,
+            }
+        )
+    return collected
+
+
 async def get_kimi_search_brief(messages: List[Dict[str, Any]], user_text: str, user_id: int = None) -> str:
-    """Ищет внешние факты и источники через Kimi $web_search."""
+    """Ищет внешние факты и источники через Kimi REST web search."""
     global client
     if client is None and KIMI_API_KEY:
         client = AsyncOpenAI(api_key=KIMI_API_KEY, base_url="https://api.moonshot.ai/v1")
@@ -108,13 +260,10 @@ async def get_kimi_search_brief(messages: List[Dict[str, Any]], user_text: str, 
     last_text = ""
     total_input_tokens = 0
     total_output_tokens = 0
-    search_call_count = 0
 
     def _track():
         if user_id:
             conversation_manager.track_tokens(user_id, KIMI_MODEL, total_input_tokens, total_output_tokens)
-            if search_call_count:
-                conversation_manager.track_calls(user_id, KIMI_MODEL, search_call_count)
 
     for _ in range(4):
         try:
@@ -122,7 +271,7 @@ async def get_kimi_search_brief(messages: List[Dict[str, Any]], user_text: str, 
                 client.chat.completions.create(
                     model=KIMI_MODEL,
                     messages=current_messages,
-                    tools=[WEB_SEARCH_TOOL_KIMI],
+                    tools=KIMI_SEARCH_TOOLS,
                     extra_body={"thinking": {"type": "disabled"}},
                     max_tokens=max_output_tokens(KIMI_MODEL),
                 ),
@@ -151,8 +300,6 @@ async def get_kimi_search_brief(messages: List[Dict[str, Any]], user_text: str, 
             _track()
             return message.content or last_text or "Kimi не вернул результат поиска."
 
-        search_call_count += sum(1 for tc in tool_calls if tc.function.name == "$web_search")
-
         current_messages.append({
             "role": "assistant",
             "content": message.content or "",
@@ -168,27 +315,7 @@ async def get_kimi_search_brief(messages: List[Dict[str, Any]], user_text: str, 
                 for tc in tool_calls
             ],
         })
-
-        for tc in tool_calls:
-            try:
-                from status_feed import announce_tool
-                try:
-                    parsed_args = json.loads(tc.function.arguments)
-                except Exception:
-                    parsed_args = {}
-                await announce_tool(tc.function.name, parsed_args if isinstance(parsed_args, dict) else {})
-            except Exception:
-                pass
-            try:
-                tool_result = json.loads(tc.function.arguments)
-            except Exception:
-                tool_result = tc.function.arguments
-            current_messages.append({
-                "role": "tool",
-                "tool_call_id": tc.id,
-                "name": tc.function.name,
-                "content": json.dumps(tool_result, ensure_ascii=False),
-            })
+        await _append_tool_results(current_messages, tool_calls, user_id=user_id)
 
     _track()
     return last_text or "Kimi web search не завершился за лимит шагов."
@@ -388,9 +515,9 @@ async def get_kimi_chat_response(
     """
     Режим "Поиск в интернете" через Kimi K2.6.
 
-    Используется нативный builtin-инструмент $web_search Moonshot: модель сама решает,
-    что искать, сервер подставляет результаты поиска в контекст, а мы извлекаем
-    источники из финального ответа (цитаты [1]/URL) для панели источников в UI.
+    Модель вызывает обычные function-tools `web_search` / `browse_page`; мы исполняем
+    их через Kimi REST (`/v1/tools/search_pro`, `/v1/tools/fetch`) и собираем
+    источники из структурированного ответа, с фоллбэком на цитаты в тексте.
 
     Возвращает (текст_ответа, файлы, текст_размышлений, результаты_поиска).
     """
@@ -414,17 +541,17 @@ async def get_kimi_chat_response(
         current_messages[0]["content"] = search_prompt + "\n\n" + current_messages[0].get("content", "")
 
     generated_files: List[Dict[str, Any]] = []
-    search_results: List[Dict[str, str]] = []
+    collected_sources: List[Dict[str, str]] = []
     last_text = ""
     total_input_tokens = 0
     total_output_tokens = 0
-    search_call_count = 0
 
     def _track():
         if user_id:
             conversation_manager.track_tokens(user_id, KIMI_MODEL, total_input_tokens, total_output_tokens)
-            if search_call_count:
-                conversation_manager.track_calls(user_id, KIMI_MODEL, search_call_count)
+
+    def _final_sources(text: str) -> List[Dict[str, str]]:
+        return _merge_ui_sources(collected_sources, _build_search_results_from_text(text or ""))
 
     for _ in range(10):
         try:
@@ -432,7 +559,7 @@ async def get_kimi_chat_response(
                 client.chat.completions.create(
                     model=KIMI_MODEL,
                     messages=current_messages,
-                    tools=[WEB_SEARCH_TOOL_KIMI],
+                    tools=KIMI_SEARCH_TOOLS,
                     extra_body={"thinking": {"type": "disabled"}},
                     max_tokens=max_output_tokens(KIMI_MODEL),
                 ),
@@ -441,13 +568,11 @@ async def get_kimi_chat_response(
         except asyncio.TimeoutError:
             logger.error("Kimi chat API call timed out after 420s")
             _track()
-            search_results = _build_search_results_from_text(last_text)
-            return "❌ Модель Kimi не ответила за 420 секунд (таймаут)", [], "", search_results
+            return "❌ Модель Kimi не ответила за 420 секунд (таймаут)", [], "", _final_sources(last_text)
         except Exception as e:
             logger.error(f"Kimi chat API call failed: {e}", exc_info=True)
             _track()
-            search_results = _build_search_results_from_text(last_text)
-            return f"❌ Ошибка API Kimi: {str(e)}", [], "", search_results
+            return f"❌ Ошибка API Kimi: {str(e)}", [], "", _final_sources(last_text)
 
         usage = getattr(response, "usage", None)
         if usage:
@@ -474,30 +599,16 @@ async def get_kimi_chat_response(
 
         if not tool_calls:
             _track()
-            search_results = _build_search_results_from_text(message.content or "")
+            search_results = _final_sources(message.content or "")
             answer = strip_source_links(message.content or "")
             return answer or "Нет ответа от модели", generated_files, "", search_results
 
-        search_call_count += sum(1 for tc in tool_calls if tc.function.name == "$web_search")
-
-        for tc in tool_calls:
-            try:
-                from status_feed import announce_tool
-                try:
-                    parsed = json.loads(tc.function.arguments)
-                except Exception:
-                    parsed = {}
-                await announce_tool(tc.function.name, parsed if isinstance(parsed, dict) else {})
-            except Exception:
-                pass
-            current_messages.append({
-                "role": "tool",
-                "tool_call_id": tc.id,
-                "name": tc.function.name,
-                "content": tc.function.arguments,
-            })
+        collected_sources.extend(
+            await _append_tool_results(
+                current_messages, tool_calls, user_id=user_id, research=research
+            )
+        )
 
     logger.warning("Kimi chat: exhausted max loops")
     _track()
-    search_results = _build_search_results_from_text(last_text)
-    return last_text or "Нет ответа от модели", generated_files, "", search_results
+    return last_text or "Нет ответа от модели", generated_files, "", _final_sources(last_text)
