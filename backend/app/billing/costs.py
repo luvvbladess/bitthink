@@ -16,6 +16,8 @@ MODEL_USD: dict[str, dict[str, float]] = {
     "kimi-k2.6": {"input": 0.60, "output": 2.50},
     "deepseek-v4-pro": {"input": 0.55, "output": 2.19},
     "deepseek-v4-flash": {"input": 0.14, "output": 0.28},
+    "gpt-image-2.5-sunburst": {"input": 0.0, "output": 0.0, "image": 0.08},
+    "gpt-image-2.5-flare": {"input": 0.0, "output": 0.0, "image": 0.08},
     "gpt-image-2": {"input": 0.0, "output": 0.0, "image": 0.08},
     "gpt-image-1.5": {"input": 0.0, "output": 0.0, "image": 0.08},
     "gpt-image-1": {"input": 0.0, "output": 0.0, "image": 0.04},

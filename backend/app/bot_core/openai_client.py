@@ -707,7 +707,7 @@ def _image_generate_kwargs(prompt: str, size: str = "auto", quality: str = "auto
 
 
 async def generate_image(prompt: str, size: str = "auto", quality: str = "auto") -> Tuple[Optional[str], Optional[str]]:
-    """Генерирует изображение через gpt-image-2. Не передаём response_format: GPT Image всегда отдаёт b64."""
+    """Генерирует изображение через GPT Image 2.5. Не передаём response_format: GPT Image всегда отдаёт b64."""
     try:
         response = await asyncio.wait_for(
             client.images.generate(**_image_generate_kwargs(prompt, size, quality)),
@@ -751,7 +751,7 @@ async def edit_image(
     size: str = "auto",
     quality: str = "auto",
 ) -> Tuple[Optional[str], Optional[str]]:
-    """Правка или генерация по референсам через images.edit (gpt-image-2)."""
+    """Правка или генерация по референсам через images.edit (GPT Image 2.5)."""
     sources = image_bytes if isinstance(image_bytes, list) else [image_bytes]
     sources = [item for item in sources if item]
     if not sources:
@@ -768,7 +768,7 @@ async def edit_image(
             kwargs["size"] = size
         if quality and quality != "auto":
             kwargs["quality"] = quality
-        # gpt-image-2 always uses high fidelity; the optional fidelity flag is rejected.
+        # GPT Image 2.5 processes image inputs at high fidelity; the optional flag is rejected.
         response = await asyncio.wait_for(client.images.edit(**kwargs), timeout=180)
         if response.data and len(response.data) > 0:
             b64_data = response.data[0].b64_json

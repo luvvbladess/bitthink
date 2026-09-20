@@ -52,8 +52,10 @@ AVAILABLE_MODELS = {
 # Модель OpenAI для анализа изображений
 OPENAI_VISION_MODEL = "gpt-5.6-sol"
 
-# Модель для генерации и правок. Official API id: gpt-image-2 (snapshot gpt-image-2-2026-04-21).
-IMAGE_MODEL = "gpt-image-2"
+# GPT Image 2.5 has no generic gpt-image-2.5 id. Sunburst is the quality
+# successor to gpt-image-2 for both generate and edit.
+# Snapshot: gpt-image-2.5-sunburst-2026-09-08
+IMAGE_MODEL = "gpt-image-2.5-sunburst"
 
 # Fallback output cap. Live calls use model_context.max_output_tokens().
 MAX_TOKENS = 128000

@@ -225,6 +225,7 @@ def test_spend_summary_uses_vendor_rates():
     assert abs(model_cost_usd("gpt-5.6-luna", 1_000_000, 0) - 0.25) < 1e-9
     assert abs(model_cost_usd("gpt-5.6-sol", 0, 1_000_000) - 14.0) < 1e-9
     assert abs(model_cost_usd("gpt-6-astra", 1_000_000, 0) - 10.0) < 1e-9
+    assert abs(model_cost_usd("gpt-image-2.5-sunburst", 0, 0, 1) - 0.08) < 1e-9
     assert abs(model_cost_usd("gpt-image-2", 0, 0, 1) - 0.08) < 1e-9
     assert abs(model_cost_usd("gpt-image-1.5", 0, 0, 2) - 0.16) < 1e-9
     summary = spend_summary(
