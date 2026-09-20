@@ -52,16 +52,16 @@ def test_common_text_and_presentation_formats_are_extracted():
     assert "42%" in presentation
 
 
-def test_image_model_is_gpt_image_2():
-    assert bot_config.IMAGE_MODEL == "gpt-image-2"
+def test_image_model_is_gpt_image_25():
+    assert bot_config.IMAGE_MODEL == "gpt-image-2.5-sunburst"
 
 
-def test_gpt_image_2_omits_auto_size_and_input_fidelity():
+def test_gpt_image_25_omits_auto_size_and_input_fidelity():
     from app.bot_core.openai_client import _image_generate_kwargs, edit_image
     import inspect
 
     kwargs = _image_generate_kwargs("кот", size="auto", quality="auto")
-    assert kwargs["model"] == "gpt-image-2"
+    assert kwargs["model"] == "gpt-image-2.5-sunburst"
     assert "size" not in kwargs
     assert "quality" not in kwargs
     assert "input_fidelity" not in inspect.getsource(edit_image)
