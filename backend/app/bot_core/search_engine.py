@@ -1,4 +1,4 @@
-"""Поисковый слой: Kimi native web search с резервом OpenAI web search."""
+"""Поисковый слой: Kimi REST search/search_pro с резервом OpenAI web search."""
 
 import re
 import logging
@@ -169,23 +169,33 @@ async def _search_openai_sources(query: str, max_results: int) -> List[Dict[str,
 
 
 async def _search_kimi_sources(query: str, max_results: int) -> List[Dict[str, str]]:
-    """Получает источники через нативный $web_search Kimi, без DDG-прокси."""
+    """Structured sources via Kimi Web Search Basic REST."""
     try:
-        from kimi_client import _build_search_results_from_text, get_kimi_search_brief
+        from kimi_web_search import kimi_search, to_engine_sources
 
-        brief = await get_kimi_search_brief([], query)
-        if brief.startswith(("Ошибка поиска", "Kimi web search недоступен", "Поиск через Kimi")):
-            return []
-        items = _build_search_results_from_text(brief)
-        sources: List[Dict[str, str]] = []
-        for item in items[:max_results]:
-            url = (item.get("summary") or "").splitlines()[0]
-            if not url.startswith(("http://", "https://")):
-                continue
-            sources.append({"title": item.get("query") or "Источник", "url": url, "snippet": ""})
-        return sources
+        results = await kimi_search(
+            query,
+            limit=min(max(max_results, 1), 20),
+            timeout_seconds=20,
+        )
+        return to_engine_sources(results)[:max_results]
     except Exception as exc:
         logger.warning(f"Kimi web search failed: {exc}")
+        return []
+
+
+async def _search_kimi_pro(query: str, max_results: int) -> List[Dict[str, Any]]:
+    """Ranked passages via Kimi Web Search Pro REST."""
+    try:
+        from kimi_web_search import kimi_search_pro
+
+        return await kimi_search_pro(
+            query,
+            limit=min(max(max_results, 1), 20),
+            timeout_seconds=30,
+        )
+    except Exception as exc:
+        logger.warning(f"Kimi search_pro failed: {exc}")
         return []
 
 
@@ -193,7 +203,7 @@ async def search_web(query: str, max_results: int = 14) -> List[Dict[str, str]]:
     """
     Выполняет поиск и возвращает структурированные источники.
 
-    Приоритет: нативный Kimi $web_search. Если Kimi не вернул как минимум два
+    Приоритет: Kimi REST `/v1/tools/search`. Если Kimi не вернул как минимум два
     пригодных источника, автоматически используем OpenAI web search.
     """
     sources = await _search_kimi_sources(query, max_results)
@@ -217,34 +227,42 @@ async def get_web_search_sources(query: str, max_results: int = 14) -> List[Dict
 async def build_grounded_web_context(query: str, max_results: int = 14, pages_to_read: int = 6) -> tuple[str, List[Dict[str, str]]]:
     """Perplexity-style shared retrieval stage used before every normal answer.
 
-    Kimi gathers the candidate sources, then we read several top pages and pass
-    numbered evidence to the selected model. OpenAI search is the automatic fallback.
+    Kimi Search Pro gathers ranked passages; we scrape only pages that came
+    back without chunks. OpenAI search is the automatic fallback.
     """
+    from kimi_web_search import evidence_from_results, to_engine_sources
     from status_feed import push_status
 
     await push_status("search", f"Ищу: {query[:90]}")
-    sources = await search_web(query, max_results=max_results)
+    pro_results = await _search_kimi_pro(query, max_results)
+    sources = to_engine_sources(pro_results)
+    if not sources:
+        logger.info(f"Kimi Pro empty for '{query[:60]}', falling back to search_web")
+        sources = await search_web(query, max_results=max_results)
+        pro_results = []
     if not sources:
         await push_status("search", "Свежих источников не найдено — отвечаю по контексту")
         return "", []
 
     await push_status("search", f"Нашёл {len(sources)} источников")
     selected = sources[:pages_to_read]
+    content_by_url = evidence_from_results(pro_results)
+    to_scrape = [source for source in selected if not content_by_url.get(source.get("url", ""))]
     for source in selected:
         host = urlparse(source.get("url", "")).netloc.replace("www.", "")
         await push_status("browse", f"Читаю {host or source.get('title', 'источник')}")
 
-    fetched = await asyncio.gather(
-        *(fetch_url_content(source.get("url", "")) for source in selected),
-        return_exceptions=True,
-    )
-    content_by_url: Dict[str, str] = {}
-    for source, result in zip(selected, fetched):
-        if isinstance(result, Exception):
-            continue
-        url, content = result
-        if content:
-            content_by_url[url] = content[:6000]
+    if to_scrape:
+        fetched = await asyncio.gather(
+            *(fetch_url_content(source.get("url", "")) for source in to_scrape),
+            return_exceptions=True,
+        )
+        for source, result in zip(to_scrape, fetched):
+            if isinstance(result, Exception):
+                continue
+            url, content = result
+            if content and not str(content).startswith("["):
+                content_by_url[url] = content[:6000]
 
     blocks = []
     for index, source in enumerate(sources, 1):
@@ -263,19 +281,25 @@ async def build_grounded_web_context(query: str, max_results: int = 14, pages_to
     return "\n\n".join(blocks), ui_sources
 
 
-async def smart_web_search(query: str, max_results: int = 14) -> str:
+async def smart_web_search(
+    query: str,
+    max_results: int = 14,
+    sources: List[Dict[str, str]] | None = None,
+) -> str:
     """
-    Выполняет поиск в DuckDuckGo, получает сниппеты и докачивает контент по топовым ссылкам.
+    Выполняет поиск через Kimi REST, получает сниппеты и докачивает контент по топовым ссылкам.
     
     Args:
         query: Поисковой запрос
         max_results: Количество результатов для анализа
+        sources: Уже полученные источники — повторный поиск не вызывается
         
     Returns:
         Сводная информация из сети в формате текста.
     """
     try:
-        sources = await search_web(query, max_results=max_results)
+        if sources is None:
+            sources = await search_web(query, max_results=max_results)
         
         if not sources:
             return "По вашему запросу ничего не найдено в сети."

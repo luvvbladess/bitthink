@@ -313,7 +313,7 @@ async def get_deepseek_response(
                             {"query": s.get("title", "Источник"), "summary": f"{s.get('url', '')}\n{s.get('snippet', '')}".strip()}
                             for s in sources[:12]
                         ])
-                        tool_result = await smart_web_search(query, max_results=12)
+                        tool_result = await smart_web_search(query, max_results=12, sources=sources)
                         search_count += 1
                     else:
                         tool_result = "❌ Ошибка: Пустой поисковой запрос."

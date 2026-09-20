@@ -135,7 +135,7 @@ async def execute_subtask(
     complexity = task.get("complexity", "simple")
     search_required = task.get("search_required", False)
 
-    # 1. Выполняем поиск, если он требуется. Приоритет — встроенный $web_search у Kimi;
+    # 1. Выполняем поиск, если он требуется. Приоритет — Kimi REST web search;
     # если KIMI_API_KEY не задан, используем резервный поиск через DuckDuckGo.
     facts = ""
     if search_required:

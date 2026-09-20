@@ -341,7 +341,7 @@ async def get_smart_response(
                     on_reasoning_delta=None,
                     research=research,
                 ),
-                timeout=45 if research else 25,
+                timeout=80 if research else 50,
             )
         except asyncio.TimeoutError:
             logger.warning("Kimi web search timed out research=%s", research)
