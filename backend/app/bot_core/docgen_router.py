@@ -53,9 +53,9 @@ PLANNER_PREVIEW_GROUPS = 40
 _NAMES_SHOWN_PER_GROUP = 8        # file names listed per archive before "… и ещё N"
 PLANNER_CATALOG_CHUNKS = 400      # chunk titles shown, was an unbounded 2000
 
-PLANNER_MODEL = "gpt-5.6-terra"
-DEFAULT_WRITER_MODEL = "gpt-5.6-luna"
-ESCALATED_WRITER_MODEL = "gpt-5.6-terra"
+PLANNER_MODEL = "gpt-6-sol"
+DEFAULT_WRITER_MODEL = "gpt-6-luna"
+ESCALATED_WRITER_MODEL = "gpt-6-sol"
 
 # Одним ответом план на тысячи разделов физически не помещается: элемент плана
 # в JSON — это ~85 токенов (замерено), а потолок вывода планировщика 128 000
@@ -117,7 +117,54 @@ _DOC_COUNT_RE = re.compile(
 _NOT_A_SECTION = frozenset({"Нет ответа от модели"})
 
 _PAGE_MARKER = re.compile(r"\n---\s*Страница\s+\d+\s*---\n")
+# Планировщик копирует имя исходника в title — в том числе .xlsx/.pdf.
+# Без этого итоговый файл становился «насос.xlsx.docx».
+_STRIP_SOURCE_SUFFIX = re.compile(
+    r"\.(docx?|pdf|xlsx?|xlsm|txt|rtf|odt)$",
+    re.IGNORECASE,
+)
 _SECTION_FAILED_PREFIX = "[Не удалось сгенерировать раздел"
+# Следы генерации, которые нельзя отдавать заказчику в .docx. «сгенерировано»
+# само по себе не режем: в техническом тексте бывает «сигнал сгенерирован».
+_GENERATION_LEAK_RE = re.compile(
+    r"\[Не удалось[^\]]{0,200}\]"
+    r"|Не удалось сгенерировать[^\n]*"
+    r"|Нет ответа от модели"
+    r"|сгенерирован(?:о|а|ы)?\s+(?:нейросет\w*|ИИ|искусственн\w*|моделью)[^\n.]*\.?"
+    r"|как языковая модель[^\n.]*\.?"
+    r"|как\s+ИИ\b[^\n.]*\.?"
+    r"|as an ai\b[^\n.]*\.?"
+    r"|i(?:'m| am) (?:an )?ai\b[^\n.]*\.?",
+    re.IGNORECASE,
+)
+_WRITER_NO_LEAK_RULE = (
+    "Документ читает заказчик: ни намёка, что текст писала модель. "
+    "Не пиши про генерацию, модели, промпты, сбои, повторы, «как ИИ», "
+    "«сгенерировано», «как языковая модель», английские заглушки, "
+    "разметку чат-бота, скобки «[Не удалось…]» и «Не удалось сгенерировать». "
+    "Только готовый текст раздела."
+)
+_PLANNER_NO_LEAK_RULE = (
+    "В title и brief — только содержание документа, без мета про генерацию, "
+    "модели, сбои и «сгенерировано»."
+)
+
+
+def _is_failed_section(text: str) -> bool:
+    return (text or "").lstrip().startswith(_SECTION_FAILED_PREFIX)
+
+
+def _strip_generation_leaks(text: str) -> str:
+    """Вырезает пометки про сбой и ИИ, чтобы они не попали в файл заказчика."""
+    if not text:
+        return text
+    cleaned = _GENERATION_LEAK_RE.sub("", text)
+    cleaned = re.sub(r"^```(?:markdown|md)?\s*\n", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\n```\s*$", "", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 # Число в маркере обязательно: без него подстрока может встретиться в самом
 # тексте документа и оболгать его как усечённый.
 _PAGES_TRUNCATED_RE = re.compile(r"Прочитал первые \d+")
@@ -268,6 +315,103 @@ def _file_stem(name: str) -> str:
     return re.sub(r"[_\-]+", " ", base).strip()
 
 
+# Заголовки разделов типового ИТТ. Планировщик копирует их из шаблона в title,
+# и тогда каждый раздел становится отдельным файлом («1 Общие сведения.docx»)
+# вместо пяти ИТТ на узлы. Сверяем уже без ведущего номера.
+_ITT_SECTION_TITLES = frozenset({
+    "общие сведения",
+    "основные сведения об объекте",
+    "основные сведения об объекте поставки",
+    "основные сведения об объекте (поставки)",
+    "назначение",
+    "назначение поставки",
+    "состав поставки",
+    "технические требования",
+    "требования к испытаниям",
+    "требования к документации",
+    "приемка и гарантийные обязательства",
+    "приемка",
+    "гарантийные обязательства",
+    "область применения",
+    "нормативные ссылки",
+    "термины и определения",
+    "сокращения",
+    "требования безопасности",
+    "маркировка и упаковка",
+    "транспортирование и хранение",
+    "указания по эксплуатации",
+    "гарантии изготовителя",
+})
+_ITT_SECTION_SUFFIXES = frozenset({
+    "",
+    "поставки",
+    "объекта",
+    "объекта поставки",
+    "и гарантийные обязательства",
+    "к испытаниям",
+    "к документации",
+    "изготовителя",
+})
+_ITT_INNER_SECTIONS = (
+    "Общие сведения",
+    "Основные сведения об объекте",
+    "Назначение поставки",
+    "Состав поставки",
+    "Технические требования",
+    "Требования к испытаниям",
+    "Требования к документации",
+    "Приёмка и гарантийные обязательства",
+)
+
+
+def _heading_core(title: str) -> str:
+    t = (title or "").lower().replace("ё", "е")
+    t = _STRIP_SOURCE_SUFFIX.sub("", t)
+    t = re.sub(r'[\\/:*?"<>|]+', " ", t)
+    t = re.sub(r"^\d+(?:\.\d+)*[.)]?\s+", "", t)
+    t = re.sub(r"[«»„“\"']", "", t)
+    return re.sub(r"\s+", " ", t).strip(" .,—–-")
+
+
+def _is_section_heading_title(title: str) -> bool:
+    """True, если title — пункт оглавления ИТТ, а не имя изделия/узла."""
+    core = _heading_core(title)
+    if not core:
+        return False
+    if core in _ITT_SECTION_TITLES:
+        return True
+    for known in _ITT_SECTION_TITLES:
+        if core == known or core.startswith(known + " "):
+            rest = core[len(known):].strip(" .:—–-")
+            if rest in _ITT_SECTION_SUFFIXES:
+                return True
+    return False
+
+
+def _wants_itt(text: str) -> bool:
+    return bool(re.search(r"(?i)итт|исходн\w{0,8}\s+техническ", text or ""))
+
+
+def _ensure_itt_title(title: str) -> str:
+    t = re.sub(r"\s+", " ", (title or "").strip())
+    if not t:
+        return "ИТТ"
+    if re.match(r"(?i)(?:итт|itt)\b", t):
+        return t
+    return f"ИТТ. {t}"
+
+
+def _prepare_document_title(title: str, user_text: str = "") -> str:
+    t = re.sub(r'[\\/:*?"<>|]+', " ", title or "").strip()
+    t = _STRIP_SOURCE_SUFFIX.sub("", t).strip()
+    t = re.sub(r"\s+", " ", t)
+    if _is_section_heading_title(t):
+        return "Документ"
+    if _wants_itt(user_text):
+        t = _ensure_itt_title(t)
+    return t or "Документ"
+
+
 def _name_score(query: str, candidate: str) -> int:
     """Насколько имя шаблона/исходника относится к названию итогового документа.
 
@@ -416,9 +560,11 @@ def _seed_document_titles(
     просить планировщик выдумать тысячу названий: он потеряет большую часть.
 
     База знаний — обычная единица работы (каждый xlsx/docx → свой выходной
-    файл). Столько же шаблонов — запасной вариант: папка ГОСТовских форм и
-    одна общая база. Возвращает (название, исходный файл) — файл нужен, чтобы
-    подтянуть его краткое содержание в бриф и в сопоставление шаблона.
+    файл). Шаблоны — оформление, не перечень итоговых файлов: если база знаний
+    уже есть, имена из шаблонов ИТТ не подставляем, иначе пять ледокольных
+    ИТТ становятся пятью именами файлов вместо пяти узлов проекта.
+    Возвращает (название, исходный файл) — файл нужен, чтобы подтянуть его
+    краткое содержание в бриф и в сопоставление шаблона.
     """
     if requested < 2:
         return None
@@ -426,6 +572,8 @@ def _seed_document_titles(
     templates = [n for n in sorted(template_names or ()) if n.lower().endswith((".docx", ".doc"))]
     if len(knowledge) == requested:
         return [(_file_stem(n) or n, n) for n in knowledge]
+    if knowledge:
+        return None
     if len(templates) == requested:
         return [(_file_stem(n) or n, n) for n in templates]
     return None
@@ -661,7 +809,7 @@ def _build_context_block(chunks: List[Chunk], budget: int, template_names: Optio
 # («Формы», «Образцы») тоже должно опознаваться, поэтому окончания
 # перечислены, а не отброшены.
 _TEMPLATE_NAME_RE = re.compile(
-    r"(?<![а-яёa-z])(шаблон|образ(?:ец|цы|цов|цам)|форм[аыу]?|бланк|пример|template|form|sample|shablon)",
+    r"(?<![а-яёa-z])(шаблон|образ(?:ец|цы|цов|цам)|форм[аыу]?|бланк|пример|template|form|sample|shablon|итт)",
     re.IGNORECASE,
 )
 
@@ -684,7 +832,10 @@ def _classify_documents_hint(chunks: List[Chunk]) -> str:
         f"По именам файлов похоже на шаблон оформления: {', '.join(template_like)}. "
         f"Остальное похоже на базу знаний: {', '.join(knowledge_like) or '(нет других файлов)'}. "
         "Это только подсказка по имени файла — если пользователь в запросе прямо называет "
-        "другой файл шаблоном, доверяй запросу, а не этой подсказке."
+        "другой файл шаблоном, доверяй запросу, а не этой подсказке. "
+        "Имена шаблонов и их оглавление (Общие сведения, Назначение, "
+        "Технические требования…) не являются именами итоговых файлов, "
+        "если пользователь просит документы на узлы из базы знаний."
     )
 
 
@@ -849,9 +1000,16 @@ async def _plan_outline(
         size_instruction = (
             f"Это перечень отдельных документов: верни ровно {want_count} элементов, "
             f"и все {want_count} названий должны быть разными. "
-            "Каждый элемент — отдельный файл, не глава одного тома и не раздел. "
-            "В title — название документа (оно же станет именем файла), в brief — что в нём "
-            "должно быть. Поле document в этом ответе не нужно, оставь его пустым: "
+            "Каждый элемент — отдельный файл, не глава одного тома и не раздел шаблона. "
+            "В title — наименование изделия/узла/комплектующего из базы знаний "
+            "(лучше «ИТТ на …»). "
+            "ЗАПРЕЩЕНО ставить в title заголовки разделов шаблона ИТТ: "
+            "«Общие сведения», «Основные сведения об объекте», «Назначение», "
+            "«Состав поставки», «Технические требования», «Требования к испытаниям», "
+            "«Требования к документации», «Приёмка». Это внутренняя структура каждого файла. "
+            "Имена файлов-шаблонов (ИТТ.3262-…) тоже не копируй в title, если пользователь "
+            "просит документы на узлы проекта из базы знаний. "
+            "Поле document в этом ответе не нужно, оставь его пустым: "
             "именем файла станет title.\n"
         )
     elif as_documents:
@@ -883,12 +1041,15 @@ async def _plan_outline(
         '{"template_documents": ["точное имя файла или имя архива из списка ниже", ...] (можно пустой список), '
         '"sections": [{"title": "Название раздела", "brief": "Что должно быть в разделе, 1-3 предложения", '
         '"complexity": "simple" | "complex", "document": "название отдельного файла"}, ...]}.\n'
+        f"{_PLANNER_NO_LEAK_RULE}\n"
         "document — заполняй ТОЛЬКО если пользователь просит НЕСКОЛЬКО отдельных документов "
         "(например «сделай 10 ИТТ на разные узлы» или «1000 документов»). Тогда у каждого раздела "
         "стоит название того документа, к которому он относится, и разделы одного документа идут подряд. "
         "Если нужен один документ — оставь document пустым у всех разделов.\n"
         "Если шаблонов оформления несколько, каждому итоговому файлу соответствует ОДИН шаблон "
         "с похожим именем; факты бери только из исходников этой же темы, не смешивай базы разных узлов.\n"
+        "Исходники бывают Word (.doc/.docx), PDF и Excel (.xlsx/.xls/.xlsm), в том числе внутри zip. "
+        "Таблицы и текст PDF — такая же база знаний, как Word: не пропускай их только из‑за формата.\n"
         "complexity=complex — для расчётов, таблиц с цифрами, юридических формулировок, "
         "технических требований с точными значениями. Остальное — simple.\n\n"
         f"Запрос пользователя:\n{user_text}\n\n"
@@ -900,10 +1061,22 @@ async def _plan_outline(
         "папки внутри архива (например, \"архив.zip/папка\") или имя одного файла — тогда шаблоном\n"
         "станут все файлы этого архива, все файлы этой папки или один этот файл.\n"
         "Слова пользователя в запросе всегда важнее подсказки по имени файла.\n"
-        "Если ничто не указывает на шаблон, верни template_documents: []. Если template_documents\n"
-        "задан, построй список разделов, максимально повторяя структуру (заголовки, их порядок) этих\n"
-        "документов, а не придумывай новую; иначе строй план свободно по сути запроса и остальных\n"
-        "материалов.\n\n"
+        "Если ничто не указывает на шаблон, верни template_documents: [].\n"
+    )
+    if as_documents and as_chapters:
+        prompt += (
+            "Сейчас sections — это СПИСОК ИТОГОВЫХ ФАЙЛОВ. Шаблон задаёт оформление "
+            "и разделы внутри каждого файла, а не имена файлов. Не копируй оглавление "
+            "шаблона в title.\n\n"
+        )
+    else:
+        prompt += (
+            "Если template_documents задан, построй список разделов, максимально "
+            "повторяя структуру (заголовки, их порядок) этих документов, а не "
+            "придумывай новую; иначе строй план свободно по сути запроса и остальных "
+            "материалов.\n\n"
+        )
+    prompt += (
         f"{classification_hint}\n\n"
         f"Начало каждого документа (для распознавания шаблона):\n{document_previews}"
     )
@@ -942,10 +1115,23 @@ async def _expand_chapter(
         f"Верни СТРОГО JSON-объект без markdown-обёрток: "
         '{"sections": [{"title": "...", "brief": "Что должно быть в разделе, 1-3 предложения", '
         '"complexity": "simple" | "complex"}, ...]}.\n'
+        f"{_PLANNER_NO_LEAK_RULE}\n"
         f"Нужно примерно {per_chapter} раздел(ов), только по этой главе, без пересечений с другими.\n"
         "complexity=complex — для расчётов, таблиц с цифрами, юридических формулировок, "
-        "технических требований с точными значениями. Остальное — simple.\n\n"
-        f"Запрос пользователя:\n{user_text}\n\n"
+        "технических требований с точными значениями. Остальное — simple.\n"
+    )
+    if _wants_itt(f"{user_text}\n{chapter.title}"):
+        numbered = "; ".join(
+            f"{i} {name}" for i, name in enumerate(_ITT_INNER_SECTIONS, 1)
+        )
+        prompt += (
+            f"Это исходные технические требования на «{chapter.title}». "
+            f"title в JSON — внутренние разделы ОДНОГО файла по структуре шаблона ИТТ: {numbered}. "
+            "Не ставь имя узла в title каждого раздела — имя файла уже "
+            f"«{chapter.title}».\n"
+        )
+    prompt += (
+        f"\nЗапрос пользователя:\n{user_text}\n\n"
         f"Глава: {chapter.title}\n"
         f"Что входит в главу: {chapter.brief}\n\n"
         f"Заголовки доступных фрагментов исходников:\n{catalog}"
@@ -1066,7 +1252,9 @@ async def _top_up_documents(
             extra_instruction=(
                 f"{extra_instruction}\nУже запланированы документы: {have}. "
                 f"Верни ТОЛЬКО ещё {missing} других документов на другие узлы, "
-                "не повторяя перечисленные."
+                "не повторяя перечисленные. "
+                "title — узел/изделие («ИТТ на …»), не раздел шаблона "
+                "(Общие сведения, Назначение, Технические требования)."
             ),
             want_count=missing, as_chapters=True, as_documents=True,
         )
@@ -1076,6 +1264,8 @@ async def _top_up_documents(
         for section in extra:
             title = section.title.strip()
             if not title or title.lower() in known:
+                continue
+            if _is_section_heading_title(title):
                 continue
             known.add(title.lower())
             section.document = section.document or title
@@ -1107,8 +1297,15 @@ async def _plan_as_documents(
     digests = _file_digests(chunks)
 
     if seed:
+        seed = [(title, source) for title, source in seed
+                if not _is_section_heading_title(title)]
+        if len(seed) != documents_wanted:
+            seed = []
+
+    if seed:
         chapters = []
         for i, (title, source) in enumerate(seed):
+            title = _prepare_document_title(title, user_text)
             snippet = _digest_snippet(digests.get(source, ""))
             brief = (
                 f"Документ «{title}». Кратко по исходнику: {snippet}"
@@ -1138,6 +1335,7 @@ async def _plan_as_documents(
         # Дубли убираются ДО добора: иначе недостача считается по списку с
         # повторами, добор просит слишком мало, и файлов выходит меньше заказа.
         chapters = _dedupe_by_title(chapters)
+        chapters = [c for c in chapters if not _is_section_heading_title(c.title)]
         chapters = await _top_up_documents(
             chapters, want, user_text, chunks, user_id, extra_instruction,
         )
@@ -1151,6 +1349,7 @@ async def _plan_as_documents(
         # раскладывала десять названий по двум документам — из 80 разделов
         # выходило 2 файла вместо 10. Выбора тут быть не должно.
         for chapter in chapters:
+            chapter.title = _prepare_document_title(chapter.title, user_text)
             chapter.document = chapter.title
 
     # Без указанного объёма документ получал ОДИН раздел: в готовых ИТТ было
@@ -1456,6 +1655,7 @@ async def _write_section(
     user_request: str = "",
     assigned_templates: Optional[Dict[str, str]] = None,
     digests: Optional[Dict[str, str]] = None,
+    force_complex: bool = False,
 ) -> str:
     # Selecting chunks + building the context block tokenizes/scans the whole
     # corpus per section; at 12 concurrent writers that's real CPU time on the
@@ -1497,12 +1697,29 @@ async def _write_section(
     prompt_parts.append(
         "Напиши текст ТОЛЬКО этого раздела в Markdown, без заголовка раздела (его добавят "
         "отдельно), без вступлений вида «в этом разделе» и без итоговых выводов в конце. "
-        "Не выдумывай цифры и факты, которых нет в исходниках или в задаче раздела."
+        "Списки только нумерованные, максимум четыре уровня: 1, 1.1, 1.1.1, 1.1.1.1. "
+        "Без маркеров «-» и «•». "
+        "Номер в markdown — структура для Word, в файл он не копируется: Word нумерует сам. "
+        "Заголовок раздела уже будет с номером N. Пункты одного уровня: 1. затем 2. затем 3. "
+        "Сборка превратит их в N.1 / N.2 / N.3. Вложенные пункты — только 1.1 / 1.2 или "
+        "с отступом. После фразы с двоеточием («являются:», «распространяются на:», "
+        "«сокращения:») пиши подпункты 1.1 / 1.2, не следующий 2. / 3. "
+        "Не начинай каждый раздел как новый перечень с самостоятельными 1 / 1.1 / 2: "
+        "по документу пункты не должны повторяться. "
+        "Отдельный перечень с 1. — только если у раздела нет номера. "
+        "Пункты не делай заголовками #/##/###. "
+        "Не дублируй номер раздела в тексте пункта. "
+        "Не выдумывай цифры и факты, которых нет в исходниках или в задаче раздела. "
+        "Числа и строки из Excel и из PDF — такие же факты, как из Word. "
+        f"{_WRITER_NO_LEAK_RULE}"
     )
     prompt = "\n\n".join(prompt_parts)
 
     messages = [
-        {"role": "system", "content": "Ты технический писатель. Пишешь один раздел документа, по существу, без воды."},
+        {"role": "system", "content": (
+            "Ты технический писатель. Пишешь один раздел документа, по существу, без воды. "
+            "Текст документа, не чат и не мета про ИИ."
+        )},
         {"role": "user", "content": prompt},
     ]
 
@@ -1512,30 +1729,32 @@ async def _write_section(
     # (generation_hub.hub.cancel) reaches a running job. Do not widen this
     # except clause.
     last_error: Optional[Exception] = None
+    use_complex = force_complex or section.complexity == "complex"
+    timeout_s = 180 if force_complex else 120
     for attempt in range(1, SECTION_ATTEMPTS + 1):
         try:
-            if section.complexity == "complex":
+            if use_complex:
                 if DEEPSEEK_API_KEY:
                     from deepseek_client import get_deepseek_response
                     text, _, _, _ = await asyncio.wait_for(
                         get_deepseek_response(
                             messages, model="deepseek-v4-pro", user_id=user_id, use_tools=False,
                         ),
-                        timeout=120,
+                        timeout=timeout_s,
                     )
                 else:
                     text, _, _, _ = await asyncio.wait_for(
                         get_chat_response(
                             messages, model=ESCALATED_WRITER_MODEL, user_id=user_id, use_tools=False, use_skills=False,
                         ),
-                        timeout=120,
+                        timeout=timeout_s,
                     )
             else:
                 text, _, _, _ = await asyncio.wait_for(
                     get_chat_response(
                         messages, model=DEFAULT_WRITER_MODEL, user_id=user_id, use_tools=False, use_skills=False,
                     ),
-                    timeout=120,
+                    timeout=timeout_s,
                 )
             # Клиенты моделей не бросают исключение на ошибке API — они
             # возвращают её обычным текстом. Без этой проверки такой ответ
@@ -1543,9 +1762,17 @@ async def _write_section(
             # считается удачным, и прогон на тысячи разделов рапортует
             # «Готово», собрав документ из сообщений об ошибке.
             stripped = text.strip()
-            if not stripped or stripped.startswith("❌") or stripped in _NOT_A_SECTION:
+            if (
+                not stripped
+                or stripped.startswith("❌")
+                or stripped in _NOT_A_SECTION
+                or _is_failed_section(stripped)
+            ):
                 raise RuntimeError(stripped[:200] or "пустой ответ модели")
-            return stripped
+            cleaned = _strip_generation_leaks(stripped)
+            if not cleaned:
+                raise RuntimeError(stripped[:200] or "пустой ответ модели")
+            return cleaned
         except Exception as e:
             last_error = e
             if attempt < SECTION_ATTEMPTS:
@@ -1562,7 +1789,10 @@ async def _write_section(
                     f"docgen section '{section.title}' failed after {SECTION_ATTEMPTS} attempts: {e}",
                     exc_info=True,
                 )
-    return f"{_SECTION_FAILED_PREFIX}: {str(last_error)[:200]}]"
+    reason = (str(last_error) if last_error else "").strip() or (
+        type(last_error).__name__ if last_error else "ошибка"
+    )
+    return f"{_SECTION_FAILED_PREFIX}: {reason[:200]}]"
 
 
 def _progress_bar(done: int, total: int, cells: int = 10) -> str:
@@ -1708,7 +1938,7 @@ def _template_renders_cleanly(blank_template: bytes) -> bool:
     """Проверяет заготовку одним пробным документом до того, как по ней будут
     собраны все файлы.
 
-    convert_markdown_to_docx на сбое htmldocx не падает, а кладёт в документ
+    convert_markdown_to_docx на сбое сборки не падает, а кладёт в документ
     СЫРОЙ markdown («## Заголовок», «- пункт») и возвращает валидный .docx.
     Заказчик получил бы десять таких файлов, а сводка сообщила бы, что
     оформление взято из шаблона. Один пробный прогон на весь заказ — это
@@ -1740,8 +1970,11 @@ def _document_filename(title: str, used: Set[str]) -> str:
     clean = re.sub(r'[\\/:*?"<>|]+', " ", title or "").strip()
     # Планировщик нередко называет документ вместе с расширением («ИТТ_ПЛК.docx»),
     # и файл выходил «ИТТ_ПЛК.docx.docx».
-    clean = re.sub(r"\.(docx?|pdf|txt|rtf|odt)$", "", clean, flags=re.IGNORECASE).strip()
-    clean = re.sub(r"\s+", " ", clean)[:120] or "Документ"
+    clean = _STRIP_SOURCE_SUFFIX.sub("", clean).strip()
+    clean = re.sub(r"\s+", " ", clean)
+    if _is_section_heading_title(clean):
+        clean = "Документ"
+    clean = (clean[:120] if clean else "") or "Документ"
     candidate = f"{clean}.docx"
     index = 2
     while candidate.lower() in used:
@@ -1767,12 +2000,17 @@ def _group_by_document(
     parts_by_document: Dict[str, List[str]] = {}
     chapter_by_document: Dict[str, str] = {}
     for section, text in zip(outline, section_texts):
-        parts = parts_by_document.setdefault(section.document, [])
-        if section.chapter and chapter_by_document.get(section.document) != section.chapter:
-            chapter_by_document[section.document] = section.chapter
+        key = (section.document or "").strip() or "Документ"
+        parts = parts_by_document.setdefault(key, [])
+        if section.chapter and chapter_by_document.get(key) != section.chapter:
+            chapter_by_document[key] = section.chapter
             parts.append(f"# {section.chapter}")
-        parts.append(f"## {section.title}\n\n{text}")
-    return [(title, "\n\n".join(parts)) for title, parts in parts_by_document.items()]
+        body = "" if _is_failed_section(text) else _strip_generation_leaks(text or "")
+        parts.append(f"## {section.title}\n\n{body}".rstrip())
+    return [
+        (title, _strip_generation_leaks("\n\n".join(parts)))
+        for title, parts in parts_by_document.items()
+    ]
 
 
 def _zip_documents(files: List[Dict[str, Any]], archive_name: str = "Документы.zip") -> Dict[str, Any]:
@@ -1785,6 +2023,21 @@ def _zip_documents(files: List[Dict[str, Any]], archive_name: str = "Докум�
         for item in files:
             archive.writestr(item["filename"], item["bytes"])
     return {"filename": archive_name, "bytes": buffer.getvalue()}
+
+
+def _with_pdf_copies(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """К каждому .docx — PDF через LibreOffice, если конвертер есть в образе."""
+    from document_parser import convert_docx_to_pdf
+
+    extra: List[Dict[str, Any]] = []
+    for item in files:
+        name = str(item.get("filename") or "")
+        if not name.lower().endswith(".docx"):
+            continue
+        pdf = convert_docx_to_pdf(item["bytes"])
+        if pdf:
+            extra.append({"filename": name[:-5] + ".pdf", "bytes": pdf})
+    return files + extra
 
 
 def _estimate_cost_usd(outline: List[Section], has_sources: bool) -> float:
@@ -2030,25 +2283,52 @@ async def _run_docgen(
         results = await asyncio.gather(*jobs)
         for offset, text in enumerate(results):
             section_texts[batch_start + offset] = text
-            if text and not text.startswith(_SECTION_FAILED_PREFIX):
+            if text and not _is_failed_section(text):
                 last_global_tail = text[-500:]
                 if batch[offset].document:
                     tails[batch[offset].document] = last_global_tail
         done += len(batch)
         chars_written = sum(
             len(text) for text in section_texts
-            if text and not text.startswith(_SECTION_FAILED_PREFIX)
+            if text and not _is_failed_section(text)
         )
         await _update_status(status_msg, _progress_line(done, total, chars_written))
+
+    failed_idxs = [i for i, text in enumerate(section_texts) if _is_failed_section(text)]
+    if failed_idxs:
+        await _update_status(status_msg, "📄 Дописываю разделы, которые не собрались...")
+        for batch_start in range(0, len(failed_idxs), MAX_PARALLEL_SECTIONS):
+            batch_idxs = failed_idxs[batch_start:batch_start + MAX_PARALLEL_SECTIONS]
+            salvage = await asyncio.gather(*[
+                _write_section(
+                    outline[i], chunks,
+                    tails.get(outline[i].document, "") if outline[i].document else last_global_tail,
+                    user_id, template_names, replacements,
+                    user_request=user_text, assigned_templates=assigned, digests=digests,
+                    force_complex=True,
+                )
+                for i in batch_idxs
+            ])
+            for i, text in zip(batch_idxs, salvage):
+                section_texts[i] = text
+                if text and not _is_failed_section(text):
+                    last_global_tail = text[-500:]
+                    if outline[i].document:
+                        tails[outline[i].document] = last_global_tail
 
     await _update_status(status_msg, "📄 Собираю итоговый .docx...")
     documents = _group_by_document(outline, section_texts)
     blanks = await asyncio.to_thread(_template_blanks, user_id, template_names)
+    grouped_titles = [title for title, _ in documents]
+    match_texts = dict(title_texts)
+    if user_text:
+        for title in grouped_titles:
+            match_texts[title] = f"{match_texts.get(title, '')} {user_text}".strip()
     file_assigned = _assign_templates(
-        [title for title, _ in documents],
+        grouped_titles,
         set(blanks) or template_names,
         digests=digests,
-        title_texts=title_texts,
+        title_texts=match_texts,
     )
 
     from docx_generator import convert_markdown_to_docx
@@ -2068,9 +2348,11 @@ async def _run_docgen(
             full_markdown += markdown_text
             tmpl_name = file_assigned.get(title or "")
             template_bytes = blanks.get(tmpl_name) if tmpl_name else None
-            if template_bytes is None and len(blanks) == 1:
-                template_bytes = next(iter(blanks.values()))
+            # Один файл и несколько шаблонов: без этого оформление терялось —
+            # live-прогон на архиве «Пример оформления» собирал голый Word.
+            if template_bytes is None and blanks:
                 tmpl_name = next(iter(blanks))
+                template_bytes = blanks[tmpl_name]
             if template_bytes and tmpl_name:
                 used_templates.add(tmpl_name)
             docx_bytes = await asyncio.to_thread(
@@ -2080,14 +2362,19 @@ async def _run_docgen(
                 "filename": _document_filename(title or "Документ", used_names),
                 "bytes": docx_bytes,
             })
+        files = await asyncio.to_thread(_with_pdf_copies, files)
+        pdf_attached = any(str(item.get("filename") or "").lower().endswith(".pdf") for item in files)
     except Exception as e:
         logger.error(f"docgen docx assembly failed: {e}", exc_info=True)
         return f"Не удалось собрать документ: {str(e)[:200]}", [], "", []
 
+    docx_count = sum(
+        1 for item in files if str(item.get("filename") or "").lower().endswith(".docx")
+    )
     approx_pages = max(1, len(full_markdown) // CHARS_PER_PAGE)
-    if len(files) > 1:
+    if docx_count > 1:
         summary = (
-            f"Готово. Документов: {len(files)}, разделов: {total}, примерно {approx_pages} стр. "
+            f"Готово. Документов: {docx_count}, разделов: {total}, примерно {approx_pages} стр. "
             "Все файлы — в архиве во вложении."
         )
     else:
@@ -2107,9 +2394,12 @@ async def _run_docgen(
         summary += " Исходники не найдены — документ написан по одному промпту."
     if planning_failed:
         summary += " План разделов построить не удалось, поэтому документ написан одним разделом."
-    failed_sections = sum(1 for text in section_texts if text.startswith(_SECTION_FAILED_PREFIX))
+    failed_sections = sum(1 for text in section_texts if _is_failed_section(text))
     if failed_sections:
-        summary += f" Не удалось сгенерировать разделов: {failed_sections} из {total} — они помечены в тексте."
+        summary += (
+            f" Не удалось дописать разделов: {failed_sections} из {total}. "
+            "В файле эти разделы без служебных пометок — повторите генерацию."
+        )
     if truncated_sources:
         summary += (
             f" Прочитаны не целиком: {', '.join(truncated_sources)}. "
@@ -2126,8 +2416,10 @@ async def _run_docgen(
             summary += f" Заменено реквизитов: {replaced_count}."
         if placeholder_count:
             summary += f" Оставлены метки [УКАЗАТЬ: …] вместо не указанных значений: {placeholder_count}."
+    if pdf_attached:
+        summary += " К каждому .docx приложен PDF для просмотра."
     # Десять отдельных вложений в переписке — десять карточек, которые качают
     # по одной. Когда документов больше одного, отдаётся архив.
-    if len(files) > 1:
+    if docx_count > 1:
         files = [_zip_documents(files)]
     return summary, files, "", []

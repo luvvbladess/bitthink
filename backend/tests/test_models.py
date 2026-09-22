@@ -38,7 +38,7 @@ def test_public_model_catalog_hides_internal_routes():
         response = TestClient(app).get("/models")
         assert response.status_code == 200
         ids = {model["id"] for model in response.json()["models"]}
-        assert ids == {"auto", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra", "director", "studio", "docgen"}
+        assert ids == {"auto", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra", "director", "studio", "docgen"}
         assert "none" in response.json()["reasoningEfforts"]
         assert "deepseek-v4-pro" not in ids
         assert "kimi-k2.6" not in ids
@@ -48,7 +48,7 @@ def test_public_model_catalog_hides_internal_routes():
         assert payload["studioAvailable"] is False
         assert payload["docgenAvailable"] is False
         assert payload["astraAvailable"] is False
-        assert payload["multipliers"]["gpt-5.6-sol"] == 32
+        assert payload["multipliers"]["gpt-6-sol"] == 20
         assert payload["multipliers"]["gpt-6-astra"] == 90
     finally:
         app.dependency_overrides.clear()
@@ -57,7 +57,7 @@ def test_public_model_catalog_hides_internal_routes():
 def test_free_user_cannot_select_locked_expert_model():
     app.dependency_overrides[get_current_user] = lambda: "models-locked@example.com"
     try:
-        response = TestClient(app).post("/models/select", json={"model": "gpt-5.6-sol"})
+        response = TestClient(app).post("/models/select", json={"model": "gpt-6-sol"})
         assert response.status_code == 403
     finally:
         app.dependency_overrides.clear()
@@ -67,13 +67,13 @@ def test_best_route_balances_cost_and_complexity_without_router_tokens():
     assert best_route("Привет, как приготовить омлет?", "none", True) == ("deepseek-v4-flash", False)
     assert best_route("Проанализируй архитектуру и сделай ревью кода", "none", True) == ("deepseek-v4-pro", False)
     assert best_route("Объясни тему глубоко", "medium", True) == ("deepseek-v4-pro", True)
-    assert best_route("Короткий вопрос", "none", False) == ("gpt-5.6-luna", False)
+    assert best_route("Короткий вопрос", "none", False) == ("gpt-6-luna", False)
 
 
 def test_auto_route_uses_request_volume_not_a_single_analysis_verb():
     simple = "Сравни плюсы и минусы удалённой работы"
     assert best_route(simple, "none", True) == ("deepseek-v4-flash", False)
-    assert best_route(simple, "none", False) == ("gpt-5.6-luna", False)
+    assert best_route(simple, "none", False) == ("gpt-6-luna", False)
 
     detailed = "Сравни два подхода. " + ("Учти стоимость, риски, сроки и ограничения команды. " * 24)
     assert best_route(detailed, "none", True) == ("deepseek-v4-pro", False)
@@ -81,10 +81,10 @@ def test_auto_route_uses_request_volume_not_a_single_analysis_verb():
 
 def test_computer_orchestrator_is_smart_but_direct_hop_stays_economy():
     # The orchestrator (round planning) drives every hiring/coordination decision
-    # in Pilot, so it targets Terra quality by default; a lone reply with no
+    # in Pilot, so it targets Sol quality by default; a lone reply with no
     # employees hired is still ordinary economy work.
-    assert PLANNER_MODEL == "gpt-5.6-terra"
-    assert DIRECT_ANSWER_MODEL == "gpt-5.6-luna"
+    assert PLANNER_MODEL == "gpt-6-sol"
+    assert DIRECT_ANSWER_MODEL == "gpt-6-luna"
 
 
 def test_computer_orchestrator_downgrades_gracefully_below_terra_tier(monkeypatch):
@@ -94,29 +94,29 @@ def test_computer_orchestrator_downgrades_gracefully_below_terra_tier(monkeypatc
     monkeypatch.setattr(
         conversations.conversation_manager, "get_subscription", lambda _uid: {"tier": "pro"}
     )
-    assert dr._clamped_planner_model(1) == "gpt-5.6-luna"
+    assert dr._clamped_planner_model(1) == "gpt-6-luna"
 
     monkeypatch.setattr(
         conversations.conversation_manager, "get_subscription", lambda _uid: {"tier": "proplus"}
     )
-    assert dr._clamped_planner_model(1) == "gpt-5.6-terra"
+    assert dr._clamped_planner_model(1) == "gpt-6-sol"
 
 
 def test_computer_composer_escalates_only_for_heavy_or_document_work():
     small_journal = [{"status": "ok", "result": "Короткий проверенный результат."}]
-    assert _select_composer_model("Сравни два тарифа", small_journal) == "gpt-5.6-luna"
-    assert _select_composer_model("Проверь договор", small_journal, "Текст документа") == "gpt-5.6-terra"
+    assert _select_composer_model("Сравни два тарифа", small_journal) == "gpt-6-luna"
+    assert _select_composer_model("Проверь договор", small_journal, "Текст документа") == "gpt-6-sol"
 
     large_journal = [
         {"status": "ok", "result": "x" * 3000}
         for _ in range(6)
     ]
-    assert _select_composer_model("Собери вывод", large_journal) == "gpt-5.6-terra"
+    assert _select_composer_model("Собери вывод", large_journal) == "gpt-6-sol"
     photo_journal = [
         {"status": "ok", "result": "a"},
         {"status": "ok", "result": "b"},
     ]
-    assert _select_composer_model("где снято это фото", photo_journal) == "gpt-5.6-terra"
+    assert _select_composer_model("где снято это фото", photo_journal) == "gpt-6-sol"
 
 
 def test_pilot_hires_astra_only_for_dense_contract_work(monkeypatch):
@@ -125,7 +125,7 @@ def test_pilot_hires_astra_only_for_dense_contract_work(monkeypatch):
     monkeypatch.setattr(
         dr,
         "_employee_models",
-        lambda _uid: ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra"],
+        lambda _uid: ["gpt-6-luna", "gpt-6-sol", "gpt-6-astra"],
     )
     assert not dr._task_warrants_astra("сравни три сайта")
     assert not dr._task_warrants_astra("проверь договор")
@@ -140,10 +140,10 @@ def test_pilot_hires_astra_only_for_dense_contract_work(monkeypatch):
     assert parsed["new_employees"][0]["model"] == "gpt-6-astra"
 
     cheap = dr._clamp_employee_plan(parsed, 1, "сравни три сайта")
-    assert [item["model"] for item in cheap["new_employees"]] == ["gpt-5.6-sol", "gpt-5.6-sol"]
+    assert [item["model"] for item in cheap["new_employees"]] == ["gpt-6-sol", "gpt-6-sol"]
 
     heavy = dr._clamp_employee_plan(parsed, 1, "проверь договор", "пункт " * 80)
-    assert [item["model"] for item in heavy["new_employees"]] == ["gpt-6-astra", "gpt-5.6-sol"]
+    assert [item["model"] for item in heavy["new_employees"]] == ["gpt-6-astra", "gpt-6-sol"]
 
     already = [{"model": "gpt-6-astra"}]
     second = dr._clamp_employee_plan(parsed, 1, "проверь договор", "пункт " * 80, already)
@@ -192,7 +192,7 @@ def test_pilot_injects_memory_and_custom_prompt_into_planner_employee_and_compos
 
     monkeypatch.setattr("openai_client.get_chat_response", fake_employee_response)
     asyncio.run(
-        dr._execute_employee({"role": "Поиск", "task": "найди цену", "model": "gpt-5.6-luna"}, 1, [], 1)
+        dr._execute_employee({"role": "Поиск", "task": "найди цену", "model": "gpt-6-luna"}, 1, [], 1)
     )
     assert any("английском" in text and "буквально" in text for text in captured)
 
@@ -206,7 +206,7 @@ def test_pilot_injects_memory_and_custom_prompt_into_planner_employee_and_compos
     asyncio.run(
         dr._compose_answer(
             "Сравни два тарифа",
-            [{"round": 1, "role": "Поиск", "task": "найди цену", "model": "gpt-5.6-luna", "status": "ok", "result": "$10"}],
+            [{"round": 1, "role": "Поиск", "task": "найди цену", "model": "gpt-6-luna", "status": "ok", "result": "$10"}],
             1,
         )
     )
@@ -238,7 +238,7 @@ def test_pilot_planner_employee_and_composer_see_chat_history(monkeypatch):
     monkeypatch.setattr("openai_client.get_chat_response", fake_employee_response)
     asyncio.run(
         dr._execute_employee(
-            {"role": "Расчёт", "task": "посчитай стоимость", "model": "gpt-5.6-luna"},
+            {"role": "Расчёт", "task": "посчитай стоимость", "model": "gpt-6-luna"},
             1,
             [],
             1,
@@ -262,7 +262,7 @@ def test_pilot_planner_employee_and_composer_see_chat_history(monkeypatch):
                     "round": 1,
                     "role": "Расчёт",
                     "task": "посчитай стоимость",
-                    "model": "gpt-5.6-luna",
+                    "model": "gpt-6-luna",
                     "status": "ok",
                     "result": "1000",
                 }
@@ -288,7 +288,7 @@ def test_director_builds_history_once_and_reuses_it_across_rounds(monkeypatch):
             return {"status": "done", "new_employees": []}
         return {
             "status": "continue",
-            "new_employees": [{"role": "A", "task": "t", "model": "gpt-5.6-luna"}],
+            "new_employees": [{"role": "A", "task": "t", "model": "gpt-6-luna"}],
         }
 
     async def fake_exec(employee, round_num, journal, user_id, document_context="", history_text="", has_images=False):
@@ -444,7 +444,7 @@ def test_astra_falls_back_when_api_model_is_missing():
     source = (Path(__file__).resolve().parents[1] / "app" / "bot_core" / "openai_client.py").read_text(encoding="utf-8")
     assert "def _astra_unavailable" in source
     assert 'requested == "gpt-6-astra" and _astra_unavailable' in source
-    assert 'model="gpt-5.6-sol"' in source
+    assert 'model="gpt-6-sol"' in source
     assert "model_not_found" in source
 
 
@@ -454,8 +454,8 @@ def test_astra_is_sandbox_agent_not_web_only_chat():
 
     assert openai_tool_flags("gpt-6-astra", False) == (True, False)
     assert openai_tool_flags("gpt-6-astra", True) == (True, False)
-    assert openai_tool_flags("gpt-5.6-luna", True) == (True, True)
-    assert openai_tool_flags("gpt-5.6-luna", False) == (False, False)
+    assert openai_tool_flags("gpt-6-luna", True) == (True, True)
+    assert openai_tool_flags("gpt-6-luna", False) == (False, False)
     assert "песочниц" in ASTRA_AGENT_PROMPT
 
     client = (Path(__file__).resolve().parents[1] / "app" / "bot_core" / "openai_client.py").read_text(encoding="utf-8")
@@ -482,11 +482,11 @@ def test_attachments_skip_forced_web_in_auto_not_search_modes():
     assert not turn_requires_web(question, "studio", has_images=True)
     assert turn_requires_web(question, "kimi-k2.6", has_documents=True)
     assert turn_requires_web(question, "kimi-k2.6", has_images=True)
-    assert turn_requires_web(question, "gpt-5.6-sol", research_mode=True, has_images=True)
-    assert turn_requires_web(question, "gpt-5.6-terra", research_mode=True, has_documents=True)
+    assert turn_requires_web(question, "gpt-6-sol", research_mode=True, has_images=True)
+    assert turn_requires_web(question, "gpt-6-sol", research_mode=True, has_documents=True)
     assert turn_requires_web("загугли курс доллара", "auto", has_documents=True)
     assert turn_requires_web("что нового", "kimi-k2.6")
-    assert turn_requires_web("сделай обзор рынка", "gpt-5.6-sol", research_mode=True)
+    assert turn_requires_web("сделай обзор рынка", "gpt-6-sol", research_mode=True)
     assert turn_requires_web("зайди на сайт компании", "director")
     assert turn_requires_web("Проанализируй прикреплённые файлы.", "director", has_documents=True)
     assert turn_requires_web("сравни сервисы для отчёта", "director", has_images=True)
@@ -880,9 +880,8 @@ def test_each_mode_has_one_shared_context_window():
     from model_context import input_budget_tokens, packing_char_budgets, packing_mode_id, window_for
 
     assert window_for("gpt-5-nano").context == 400_000
-    assert window_for("gpt-5.6-luna").context == 1_050_000
-    assert window_for("gpt-5.6-terra").context == 1_050_000
-    assert window_for("gpt-5.6-sol").context == 1_050_000
+    assert window_for("gpt-6-luna").context == 1_050_000
+    assert window_for("gpt-6-sol").context == 1_050_000
     assert window_for("gpt-6-astra").context == 1_050_000
     assert window_for("kimi-k2.6").context == 262_144
     assert window_for("deepseek-v4-pro").context == 1_048_576
@@ -890,7 +889,7 @@ def test_each_mode_has_one_shared_context_window():
     assert packing_mode_id("director") == "director"
     assert packing_mode_id("kimi-k2.6") == "kimi-k2.6"
 
-    mixed = ["auto", "director", "correspondent", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"]
+    mixed = ["auto", "director", "correspondent", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra"]
     assert {window_for(mode).context for mode in mixed} == {1_050_000}
     assert len({packing_char_budgets(mode) for mode in mixed}) == 1
 
@@ -967,9 +966,9 @@ def test_director_plan_keeps_parallel_employees():
 
     plan = _parse_director_plan(
         '{"status":"continue","new_employees":['
-        '{"role":"A","task":"one","model":"gpt-5.6-luna"},'
+        '{"role":"A","task":"one","model":"gpt-6-luna"},'
         '{"role":"B","task":"two","model":"kimi-k2.6"},'
-        '{"role":"C","task":"three","model":"gpt-5.6-luna"}'
+        '{"role":"C","task":"three","model":"gpt-6-luna"}'
         "]}"
     )
     assert plan["status"] == "continue"
@@ -978,8 +977,8 @@ def test_director_plan_keeps_parallel_employees():
         "status": "continue",
         "new_employees": plan["new_employees"]
         + [
-            {"role": "D", "task": "four", "model": "gpt-5.6-luna"},
-            {"role": "E", "task": "five", "model": "gpt-5.6-luna"},
+            {"role": "D", "task": "four", "model": "gpt-6-luna"},
+            {"role": "E", "task": "five", "model": "gpt-6-luna"},
         ],
     }
     assert len(_enforce_caps(1, 0, crowded)["new_employees"]) == MAX_PARALLEL_PER_ROUND
@@ -1012,8 +1011,8 @@ def test_computer_round_runs_employees_in_parallel(monkeypatch):
         return {
             "status": "continue",
             "new_employees": [
-                {"role": "A", "task": "t1", "model": "gpt-5.6-luna"},
-                {"role": "B", "task": "t2", "model": "gpt-5.6-luna"},
+                {"role": "A", "task": "t1", "model": "gpt-6-luna"},
+                {"role": "B", "task": "t2", "model": "gpt-6-luna"},
                 {"role": "C", "task": "t3", "model": "kimi-k2.6"},
             ],
         }

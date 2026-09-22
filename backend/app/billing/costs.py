@@ -9,9 +9,11 @@ from typing import Any
 MODEL_USD: dict[str, dict[str, float]] = {
     "gpt-5-nano": {"input": 0.05, "output": 0.40},
     "gpt-5.6-luna": {"input": 0.25, "output": 2.00},
+    "gpt-6-luna": {"input": 0.10, "output": 0.50},
     "gpt-5.6-terra": {"input": 1.25, "output": 10.00},
     "gpt-5.6-sol": {"input": 1.75, "output": 14.00},
     "gpt-5.6-sol-pro": {"input": 1.75, "output": 14.00},
+    "gpt-6-sol": {"input": 2.00, "output": 10.00},
     "gpt-6-astra": {"input": 10.00, "output": 50.00},
     "kimi-k2.6": {"input": 0.60, "output": 2.50},
     "deepseek-v4-pro": {"input": 0.55, "output": 2.19},
@@ -23,7 +25,7 @@ MODEL_USD: dict[str, dict[str, float]] = {
     "gpt-image-1": {"input": 0.0, "output": 0.0, "image": 0.04},
 }
 
-_DEFAULT = {"input": 0.25, "output": 2.00, "image": 0.0}
+_DEFAULT = {"input": 0.10, "output": 0.50, "image": 0.0}
 
 
 def model_cost_usd(
@@ -31,10 +33,17 @@ def model_cost_usd(
     input_tokens: int = 0,
     output_tokens: int = 0,
     images: int = 0,
+    cached_input_tokens: int = 0,
 ) -> float:
+    """List-price estimate. Cached prompt hits are billed at 10% of the input rate."""
     rates = MODEL_USD.get(model) or _DEFAULT
+    fresh_input = max(0, int(input_tokens or 0))
+    cached = min(max(0, int(cached_input_tokens or 0)), fresh_input)
+    fresh_input -= cached
     usd = 0.0
-    usd += max(0, int(input_tokens or 0)) / 1_000_000 * float(rates.get("input", _DEFAULT["input"]))
+    input_rate = float(rates.get("input", _DEFAULT["input"]))
+    usd += fresh_input / 1_000_000 * input_rate
+    usd += cached / 1_000_000 * input_rate * 0.1
     usd += max(0, int(output_tokens or 0)) / 1_000_000 * float(rates.get("output", _DEFAULT["output"]))
     usd += max(0, int(images or 0)) * float(rates.get("image", 0.0))
     return usd
@@ -49,7 +58,8 @@ def spend_summary(usage: dict[str, Any] | None) -> dict[str, Any]:
         inp = int(row.get("input") or 0)
         out = int(row.get("output") or 0)
         images = int(row.get("images") or 0)
-        usd = model_cost_usd(model, inp, out, images)
+        cached = int(row.get("cached") or 0)
+        usd = model_cost_usd(model, inp, out, images, cached_input_tokens=cached)
         if usd <= 0 and inp <= 0 and out <= 0 and images <= 0:
             continue
         total += usd

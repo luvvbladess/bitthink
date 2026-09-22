@@ -46,7 +46,7 @@ def test_director_clarify_does_not_hire(monkeypatch):
         assert journal == []
         return {
             "status": "clarify",
-            "new_employees": [{"role": "X", "task": "should not run", "model": "gpt-5.6-luna"}],
+            "new_employees": [{"role": "X", "task": "should not run", "model": "gpt-6-luna"}],
             "questions": [
                 {
                     "prompt": "Какой тип приложения ты хочешь создать?",

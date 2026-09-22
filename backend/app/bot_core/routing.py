@@ -139,5 +139,5 @@ def best_route(user_text: str, reasoning_effort: Optional[str], has_deepseek: bo
     if has_deepseek:
         return ("deepseek-v4-pro" if complex_task else "deepseek-v4-flash", deep)
     if complex_task:
-        return ("gpt-5.6-terra", deep)
-    return ("gpt-5.6-luna", False)
+        return ("gpt-6-sol", deep)
+    return ("gpt-6-luna", False)

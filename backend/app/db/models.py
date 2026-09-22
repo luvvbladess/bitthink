@@ -154,6 +154,7 @@ class UsageRecord(Base):
     output_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     images: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     calls: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    cached_input_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default="0")
 
 
 class AllowedContext(Base):

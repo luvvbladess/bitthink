@@ -32,28 +32,28 @@ def test_pro_price_and_pools():
 
 
 def test_multipliers_and_long_context():
-    assert our_tokens("gpt-5.6-luna", 100, 50) == 150
+    assert our_tokens("gpt-6-luna", 100, 50) == 150
     assert our_tokens("kimi-k2.6", 100, 0) == 400
-    assert our_tokens("gpt-5.6-terra", 10, 0) == 130
-    assert our_tokens("gpt-5.6-sol", 10, 0) == 320
+    assert our_tokens("gpt-6-sol", 10, 0) == 200
     assert our_tokens("gpt-6-astra", 10, 0) == 900
-    assert our_tokens("gpt-5.6-luna", 272_001, 0) == 272_001 * 2
-    assert our_tokens("gpt-5.6-luna", 100, 0, 100) == 25
-    assert our_tokens("gpt-5.6-luna", 100, 50, 0) == 150
-    assert our_tokens("gpt-5.6-luna", 100, 0, 0, 100) == 125
+    assert our_tokens("gpt-6-luna", 272_001, 0) == 272_001 * 2
+    assert our_tokens("gpt-6-luna", 100, 0, 100) == 25
+    assert our_tokens("gpt-6-luna", 100, 50, 0) == 150
+    assert our_tokens("gpt-6-luna", 100, 0, 0, 100) == 125
+    assert our_tokens("gpt-5.6-sol", 10, 0) == 320
 
 
 def test_clamp_and_research_access():
-    assert clamp_model("pro", "gpt-5.6-terra") == "gpt-5.6-luna"
-    assert clamp_model("pro", "gpt-5.6-sol") == "gpt-5.6-luna"
-    assert clamp_model("proplus", "gpt-5.6-sol") == "gpt-5.6-terra"
-    assert clamp_model("ultra", "gpt-5.6-sol") == "gpt-5.6-sol"
+    assert clamp_model("pro", "gpt-6-sol") == "gpt-6-luna"
+    assert clamp_model("pro", "gpt-5.6-terra") == "gpt-6-luna"
+    assert clamp_model("proplus", "gpt-5.6-sol") == "gpt-6-sol"
+    assert clamp_model("ultra", "gpt-6-sol") == "gpt-6-sol"
     assert clamp_model("ultra", "gpt-6-astra") == "gpt-6-astra"
-    assert clamp_model("proplus", "gpt-6-astra") == "gpt-5.6-terra"
-    assert clamp_model("pro", "gpt-6-astra") == "gpt-5.6-luna"
+    assert clamp_model("proplus", "gpt-6-astra") == "gpt-6-sol"
+    assert clamp_model("pro", "gpt-6-astra") == "gpt-6-luna"
     assert research_model("pro") is None
-    assert research_model("proplus") == "gpt-5.6-terra"
-    assert research_model("ultra") == "gpt-5.6-sol"
+    assert research_model("proplus") == "gpt-6-sol"
+    assert research_model("ultra") == "gpt-6-sol"
     assert "gpt-6-astra" in computer_models("ultra")
     assert "gpt-6-astra" not in computer_models("proplus")
 
@@ -75,8 +75,8 @@ def test_usage_view_and_debit():
     mgr = DatabaseConversationManager()
     uid = 91001
     mgr.set_subscription_tier(uid, "pro", 30)
-    mgr.debit_plan_tokens(uid, "chat", 1_000_000, model="gpt-5.6-luna")
-    mgr.debit_plan_tokens(uid, "computer", 500_000, model="gpt-5.6-luna")
+    mgr.debit_plan_tokens(uid, "chat", 1_000_000, model="gpt-6-luna")
+    mgr.debit_plan_tokens(uid, "computer", 500_000, model="gpt-6-luna")
     mgr.debit_plan_images(uid, 2)
     view = usage_view(mgr.get_subscription(uid))
     assert view["tier"] == "pro"
@@ -113,7 +113,7 @@ def test_session_and_week_block_before_month():
     assert view["windows"]["chat"]["session"]["remaining"] == 0
     assert view["chat"]["remaining"] == 27_840_000
     try:
-        assert_can_use(uid, "chat", "gpt-5.6-luna")
+        assert_can_use(uid, "chat", "gpt-6-luna")
         raise AssertionError("session should block")
     except QuotaError as err:
         assert "Пятичасовое" in str(err)
@@ -128,7 +128,7 @@ def test_session_and_week_block_before_month():
     view = usage_view(mgr.get_subscription(uid))
     assert view["windows"]["chat"]["week"]["remaining"] == 0
     try:
-        assert_can_use(uid, "chat", "gpt-5.6-luna")
+        assert_can_use(uid, "chat", "gpt-6-luna")
         raise AssertionError("week should block")
     except QuotaError as err:
         assert "Недельный" in str(err)
@@ -224,6 +224,8 @@ def test_spend_summary_uses_vendor_rates():
 
     assert abs(model_cost_usd("gpt-5.6-luna", 1_000_000, 0) - 0.25) < 1e-9
     assert abs(model_cost_usd("gpt-5.6-sol", 0, 1_000_000) - 14.0) < 1e-9
+    assert abs(model_cost_usd("gpt-6-luna", 1_000_000, 0) - 0.10) < 1e-9
+    assert abs(model_cost_usd("gpt-6-sol", 0, 1_000_000) - 10.0) < 1e-9
     assert abs(model_cost_usd("gpt-6-astra", 1_000_000, 0) - 10.0) < 1e-9
     assert abs(model_cost_usd("gpt-image-2.5-sunburst", 0, 0, 1) - 0.08) < 1e-9
     assert abs(model_cost_usd("gpt-image-2", 0, 0, 1) - 0.08) < 1e-9
@@ -236,3 +238,4 @@ def test_spend_summary_uses_vendor_rates():
     )
     assert abs(summary["usd"] - 0.33) < 1e-9
     assert summary["models"][0]["model"] == "gpt-5.6-luna"
+    assert abs(model_cost_usd("gpt-5.6-luna", 1_000_000, 0, cached_input_tokens=1_000_000) - 0.025) < 1e-9

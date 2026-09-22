@@ -111,7 +111,7 @@ async def _search_openai_sources(query: str, max_results: int) -> List[Dict[str,
         try:
             resp = await asyncio.wait_for(
                 client.responses.create(
-                    model="gpt-5.6-luna",
+                    model="gpt-6-luna",
                     input=f"Выполни веб-поиск по запросу и используй актуальные источники: {query}",
                     tools=[{"type": "web_search"}],
                     tool_choice="required",
@@ -335,7 +335,7 @@ async def smart_web_search(
         logger.error(f"Error in smart_web_search: {e}")
         return f"Произошла ошибка при поиске в сети: {str(e)}"
 
-async def check_if_search_needed(user_query: str, model: str = "gpt-5.6-luna") -> bool:
+async def check_if_search_needed(user_query: str, model: str = "gpt-6-luna") -> bool:
     """
     Использует ИИ, чтобы определить, нужен ли поиск в сети для ответа на этот вопрос.
     """

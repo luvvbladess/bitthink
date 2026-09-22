@@ -255,7 +255,7 @@ def test_studio_in_plans():
 
     assert "studio" not in allowed_models("free")
     assert "studio" in allowed_models("pro")
-    assert clamp_model("free", "studio") == "gpt-5.6-luna"
+    assert clamp_model("free", "studio") == "gpt-6-luna"
     assert clamp_model("pro", "studio") == "studio"
 
 
@@ -517,4 +517,4 @@ def test_studio_does_not_spend_astra_on_canvas():
 
     source = (Path(__file__).resolve().parents[1] / "app" / "bot_core" / "studio_router.py").read_text(encoding="utf-8")
     assert "gpt-6-astra" not in source
-    assert '"gpt-5.6-sol"' in source
+    assert '"gpt-6-sol"' in source

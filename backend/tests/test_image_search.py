@@ -53,8 +53,8 @@ def test_photo_research_gate_and_composer():
         {"status": "ok", "result": "Яндекс: Парк Победы"},
         {"status": "ok", "result": "Страница подтверждает колесо Гагарин"},
     ]
-    assert _select_composer_model(query, journal) == "gpt-5.6-terra"
-    assert _select_composer_model("Сравни два тарифа", [{"status": "ok", "result": "коротко"}]) == "gpt-5.6-luna"
+    assert _select_composer_model(query, journal) == "gpt-6-sol"
+    assert _select_composer_model("Сравни два тарифа", [{"status": "ok", "result": "коротко"}]) == "gpt-6-luna"
 
 
 def test_pilot_forces_research_rounds_instead_of_instant_answer():

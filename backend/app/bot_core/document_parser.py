@@ -1,5 +1,5 @@
 """
-Модуль для извлечения текста из документов (DOCX, PDF)
+Модуль для извлечения текста из документов (DOCX, PDF, Excel).
 """
 
 import io
@@ -147,8 +147,8 @@ async def _ocr_image_via_openai(image_bytes: bytes, user_id: int = None) -> str:
     from config import OPENAI_API_KEY
     from conversations import conversation_manager
 
-    # Используем gpt-5.6-luna для OCR — дешёвая, быстрая, с поддержкой Vision
-    OCR_MODEL = "gpt-5.6-luna"
+    # GPT-6 Luna: дешёвая, быстрая, с картинками на входе.
+    OCR_MODEL = "gpt-6-luna"
     
     try:
         # Используем глобальный клиент, чтобы не создавать новый на каждую картинку
@@ -420,42 +420,270 @@ async def extract_text_from_txt(file_data: bytes) -> str:
     return file_data.decode('utf-8', errors='replace')
 
 
-async def extract_text_from_excel(file_data: bytes, file_name: str) -> str:
+_OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+_OLE_WORKBOOK_UTF16 = "Workbook".encode("utf-16-le")
+_EXCEL_OOXML_SUFFIXES = {".xlsx", ".xlsm", ".xltx", ".xltm"}
+_EXCEL_BIFF_SUFFIXES = {".xls", ".xlt"}
+_TEXT_KINDS = {
+    "txt", "md", "markdown", "csv", "tsv", "json", "jsonl", "xml", "yaml", "yml",
+    "log", "ini", "cfg", "conf", "sql", "py", "js", "jsx", "ts", "tsx", "java",
+    "c", "h", "cpp", "hpp", "cs", "go", "rs", "php", "rb", "sh", "ps1", "tex",
+}
+
+
+def _truncate_extracted_text(text: str, max_chars: int) -> str:
+    if len(text) > max_chars:
+        return text[:max_chars] + TEXT_TRUNCATED_NOTICE
+    return text
+
+
+def _zip_internal_kind(file_data: bytes) -> Optional[str]:
+    """What's inside a PK zip: spreadsheet, Word, slides, OpenDocument, EPUB."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(file_data)) as archive:
+            names = archive.namelist()
+            mime = ""
+            if "mimetype" in names:
+                try:
+                    mime = archive.read("mimetype").decode("utf-8", errors="ignore")
+                except Exception:
+                    mime = ""
+    except zipfile.BadZipFile:
+        return None
+    if any(name.startswith("xl/") for name in names):
+        return "xlsx"
+    if any(name.startswith("word/") for name in names):
+        return "docx"
+    if any(name.startswith("ppt/") for name in names):
+        return "pptx"
+    if "spreadsheet" in mime:
+        return "ods"
+    if "presentation" in mime:
+        return "odp"
+    if "text" in mime:
+        return "odt"
+    if "content.xml" in names:
+        return "odt"
+    if "META-INF/container.xml" in names:
+        return "epub"
+    return None
+
+
+def _ole_looks_like_excel(file_data: bytes) -> bool:
+    head = file_data[:65536]
+    return _OLE_WORKBOOK_UTF16 in head or b"Workbook" in head
+
+
+def sniff_document_kind(file_data: bytes, file_name: str = "") -> str:
+    """Тип по содержимому, иначе по расширению.
+
+    Windows часто отдаёт «База.XLSX» или файл без расширения. Старый разбор
+    смотрел только на суффикс и для .XLSX брал xlrd — тот xlsx не читает,
+    и таблица молча пропадала из базы знаний.
     """
-    Извлекает данные из Excel файла (.xlsx, .xls) и конвертирует их в Markdown.
-    Читает все листы документа.
-    """
-    def _extract():
+    suffix = Path((file_name or "").lower()).suffix
+    if file_data.startswith(b"%PDF"):
+        return "pdf"
+    if file_data[:2] == b"PK":
+        inner = _zip_internal_kind(file_data)
+        if inner:
+            return inner
+    if file_data[:8] == _OLE_MAGIC:
+        if suffix in _EXCEL_BIFF_SUFFIXES:
+            return "xls"
+        if suffix in {".doc", ".dot"}:
+            return "doc"
+        if _ole_looks_like_excel(file_data):
+            return "xls"
+        return "doc"
+    if suffix == ".pdf":
+        return "pdf"
+    if suffix in _EXCEL_OOXML_SUFFIXES:
+        return "xlsx"
+    if suffix in _EXCEL_BIFF_SUFFIXES:
+        return "xls"
+    if suffix:
+        return suffix.lstrip(".")
+    return ""
+
+
+def _excel_cell_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "да" if value else "нет"
+    if isinstance(value, float):
+        if value != value:  # NaN
+            return ""
+        if value.is_integer():
+            return str(int(value))
+        return format(value, "g")
+    if isinstance(value, int):
+        return str(value)
+    if hasattr(value, "strftime"):
+        hour = getattr(value, "hour", None)
+        minute = getattr(value, "minute", None)
+        second = getattr(value, "second", None)
+        if hour or minute or second:
+            try:
+                return value.strftime("%d.%m.%Y %H:%M")
+            except (ValueError, OverflowError):
+                pass
         try:
-            # Используем pandas для чтения
-            # engine определим по расширению
-            engine = 'openpyxl' if file_name.lower().endswith('.xlsx') else 'xlrd'
-            
-            # Читаем все листы (sheet_name=None возвращает словарь)
-            excel_data = pd.read_excel(io.BytesIO(file_data), sheet_name=None, engine=engine)
-            
-            output_parts = []
-            
-            for sheet_name, df in excel_data.items():
-                if df.empty:
-                    continue
-                
-                output_parts.append(f"### Лист: {sheet_name}")
-                
-                # Keep every row. TSV is materially more token-efficient than a
-                # Markdown table and is later chunked by the shared map-reduce path.
-                df_cleaned = df.fillna("")
-                output_parts.append(df_cleaned.to_csv(index=False, sep="\t"))
-                output_parts.append("\n")
-                
-            if not output_parts:
-                return f"Файл Excel '{file_name}' пуст."
-                
-            return "\n".join(output_parts)
-        except Exception as e:
-            logger.error(f"Error in extract_text_from_excel: {e}")
-            return f"Ошибка при чтении Excel ({file_name}): {str(e)}"
-            
+            return value.strftime("%d.%m.%Y")
+        except (ValueError, OverflowError):
+            pass
+    text = str(value).strip()
+    if text.lower() in {"none", "nan", "nat"}:
+        return ""
+    return text
+
+
+def _row_to_tsv(values) -> str:
+    cells = [_excel_cell_text(value) for value in values]
+    while cells and not cells[-1]:
+        cells.pop()
+    if not any(cells):
+        return ""
+    return "\t".join(cells)
+
+
+def _workbook_to_text(workbook, max_chars: int) -> tuple[str, bool]:
+    parts: list[str] = []
+    found = False
+    total = 0
+    sheet_names = list(getattr(workbook, "sheetnames", []) or [])
+    for sheet_name in sheet_names:
+        if total >= max_chars:
+            break
+        try:
+            worksheet = workbook[sheet_name]
+        except Exception:
+            continue
+        if not hasattr(worksheet, "iter_rows"):
+            continue
+        lines = [f"### Лист: {sheet_name}"]
+        try:
+            rows = worksheet.iter_rows(values_only=True)
+        except Exception:
+            continue
+        for row in rows:
+            line = _row_to_tsv(row)
+            if not line:
+                continue
+            found = True
+            lines.append(line)
+            total += len(line) + 1
+            if total >= max_chars:
+                break
+        if len(lines) > 1:
+            parts.append("\n".join(lines))
+    text = "\n\n".join(parts)
+    return _truncate_extracted_text(text, max_chars), found
+
+
+def _excel_from_openpyxl(file_data: bytes, max_chars: int) -> str:
+    from openpyxl import load_workbook
+
+    last_error: Optional[Exception] = None
+    for data_only in (True, False):
+        workbook = None
+        try:
+            workbook = load_workbook(io.BytesIO(file_data), data_only=data_only, read_only=True)
+        except Exception as exc:
+            last_error = exc
+            try:
+                workbook = load_workbook(io.BytesIO(file_data), data_only=data_only, read_only=False)
+            except Exception as exc2:
+                last_error = exc2
+                continue
+        try:
+            text, found = _workbook_to_text(workbook, max_chars)
+        finally:
+            try:
+                workbook.close()
+            except Exception:
+                pass
+        if found:
+            return text
+    if last_error:
+        raise last_error
+    return ""
+
+
+def _excel_from_pandas(file_data: bytes, max_chars: int, engine: Optional[str] = None) -> str:
+    kwargs = {
+        "sheet_name": None,
+        "header": None,
+        "dtype": object,
+        "keep_default_na": False,
+    }
+    if engine:
+        kwargs["engine"] = engine
+    frames = pd.read_excel(io.BytesIO(file_data), **kwargs)
+    parts = []
+    total = 0
+    for sheet_name, frame in frames.items():
+        if frame is None or getattr(frame, "empty", True):
+            continue
+        lines = [f"### Лист: {sheet_name}"]
+        for row in frame.itertuples(index=False, name=None):
+            line = _row_to_tsv(row)
+            if not line:
+                continue
+            lines.append(line)
+            total += len(line) + 1
+            if total >= max_chars:
+                break
+        if len(lines) > 1:
+            parts.append("\n".join(lines))
+        if total >= max_chars:
+            break
+    return _truncate_extracted_text("\n\n".join(parts), max_chars)
+
+
+async def extract_text_from_excel(
+    file_data: bytes, file_name: str = "", extended_limits: bool = False
+) -> str:
+    """Текст всех листов Excel (.xlsx/.xlsm/.xls) для базы знаний и шаблонов."""
+    max_chars = MAX_EXTRACT_CHARS_EXTENDED if extended_limits else MAX_EXTRACT_CHARS
+    kind = sniff_document_kind(file_data, file_name)
+
+    def _extract() -> str:
+        errors: list[str] = []
+        if kind != "xls":
+            try:
+                text = _excel_from_openpyxl(file_data, max_chars)
+                if text.strip():
+                    return text
+            except Exception as exc:
+                errors.append(str(exc))
+                logger.warning("openpyxl Excel read failed (%s): %s", file_name, exc)
+            try:
+                text = _excel_from_pandas(file_data, max_chars, engine="openpyxl")
+                if text.strip():
+                    return text
+            except Exception as exc:
+                errors.append(str(exc))
+        try:
+            text = _excel_from_pandas(file_data, max_chars, engine="xlrd")
+            if text.strip():
+                return text
+        except Exception as exc:
+            errors.append(str(exc))
+        converted = convert_office_bytes(file_data, file_name or "source.xls", "xlsx")
+        if converted:
+            try:
+                text = _excel_from_openpyxl(converted, max_chars)
+                if text.strip():
+                    return text
+            except Exception as exc:
+                errors.append(str(exc))
+        if errors:
+            logger.error("Error in extract_text_from_excel (%s): %s", file_name, errors[-1])
+            return f"Ошибка при чтении Excel ({file_name}): {errors[-1]}"
+        return f"Файл Excel '{file_name}' пуст."
+
     return await asyncio.to_thread(_extract)
 
 
@@ -657,6 +885,47 @@ def _soffice_binary() -> Optional[str]:
     return None
 
 
+def convert_office_bytes(file_data: bytes, source_name: str, dest_ext: str) -> Optional[bytes]:
+    """LibreOffice headless: .doc/.docx/.odt → dest_ext (.docx, .pdf, …)."""
+    binary = _soffice_binary()
+    if not binary:
+        return None
+    import subprocess
+    import tempfile
+
+    dest_ext = dest_ext.lstrip(".").lower()
+    suffix = Path(source_name).suffix or ".bin"
+    try:
+        with tempfile.TemporaryDirectory() as work:
+            source = Path(work) / f"source{suffix}"
+            source.write_bytes(file_data)
+            profile = Path(work) / "profile"
+            subprocess.run(
+                [
+                    binary,
+                    "--headless",
+                    f"-env:UserInstallation={profile.resolve().as_uri()}",
+                    "--convert-to",
+                    dest_ext,
+                    "--outdir",
+                    str(work),
+                    str(source),
+                ],
+                capture_output=True,
+                timeout=DOC_CONVERT_TIMEOUT,
+                check=False,
+            )
+            produced = Path(work) / f"source.{dest_ext}"
+            if not produced.is_file():
+                matches = list(Path(work).glob(f"*.{dest_ext}"))
+                produced = matches[0] if matches else produced
+            if produced.is_file() and produced.stat().st_size > 0:
+                return produced.read_bytes()
+    except Exception as e:
+        logger.warning("LibreOffice %s → %s: %s", source_name, dest_ext, e)
+    return None
+
+
 def convert_doc_to_docx(file_data: bytes, file_name: str = "source.doc") -> Optional[bytes]:
     """.doc -> .docx через LibreOffice. None, если конвертера нет или не вышло.
 
@@ -664,29 +933,13 @@ def convert_doc_to_docx(file_data: bytes, file_name: str = "source.doc") -> Opti
     оформления, поэтому без этой конвертации присланный .doc-образец
     оставался лишь источником слов, но не формата.
     """
-    binary = _soffice_binary()
-    if not binary:
-        return None
-    import subprocess
-    import tempfile
+    name = file_name if file_name.lower().endswith(".doc") else "source.doc"
+    return convert_office_bytes(file_data, name, "docx")
 
-    try:
-        with tempfile.TemporaryDirectory() as work:
-            source = Path(work) / "source.doc"
-            source.write_bytes(file_data)
-            # -env:UserInstallation обязателен: без своего профиля параллельные
-            # запуски LibreOffice конфликтуют за общий и молча ничего не делают.
-            subprocess.run(
-                [binary, "--headless", f"-env:UserInstallation=file://{work}/profile",
-                 "--convert-to", "docx", "--outdir", work, str(source)],
-                capture_output=True, timeout=DOC_CONVERT_TIMEOUT, check=False,
-            )
-            produced = Path(work) / "source.docx"
-            if produced.is_file() and produced.stat().st_size > 0:
-                return produced.read_bytes()
-    except Exception as e:
-        logger.warning("Не удалось конвертировать %s из .doc: %s", file_name, e)
-    return None
+
+def convert_docx_to_pdf(file_data: bytes) -> Optional[bytes]:
+    """Готовый .docx → PDF тем же LibreOffice, что уже стоит в образе."""
+    return convert_office_bytes(file_data, "source.docx", "pdf")
 
 
 async def extract_text_from_doc(file_data: bytes, extended_limits: bool = False) -> str:
@@ -759,31 +1012,27 @@ async def extract_text_from_file(file_data: bytes, file_name: str, status_callba
         Извлеченный текст или None, если формат не поддерживается
     """
     file_name_lower = file_name.lower()
+    kind = sniff_document_kind(file_data, file_name)
 
-    suffix = Path(file_name_lower).suffix
-
-    if suffix == '.docx':
+    if kind == "docx":
         return await extract_text_from_docx(file_data, extended_limits=extended_limits)
-    elif suffix == '.doc':
+    if kind == "doc":
         return await extract_text_from_doc(file_data, extended_limits=extended_limits)
-    elif suffix == '.pdf':
-        return await extract_text_from_pdf(file_data, status_callback=status_callback, user_id=user_id, extended_limits=extended_limits)
-    elif suffix in {'.xlsx', '.xls'}:
-        return await extract_text_from_excel(file_data, file_name)
-    elif suffix in {'.pptx', '.odt', '.ods', '.odp', '.epub'}:
+    if kind == "pdf":
+        return await extract_text_from_pdf(
+            file_data, status_callback=status_callback, user_id=user_id, extended_limits=extended_limits
+        )
+    if kind in {"xlsx", "xls", "xlsm"}:
+        return await extract_text_from_excel(file_data, file_name, extended_limits=extended_limits)
+    if kind in {"pptx", "odt", "ods", "odp", "epub"}:
         return await extract_text_from_zip_document(file_data, file_name)
-    elif suffix == '.rtf':
+    if kind == "rtf" or file_name_lower.endswith(".rtf"):
         return await extract_text_from_rtf(file_data)
-    elif suffix in {'.html', '.htm'}:
+    if kind in {"html", "htm"}:
         return await extract_text_from_html(file_data)
-    elif suffix in {
-        '.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.jsonl', '.xml', '.yaml', '.yml',
-        '.log', '.ini', '.cfg', '.conf', '.sql', '.py', '.js', '.jsx', '.ts', '.tsx', '.java',
-        '.c', '.h', '.cpp', '.hpp', '.cs', '.go', '.rs', '.php', '.rb', '.sh', '.ps1', '.tex',
-    }:
+    if kind in _TEXT_KINDS:
         return await extract_text_from_txt(file_data)
-    else:
-        return None
+    return None
 
 
 import unicodedata

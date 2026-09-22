@@ -82,8 +82,8 @@ async def split_query_into_tasks(user_text: str, user_id: int = None, history_te
             {"role": "system", "content": "Ты системный планировщик задач. Отвечаешь только валидным JSON-массивом."},
             {"role": "user", "content": prompt}
         ]
-        # Используем gpt-5.6-luna как быстрый и точный роутер
-        response_text, _, _, _ = await get_chat_response(messages, model="gpt-5.6-luna", user_id=user_id)
+        # Используем gpt-6-luna как быстрый и точный роутер
+        response_text, _, _, _ = await get_chat_response(messages, model="gpt-6-luna", user_id=user_id)
         
         cleaned_json = _clean_json_response(response_text)
         tasks = json.loads(cleaned_json)
@@ -116,7 +116,7 @@ async def summarize_scraped_content(task: str, raw_content: str, user_id: int = 
             {"role": "system", "content": f"Ты аналитик данных. Выделяешь только факты без вступлений и выводов. {_FORMATTING_RULES}"},
             {"role": "user", "content": prompt}
         ]
-        summary, _, _, _ = await get_chat_response(messages, model="gpt-5.6-luna", user_id=user_id)
+        summary, _, _, _ = await get_chat_response(messages, model="gpt-6-luna", user_id=user_id)
         return summary
     except Exception as e:
         logger.error(f"Summarization of scraped content failed: {e}")
@@ -176,11 +176,11 @@ async def execute_subtask(
             answer, files, reasoning, search = await get_deepseek_response(subtask_messages, model="deepseek-v4-pro", user_id=user_id)
         else:
             logger.info(f"Routing complex subtask to GPT-5.5 (DeepSeek key missing)")
-            answer, files, reasoning, search = await get_chat_response(subtask_messages, model="gpt-5.6-sol", user_id=user_id)
+            answer, files, reasoning, search = await get_chat_response(subtask_messages, model="gpt-6-sol", user_id=user_id)
     else:
         # Простые задачи — в GPT-5.4 Mini
         logger.info(f"Routing simple subtask to GPT-5.4 Mini")
-        answer, files, reasoning, search = await get_chat_response(subtask_messages, model="gpt-5.6-luna", user_id=user_id)
+        answer, files, reasoning, search = await get_chat_response(subtask_messages, model="gpt-6-luna", user_id=user_id)
 
     # 4. Прикрепляем к результатам подзадачи факты из первоначального поиска,
     #    чтобы они отображались в панели «Веб-поиск» в веб-интерфейсе.
@@ -217,7 +217,7 @@ async def synthesize_final_answer(
             {"role": "user", "content": prompt}
         ]
         # Для сборки используем флагманскую GPT-5.5
-        final_answer, _, synthesis_reasoning, _ = await get_chat_response(messages, model="gpt-5.6-sol", user_id=user_id)
+        final_answer, _, synthesis_reasoning, _ = await get_chat_response(messages, model="gpt-6-sol", user_id=user_id)
         return final_answer, synthesis_reasoning
     except Exception as e:
         logger.error(f"Synthesis failed: {e}", exc_info=True)
@@ -344,7 +344,7 @@ async def get_correspondent_response(
     )
     gpt_messages = list(messages) + [{"role": "user", "content": analysis_prompt}]
     gpt_analysis, generated_files, analysis_reasoning, _ = await get_chat_response(
-        gpt_messages, model="gpt-5.6-terra", user_id=user_id, use_tools=False
+        gpt_messages, model="gpt-6-sol", user_id=user_id, use_tools=False
     )
     reasoning_sections = [f"### Правовой анализ\n{analysis_reasoning}"] if analysis_reasoning else []
 
@@ -389,7 +389,7 @@ async def get_correspondent_response(
     else:
         final_answer, files, final_reasoning, final_search = await get_chat_response(
             formatter_messages,
-            model="gpt-5.6-luna",
+            model="gpt-6-luna",
             user_id=user_id,
             use_tools=False,
         )

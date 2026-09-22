@@ -41,16 +41,14 @@ AVAILABLE_MODELS = {
     "docgen": "📄 Документы — большие .docx по промпту и файлам",
     "kimi-k2.6": "🌐 Поиск в интернете",
     "gpt-5-nano": "⚡ Быстрый ответ (GPT-5 Nano)",
-    "gpt-5.6-luna": "📝 Простые задачи (GPT-5.6 Luna)",
-    "gpt-5.6-terra": "🔍 Анализ (GPT-5.6 Terra)",
-    "gpt-5.6-sol": "🧠 Глубокие размышления (GPT-5.6 Sol)",
-    "gpt-5.6-sol-pro": "🧠✨ Максимальная глубина (GPT-5.6 Sol Pro)",
+    "gpt-6-luna": "📝 Простые задачи (GPT-6 Luna)",
+    "gpt-6-sol": "🧠 Сложные задачи (GPT-6 Sol)",
     "gpt-6-astra": "✦ Astra — песочница GPT-6: код, договоры, файлы",
     "deepseek-v4-pro": "💻 Код и логика"
 }
 
 # Модель OpenAI для анализа изображений
-OPENAI_VISION_MODEL = "gpt-5.6-sol"
+OPENAI_VISION_MODEL = "gpt-6-sol"
 
 # GPT Image 2.5 has no generic gpt-image-2.5 id. Sunburst is the quality
 # successor to gpt-image-2 for both generate and edit.

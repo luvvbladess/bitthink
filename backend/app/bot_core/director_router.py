@@ -16,27 +16,24 @@ logger = logging.getLogger(__name__)
 
 MODEL_POOL = [
     "gpt-5-nano",
-    "gpt-5.6-luna",
-    "gpt-5.6-terra",
+    "gpt-6-luna",
     "deepseek-v4-pro",
     "kimi-k2.6",
-    "gpt-5.6-sol",
+    "gpt-6-sol",
     "gpt-6-astra",
 ]
 # The orchestrator (round planning: who to hire, how to split the task, when
 # to stop) drives every decision Pilot makes, so a weak model here made the
 # whole mode look "dumb" and inconsistent even when employees did fine work.
-# Terra is the planning default now; _clamped_planner_model() below still
-# falls back to Luna for tiers without Terra access. Ordinary single-hop
-# synthesis (_answer_directly, when nobody was hired) stays on Luna - it is
-# high-volume service work with no round-to-round coordination to get wrong.
+# Sol is the planning default; _clamped_planner_model() falls back to Luna
+# on tiers without Sol. Ordinary single-hop synthesis stays on Luna.
 # Astra is hire-only, never the composer: one hop, and only when a contract/audit
 # brief is heavy enough that Sol would not pay for itself.
-PLANNER_MODEL = "gpt-5.6-terra"
-DIRECT_ANSWER_MODEL = "gpt-5.6-luna"
-ECONOMY_COMPOSER_MODEL = "gpt-5.6-luna"
-QUALITY_COMPOSER_MODEL = "gpt-5.6-terra"
-FALLBACK_EMPLOYEE_MODEL = "gpt-5.6-luna"
+PLANNER_MODEL = "gpt-6-sol"
+DIRECT_ANSWER_MODEL = "gpt-6-luna"
+ECONOMY_COMPOSER_MODEL = "gpt-6-luna"
+QUALITY_COMPOSER_MODEL = "gpt-6-sol"
+FALLBACK_EMPLOYEE_MODEL = "gpt-6-luna"
 ASTRA_HIRE_MARKERS = ("юрид", "договор", "контракт", "архитектур", "аудит", "расслед")
 
 
@@ -51,8 +48,8 @@ def _employee_models(user_id: int) -> list[str]:
 
 
 def _clamped_planner_model(user_id: int) -> str:
-    """Оркестратор целится в Terra, но не должен выдавать модель дороже тарифа
-    пользователя — как и composer, откатываемся на Luna, если Terra недоступна."""
+    """Оркестратор целится в Sol, но не должен выдавать модель дороже тарифа
+    пользователя — как и composer, откатываемся на Luna, если Sol недоступен."""
     try:
         from conversations import conversation_manager
         from app.billing.plans import clamp_model
@@ -63,7 +60,7 @@ def _clamped_planner_model(user_id: int) -> str:
 
 
 def _task_warrants_astra(task: str, document_context: str = "") -> bool:
-    """Astra costs ~3× Sol. Only a dense contract/audit brief is worth that."""
+    """Astra costs about 5× Sol. Only a dense contract/audit brief is worth that."""
     blob = f"{task or ''}\n{document_context or ''}".lower()
     if not any(marker in blob for marker in ASTRA_HIRE_MARKERS):
         return False
@@ -71,7 +68,7 @@ def _task_warrants_astra(task: str, document_context: str = "") -> bool:
 
 
 def _astra_fallback(allowed: list[str]) -> str:
-    for model in ("gpt-5.6-sol", "gpt-5.6-terra", FALLBACK_EMPLOYEE_MODEL):
+    for model in ("gpt-6-sol", FALLBACK_EMPLOYEE_MODEL):
         if model in allowed:
             return model
     return allowed[0] if allowed else FALLBACK_EMPLOYEE_MODEL
@@ -244,7 +241,7 @@ def _photo_search_employee() -> Dict[str, str]:
             "Затем browse_page по 2-4 лучшим совпадениям. Не угадывай место по памяти. "
             "В ответе: место или источник, какие страницы это подтверждают, и где сомнение."
         ),
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
     }
 
 
@@ -270,7 +267,7 @@ def _verify_employee(user_text: str) -> Dict[str, str]:
             "Если был image_search – открой страницы из его выдачи.\n"
             f"Вопрос: {(user_text or '')[:1200]}"
         ),
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
     }
 
 
@@ -622,12 +619,12 @@ def _select_composer_model(
     journal: List[Dict[str, Any]],
     document_context: str = "",
 ) -> str:
-    """Use Terra only when synthesis itself is genuinely demanding.
+    """Use Sol only when synthesis itself is genuinely demanding.
 
     Employee calls already do the specialist work. Repeating every result through
-    Terra was the largest avoidable Computer-mode expense, especially across
-    several planning rounds. Astra stays off the composer: wrap-up is not where
-    its extra cost shows up.
+    Sol is the expensive Computer-mode path, especially across several planning
+    rounds. Astra stays off the composer: wrap-up is not where its extra cost
+    shows up.
     """
     ok_entries = [entry for entry in journal if entry.get("status") == "ok"]
     result_chars = sum(len(entry.get("result", "")) for entry in ok_entries)
@@ -651,15 +648,14 @@ def _select_composer_model(
 def _pool_description(user_id: int, original_task: str = "", document_context: str = "") -> str:
     lines = [
         ("gpt-5-nano", "самая дешёвая, тривиальные микро-задачи и форматирование"),
-        ("gpt-5.6-luna", "дешёвая, простой анализ, черновики, короткие ответы"),
+        ("gpt-6-luna", "дешёвая, простой анализ, черновики, короткие ответы"),
         ("kimi-k2.6", "дешёвая, веб-поиск и актуальные факты"),
-        ("gpt-5.6-terra", "дорогая, только для сложного анализа, где Luna заметно недостаточно"),
         ("deepseek-v4-pro", "средняя-выше, сложные рассуждения и код"),
-        ("gpt-5.6-sol", "премиум, используй сотрудникам только если реально необходимо"),
+        ("gpt-6-sol", "дорогая, сложный код и анализ, только если Luna заметно недостаточно"),
         (
             "gpt-6-astra",
             "самая дорогая. Не больше одного сотрудника, только разбор договора или аудита "
-            "по тексту документа, когда Terra и Sol недостаточно. Не для поиска, почты и сайтов",
+            "по тексту документа, когда Sol недостаточно. Не для поиска, почты и сайтов",
         ),
     ]
     allowed = set(_employee_models(user_id))
@@ -693,7 +689,7 @@ async def _plan_round(
         listed = ", ".join(image_names[-6:])
         image_block = (
             f"В этом чате есть фото: {listed}. "
-            "Если вопрос про место, источник или содержимое кадра – найми gpt-5.6-luna с image_search. "
+            "Если вопрос про место, источник или содержимое кадра – найми gpt-6-luna с image_search. "
             "Не угадывай локацию по памяти и не ставь status=done до сверки страниц.\n"
         )
 
@@ -732,19 +728,19 @@ async def _plan_round(
         "Запрещено писать опросник обычным текстом: никаких «выберите вариант» и нумерованных анкет в ответе.\n"
         "- Не заказывай финальный отчёт, оглавление или нумерованные разделы.\n"
         "- Не проси разрешение искать или открыть сайт: найми сотрудника сразу.\n"
-        "Экономь токены без потери результата: по умолчанию gpt-5.6-luna; "
+        "Экономь токены без потери результата: по умолчанию gpt-6-luna; "
         "для актуальных фактов и поиска - kimi-k2.6; для сложного кода и рассуждений - deepseek-v4-pro. "
-        "gpt-5.6-terra только если нужен более сильный анализ, gpt-5.6-sol - в исключительном случае.\n"
+        "gpt-6-sol только если Luna заметно недостаточно.\n"
         + (
             "gpt-6-astra - не больше одного сотрудника и только на разбор договора или аудита по документу; "
             "не нанимай её на поиск, почту, сайты и сборку ответа.\n"
             if "gpt-6-astra" in pool_description
             else ""
         ) +
-        "Если нужны свежие данные с сайта - найми kimi-k2.6 для поиска или gpt-5.6-luna "
+        "Если нужны свежие данные с сайта - найми kimi-k2.6 для поиска или gpt-6-luna "
         "с задачей явно открыть URL через browse_page или войти через site_login. "
         "Если вопрос про фото (где снято, что на кадре, источник снимка) – в первом раунде "
-        "обязательно gpt-5.6-luna с image_search по файлу из чата. kimi-k2.6 не умеет поиск по картинке: "
+        "обязательно gpt-6-luna с image_search по файлу из чата. kimi-k2.6 не умеет поиск по картинке: "
         "его нанимай во втором раунде, уже по подписям и URL из image_search. "
         "Не закрывай задачу после первого правдоподобного названия места: открой страницы-совпадения "
         "browse_page и сверь ориентиры на независимых сайтах. "
@@ -768,7 +764,7 @@ async def _plan_round(
         "или\n"
         '{"status": "continue", "new_employees": ['
         '{"role": "Поиск A", "task": "...", "model": "kimi-k2.6"}, '
-        '{"role": "Поиск B", "task": "...", "model": "gpt-5.6-luna"}]}\n'
+        '{"role": "Поиск B", "task": "...", "model": "gpt-6-luna"}]}\n'
         "или, если без ответа пользователя нельзя начать работу:\n"
         '{"status": "clarify", "questions": ['
         '{"prompt": "Какой тип приложения ты хочешь создать?", '

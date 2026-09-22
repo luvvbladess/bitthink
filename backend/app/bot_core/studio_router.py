@@ -266,10 +266,10 @@ async def _compose_spec(
         return text
 
     try:
-        text = await _call("gpt-5.6-sol", "medium" if kind == "deck" else "low")
+        text = await _call("gpt-6-sol", "medium" if kind == "deck" else "low")
     except Exception:
-        logger.info("Studio sol compose failed, falling back to terra")
-        text = await _call("gpt-5.6-terra", "medium")
+        logger.info("Studio sol compose failed, falling back to luna")
+        text = await _call("gpt-6-luna", "medium")
     data = _extract_json_object(text)
     if not data:
         raise ValueError("Модель не вернула JSON-спецификацию")
@@ -377,10 +377,10 @@ async def _compose_html(
 
     effort = "low" if previous_html else ("medium" if kind == "slides" else "low")
     try:
-        text = await _call("gpt-5.6-sol", effort)
+        text = await _call("gpt-6-sol", effort)
     except Exception:
-        logger.info("Studio HTML sol compose failed, falling back to terra")
-        text = await _call("gpt-5.6-terra", "medium")
+        logger.info("Studio HTML sol compose failed, falling back to luna")
+        text = await _call("gpt-6-luna", "medium")
     html = extract_html(text)
     if not html:
         raise ValueError("Модель не вернула HTML")

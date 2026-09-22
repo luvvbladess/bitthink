@@ -336,7 +336,7 @@ export function ChatWindow({
               </Box>
               <Box sx={{ color: 'text.secondary', mb: 2.25, fontSize: '0.9375rem', mx: 'auto', maxWidth: '40ch', lineHeight: 1.5 }}>
                 {isDocgen
-                  ? 'Прикрепите шаблоны и архивы с данными — соберёт .docx. Перед генерацией покажет план и спросит подтверждение.'
+                  ? 'Прикрепите шаблоны и базу — Word, PDF, Excel или zip. Соберёт .docx. Перед генерацией покажет план и спросит подтверждение.'
                   : isStudio
                     ? 'Прикрепите образец PPTX и ТЗ — повторит стиль и соберёт слайды. Или опишите картинку и макет.'
                     : isComputer
