@@ -126,3 +126,78 @@ def test_converter_is_optional():
         assert parser.convert_doc_to_docx(b"whatever") is None
     finally:
         parser._soffice_binary = original
+
+
+def _xlsx_bytes(rows, sheet="Данные", extra_sheets=None) -> bytes:
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = sheet
+    for row in rows:
+        worksheet.append(list(row))
+    for name, extra_rows in extra_sheets or ():
+        other = workbook.create_sheet(name)
+        for row in extra_rows:
+            other.append(list(row))
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def _pdf_bytes(text: str) -> bytes:
+    import fitz
+
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_text((72, 72), text)
+    data = document.tobytes()
+    document.close()
+    return data
+
+
+def test_extract_text_from_file_reads_excel_and_pdf():
+    from app.bot_core import document_parser as parser
+
+    xlsx = _xlsx_bytes(
+        [
+            ("Узел", "Мощность, кВт", "Среда"),
+            ("Пиролизный реактор", 2500, "азот"),
+        ],
+        extra_sheets=(("Нормы", [("Давление", "16 бар")]),),
+    )
+    excel_text = asyncio.run(parser.extract_text_from_file(xlsx, "база.XLSX"))
+    assert "Пиролизный реактор" in excel_text
+    assert "2500" in excel_text
+    assert "16 бар" in excel_text
+    assert "Нормы" in excel_text
+
+    xlsm_text = asyncio.run(parser.extract_text_from_file(xlsx, "таблица.xlsm"))
+    assert "Пиролизный реактор" in xlsm_text
+
+    nameless = asyncio.run(parser.extract_text_from_file(xlsx, "база знаний"))
+    assert "Пиролизный реактор" in nameless
+
+    pdf_text = asyncio.run(parser.extract_text_from_file(_pdf_bytes("ITT pump specification 120 m3h"), "scan.PDF"))
+    assert "ITT pump specification 120 m3h" in pdf_text
+
+
+def test_extract_zip_archive_reads_pdf_and_excel():
+    from app.bot_core import document_parser as parser
+
+    zip_bytes = _make_zip({
+        "шаблоны/ITT.pdf": _pdf_bytes("ITT template for the pump unit"),
+        "знания/параметры.xlsx": _xlsx_bytes([
+            ("Параметр", "Значение"),
+            ("Подача", "120 м3/ч"),
+        ]),
+        "знания/NOTES.TXT": "Заметка инженера".encode("utf-8"),
+    })
+
+    results = asyncio.run(parser.extract_zip_archive(zip_bytes, "пакет.zip", user_id=None))
+    bodies = dict(results)
+
+    assert any(name.endswith("ITT.pdf") for name in bodies)
+    assert any(name.endswith("параметры.xlsx") for name in bodies)
+    assert "ITT template for the pump unit" in "\n".join(bodies.values())
+    assert "120 м3/ч" in "\n".join(bodies.values())

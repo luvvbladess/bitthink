@@ -62,13 +62,13 @@ async def reduce_heavy_context(
     user_text: str,
     status_msg: Optional[Any] = None,
     user_id: Optional[int] = None,
-    summarizer_model: str = "gpt-5.6-luna",
+    summarizer_model: str = "gpt-6-luna",
     model: str = "auto",
 ) -> List[dict]:
     """
     Map-Reduce для больших контекстов.
     Порог — доля официального окна текущего режима, а не фиксированные 700k символов:
-    у режима Поиск (Kimi) 256k токенов, у Авто / Computer / Research / Luna / Terra — около миллиона.
+    у режима Поиск (Kimi) 256k токенов, у Авто / Computer / Research / Luna / Sol — около миллиона.
     """
     from model_context import (
         estimate_message_tokens,
@@ -240,7 +240,7 @@ async def get_smart_response(
     model = conversation_manager.get_user_model(user_id)
     reasoning_effort = conversation_manager.get_user_reasoning_effort(user_id)
     sub = conversation_manager.get_subscription(user_id)
-    from app.billing.plans import clamp_model, canonical_tier, research_model
+    from app.billing.plans import clamp_model, canonical_tier
     from app.billing.quota import assert_can_use, usage_view
 
     tier = canonical_tier(sub.get("tier"))
@@ -286,7 +286,7 @@ async def get_smart_response(
 
     messages = await reduce_heavy_context(messages, user_text, status_msg, user_id=user_id, model=model)
     from model_context import fit_for_mode, search_hop_messages
-    messages = await fit_for_mode(messages, model)
+    messages = await fit_for_mode(messages, model, user_id=user_id)
 
     total_chars_after = sum(len(m.get("content", "")) for m in messages)
     logger.info(
@@ -302,9 +302,7 @@ async def get_smart_response(
     if packed_has_open_documents(messages):
         has_documents = True
 
-    research_mode = model in {"gpt-5.6-sol", "gpt-5.6-sol-pro"} or (
-        model == "gpt-5.6-terra" and research_model(tier) == "gpt-5.6-terra"
-    )
+    research_mode = model == "gpt-6-sol"
     # Files first only for this turn's uploads in Auto. Search/Research still
     # go to the web even if an older photo or PDF is sitting in the thread.
     web_required = turn_requires_web(
@@ -360,21 +358,17 @@ async def get_smart_response(
 
     result: Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]
 
-    # Documents keep a quality-first route independent of the public cost mode.
-    # Large files were already mapped above with Luna; Terra/Sol performs the final
-    # cross-document analysis so economical chat never downgrades document quality.
     # Never await Kimi before reading attachments: that is what made Search /
     # Research / mixed image+PDF batches look frozen after a big upload.
+    # Documents stay on Sol; tiers without Sol are clamped back to Luna.
     if has_documents and model != "director":
         from status_feed import push_status
 
         await push_status("think", "Разбираю загруженные документы")
         if model == "gpt-6-astra":
             document_model = "gpt-6-astra"
-        elif model == "gpt-5.6-sol" or reasoning_effort in {"high", "xhigh", "max"}:
-            document_model = "gpt-5.6-sol"
         else:
-            document_model = "gpt-5.6-terra"
+            document_model = "gpt-6-sol"
         document_model = clamp_model(tier, document_model)
         document_effort = reasoning_effort if reasoning_effort not in {None, "none"} else (
             "high" if model == "gpt-6-astra" or research_mode else "medium"
@@ -394,7 +388,7 @@ async def get_smart_response(
         # Multimodal turns always use a vision-capable OpenAI route. The images
         # are already resized on upload, so this remains materially cheaper than
         # repeatedly OCRing originals while preserving visual understanding.
-        vision_model = "gpt-6-astra" if model == "gpt-6-astra" else "gpt-5.6-terra"
+        vision_model = "gpt-6-astra" if model == "gpt-6-astra" else "gpt-6-sol"
         vision_tools, vision_force_web = openai_tool_flags(model, web_required)
         result = await get_chat_response(
             messages,
@@ -412,7 +406,7 @@ async def get_smart_response(
             if result is None:
                 result = await get_chat_response(
                     messages,
-                    model="gpt-5.6-luna",
+                    model="gpt-6-luna",
                     user_id=user_id,
                     use_tools=True,
                     reasoning_effort="low",
@@ -440,7 +434,7 @@ async def get_smart_response(
                 )
                 if result[0].startswith("❌"):
                     await push_status("think", "Основной маршрут недоступен · переключаюсь на резервный")
-                    fallback = clamp_model(tier, "gpt-5.6-terra" if route == "deepseek-v4-pro" else "gpt-5.6-luna")
+                    fallback = clamp_model(tier, "gpt-6-sol" if route == "deepseek-v4-pro" else "gpt-6-luna")
                     result = await get_chat_response(
                         messages,
                         model=fallback,
@@ -472,15 +466,13 @@ async def get_smart_response(
         result = await kimi_web_result(search_hop_messages(messages, user_text))
         if result is None:
             result = await get_chat_response(
-                messages, model="gpt-5.6-luna", user_id=user_id, use_tools=True,
+                messages, model="gpt-6-luna", user_id=user_id, use_tools=True,
                 reasoning_effort="low", on_reasoning_delta=None,
                 force_web_search=True,
             )
-    elif model in {"gpt-5.6-sol", "gpt-5.6-sol-pro"} or (
-        model == "gpt-5.6-terra" and research_model(tier) == "gpt-5.6-terra"
-    ):
-        # Research: Kimi gathers sources, then Terra or Sol writes the report.
-        synthesizer = clamp_model(tier, model if model != "gpt-5.6-sol-pro" else "gpt-5.6-sol")
+    elif model == "gpt-6-sol":
+        # Research: Kimi gathers sources, then Sol writes the report.
+        synthesizer = clamp_model(tier, model)
         kimi_result = await kimi_web_result(search_hop_messages(messages, user_text), research=True)
         if kimi_result:
             grounded_sources = _merge_sources(grounded_sources, kimi_result[3], limit=28)
@@ -524,9 +516,7 @@ async def get_smart_response(
     answer, files, reasoning, model_sources = result
     from status_feed import push_status
     await push_status("think", "Проверяю выводы и оформляю ответ")
-    source_limit = 28 if model == "director" else (24 if model in {"gpt-5.6-sol", "gpt-5.6-sol-pro", "gpt-6-astra", "kimi-k2.6"} or (
-        model == "gpt-5.6-terra" and research_model(tier) == "gpt-5.6-terra"
-    ) else 18)
+    source_limit = 28 if model == "director" else (24 if model in {"gpt-6-sol", "gpt-6-astra", "kimi-k2.6"} else 18)
     sources = _merge_sources(grounded_sources, model_sources, limit=source_limit)
     if sources:
         from kimi_client import strip_source_links

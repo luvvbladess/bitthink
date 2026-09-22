@@ -10,10 +10,13 @@ LONG_CONTEXT_INPUT = 272_000
 CACHED_INPUT_FRACTION = 0.25
 CACHE_WRITE_FRACTION = 1.25
 
-# 1 our-token = 1 Luna blended token. Rounded up so a full pool stays in the black.
+# 1 our-token = 1 GPT-6 Luna blended token. Rounded up so a full pool stays
+# in the black. Sol is 20× Luna on both list prices ($2/$10 vs $0.10/$0.50).
+# Retired GPT-5.6 ids stay priced so old usage rows still debit correctly.
 MODEL_MULTIPLIER: dict[str, int] = {
     "gpt-5-nano": 1,
     "gpt-5.6-luna": 1,
+    "gpt-6-luna": 1,
     "kimi-k2.6": 4,
     "deepseek-v4-pro": 5,
     "deepseek-v4-flash": 1,
@@ -21,7 +24,16 @@ MODEL_MULTIPLIER: dict[str, int] = {
     "studio": 13,
     "gpt-5.6-sol": 32,
     "gpt-5.6-sol-pro": 32,
+    "gpt-6-sol": 20,
     "gpt-6-astra": 90,
+}
+
+# Saved chats and in-flight requests may still name the previous generation.
+LEGACY_MODEL_ALIASES = {
+    "gpt-5.6-luna": "gpt-6-luna",
+    "gpt-5.6-terra": "gpt-6-sol",
+    "gpt-5.6-sol": "gpt-6-sol",
+    "gpt-5.6-sol-pro": "gpt-6-sol",
 }
 
 CHEAP_MODELS = [
@@ -29,14 +41,14 @@ CHEAP_MODELS = [
     "correspondent",
     "kimi-k2.6",
     "gpt-5-nano",
-    "gpt-5.6-luna",
+    "gpt-6-luna",
     "deepseek-v4-pro",
     "deepseek-v4-flash",
 ]
 
 PRO_MODELS = CHEAP_MODELS + ["director", "studio"]
-PROPLUS_MODELS = PRO_MODELS + ["gpt-5.6-terra"]
-ULTRA_MODELS = PROPLUS_MODELS + ["gpt-5.6-sol", "gpt-5.6-sol-pro", "gpt-6-astra"]
+PROPLUS_MODELS = PRO_MODELS + ["gpt-6-sol"]
+ULTRA_MODELS = PROPLUS_MODELS + ["gpt-6-astra"]
 # Creator is the internal unlimited seat. It must never lag behind Ultra.
 # docgen (режим «Документы») is creator-only: a single run can take hours and
 # generate thousands of model calls, so it stays off every paid, quota-bound tier.
@@ -60,7 +72,7 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "chat_tokens": 0,
         "computer_tokens": 0,
         "images": 3,
-        "models": ["auto", "kimi-k2.6", "gpt-5-nano", "gpt-5.6-luna"],
+        "models": ["auto", "kimi-k2.6", "gpt-5-nano", "gpt-6-luna"],
         "daily_replies": 30,
         "daily_searches": 5,
         "features": ["30 ответов в день", "5 поисков в день", "3 картинки в месяц", "без Пилота, Студии и Исследования"],
@@ -102,7 +114,7 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "name": "Pro+",
         "price_rub": 3_990,
         "price_year_rub": 39_900,
-        "description": "Глубокий разбор сложных задач",
+        "description": "GPT-6 Sol для сложных задач",
         "chat_tokens": 54_000_000,
         "computer_tokens": 26_400_000,
         "chat_week": 13_500_000,
@@ -111,7 +123,7 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "computer_session": 1_884_000,
         "images": 40,
         "models": list(PROPLUS_MODELS),
-        "features": ["окно 5 часов и неделя", "54 млн токенов в месяц", "глубокий разбор сложных задач"],
+        "features": ["окно 5 часов и неделя", "54 млн токенов в месяц", "GPT-6 Sol для сложных задач"],
     },
     "ultra": {
         "id": "ultra",
@@ -173,48 +185,47 @@ def allowed_models(tier: str | None) -> set[str]:
     return allowed
 
 
+def _everyday_model(allowed: set[str]) -> str:
+    if "gpt-6-luna" in allowed:
+        return "gpt-6-luna"
+    return "gpt-5-nano"
+
+
 def clamp_model(tier: str | None, model: str) -> str:
+    model = LEGACY_MODEL_ALIASES.get(model, model)
     allowed = allowed_models(tier)
     if model in allowed:
         return model
-    if model == "gpt-5.6-sol-pro" and "gpt-5.6-sol" in allowed:
-        return "gpt-5.6-sol"
-    if model == "gpt-6-astra" and "gpt-5.6-sol" in allowed:
-        return "gpt-5.6-sol"
-    if model in {"gpt-5.6-sol", "gpt-5.6-sol-pro", "gpt-6-astra"} and "gpt-5.6-terra" in allowed:
-        return "gpt-5.6-terra"
-    if model == "gpt-5.6-terra":
-        return "gpt-5.6-luna" if "gpt-5.6-luna" in allowed else "gpt-5-nano"
+    if model == "gpt-6-astra" and "gpt-6-sol" in allowed:
+        return "gpt-6-sol"
+    if model == "gpt-6-sol":
+        return _everyday_model(allowed)
     if model == "director" and "director" not in allowed:
-        return "gpt-5.6-luna"
+        return _everyday_model(allowed)
     if model == "studio" and "studio" not in allowed:
-        return "gpt-5.6-luna" if "gpt-5.6-luna" in allowed else "gpt-5-nano"
+        return _everyday_model(allowed)
     if model == "docgen" and "docgen" not in allowed:
-        return "gpt-5.6-luna" if "gpt-5.6-luna" in allowed else "gpt-5-nano"
+        return _everyday_model(allowed)
     if model == "deepseek-v4-flash" and "deepseek-v4-pro" in allowed:
         return "deepseek-v4-flash"
-    return "gpt-5.6-luna" if "gpt-5.6-luna" in allowed else "gpt-5-nano"
+    return _everyday_model(allowed)
 
 
 def research_model(tier: str | None) -> str | None:
     allowed = allowed_models(tier)
-    if "gpt-5.6-sol" in allowed:
-        return "gpt-5.6-sol"
-    if "gpt-5.6-terra" in allowed:
-        return "gpt-5.6-terra"
+    if "gpt-6-sol" in allowed:
+        return "gpt-6-sol"
     return None
 
 
 def computer_models(tier: str | None) -> list[str]:
     allowed = allowed_models(tier)
-    pool = [item for item in ("gpt-5-nano", "gpt-5.6-luna", "kimi-k2.6", "deepseek-v4-pro") if item in allowed]
-    if "gpt-5.6-terra" in allowed:
-        pool.append("gpt-5.6-terra")
-    if "gpt-5.6-sol" in allowed:
-        pool.append("gpt-5.6-sol")
+    pool = [item for item in ("gpt-5-nano", "gpt-6-luna", "kimi-k2.6", "deepseek-v4-pro") if item in allowed]
+    if "gpt-6-sol" in allowed:
+        pool.append("gpt-6-sol")
     if "gpt-6-astra" in allowed:
         pool.append("gpt-6-astra")
-    return pool or ["gpt-5.6-luna"]
+    return pool or ["gpt-6-luna"]
 
 
 def our_tokens(

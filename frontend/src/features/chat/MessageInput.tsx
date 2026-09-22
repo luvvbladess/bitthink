@@ -249,7 +249,7 @@ export function MessageInput({
         type="file"
         ref={fileInputRef}
         multiple
-        accept={imageMode ? 'image/*' : undefined}
+        accept={imageMode ? 'image/*' : isDocgen ? '.doc,.docx,.pdf,.xls,.xlsx,.xlsm,.csv,.txt,.rtf,.odt,.zip' : undefined}
         style={{ display: 'none' }}
         onChange={(e) => {
           addFiles(e.target.files);
@@ -324,7 +324,7 @@ export function MessageInput({
                       ? 'Что найти прямо сейчас?'
                       : selectedModel === 'gpt-6-astra'
                         ? 'Код, договор или задачу в песочницу...'
-                        : selectedModel === 'gpt-5.6-sol' || selectedModel === 'gpt-5.6-terra'
+                        : selectedModel === 'gpt-6-sol' || selectedModel === 'gpt-5.6-sol' || selectedModel === 'gpt-5.6-terra'
                           ? 'Какую тему разобрать с источниками?'
                           : 'Спросите что угодно...'
         }
@@ -503,7 +503,7 @@ export function MessageInput({
         {editingImage
           ? 'Опишите правку. Картинка останется в этой беседе'
           : isDocgen
-            ? `${DOCGEN_LABEL}: большой .docx по вашим файлам. Перед запуском спросит подтверждение`
+            ? `${DOCGEN_LABEL}: Word, PDF, Excel или zip — соберёт .docx. Перед запуском спросит подтверждение`
           : isStudio
             ? 'Готовый макет на холсте правится чатом. Можно прикрепить образец PPTX или PDF и файл ТЗ'
           : isComputer

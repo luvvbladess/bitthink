@@ -2,7 +2,13 @@ from fastapi import APIRouter, Depends, HTTPException
 
 import config as bot_config
 from app.auth import get_current_user
-from app.billing.plans import MODEL_MULTIPLIER, allowed_models, clamp_model, research_model
+from app.billing.plans import (
+    LEGACY_MODEL_ALIASES,
+    MODEL_MULTIPLIER,
+    allowed_models,
+    clamp_model,
+    research_model,
+)
 from app.core.repository import repo
 from app.models.schemas import ModelSelect
 
@@ -17,22 +23,20 @@ WEB_MODEL_INFO = {
     "docgen": {"name": "Документы", "description": "Большой .docx по промпту и вашим файлам"},
     "kimi-k2.6": {"name": "Поиск в интернете", "description": "Актуальные данные и источники"},
     "gpt-5-nano": {"name": "Быстрый ответ (GPT-5 Nano)", "description": "Мгновенные ответы на простые вопросы"},
-    "gpt-5.6-luna": {"name": "Быстрый", "description": "Повседневные вопросы с минимальным расходом"},
-    "gpt-5.6-terra": {"name": "Анализ", "description": "Документы, данные и содержательные ответы"},
-    "gpt-5.6-sol": {"name": "Эксперт", "description": "Самые сложные многошаговые задачи"},
-    "gpt-5.6-sol-pro": {"name": "Максимальная глубина (GPT-5.6 Sol Pro)", "description": "Предельная точность для самых сложных задач"},
+    "gpt-6-luna": {"name": "Быстрый", "description": "Повседневные вопросы пачками, с минимальным расходом"},
+    "gpt-6-sol": {"name": "Эксперт", "description": "Сложный код, агенты и многошаговые задачи"},
     "gpt-6-astra": {"name": "Astra", "description": "Песочница GPT-6: код, договоры, файлы, многошаговые задачи"},
     "deepseek-v4-pro": {"name": "Код и логика", "description": "Программирование и технические задачи"},
 }
 
 # Perplexity-like public surface: users choose an intent, not a provider catalog.
 # Hidden routes remain available internally to Auto, OCR and specialist pipelines.
-PUBLIC_MODEL_IDS = ["auto", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra", "director", "studio", "docgen"]
+PUBLIC_MODEL_IDS = ["auto", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra", "director", "studio", "docgen"]
 
-# Reasoning effort: user-adjustable per PRODUCT decision. "max" is Astra-only;
-# "xhigh" is Sol and Astra; every other model caps out at "high".
+# The API lets Sol and Luna run up to max. The product dial keeps max on Astra
+# so everyday Luna does not burn reasoning tokens, and xhigh on Sol and Astra.
 REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"]
-XHIGH_CAPABLE_MODELS = {"gpt-5.6-sol", "gpt-5.6-sol-pro", "gpt-6-astra"}
+XHIGH_CAPABLE_MODELS = {"gpt-6-sol", "gpt-6-astra"}
 MAX_CAPABLE_MODELS = {"gpt-6-astra"}
 
 # Only the direct OpenAI-family models expose a real, honored effort dial in this
@@ -42,7 +46,7 @@ MAX_CAPABLE_MODELS = {"gpt-6-astra"}
 # effort levels internally by design — a single global override would fight their
 # own cost/quality routing logic. The picker is hidden for all of those.
 REASONING_EFFORT_CAPABLE_MODELS = {
-    "auto", "gpt-5-nano", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-sol-pro", "gpt-6-astra",
+    "auto", "gpt-5-nano", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra",
 }
 
 
@@ -100,14 +104,15 @@ async def list_models(user_id: str = Depends(get_current_user)):
 
 @router.post("/select")
 async def select_model(data: ModelSelect, user_id: str = Depends(get_current_user)):
-    if data.model not in bot_config.AVAILABLE_MODELS:
+    requested = LEGACY_MODEL_ALIASES.get(data.model, data.model)
+    if requested not in bot_config.AVAILABLE_MODELS:
         raise HTTPException(status_code=400, detail="Unknown model")
     subscription = await repo.get_subscription(user_id)
     allowed = _allowed_for(subscription.get("tier", "free"))
-    if data.model not in allowed:
+    if requested not in allowed:
         raise HTTPException(status_code=403, detail="Модель недоступна на этом тарифе")
-    await repo.set_user_model(user_id, data.model)
-    return {"ok": True, "model": data.model}
+    await repo.set_user_model(user_id, requested)
+    return {"ok": True, "model": requested}
 
 
 @router.post("/reasoning")

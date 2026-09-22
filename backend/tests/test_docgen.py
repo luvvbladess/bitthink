@@ -642,6 +642,51 @@ def test_seed_document_titles_none_when_counts_do_not_match():
     assert dg._seed_document_titles(10, knowledge, templates) is None
 
 
+def test_seed_document_titles_ignores_templates_when_knowledge_exists():
+    """Five icebreaker ИТТ + one project report is not five output files
+    named after the icebreaker. Templates are formatting, not the file list."""
+    knowledge = ["база.zip/отчет.docx"]
+    templates = {f"шаблоны.zip/ИТТ_{i}.docx" for i in range(5)}
+    assert dg._seed_document_titles(5, knowledge, templates) is None
+
+
+def test_seed_document_titles_from_templates_when_no_knowledge():
+    templates = {f"шаблоны.zip/форма_{i}.docx" for i in range(3)}
+    titles = dg._seed_document_titles(3, [], templates)
+    assert titles is not None
+    assert len(titles) == 3
+    assert "форма 0" in titles[0][0]
+
+
+def test_itt_filename_is_treated_as_template():
+    bare = "ИТТ.3262-077 Система водотушения.doc"
+    name = f"вложения/{bare}"
+    assert dg._TEMPLATE_NAME_RE.search(bare)
+    chunks = [
+        dg.Chunk(id=0, doc_name=name, title="", text="ИСХОДНЫЕ ТЕХНИЧЕСКИЕ ТРЕБОВАНИЯ"),
+        dg.Chunk(id=1, doc_name="База для заполнения.zip/отчет.docx", title="", text="ПЛК"),
+    ]
+    assert dg._heuristic_template_names(chunks) == {name}
+
+
+def test_section_heading_titles_are_detected():
+    assert dg._is_section_heading_title("1 Общие сведения")
+    assert dg._is_section_heading_title("2 Основные сведения об объекте")
+    assert dg._is_section_heading_title("Назначение поставки")
+    assert dg._is_section_heading_title("Требования к испытаниям")
+    assert dg._is_section_heading_title("8 Приемка и гарантийные обязательства")
+    assert not dg._is_section_heading_title("ИТТ на шкаф управления КИПиА")
+    assert not dg._is_section_heading_title("подсистема сбора данных")
+    assert not dg._is_section_heading_title("Технические требования к шкафу ПЛК")
+
+
+def test_document_filename_does_not_use_template_toc():
+    used = set()
+    assert dg._document_filename("1 Общие сведения", used) == "Документ.docx"
+    assert dg._document_filename("Требования к испытаниям", used) == "Документ (2).docx"
+    assert dg._document_filename("ИТТ на шкаф управления", used) == "ИТТ на шкаф управления.docx"
+
+
 def test_scope_chunks_keeps_only_related_knowledge_and_own_template():
     chunks = [
         Chunk(id=0, doc_name="шаблоны.zip/ПЛК.docx", title="t",
@@ -749,8 +794,7 @@ def test_template_formatting_is_not_overridden_when_template_is_used():
     plain = _Document(io.BytesIO(without))
     plain_body = [p for p in plain.paragraphs if p.text.strip() == "Обычный абзац текста документа."]
     assert plain_body
-    # Default path still applies a first-line indent; the exact EMU value is
-    # the 1.25cm we set plus whatever htmldocx already wrote.
+    # Default path still applies a first-line indent.
     assert plain_body[0].paragraph_format.first_line_indent
 
 
@@ -945,8 +989,21 @@ def test_sections_without_a_document_stay_one_file():
     outline = _sections(("Раздел 1", ""), ("Раздел 2", ""))
     groups = dg._group_by_document(outline, ["текст один", "текст два"])
     assert len(groups) == 1
-    assert groups[0][0] == ""
+    assert groups[0][0] == "Документ"
     assert "текст один" in groups[0][1] and "текст два" in groups[0][1]
+
+
+def test_one_file_with_several_templates_still_gets_a_template():
+    """Live ITT job: planner leaves document empty, five forms in «Пример
+    оформления». Assignment must still return a .docx, not standard Word."""
+    outline = _sections(("Общие сведения", ""), ("Требования", ""))
+    groups = dg._group_by_document(outline, ["а", "б"])
+    templates = {
+        "Пример оформления.zip/ИТТ.3262-074.docx",
+        "Пример оформления.zip/ИТТ.3262-079.docx",
+    }
+    assigned = dg._assign_templates([title for title, _ in groups], templates)
+    assert assigned.get("Документ") in templates
 
 
 def test_each_document_becomes_its_own_file():
@@ -956,6 +1013,66 @@ def test_each_document_becomes_its_own_file():
     assert [title for title, _ in groups] == ["ИТТ на ПЛК", "ИТТ на шкаф"]
     assert "а" in groups[0][1] and "б" in groups[0][1]
     assert "в" in groups[1][1] and "а" not in groups[1][1]
+
+
+def test_failed_section_placeholder_is_not_copied_into_the_file():
+    """Служебная пометка писателя не должна попадать в .docx заказчику."""
+    outline = _sections(("Общие сведения", "ИТТ"), ("Основные сведения об объекте", "ИТТ"))
+    marker = f"{dg._SECTION_FAILED_PREFIX}: TimeoutError]"
+    groups = dg._group_by_document(outline, ["текст раздела", marker])
+    markdown_text = groups[0][1]
+    assert "текст раздела" in markdown_text
+    assert "Основные сведения об объекте" in markdown_text
+    assert dg._SECTION_FAILED_PREFIX not in markdown_text
+    assert "TimeoutError" not in markdown_text
+
+    empty_reason = f"{dg._SECTION_FAILED_PREFIX}: ]"
+    groups = dg._group_by_document(outline, ["текст раздела", f"  {empty_reason}"])
+    markdown_text = groups[0][1]
+    assert dg._SECTION_FAILED_PREFIX not in markdown_text
+    assert "[Не удалось" not in markdown_text
+
+
+def test_generation_leak_strings_are_stripped_from_grouped_markdown():
+    """Даже если модель вставила мета про ИИ в удачный раздел — в файл это не идёт."""
+    outline = _sections(("Общие сведения", "ИТТ"))
+    body = (
+        "```markdown\n"
+        "Температура реактора 450 °C.\n"
+        "[Не удалось сгенерировать раздел: ]\n"
+        "[Не удалось]\n"
+        "Не удалось сгенерировать этот абзац.\n"
+        "Нет ответа от модели\n"
+        "Как языковая модель уточню параметры.\n"
+        "Как ИИ не могу указать напряжение.\n"
+        "Текст сгенерирован нейросетью по шаблону.\n"
+        "As an AI I cannot specify the voltage.\n"
+        "Сигнал сгенерирован контроллером.\n"
+        "Мощность насоса 15 кВт.\n"
+        "```"
+    )
+    groups = dg._group_by_document(outline, [body])
+    markdown_text = groups[0][1]
+    assert "Температура реактора 450 °C." in markdown_text
+    assert "Мощность насоса 15 кВт." in markdown_text
+    assert "Сигнал сгенерирован контроллером." in markdown_text
+    assert dg._SECTION_FAILED_PREFIX not in markdown_text
+    assert "[Не удалось]" not in markdown_text
+    assert "[Не удалось" not in markdown_text
+    assert "Не удалось сгенерировать" not in markdown_text
+    assert "Нет ответа от модели" not in markdown_text
+    assert "языковая модель" not in markdown_text.lower()
+    assert "как ии" not in markdown_text.lower()
+    assert "нейросет" not in markdown_text.lower()
+    assert "as an ai" not in markdown_text.lower()
+    assert "```" not in markdown_text
+
+
+def test_writer_prompt_forbids_generation_meta():
+    assert "как языковая модель" in dg._WRITER_NO_LEAK_RULE
+    assert "[Не удалось" in dg._WRITER_NO_LEAK_RULE
+    assert "Не удалось сгенерировать" in dg._WRITER_NO_LEAK_RULE
+    assert "title" in dg._PLANNER_NO_LEAK_RULE and "сгенерировано" in dg._PLANNER_NO_LEAK_RULE
 
 
 def test_interleaved_sections_do_not_split_a_document_in_two():
@@ -989,6 +1106,24 @@ def test_many_documents_are_packed_into_one_archive():
         assert archive.read("Док 1.docx") == b"PK-fake-1"
 
 
+def test_pdf_copies_are_added_when_libreoffice_works(monkeypatch):
+    import document_parser as parser
+
+    monkeypatch.setattr(parser, "convert_docx_to_pdf", lambda data: b"%PDF-fake")
+    files = [{"filename": "ИТТ ПЛК.docx", "bytes": b"PK-docx"}]
+    out = dg._with_pdf_copies(files)
+    assert [item["filename"] for item in out] == ["ИТТ ПЛК.docx", "ИТТ ПЛК.pdf"]
+    assert out[1]["bytes"].startswith(b"%PDF")
+
+
+def test_pdf_copies_are_skipped_without_converter(monkeypatch):
+    import document_parser as parser
+
+    monkeypatch.setattr(parser, "convert_docx_to_pdf", lambda data: None)
+    files = [{"filename": "ИТТ ПЛК.docx", "bytes": b"PK-docx"}]
+    assert dg._with_pdf_copies(files) == files
+
+
 def _docx_with_landscape_appendix() -> bytes:
     from docx import Document as _Document
     from docx.enum.section import WD_ORIENT
@@ -1019,7 +1154,7 @@ def test_template_page_setup_comes_from_the_first_section():
 
 
 def test_template_without_heading_style_still_renders_formatted_text():
-    """The catastrophic case: htmldocx raises on a missing style, and
+    """The catastrophic case: add_heading raises on a missing style, and
     convert_markdown_to_docx then writes RAW markdown into the document and
     returns it as a valid .docx — so the customer gets «## Заголовок» as body
     text while the summary claims the template was applied."""
@@ -1193,6 +1328,55 @@ def test_a_minority_of_direct_formatting_does_not_override_the_style():
     assert normal.font.size == Pt(14), f"a caption redefined the body: {normal.font.size}"
 
 
+def test_lone_equation_font_does_not_steal_times_from_doc_defaults():
+    """Converted .doc ИТТ: body runs have no rFonts, docDefaults is Times 14,
+    one formula is Cambria Math. That one glyph used to become the whole file."""
+    from docx import Document as _Document
+    from docx.oxml.ns import qn
+    from docx.oxml.shared import OxmlElement
+    from docx.shared import Pt
+    from docx_generator import blank_copy_of_template, convert_markdown_to_docx
+
+    doc = _Document()
+    normal_el = doc.styles["Normal"].element
+    for r_fonts in list(normal_el.findall(".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}rFonts")):
+        r_fonts.getparent().remove(r_fonts)
+    for sz in list(normal_el.findall(".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}sz")):
+        sz.getparent().remove(sz)
+    doc.add_paragraph("Исходные технические требования к системе водотушения. " * 6)
+    equation = doc.add_paragraph("α")
+    equation.runs[0].font.name = "Cambria Math"
+    defaults = doc.styles.element.find(
+        "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}docDefaults"
+    )
+    r_pr = defaults.find(".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}rPr")
+    r_fonts = r_pr.find("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}rFonts")
+    if r_fonts is None:
+        r_fonts = OxmlElement("w:rFonts")
+        r_pr.insert(0, r_fonts)
+    for key in ("ascii", "hAnsi", "cs", "eastAsia"):
+        r_fonts.set(qn(f"w:{key}"), "Times New Roman")
+    sz = r_pr.find("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}sz")
+    if sz is None:
+        sz = OxmlElement("w:sz")
+        r_pr.append(sz)
+    sz.set(qn("w:val"), "28")
+    buf = io.BytesIO()
+    doc.save(buf)
+
+    blank = blank_copy_of_template(buf.getvalue())
+    normal = _Document(io.BytesIO(blank)).styles["Normal"]
+    assert normal.font.name == "Times New Roman", normal.font.name
+    assert normal.font.size == Pt(14), normal.font.size
+    built = _Document(io.BytesIO(convert_markdown_to_docx(
+        "## Раздел\n\nАбзац текста.",
+        base_template_bytes=blank,
+    )))
+    fonts = {run.font.name for p in built.paragraphs for run in p.runs if run.text.strip()}
+    assert "Cambria Math" not in fonts
+    assert fonts <= {"Times New Roman", None}
+
+
 def test_template_without_a_default_style_still_formats_plain_paragraphs():
     """LibreOffice marks no style as the paragraph default, so plain paragraphs
     came out with no style at all — 32 of 164 in the delivered ИТТ — and Word
@@ -1250,9 +1434,8 @@ def _template_without_style(style_id: str) -> bytes:
 
 def test_template_without_list_styles_still_renders_lists():
     """The customer's finished documents contained raw markdown («- Заказчик –
-    ООО …») because htmldocx builds <ul> with 'List Bullet' and <ol> with
-    'List Number'. Neither was in the backfill list, so a template that never
-    used lists crashed the conversion on the document's first bullet."""
+    ООО …») because a template without List Bullet / List Number used to crash
+    conversion on the first list item."""
     from docx import Document as _Document
     from docx_generator import (
         blank_copy_of_template, convert_markdown_to_docx, CONVERSION_FAILED_MARKER,
@@ -1360,6 +1543,527 @@ def test_headings_are_never_smaller_than_the_body_text():
         assert style.font.name == "Times New Roman", f"{name} uses {style.font.name}"
 
 
+def test_heading_joins_gost_list_without_duplicating_the_number():
+    """Номер раздела даёт Word. Стилевой outline шаблона снимается, иначе
+    он делит счётчик с пунктами (1.3 → 5.1)."""
+    from docx import Document as _Document
+    from docx.oxml.ns import qn
+    from docx.oxml.shared import OxmlElement
+    from docx_generator import blank_copy_of_template, convert_markdown_to_docx
+
+    source_doc = _Document()
+    style = source_doc.styles["Heading 2"]
+    pPr = style.element.get_or_add_pPr()
+    numPr = OxmlElement("w:numPr")
+    ilvl = OxmlElement("w:ilvl")
+    ilvl.set(qn("w:val"), "1")
+    num_id = OxmlElement("w:numId")
+    num_id.set(qn("w:val"), "1")
+    numPr.append(ilvl)
+    numPr.append(num_id)
+    pPr.append(numPr)
+    buf = io.BytesIO()
+    source_doc.save(buf)
+    blank = blank_copy_of_template(buf.getvalue())
+
+    built = _Document(io.BytesIO(convert_markdown_to_docx(
+        "## 1. Назначение и область применения\n\n1. пункт раздела.",
+        base_template_bytes=blank,
+    )))
+    headings = [p for p in built.paragraphs if p.style and p.style.name.startswith("Heading") and p.text.strip()]
+    assert headings, "heading did not survive conversion"
+    assert "Назначение и область применения" in headings[0].text
+    assert not headings[0].text.strip().startswith("1.")
+    assert _num_id_of(headings[0]) is not None
+    assert _ilvl_of(headings[0]) == 0
+    heading_style = built.styles["Heading 2"]
+    assert heading_style.element.find(".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numPr") is None
+    body = next(p for p in built.paragraphs if p.text.strip() == "пункт раздела.")
+    assert _num_id_of(body) == _num_id_of(headings[0])
+    assert _ilvl_of(body) == 1
+
+
+def _num_id_of(paragraph):
+    pPr = paragraph._element.pPr
+    if pPr is None or pPr.numPr is None or pPr.numPr.numId is None:
+        return None
+    return int(pPr.numPr.numId.val)
+
+
+def _ilvl_of(paragraph):
+    pPr = paragraph._element.pPr
+    if pPr is None or pPr.numPr is None or pPr.numPr.ilvl is None:
+        return None
+    return int(pPr.numPr.ilvl.val)
+
+
+def test_lists_are_three_level_decimal_not_bullets():
+    """Word numbering 1 / 1.1 / 1.1.1 — numbers live in numPr, not in the text."""
+    from docx import Document as _Document
+    from docx.oxml.ns import qn
+    from docx_generator import convert_markdown_to_docx
+
+    markdown_text = (
+        "## Раздел\n\n"
+        "- сбор сигналов\n"
+        "- обработка данных\n\n"
+        "1. верхний\n"
+        "   1. средний\n"
+        "      1. нижний\n"
+    )
+    built = _Document(io.BytesIO(convert_markdown_to_docx(markdown_text)))
+    texts = [p.text.strip() for p in built.paragraphs if p.text.strip()]
+    assert not any(t.startswith("- ") for t in texts)
+    assert any("сбор сигналов" in t for t in texts)
+    assert any(t == "верхний" or t.endswith("верхний") for t in texts)
+    assert not any(t.startswith("1. верхний") for t in texts)
+
+    numbering = built.part.numbering_part.numbering_definitions._numbering
+    lvl_texts = [el.get(qn("w:val")) for el in numbering.findall(".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}lvlText")]
+    assert "%1." in lvl_texts
+    assert "%1.%2." in lvl_texts
+    assert "%1.%2.%3." in lvl_texts
+    assert "%1.%2.%3.%4." in lvl_texts
+
+    nested = [p for p in built.paragraphs if p.text.strip() in {"верхний", "средний", "нижний"}]
+    assert [_ilvl_of(p) for p in nested] == [0, 1, 2]
+    assert len({_num_id_of(p) for p in nested}) == 1
+
+
+def test_fourth_numbering_level_is_ilvl_three():
+    from docx import Document as _Document
+    from docx_generator import convert_markdown_to_docx
+
+    built = _Document(io.BytesIO(convert_markdown_to_docx(
+        "## Раздел\n\n"
+        "1. верхний\n"
+        "1.1 средний\n"
+        "1.1.1 нижний\n"
+        "1.1.1.1 четвёртый\n"
+    )))
+    fourth = next(p for p in built.paragraphs if p.text.strip() == "четвёртый")
+    assert _ilvl_of(fourth) == 3
+    nested = [p for p in built.paragraphs if p.text.strip() in {"верхний", "средний", "нижний", "четвёртый"}]
+    assert [_ilvl_of(p) for p in nested] == [0, 1, 2, 3]
+    assert len({_num_id_of(p) for p in nested}) == 1
+
+
+def test_section_one_relative_clauses_nest_instead_of_collapsing():
+    """Под «## 1» пункты 1. / 1.1 / 1.1.1 / 1.1.1.1 — это 1.1 / 1.1.1 / 1.1.1.1 / 1.1.1.1.1."""
+    from docx import Document as _Document
+    from docx_generator import convert_markdown_to_docx
+
+    built = _Document(io.BytesIO(convert_markdown_to_docx(
+        "## 1. Раздел\n\n"
+        "1. верхний\n"
+        "1.1 средний\n"
+        "1.1.1 нижний\n"
+        "1.1.1.1 четвёртый\n"
+    )))
+    heading = next(p for p in built.paragraphs if p.text.strip() == "Раздел")
+    nested = [p for p in built.paragraphs if p.text.strip() in {"верхний", "средний", "нижний", "четвёртый"}]
+    assert _ilvl_of(heading) == 0
+    assert [_ilvl_of(p) for p in nested] == [1, 2, 3, 4]
+    assert len({_num_id_of(p) for p in [heading, *nested]}) == 1
+
+
+def test_colon_introduces_a_nested_level_not_a_flat_1_2_3():
+    """«являются:» + договор/ТЗ — это 1.2.1 / 1.2.2, не 1.3 / 1.4."""
+    from docx import Document as _Document
+    from docx_generator import convert_markdown_to_docx
+
+    built = _Document(io.BytesIO(convert_markdown_to_docx(
+        "## 1. Общие сведения\n\n"
+        "1. Настоящие исходные технические требования устанавливают требования.\n"
+        "2. Основанием для разработки настоящих ИТТ являются:\n"
+        "1. договор № 10/10-2025-БИО;\n"
+        "2. техническое задание на выполнение работ;\n"
+        "3. Пиролизный реактор является технологическим узлом.\n"
+        "4. Требования настоящего документа распространяются на:\n"
+        "1. конструкцию и материальное исполнение;\n"
+        "2. обеспечение совместимости с узлами установки.\n"
+        "5. В настоящих ИТТ применяются следующие термины и сокращения:\n"
+        "1. НИОКР — научно-исследовательские работы.\n"
+        "2. ТЗ — техническое задание.\n"
+    )))
+    h = next(p for p in built.paragraphs if p.text.strip() == "Общие сведения")
+    intro = next(p for p in built.paragraphs if "Настоящие исходные" in p.text)
+    basis = next(p for p in built.paragraphs if "Основанием для разработки" in p.text)
+    contract = next(p for p in built.paragraphs if "договор №" in p.text)
+    tz = next(p for p in built.paragraphs if "техническое задание на выполнение" in p.text)
+    reactor = next(p for p in built.paragraphs if "Пиролизный реактор является" in p.text)
+    scope = next(p for p in built.paragraphs if "распространяются на" in p.text)
+    construction = next(p for p in built.paragraphs if "конструкцию и материальное" in p.text)
+    terms = next(p for p in built.paragraphs if "термины и сокращения" in p.text)
+    niokr = next(p for p in built.paragraphs if p.text.strip().startswith("НИОКР"))
+    assert _ilvl_of(h) == 0
+    assert [_ilvl_of(p) for p in (intro, basis, reactor, scope, terms)] == [1, 1, 1, 1, 1]
+    assert [_ilvl_of(p) for p in (contract, tz, construction, niokr)] == [2, 2, 2, 2]
+    assert len({_num_id_of(p) for p in (h, intro, contract, reactor, niokr)}) == 1
+
+
+def test_colon_children_stay_one_level_deeper_even_if_writer_uses_1_1_1():
+    """Писатель после двоеточия часто ставит 1.1.1 — это всё равно 1.2.1, не 1.2.1.1."""
+    from docx import Document as _Document
+    from docx_generator import convert_markdown_to_docx
+
+    built = _Document(io.BytesIO(convert_markdown_to_docx(
+        "## 1. Общие сведения\n\n"
+        "1. Исходными данными для разработки являются:\n"
+        "1.1.1 Договор № 10/10-2025-БИО;\n"
+        "1.1.1 Техническое задание на выполнение работ.\n"
+        "2. При разработке пиролизного реактора необходимо учитывать требования.\n"
+    )))
+    basis = next(p for p in built.paragraphs if "Исходными данными" in p.text)
+    contract = next(p for p in built.paragraphs if "Договор №" in p.text)
+    after = next(p for p in built.paragraphs if "При разработке" in p.text)
+    assert _ilvl_of(basis) == 1
+    assert _ilvl_of(contract) == 2
+    assert _ilvl_of(after) == 1
+
+
+def test_numbered_paragraphs_do_not_write_firstline_indent():
+    """w:firstLine on the paragraph overrides numbering hanging and shoves
+    markers into the left margin — the ИТТ screenshots."""
+    from docx import Document as _Document
+    from docx.oxml.ns import qn
+    from docx_generator import convert_markdown_to_docx
+
+    built = _Document(io.BytesIO(convert_markdown_to_docx(
+        "## 1. Раздел\n\n1. верхний\n1.1 средний\n1.1.1 нижний\n"
+    )))
+    numbered = [p for p in built.paragraphs if _num_id_of(p) is not None]
+    assert numbered
+    for paragraph in numbered:
+        pPr = paragraph._element.pPr
+        ind = None if pPr is None else pPr.find(qn("w:ind"))
+        assert ind is None, paragraph.text
+
+
+def test_gost_integer_clause_without_dot_is_a_word_list():
+    """«1 ИТТ являются» — пункт ГОСТ, не обычный абзац с номером в тексте."""
+    from docx import Document as _Document
+    from docx_generator import convert_markdown_to_docx
+
+    built = _Document(io.BytesIO(convert_markdown_to_docx(
+        "## 1.2 Назначение настоящих ИТТ\n\n"
+        "1 ИТТ являются исходным документом для взаимодействия Заказчика и Исполнителя при:\n"
+        "1.1 подготовке и рассмотрении технического предложения;\n"
+        "2 Подсистема должна обеспечивать сбор данных КИПиА.\n"
+    )))
+    heading = next(p for p in built.paragraphs if "Назначение настоящих ИТТ" in p.text)
+    first = next(p for p in built.paragraphs if "ИТТ являются" in p.text)
+    nested = next(p for p in built.paragraphs if "подготовке и рассмотрении" in p.text)
+    second = next(p for p in built.paragraphs if "Подсистема должна" in p.text)
+    assert "Назначение настоящих ИТТ" in heading.text
+    assert not heading.text.strip().startswith("1.2")
+    assert _num_id_of(heading) is not None
+    assert not first.text.strip().startswith("1 ")
+    assert _num_id_of(first) is not None
+    assert _num_id_of(heading) == _num_id_of(first) == _num_id_of(nested) == _num_id_of(second)
+    assert _ilvl_of(heading) == 1
+    assert [_ilvl_of(p) for p in (first, nested, second)] == [2, 3, 2]
+
+
+def test_body_lists_under_numbered_heading_continue_the_section_number():
+    """Под «2 Основные сведения» пункты 1. / 1.1 / 2. — это 2.1 / 2.1.1 / 2.2,
+    а не новый перечень 1 / 1.1 / 2 в каждом разделе."""
+    from docx import Document as _Document
+    from docx_generator import convert_markdown_to_docx
+
+    markdown_text = (
+        "## 2 Основные сведения об объекте\n\n"
+        "1. Назначение опытной установки\n"
+        "1.1. Опытная установка предназначена\n"
+        "2. Технологическая схема\n"
+        "2.1. Линия разделена\n\n"
+        "## 3 Назначение поставки\n\n"
+        "1. Пиролизный реактор применяется\n"
+        "2. В результате пиролиза\n"
+        "3. Реактор должен обеспечивать\n"
+        "3.1. системами подачи\n"
+    )
+    built = _Document(io.BytesIO(convert_markdown_to_docx(markdown_text)))
+    h2 = next(p for p in built.paragraphs if "Основные сведения" in p.text)
+    h3 = next(p for p in built.paragraphs if "Назначение поставки" in p.text)
+    a = next(p for p in built.paragraphs if p.text.strip() == "Назначение опытной установки")
+    a1 = next(p for p in built.paragraphs if "Опытная установка предназначена" in p.text)
+    b = next(p for p in built.paragraphs if p.text.strip() == "Технологическая схема")
+    b1 = next(p for p in built.paragraphs if "Линия разделена" in p.text)
+    c = next(p for p in built.paragraphs if "Пиролизный реактор применяется" in p.text)
+    d = next(p for p in built.paragraphs if "системами подачи" in p.text)
+    ids = {_num_id_of(p) for p in (h2, h3, a, a1, b, b1, c, d)}
+    assert None not in ids
+    assert len(ids) == 1
+    assert _ilvl_of(h2) == 0 and _ilvl_of(h3) == 0
+    assert [_ilvl_of(p) for p in (a, a1, b, b1)] == [1, 2, 1, 2]
+    assert [_ilvl_of(p) for p in (c, d)] == [1, 2]
+    assert not h2.text.strip().startswith("2")
+    assert not a.text.strip().startswith("1.")
+
+
+def test_word_numbering_continues_after_heading_even_with_intro():
+    from docx import Document as _Document
+    from docx_generator import convert_markdown_to_docx
+
+    markdown_text = (
+        "## 1. Первый раздел\n\n"
+        "1.1 пункт одного списка\n\n"
+        "## 2. Второй раздел\n\n"
+        "Текст раздела.\n\n"
+        "1. свой перечень\n"
+        "2. следующий пункт\n"
+    )
+    built = _Document(io.BytesIO(convert_markdown_to_docx(markdown_text)))
+    first_heading = next(p for p in built.paragraphs if "Первый раздел" in p.text)
+    second_heading = next(p for p in built.paragraphs if "Второй раздел" in p.text)
+    restarted = next(p for p in built.paragraphs if p.text.strip() == "свой перечень")
+    nxt = next(p for p in built.paragraphs if p.text.strip() == "следующий пункт")
+    assert "Первый раздел" in first_heading.text
+    assert not first_heading.text.strip().startswith("1.")
+    assert _num_id_of(first_heading) == _num_id_of(second_heading) == _num_id_of(restarted)
+    assert _ilvl_of(first_heading) == 0
+    assert _ilvl_of(second_heading) == 0
+    assert _ilvl_of(restarted) == 1
+    assert _num_id_of(restarted) == _num_id_of(nxt)
+
+
+def test_word_numbering_section_two_body_is_not_a_fresh_one():
+    """«1. 2.» под заголовком 2 — это 2.1 / 2.2 того же списка, не новый «1.»."""
+    from docx import Document as _Document
+    from docx_generator import convert_markdown_to_docx
+
+    markdown_text = (
+        "## 1. Первый раздел\n\n"
+        "1.1 пункт одного списка\n"
+        "1.2 второй пункт\n\n"
+        "## 2. Второй раздел\n\n"
+        "1. свой перечень\n"
+        "2. следующий пункт\n"
+    )
+    built = _Document(io.BytesIO(convert_markdown_to_docx(markdown_text)))
+    first_heading = next(p for p in built.paragraphs if "Первый раздел" in p.text)
+    second_heading = next(p for p in built.paragraphs if "Второй раздел" in p.text)
+    attached = next(p for p in built.paragraphs if p.text.strip() == "пункт одного списка")
+    restarted = next(p for p in built.paragraphs if p.text.strip() == "свой перечень")
+    assert _num_id_of(first_heading) == _num_id_of(second_heading) == _num_id_of(attached) == _num_id_of(restarted)
+    assert _ilvl_of(attached) == 1
+    assert _ilvl_of(restarted) == 1
+    assert _ilvl_of(second_heading) == 0
+
+
+def test_word_numbering_attaches_after_intro_paragraph():
+    """Вводный абзац не разрывает контур: 1.1 под разделом 1 и 2.1 под разделом 2."""
+    from docx import Document as _Document
+    from docx_generator import convert_markdown_to_docx
+
+    markdown_text = (
+        "## 1. Первый раздел\n\n"
+        "Вводный абзац перед пунктами.\n\n"
+        "1.1 пункт после абзаца\n\n"
+        "## 2. Второй раздел\n\n"
+        "Ещё абзац.\n\n"
+        "2.1 продолжение контура\n"
+    )
+    built = _Document(io.BytesIO(convert_markdown_to_docx(markdown_text)))
+    first_heading = next(p for p in built.paragraphs if "Первый раздел" in p.text)
+    child = next(p for p in built.paragraphs if p.text.strip() == "пункт после абзаца")
+    continuation = next(p for p in built.paragraphs if p.text.strip() == "продолжение контура")
+    assert _num_id_of(first_heading) == _num_id_of(child) == _num_id_of(continuation)
+    assert _ilvl_of(child) == 1
+    assert _ilvl_of(continuation) == 1
+
+
+def test_word_numbering_repeated_markdown_ones_are_one_list():
+    """Обычный markdown 1. 1. 1. — один Word-список, не три единицы."""
+    from docx import Document as _Document
+    from docx_generator import convert_markdown_to_docx
+
+    built = _Document(io.BytesIO(convert_markdown_to_docx(
+        "## Раздел\n\n1. первый\n1. второй\n1. третий\n"
+    )))
+    items = [p for p in built.paragraphs if p.text.strip() in {"первый", "второй", "третий"}]
+    assert len(items) == 3
+    assert len({_num_id_of(p) for p in items}) == 1
+    assert [_ilvl_of(p) for p in items] == [0, 0, 0]
+
+
+def test_word_numbering_survives_a_table_inside_the_list():
+    from docx import Document as _Document
+    from docx_generator import convert_markdown_to_docx
+
+    markdown_text = (
+        "1. первый\n"
+        "1.1 уточнение\n\n"
+        "| A | B |\n"
+        "|---|---|\n"
+        "| 1 | x |\n\n"
+        "1.2 после таблицы\n"
+    )
+    built = _Document(io.BytesIO(convert_markdown_to_docx(markdown_text)))
+    by_text = {p.text.strip(): p for p in built.paragraphs if p.text.strip()}
+    assert _num_id_of(by_text["первый"]) == _num_id_of(by_text["после таблицы"])
+    assert _ilvl_of(by_text["после таблицы"]) == 1
+    assert built.tables
+
+
+def test_word_numbering_keeps_one_list_across_unnumbered_headings():
+    """ГОСТ-контур 1 / 1.1 / 2 / 2.1 — один Word-список, даже если разделы без номера."""
+    from docx import Document as _Document
+    from docx_generator import convert_markdown_to_docx
+
+    markdown_text = (
+        "## Назначение\n\n"
+        "1. верхний первого раздела\n"
+        "1.1 вложенный первого раздела\n\n"
+        "## Нормативные ссылки\n\n"
+        "2. верхний второго раздела\n"
+        "2.1 вложенный второго раздела\n"
+    )
+    built = _Document(io.BytesIO(convert_markdown_to_docx(markdown_text)))
+    by_text = {p.text.strip(): p for p in built.paragraphs if p.text.strip()}
+    items = [
+        by_text["верхний первого раздела"],
+        by_text["вложенный первого раздела"],
+        by_text["верхний второго раздела"],
+        by_text["вложенный второго раздела"],
+    ]
+    assert [_ilvl_of(p) for p in items] == [0, 1, 0, 1]
+    assert len({_num_id_of(p) for p in items}) == 1
+
+
+def test_native_python_docx_builds_headings_lists_tables_and_bold():
+    """Word files are assembled with python-docx, not markdown→HTML."""
+    from docx import Document as _Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx_generator import convert_markdown_to_docx
+
+    markdown_text = (
+        "# Титул документа\n\n"
+        "## Раздел\n\n"
+        "Это **важно** и обычный текст.\n\n"
+        "1. верхний\n"
+        "   1. средний\n"
+        "      1. нижний\n\n"
+        "| № | Наименование |\n"
+        "|---|---|\n"
+        "| 1 | **ПЛК** |\n"
+    )
+    built = _Document(io.BytesIO(convert_markdown_to_docx(markdown_text)))
+    styles = [(p.style.name if p.style else "", p.text.strip()) for p in built.paragraphs if p.text.strip()]
+    assert any(name == "Heading 1" and "Титул" in text for name, text in styles), styles
+    assert any(name == "Heading 2" and "Раздел" in text for name, text in styles), styles
+    assert not any("##" in text or text.startswith("# ") for _, text in styles), styles
+
+    title = next(p for p in built.paragraphs if p.text.strip() == "Титул документа")
+    assert title.alignment == WD_ALIGN_PARAGRAPH.CENTER
+    section = next(p for p in built.paragraphs if p.text.strip() == "Раздел")
+    assert section.alignment == WD_ALIGN_PARAGRAPH.LEFT
+
+    body = next(p for p in built.paragraphs if "важно" in p.text)
+    assert not any("**" in (run.text or "") for run in body.runs)
+    assert any(run.bold and "важно" in (run.text or "") for run in body.runs)
+
+    clauses = [p for p in built.paragraphs if p.text.strip() in {"верхний", "средний", "нижний"}]
+    assert len(clauses) == 3
+    assert [_ilvl_of(p) for p in clauses] == [0, 1, 2]
+    for paragraph in clauses:
+        style_name = (paragraph.style.name if paragraph.style else "") or ""
+        assert "heading" not in style_name.lower()
+
+    assert built.tables, "table was not created with add_table"
+    assert "ПЛК" in built.tables[0].cell(1, 1).text
+    assert "**" not in built.tables[0].cell(1, 1).text
+
+
+def test_gost_decimals_stay_in_the_paragraph():
+    """«2.5 МПа» is a value, not list level 1.1 with the number stripped."""
+    from docx import Document as _Document
+    from docx_generator import convert_markdown_to_docx
+
+    built = _Document(io.BytesIO(convert_markdown_to_docx(
+        "Параметры:\n\n2.5 МПа — давление на входе насоса."
+    )))
+    paragraph = next(p for p in built.paragraphs if "2.5" in p.text)
+    assert "2.5 МПа" in paragraph.text
+    pPr = paragraph._element.pPr
+    assert pPr is None or pPr.numPr is None
+    style_name = (paragraph.style.name if paragraph.style else "") or ""
+    assert "heading" not in style_name.lower()
+
+
+def test_numbered_clauses_are_not_headings():
+    """Short 1.2 / 1.2.1 lines used to become Heading (centered, bold)."""
+    from docx import Document as _Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx_generator import convert_markdown_to_docx
+
+    markdown_text = (
+        "## Гарантийные обязательства\n\n"
+        "1.2 В состав гарантийных обязательств входят:\n"
+        "1.2.1 обеспечение работоспособности функций аналогового ввода;\n"
+        "1.2.2 обеспечение выполнения команд оперативного управления;\n"
+        "### 1.2.3 обеспечение работы пяти ПИД-контуров;\n\n"
+        "1.1 Область применения\n\n"
+        "Настоящие ИТТ распространяются на ПЛК.\n"
+    )
+    built = _Document(io.BytesIO(convert_markdown_to_docx(markdown_text)))
+    title = next(p for p in built.paragraphs if p.text.strip() == "Гарантийные обязательства")
+    assert title.style and title.style.name.startswith("Heading")
+
+    for fragment in (
+        "В состав гарантийных обязательств входят:",
+        "обеспечение работоспособности функций аналогового ввода;",
+        "обеспечение выполнения команд оперативного управления;",
+        "обеспечение работы пяти ПИД-контуров;",
+        "Область применения",
+    ):
+        paragraph = next(p for p in built.paragraphs if fragment in p.text)
+        style_name = (paragraph.style.name if paragraph.style else "") or ""
+        assert "heading" not in style_name.lower(), (fragment, style_name)
+        assert _num_id_of(paragraph) is not None, fragment
+        assert paragraph.alignment in (None, WD_ALIGN_PARAGRAPH.LEFT)
+
+
+def test_gost_nested_markers_inside_a_markdown_list():
+    from docx import Document as _Document
+    from docx_generator import convert_markdown_to_docx
+
+    built = _Document(io.BytesIO(convert_markdown_to_docx(
+        "1. верхний\n1.1 средний\n1.1.1 нижний\n"
+    )))
+    by_text = {p.text.strip(): p for p in built.paragraphs if p.text.strip()}
+    assert [_ilvl_of(by_text[name]) for name in ("верхний", "средний", "нижний")] == [0, 1, 2]
+    assert len({_num_id_of(by_text[name]) for name in ("верхний", "средний", "нижний")}) == 1
+    for name in ("верхний", "средний", "нижний"):
+        style_name = (by_text[name].style.name if by_text[name].style else "") or ""
+        assert "heading" not in style_name.lower()
+
+
+def test_heading_runs_use_the_body_typeface():
+    """Heading runs must inherit the body typeface (Times), not a leftover
+    Calibri from the converter — that is the mixed fonts on screenshot 3."""
+    from docx import Document as _Document
+    from docx.shared import Pt
+    from docx_generator import blank_copy_of_template, convert_markdown_to_docx
+
+    source = _Document()
+    source.styles["Normal"].font.name = "Times New Roman"
+    source.styles["Normal"].font.size = Pt(14)
+    source.styles["Heading 1"].font.name = "Arial"
+    buf = io.BytesIO()
+    source.save(buf)
+    blank = blank_copy_of_template(buf.getvalue())
+    built = _Document(io.BytesIO(convert_markdown_to_docx(
+        "# ИТТ РЭО.БИТ–АСУТП–002 Программируемый логический контроллер\n\nПЛК обеспечивает сбор данных.",
+        base_template_bytes=blank,
+    )))
+    assert built.styles["Heading 1"].font.name == "Times New Roman"
+    heading = next(p for p in built.paragraphs if p.style and p.style.name.startswith("Heading") and p.text.strip())
+    names = {run.font.name for run in heading.runs if run.text.strip()}
+    assert names <= {"Times New Roman", None} or names == {"Times New Roman"}
+
+
 def test_table_cells_are_not_justified():
     """A template's justified body formatting is promoted into Normal, and
     table cells inherit it — «Версия/редакция» then wrapped as «В ерсия/ редак
@@ -1401,6 +2105,8 @@ def test_document_filename_does_not_double_the_extension():
     assert dg._document_filename("ИТТ_Подсистема_сбора_данных.docx", used) == "ИТТ_Подсистема_сбора_данных.docx"
     assert dg._document_filename("Отчёт.DOC", set()) == "Отчёт.docx"
     assert dg._document_filename("ИТТ на ПЛК", set()) == "ИТТ на ПЛК.docx"
+    assert dg._document_filename("насос.xlsx", set()) == "насос.docx"
+    assert dg._document_filename("реактор.PDF", set()) == "реактор.docx"
 
 
 def test_ten_requested_documents_are_planned_as_ten():
@@ -1592,6 +2298,63 @@ def test_duplicate_titles_do_not_silently_reduce_the_count():
         dg._plan_outline, dg._expand_chapter = orig_plan, orig_expand
 
     assert len({s.document for s in sections}) == 5, sorted({s.document for s in sections})
+
+
+def test_plan_rejects_template_toc_as_filenames():
+    """The live ИТТ run named files after template sections
+    («1 Общие сведения.docx») instead of the five project nodes."""
+    import asyncio as _asyncio
+
+    rounds = []
+
+    async def fake_plan(user_text, chunks, user_id, extra_instruction="",
+                        want_count=None, as_chapters=False, as_documents=False):
+        rounds.append(want_count)
+        if len(rounds) == 1:
+            titles = [
+                "1 Общие сведения",
+                "2 Основные сведения об объекте",
+                "3 Назначение поставки",
+                "4 Состав поставки",
+                "5 Технические требования",
+            ]
+        else:
+            titles = [
+                "ИТТ на подсистему сбора данных КИПиА",
+                "ИТТ на шкаф управления",
+                "ИТТ на насосную станцию",
+                "ИТТ на систему электроснабжения",
+                "ИТТ на контур охлаждения",
+            ][:want_count]
+        return (
+            [dg.Section(id=i, title=t, brief="", complexity="complex", document="")
+             for i, t in enumerate(titles)],
+            set(), False,
+        )
+
+    async def fake_expand(chapter, user_text, catalog, per_chapter, user_id):
+        return [dg.Section(id=0, title="Раздел", brief="", complexity="simple",
+                           document=chapter.document)]
+
+    orig_plan, orig_expand = dg._plan_outline, dg._expand_chapter
+    dg._plan_outline, dg._expand_chapter = fake_plan, fake_expand
+    try:
+        sections, _, _ = _asyncio.run(
+            dg._plan_document(
+                "сделай 5 документов ИТТ на разные узлы по шаблону", [], 1,
+            )
+        )
+    finally:
+        dg._plan_outline, dg._expand_chapter = orig_plan, orig_expand
+
+    names = {s.document for s in sections}
+    assert len(names) == 5, sorted(names)
+    joined = " ".join(names).lower().replace("ё", "е")
+    assert "общие сведения" not in joined
+    assert "назначение поставки" not in joined
+    assert "состав поставки" not in joined
+    assert all("итт" in n.lower() for n in names), sorted(names)
+    assert any("кипиа" in n.lower() for n in names)
 
 
 def test_apply_replacements_longest_first_prevents_partial_overlap():

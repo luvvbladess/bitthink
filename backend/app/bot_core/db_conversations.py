@@ -774,6 +774,7 @@ class DatabaseConversationManager:
             record = self._get_usage_record(session, user_id, date, model)
             record.input_tokens += input_tokens
             record.output_tokens += output_tokens
+            record.cached_input_tokens = (record.cached_input_tokens or 0) + max(0, int(cached_input_tokens or 0))
             session.commit()
         try:
             from app.billing.quota import debit_model_usage
@@ -823,6 +824,7 @@ class DatabaseConversationManager:
             record.output_tokens = record.output_tokens or 0
             record.images = record.images or 0
             record.calls = record.calls or 0
+            record.cached_input_tokens = record.cached_input_tokens or 0
         return record
 
     def get_day_usage(self, user_id: int, day: Optional[str] = None) -> dict:
@@ -834,6 +836,7 @@ class DatabaseConversationManager:
                 "output": r.output_tokens,
                 "images": r.images,
                 "calls": r.calls,
+                "cached": r.cached_input_tokens or 0,
             } for r in records}
 
     def get_month_usage(self, user_id: int, month: Optional[str] = None) -> dict:
@@ -845,11 +848,12 @@ class DatabaseConversationManager:
             ).all()
             result: Dict[str, dict] = {}
             for r in records:
-                result.setdefault(r.model, {"input": 0, "output": 0, "images": 0, "calls": 0})
+                result.setdefault(r.model, {"input": 0, "output": 0, "images": 0, "calls": 0, "cached": 0})
                 result[r.model]["input"] += r.input_tokens
                 result[r.model]["output"] += r.output_tokens
                 result[r.model]["images"] += r.images
                 result[r.model]["calls"] += r.calls
+                result[r.model]["cached"] += r.cached_input_tokens or 0
             return result
 
     # ------------------------------------------------------------------

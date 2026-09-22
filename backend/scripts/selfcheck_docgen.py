@@ -180,7 +180,7 @@ def _install_fakes(plan_response: str, writer_fails: bool = False, fail_first_at
     """Returns (writer_prompts, pools_seen, attempt_counts); all fill up as the run proceeds.
 
     writer_fails: every writer call for every section fails (tests that retry
-    is bounded and the placeholder still appears).
+    is bounded and the placeholder is not copied into the .docx).
     fail_first_attempt: each section's first attempt fails, subsequent ones
     succeed (tests that a transient failure is recovered by retry).
     attempt_counts: prompt content -> number of writer calls made for that
@@ -297,13 +297,16 @@ async def check_failed_sections_are_reported():
     summary, files, _, _ = await dg.get_docgen_response(messages, reply, 777, FakeStatus())
 
     assert files and files[0]["bytes"][:2] == b"PK", "must still produce a .docx when sections fail"
-    assert "Не удалось сгенерировать разделов: 2 из 2" in summary, (
+    assert "Не удалось дописать разделов: 2 из 2" in summary, (
         f"failed sections were not reported to the user: {summary}"
     )
-    assert attempt_counts and all(count == dg.SECTION_ATTEMPTS for count in attempt_counts.values()), (
-        f"expected every failing section to be retried exactly SECTION_ATTEMPTS times, got {attempt_counts}"
+    assert attempt_counts and all(count == dg.SECTION_ATTEMPTS * 2 for count in attempt_counts.values()), (
+        f"expected every failing section to be retried SECTION_ATTEMPTS then salvaged, got {attempt_counts}"
     )
-    print("OK: failed sections — retried SECTION_ATTEMPTS times each, counted and reported, document still assembled")
+    with zipfile.ZipFile(BytesIO(files[0]["bytes"])) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8", "replace")
+    assert dg._SECTION_FAILED_PREFIX not in document_xml, "failure marker leaked into the .docx"
+    print("OK: failed sections — retried, salvaged, counted in the summary, marker kept out of the file")
 
 
 async def check_section_retry_recovers():
@@ -319,6 +322,7 @@ async def check_section_retry_recovers():
     assert files and files[0]["bytes"][:2] == b"PK", "must still produce a .docx after a retried section"
     assert dg._SECTION_FAILED_PREFIX not in summary, f"a recovered section left a placeholder trace: {summary}"
     assert "Не удалось сгенерировать" not in summary, f"summary wrongly reported a failed section: {summary}"
+    assert "Не удалось дописать" not in summary, f"summary wrongly reported a failed section: {summary}"
     assert len(writer_prompts) == 2, f"expected both sections to eventually succeed, got {len(writer_prompts)}"
     assert attempt_counts and all(count == 2 for count in attempt_counts.values()), (
         f"expected exactly 2 attempts (fail once, then succeed) per section, got {attempt_counts}"
@@ -805,15 +809,15 @@ async def check_api_error_text_is_not_written_into_the_document():
     summary, files, _, _ = await dg.get_docgen_response(messages, reply, 777, FakeStatus())
     assert "placeholder" in writer_calls and "banner" in writer_calls, "both failure shapes must be exercised"
     # The load-bearing assertion: neither shape was accepted as section content.
-    assert "Не удалось сгенерировать разделов: 2 из 2" in summary, (
+    assert "Не удалось дописать разделов: 2 из 2" in summary, (
         f"API failures were not reported as failures: {summary!r}"
     )
     with zipfile.ZipFile(BytesIO(files[0]["bytes"])) as archive:
         document_xml = archive.read("word/document.xml").decode("utf-8", "replace")
-    # The reason may appear in the .docx, but only inside the explicit failure
-    # marker — never as prose the reader would take for the document's text.
-    assert document_xml.count(dg._SECTION_FAILED_PREFIX) == 2, "failed sections are not marked in the .docx"
-    print("OK: API failure (banner and bare placeholder) — counted as failed sections, never passed off as text")
+    assert dg._SECTION_FAILED_PREFIX not in document_xml, "failure marker leaked into the .docx"
+    assert "Нет ответа от модели" not in document_xml
+    assert "Model Not Exist" not in document_xml
+    print("OK: API failure (banner and bare placeholder) — counted as failed sections, never written into the file")
 
 
 async def check_many_documents_with_template_formatting():

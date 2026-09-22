@@ -7,7 +7,7 @@ export function followUpMode(selected?: string | null): FollowUpMode {
   if (selected === 'docgen') return 'docgen';
   if (selected === 'gpt-6-astra') return 'astra';
   if (selected === 'kimi-k2.6') return 'search';
-  if (selected === 'gpt-5.6-sol' || selected === 'gpt-5.6-sol-pro' || selected === 'gpt-5.6-terra') {
+  if (selected === 'gpt-6-sol' || selected === 'gpt-5.6-sol' || selected === 'gpt-5.6-sol-pro' || selected === 'gpt-5.6-terra') {
     return 'research';
   }
   return 'auto';

@@ -19,7 +19,8 @@ IMAGE_EXTENSIONS = {
 }
 DOCUMENT_EXTENSIONS = {
     ".pdf", ".doc", ".docx", ".odt", ".rtf", ".txt", ".md", ".markdown",
-    ".xlsx", ".xls", ".ods", ".csv", ".tsv", ".ppt", ".pptx", ".odp",
+    ".xlsx", ".xlsm", ".xltx", ".xltm", ".xls", ".ods", ".csv", ".tsv",
+    ".ppt", ".pptx", ".odp",
     ".epub", ".html", ".htm", ".xml", ".json", ".jsonl", ".yaml", ".yml",
     ".log", ".ini", ".cfg", ".conf", ".sql", ".py", ".js", ".jsx", ".ts",
     ".tsx", ".java", ".c", ".h", ".cpp", ".hpp", ".cs", ".go", ".rs",

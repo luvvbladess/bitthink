@@ -1,8 +1,8 @@
 """One conversation window per product mode.
 
-Auto / Computer / Research / Luna / Terra all mix models on the same thread.
+Auto / Computer / Research / Luna / Sol all mix models on the same thread.
 The thread is packed once to the mode window. Individual hops (Kimi search,
-Luna OCR, Terra vision) do not re-pack to a different size.
+Luna OCR, Sol vision) do not re-pack to a different size.
 """
 
 from __future__ import annotations
@@ -16,7 +16,9 @@ logger = logging.getLogger(__name__)
 CHARS_PER_TOKEN = 3
 IMAGE_TOKENS = 2_000
 TOOL_RESERVE_TOKENS = 6_000
-COMPACT_RATIO = 0.85
+# Оценка токенов занижает русский текст. Если паковать почти до упора, API
+# обрежет начало запроса: пропадёт ранний разговор и сломается префикс кэша.
+COMPACT_RATIO = 0.62
 MEMORY_LABEL = "Сжатая память более раннего разговора"
 DIALOGUE_SOFT_LIMIT_TOKENS = 36_000
 DIALOGUE_KEEP_MESSAGES = 36
@@ -36,18 +38,16 @@ class ModeWindow:
     max_output: int
 
 
-# Conversation windows. Mixed-model modes share GPT-5.6's 1.05M window
-# (OpenAI Luna/Terra/Sol and DeepSeek V4). Search is Kimi-only, so 256K.
+# Conversation windows. Mixed-model modes share the 1.05M window
+# (GPT-6 Luna/Sol/Astra and DeepSeek V4). Search is Kimi-only, so 256K.
 # Leaf output caps stay in LEAF_OUTPUT — that is generation, not thread size.
 MODE_WINDOWS: Dict[str, ModeWindow] = {
     "auto": ModeWindow(1_050_000, 128_000),
     "correspondent": ModeWindow(1_050_000, 128_000),
     "director": ModeWindow(1_050_000, 128_000),
     "studio": ModeWindow(1_050_000, 128_000),
-    "gpt-5.6-luna": ModeWindow(1_050_000, 128_000),
-    "gpt-5.6-terra": ModeWindow(1_050_000, 128_000),
-    "gpt-5.6-sol": ModeWindow(1_050_000, 128_000),
-    "gpt-5.6-sol-pro": ModeWindow(1_050_000, 128_000),
+    "gpt-6-luna": ModeWindow(1_050_000, 128_000),
+    "gpt-6-sol": ModeWindow(1_050_000, 128_000),
     "gpt-6-astra": ModeWindow(1_050_000, 128_000),
     "kimi-k2.6": ModeWindow(262_144, 32_768),
     "gpt-5-nano": ModeWindow(400_000, 128_000),
@@ -57,10 +57,8 @@ MODE_WINDOWS: Dict[str, ModeWindow] = {
 
 LEAF_OUTPUT: Dict[str, int] = {
     "gpt-5-nano": 128_000,
-    "gpt-5.6-luna": 128_000,
-    "gpt-5.6-terra": 128_000,
-    "gpt-5.6-sol": 128_000,
-    "gpt-5.6-sol-pro": 128_000,
+    "gpt-6-luna": 128_000,
+    "gpt-6-sol": 128_000,
     "gpt-6-astra": 128_000,
     "kimi-k2.6": 32_768,
     "deepseek-v4-pro": 64_000,
@@ -430,7 +428,11 @@ def fit_messages_to_mode(messages: List[Dict[str, Any]], mode: str) -> List[Dict
 def _trim_systems(messages: List[Dict[str, Any]], budget: int) -> List[Dict[str, Any]]:
     fitted = list(messages)
     while estimate_messages_tokens(fitted) > budget and fitted:
-        longest = max(range(len(fitted)), key=lambda index: estimate_message_tokens(fitted[index]))
+        # Первое system-сообщение — стабильный префикс кэша. Режем его только
+        # когда кроме него уже нечего ужимать.
+        protected = 0 if len(fitted) > 1 else None
+        candidates = [index for index in range(len(fitted)) if index != protected]
+        longest = max(candidates, key=lambda index: estimate_message_tokens(fitted[index]))
         message = fitted[longest]
         content = message.get("content")
         if not isinstance(content, str) or len(content) < 2_000:
@@ -444,12 +446,93 @@ def _trim_systems(messages: List[Dict[str, Any]], budget: int) -> List[Dict[str,
     return fitted
 
 
-async def fit_for_mode(messages: List[Dict[str, Any]], mode: str) -> List[Dict[str, Any]]:
+def _dropped_dialogue(before: Sequence[Dict[str, Any]], after: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    kept = {id(message) for message in after}
+    return [
+        message for message in before
+        if message.get("role") != "system" and id(message) not in kept
+    ]
+
+
+def _replace_memory(messages: List[Dict[str, Any]], mode: str, summary: str) -> List[Dict[str, Any]]:
+    body = (
+        f"{MEMORY_LABEL}. Это сжатое содержание более ранних сообщений, "
+        f"чтобы хватило окна режима ({window_for(mode).context:,} токенов). "
+        "Не говори, что не видишь предыдущий разговор.\n"
+        f"{summary.strip()[:4000]}"
+    )
+    fitted = list(messages)
+    for index, message in enumerate(fitted):
+        if _is_memory_message(message):
+            updated = dict(message)
+            updated["content"] = body
+            fitted[index] = updated
+            return fitted
+    insert_at = 1 if fitted and fitted[0].get("role") == "system" else 0
+    fitted.insert(insert_at, {"role": "system", "content": body})
+    return fitted
+
+
+async def _summarize_overflow(text: str, user_id: Optional[int] = None) -> str:
+    """Один дешёвый проход по вытесненной переписке. Пустая строка — оставить выжимку как есть."""
+    clipped = (text or "").strip()
+    if len(clipped) < 8_000:
+        return ""
+    clipped = clipped[:24_000]
+    try:
+        from openai_client import get_chat_response
+
+        summary, _, _, _ = await get_chat_response(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "Сожми старую переписку для продолжения того же разговора. "
+                        "Сохрани имена, числа, решения, ограничения и открытые вопросы. "
+                        "Без вступлений. Не длиннее 1200 знаков."
+                    ),
+                },
+                {"role": "user", "content": clipped},
+            ],
+            model="gpt-6-luna",
+            user_id=user_id,
+            use_tools=False,
+            use_skills=False,
+        )
+    except Exception:
+        logger.exception("overflow summary failed")
+        return ""
+    text_out = (summary or "").strip()
+    if not text_out or text_out.startswith("❌"):
+        return ""
+    return text_out[:4000]
+
+
+async def fit_for_mode(
+    messages: List[Dict[str, Any]],
+    mode: str,
+    user_id: Optional[int] = None,
+    summarizer: Optional[Any] = None,
+) -> List[Dict[str, Any]]:
     fitted = fit_messages_to_mode(messages, mode)
+    dropped = _dropped_dialogue(messages, fitted)
+    dropped_text = "\n".join(
+        f"{message.get('role')}: {_message_text(message)[:2000]}"
+        for message in dropped
+        if _message_text(message).strip()
+    )
+    if len(dropped_text) >= 8_000:
+        summarize = summarizer or _summarize_overflow
+        try:
+            summary = await summarize(dropped_text, user_id)
+        except TypeError:
+            summary = await summarize(dropped_text)
+        if summary and str(summary).strip():
+            fitted = _replace_memory(fitted, mode, str(summary))
     if estimate_messages_tokens(fitted) + 80 < estimate_messages_tokens(messages):
         try:
             from status_feed import push_status
-            await push_status("think", "Сжимаю предыдущие сообщения под окно режима")
+            await push_status("think", "Сжимаю ранние сообщения, чтобы не переполнить окно")
         except Exception:
             pass
     return fitted

@@ -33,23 +33,21 @@ interface ModelsCache {
 const ANSWER_MODES = [
   { id: 'auto', label: 'Авто', description: 'Подберёт модель по задаче', model: 'auto', icon: Sparkle },
   { id: 'search', label: 'Поиск', description: 'Свежие ответы с источниками', model: 'kimi-k2.6', icon: MagnifyingGlass },
-  { id: 'research', label: 'Исследование', description: 'Глубокий разбор источников', model: 'gpt-5.6-sol', icon: Books },
+  { id: 'research', label: 'Исследование', description: 'Глубокий разбор источников на Sol', model: 'gpt-6-sol', icon: Books },
   { id: 'astra', label: ASTRA_LABEL, description: 'Песочница GPT-6: код, договоры, файлы', model: 'gpt-6-astra', icon: Atom },
   { id: 'studio', label: STUDIO_LABEL, description: 'Живой холст: картинки, слайды, лендинг', model: 'studio', icon: Presentation },
-  { id: 'docgen', label: DOCGEN_LABEL, description: 'Большой документ .docx по промпту и вашим файлам', model: 'docgen', icon: FileText },
+  { id: 'docgen', label: DOCGEN_LABEL, description: 'Большой .docx по Word, PDF, Excel и архивам', model: 'docgen', icon: FileText },
   { id: 'computer', label: PILOT_LABEL, description: 'Сам зайдёт на сайт, почту или сервер', model: 'director', icon: Desktop },
 ] as const;
 
 const REASONING_CAPABLE = new Set([
   'auto',
   'gpt-5-nano',
-  'gpt-5.6-luna',
-  'gpt-5.6-terra',
-  'gpt-5.6-sol',
-  'gpt-5.6-sol-pro',
+  'gpt-6-luna',
+  'gpt-6-sol',
   'gpt-6-astra',
 ]);
-const XHIGH_CAPABLE = new Set(['gpt-5.6-sol', 'gpt-5.6-sol-pro', 'gpt-6-astra']);
+const XHIGH_CAPABLE = new Set(['gpt-6-sol', 'gpt-6-astra']);
 
 function useModelsQuery() {
   return useQuery({ queryKey: ['models'], queryFn: () => apiFetch('/models'), staleTime: 10_000 });
@@ -108,13 +106,13 @@ export function SearchModeSelector() {
   const multipliers = data?.multipliers || {};
   const modes = ANSWER_MODES.map((mode) => {
     if (mode.id === 'research') {
-      return { ...mode, model: researchModel || 'gpt-5.6-terra', description: researchModel === 'gpt-5.6-sol' ? 'Глубокий разбор на Sol' : 'Глубокий разбор на Terra' };
+      return { ...mode, model: researchModel || 'gpt-6-sol', description: 'Глубокий разбор на Sol' };
     }
     return mode;
   });
   const matchedMode = modes.find((mode) => {
     if (mode.id === 'research') {
-      return selected === researchModel || selected === 'gpt-5.6-sol' || selected === 'gpt-5.6-terra' || selected === 'gpt-5.6-sol-pro';
+      return selected === researchModel || selected === 'gpt-6-sol' || selected === 'gpt-5.6-sol' || selected === 'gpt-5.6-terra' || selected === 'gpt-5.6-sol-pro';
     }
     return mode.model === selected;
   });
@@ -332,7 +330,7 @@ export function ReasoningEffortSelector() {
                 : 'max'
               : enabled
                 ? 'none'
-                : selected === 'gpt-5.6-sol'
+                : selected === 'gpt-6-sol' || selected === 'gpt-5.6-sol'
                   ? 'high'
                   : 'medium',
           )

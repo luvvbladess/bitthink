@@ -74,7 +74,7 @@ VISUALIZE_TOOL_RESPONSES = {
 WEB_SEARCH_TOOL = {"type": "web_search"}
 
 
-_XHIGH_CAPABLE_MODELS = ("gpt-5.6-sol", "gpt-5.6-sol-pro", "gpt-6-astra")
+_XHIGH_CAPABLE_MODELS = ("gpt-6-sol", "gpt-6-astra")
 _MAX_CAPABLE_MODELS = ("gpt-6-astra",)
 
 
@@ -82,7 +82,8 @@ def _get_reasoning_config(model: str, user_effort: Optional[str] = None) -> dict
     """Возвращает конфиг reasoning в зависимости от модели и пользовательской настройки.
 
     user_effort, если задан, переопределяет дефолт модели.
-    max — только GPT-6 Astra; xhigh — Sol и Astra; остальным понижается до high.
+    API Sol и Luna принимают none…max. В продукте max остаётся у Astra,
+    xhigh — у Sol и Astra, остальным понижается до high.
     """
     effort = (user_effort or "").strip().lower()
     if effort in {"", "none"}:
@@ -95,20 +96,21 @@ def _get_reasoning_config(model: str, user_effort: Optional[str] = None) -> dict
         return {"effort": effort}
     if model == "gpt-6-astra":
         return {"effort": "high"}
-    if model == "gpt-5.6-sol-pro":
-        return {"effort": "xhigh"}
-    if model == "gpt-5.6-sol":
+    if model == "gpt-6-sol":
         return {"effort": "high"}
-    if model in ("gpt-5-nano", "gpt-5.6-luna"):
+    if model in ("gpt-5-nano", "gpt-6-luna"):
         return {"effort": "low"}
     return {"effort": "medium"}
 
 
-# Внутренние ID моделей бота, которых нет как отдельных моделей в API OpenAI -
-# транслируются в реальную строку модели прямо перед вызовом API. gpt-5.6-sol-pro
-# отличается от обычного gpt-5.6-sol только уровнем reasoning.effort (xhigh),
-# заданным в _get_reasoning_config выше, а не отдельной моделью.
-_MODEL_API_ALIASES = {"gpt-5.6-sol-pro": "gpt-5.6-sol"}
+# Старые id линейки GPT-5.6 больше не вызываются. Если где-то остались —
+# уходят в актуальную модель того же класса.
+_MODEL_API_ALIASES = {
+    "gpt-5.6-luna": "gpt-6-luna",
+    "gpt-5.6-terra": "gpt-6-sol",
+    "gpt-5.6-sol": "gpt-6-sol",
+    "gpt-5.6-sol-pro": "gpt-6-sol",
+}
 
 
 def _resolve_api_model(model: str) -> str:
@@ -350,8 +352,7 @@ async def get_chat_response(
         if image_base64 and not is_astra:
             use_model = OPENAI_VISION_MODEL
 
-        # Reasoning config считаем ДО перевода в реальную строку API, т.к. отличие
-        # gpt-5.6-sol-pro от gpt-5.6-sol только в этом
+        # Reasoning config считаем ДО перевода старых id в строку API.
         reasoning_cfg = _get_reasoning_config(use_model, reasoning_effort)
         window_model = use_model
         use_model = _resolve_api_model(use_model)
@@ -411,6 +412,9 @@ async def get_chat_response(
                 request["tools"] = tools
                 # Ask OpenAI to include raw web search results so we can show them in the UI.
                 request["include"] = ["web_search_call.results", "web_search_call.action.sources"]
+            if user_id is not None:
+                # Один ключ на пользователя держит стабильный system-префикс на одном сервере кэша.
+                request["prompt_cache_key"] = f"web-{user_id}"[:64]
             if force_web:
                 # With tool_choice="auto" search is optional. Explicit search
                 # mode and volatile Auto queries must never silently skip it.
@@ -450,6 +454,8 @@ async def get_chat_response(
                 total_output_tokens += out
                 total_cached_tokens += cached
                 total_cache_write_tokens += writes
+                if cached:
+                    logger.info("Responses API prompt cache hit: %s input tokens", cached)
 
             # Парсим вывод
             text_this_turn = ""
@@ -672,10 +678,10 @@ async def get_chat_response(
         logger.error(f"OpenAI Responses API error: {e}")
         requested = (model or DEFAULT_MODEL)
         if requested == "gpt-6-astra" and _astra_unavailable(err):
-            logger.warning("gpt-6-astra unavailable, falling back to gpt-5.6-sol")
+            logger.warning("gpt-6-astra unavailable, falling back to gpt-6-sol")
             return await get_chat_response(
                 messages,
-                model="gpt-5.6-sol",
+                model="gpt-6-sol",
                 image_base64=image_base64,
                 image_mime_type=image_mime_type,
                 user_id=user_id,

@@ -162,6 +162,10 @@ class ConversationManager:
                     saved_model = "gpt-5.6-luna"
                 elif saved_model == "gpt-5.4":
                     saved_model = "gpt-5.6-terra"
+                if saved_model in {"gpt-5.6-sol", "gpt-5.6-sol-pro", "gpt-5.6-terra"}:
+                    saved_model = "gpt-6-sol"
+                elif saved_model == "gpt-5.6-luna":
+                    saved_model = "gpt-6-luna"
                 self._user_models[user_id] = saved_model
                 
                 # Загружаем кастомные промпты

@@ -274,8 +274,7 @@ def usage_view(sub: dict[str, Any]) -> dict[str, Any]:
             "Luna / Nano": 1,
             "Kimi": 4,
             "DeepSeek": 5,
-            "Terra": 13,
-            "Sol": 32,
+            "Sol": 20,
             "Astra": 90,
         },
     }
@@ -291,7 +290,7 @@ def _block_window(window: dict[str, Any], empty_message: str) -> None:
     raise QuotaError(empty_message, "quota")
 
 
-def assert_can_use(user_id: int, pool: PoolName = "chat", model: str = "gpt-5.6-luna") -> None:
+def assert_can_use(user_id: int, pool: PoolName = "chat", model: str = "gpt-6-luna") -> None:
     sub = _manager().get_subscription(user_id)
     view = usage_view(sub)
     if view["unlimited"]:

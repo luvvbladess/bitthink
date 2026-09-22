@@ -1,120 +1,146 @@
 """
 Модуль для генерации DOCX документов из Markdown/текста.
-Использует связку markdown -> html -> docx для поддержки таблиц и форматирования.
+
+Сборка идёт напрямую через python-docx: Document(), add_heading(), абзацы,
+нумерованные списки 1 / 1.1 / 1.1.1 / 1.1.1.1 и add_table(). Markdown модели остаётся
+источником структуры, но в Word он не экспортируется через HTML — иначе
+ломаются стили шаблона, таблицы и нумерация.
 """
 
 import io
 import re
 import unicodedata
 from typing import Optional
-import markdown
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Cm, RGBColor
 from docx.oxml.shared import OxmlElement
 from docx.oxml.ns import qn
-from htmldocx import HtmlToDocx
 import logging
 
 logger = logging.getLogger(__name__)
 
-# Текст этого абзаца — признак того, что htmldocx не справился и в документ
+# Текст этого абзаца — признак того, что сборка DOCX сорвалась и в документ
 # лёг сырой markdown. Вызывающий код ищет его, чтобы не выдать такой файл
 # пользователю за готовый.
 CONVERSION_FAILED_MARKER = "Ошибка при конвертации форматирования. Исходный текст:"
 
-def create_list_numbering(doc, is_bullet=False):
-    """
-    Создает полностью новый вложенный (multilevel) шаблон нумерации.
-    Гарантирует формат 1.1, 1.1.1 для цифр и разные маркеры для bullet-списков.
-    """
-    from docx.oxml.shared import OxmlElement
-    from docx.oxml.ns import qn
-    import random
-    
+# hanging обязан быть шире номера («1.1.» ≈ 0.4"), иначе LibreOffice
+# склеивает «1.1.подготовке». left > hanging, чтобы маркер не уезжал в поле.
+LIST_NUMBERING_LEVELS = (
+    (720, 400, "%1."),
+    (1440, 720, "%1.%2."),
+    (2160, 960, "%1.%2.%3."),
+    (2880, 1200, "%1.%2.%3.%4."),
+    (3600, 1440, "%1.%2.%3.%4.%5."),
+)
+MAX_LIST_ILVL = len(LIST_NUMBERING_LEVELS) - 1
+
+
+def _numbering_root(doc):
     try:
-        numbering_part = doc.part.numbering_part
+        return doc.part.numbering_part.numbering_definitions._numbering
     except (NotImplementedError, AttributeError):
         return None
-        
-    numbering_element = numbering_part.numbering_definitions._numbering
-    
-    current_abs_ids = [int(a.get(qn('w:abstractNumId'))) for a in numbering_element.xpath('w:abstractNum')]
+
+
+def _lvl_val(lvl, tag: str):
+    el = lvl.find(qn(tag))
+    return el.get(qn("w:val")) if el is not None else None
+
+
+def _find_gost_abstract_id(root) -> Optional[int]:
+    """AbstractNum шаблона, где уровни 0–3 — десятичные 1 / 1.1 / 1.1.1 / 1.1.1.1."""
+    for absn in root.findall(qn("w:abstractNum")):
+        texts = {}
+        fmts = {}
+        for lvl in absn.findall(qn("w:lvl")):
+            ilvl = int(lvl.get(qn("w:ilvl")))
+            texts[ilvl] = _lvl_val(lvl, "w:lvlText") or ""
+            fmts[ilvl] = _lvl_val(lvl, "w:numFmt")
+        if fmts.get(0) != "decimal":
+            continue
+        if texts.get(0, "").startswith("%1") and texts.get(1, "").startswith("%1.%2"):
+            return int(absn.get(qn("w:abstractNumId")))
+    return None
+
+
+def _append_num_instance(root, abstract_id: int) -> int:
+    current_ids = [int(n.get(qn("w:numId"))) for n in root.findall(qn("w:num"))]
+    next_num_id = max(current_ids, default=0) + 1
+    num = OxmlElement("w:num")
+    num.set(qn("w:numId"), str(next_num_id))
+    abs_id = OxmlElement("w:abstractNumId")
+    abs_id.set(qn("w:val"), str(abstract_id))
+    num.append(abs_id)
+    root.append(num)
+    return next_num_id
+
+
+def _create_gost_abstract(root) -> int:
+    import random
+
+    current_abs_ids = [int(a.get(qn("w:abstractNumId"))) for a in root.findall(qn("w:abstractNum"))]
     next_abs_id = max(current_abs_ids, default=-1) + 1
-    
-    abs_num = OxmlElement('w:abstractNum')
-    abs_num.set(qn('w:abstractNumId'), str(next_abs_id))
-    
-    nsid = OxmlElement('w:nsid')
-    nsid.set(qn('w:val'), ''.join(random.choices('0123456789ABCDEF', k=8)))
+    abs_num = OxmlElement("w:abstractNum")
+    abs_num.set(qn("w:abstractNumId"), str(next_abs_id))
+    nsid = OxmlElement("w:nsid")
+    nsid.set(qn("w:val"), "".join(random.choices("0123456789ABCDEF", k=8)))
     abs_num.append(nsid)
-    
-    multiLevelType = OxmlElement('w:multiLevelType')
-    multiLevelType.set(qn('w:val'), 'multilevel')
-    abs_num.append(multiLevelType)
-    
-    bullets = ['\u25cf', '\u25cb', '\u25a0', '\u25b7', '\u2666', '\u261e', '\u27a4', '\u25c6', '\u2756']
-    
-    for i in range(9):
-        lvl = OxmlElement('w:lvl')
-        lvl.set(qn('w:ilvl'), str(i))
-        
-        start = OxmlElement('w:start')
-        start.set(qn('w:val'), '1')
+    multi = OxmlElement("w:multiLevelType")
+    multi.set(qn("w:val"), "multilevel")
+    abs_num.append(multi)
+    for i, (left, hanging, text) in enumerate(LIST_NUMBERING_LEVELS):
+        lvl = OxmlElement("w:lvl")
+        lvl.set(qn("w:ilvl"), str(i))
+        start = OxmlElement("w:start")
+        start.set(qn("w:val"), "1")
         lvl.append(start)
-        
-        numFmt = OxmlElement('w:numFmt')
-        lvlText = OxmlElement('w:lvlText')
-        lvlJc = OxmlElement('w:lvlJc')
-        lvlJc.set(qn('w:val'), 'left')
-        
-        if is_bullet:
-            numFmt.set(qn('w:val'), 'bullet')
-            lvlText.set(qn('w:val'), bullets[i])
-            rPr = OxmlElement('w:rPr')
-            rFonts = OxmlElement('w:rFonts')
-            rFonts.set(qn('w:ascii'), 'Arial')
-            rFonts.set(qn('w:hAnsi'), 'Arial')
-            rFonts.set(qn('w:cs'), 'Arial')
-            rPr.append(rFonts)
-            lvl.append(rPr)
-        else:
-            numFmt.set(qn('w:val'), 'decimal')
-            text_val = ".".join([f"%{j+1}" for j in range(i+1)]) + "."
-            lvlText.set(qn('w:val'), text_val)
-            
-        lvl.append(numFmt)
-        lvl.append(lvlText)
-        lvl.append(lvlJc)
-        
-        pPr = OxmlElement('w:pPr')
-        ind = OxmlElement('w:ind')
-        ind.set(qn('w:left'), str(720 + (i * 360)))
-        ind.set(qn('w:hanging'), '360')
+        num_fmt = OxmlElement("w:numFmt")
+        num_fmt.set(qn("w:val"), "decimal")
+        lvl.append(num_fmt)
+        suff = OxmlElement("w:suff")
+        suff.set(qn("w:val"), "space")
+        lvl.append(suff)
+        lvl_text = OxmlElement("w:lvlText")
+        lvl_text.set(qn("w:val"), text)
+        lvl.append(lvl_text)
+        lvl_jc = OxmlElement("w:lvlJc")
+        lvl_jc.set(qn("w:val"), "left")
+        lvl.append(lvl_jc)
+        pPr = OxmlElement("w:pPr")
+        ind = OxmlElement("w:ind")
+        ind.set(qn("w:left"), str(left))
+        ind.set(qn("w:hanging"), str(hanging))
         pPr.append(ind)
         lvl.append(pPr)
-        
         abs_num.append(lvl)
-        
-    nums = numbering_element.xpath('w:num')
+    nums = root.findall(qn("w:num"))
     if nums:
         nums[0].addprevious(abs_num)
     else:
-        numbering_element.append(abs_num)
-        
-    current_ids = [int(n.get(qn('w:numId'))) for n in numbering_element.xpath('w:num')]
-    next_num_id = max(current_ids, default=0) + 1
-    
-    num = OxmlElement('w:num')
-    num.set(qn('w:numId'), str(next_num_id))
-    
-    absId = OxmlElement('w:abstractNumId')
-    absId.set(qn('w:val'), str(next_abs_id))
-    num.append(absId)
-    
-    numbering_element.append(num)
-    
-    return next_num_id
+        root.append(abs_num)
+    return next_abs_id
+
+
+def create_list_numbering(doc, is_bullet=False):
+    """Новый Word-список 1 / 1.1 / 1.1.1 / 1.1.1.1 на своём abstractNum.
+
+    Чужой abstractNum шаблона нельзя переиспользовать: Word ведёт один
+    счётчик на abstract, и «1.3» раздела превращается в «5.1».
+    """
+    root = _numbering_root(doc)
+    if root is None:
+        return None
+    return _append_num_instance(root, _create_gost_abstract(root))
+
+
+def _clear_direct_indent(paragraph) -> None:
+    """Прямой w:ind на абзаце перекрывает hanging нумерации — номер уезжает в поле."""
+    pPr = paragraph._element.get_or_add_pPr()
+    ind = pPr.find(qn("w:ind"))
+    if ind is not None:
+        pPr.remove(ind)
 
 def remove_empty_list_items(doc):
     """
@@ -137,110 +163,56 @@ def remove_empty_list_items(doc):
         element.getparent().remove(element)
 
 def fix_numbered_lists(doc):
-    """
-    Пост-обработка документа для сброса и настройки многоуровневых списков (Multilevel 1.1.1).
-    Каждый блок верхнего уровня (ilvl=0) после другого верхнего уровня считается
-    ОДНИМ связным многоуровневым списком. Разрыв между блоками (Normal-абзац) сбрасывает счётчик.
+    """Донумеровывает списки без numPr. Уже расставленные Word-номера не трогает.
+
+    Списки могут быть разными: новый numId — новый «1.». Склеивать всё в один
+    список нельзя — под заголовком «2.» часто начинается свой перечень.
     """
     from docx.oxml.text.paragraph import CT_P
-    from docx.oxml.table import CT_Tbl
     from docx.text.paragraph import Paragraph
-    from docx.oxml.ns import qn
 
-    # Один numId для всего текущего непрерывного многоуровневого блока
-    current_num_id_num = None
-    current_num_id_bullet = None
-    # Предыдущий уровень вложенности (чтобы отслеживать возврат на 0)
-    prev_ilvl = -1
-    
+    current_num_id = None
     list_style_keywords = {'list', 'bullet', 'number', 'список'}
 
     for child in doc.element.body.iterchildren():
-        if isinstance(child, CT_P):
-            p = Paragraph(child, doc)
-            style_name = p.style.name.lower() if p.style else ""
-            is_empty = not p.text.strip()
-            
-            has_num_pr = False
-            try:
-                pPr_elem = p._element.pPr
-                if pPr_elem is not None and pPr_elem.numPr is not None:
-                    has_num_pr = True
-            except Exception: pass
-            
-            is_list_style = any(kw in style_name for kw in list_style_keywords)
-            
-            if is_list_style or has_num_pr:
-                # 1. Определяем тип (маркер или цифра)
-                is_bullet = 'bullet' in style_name
-                if has_num_pr and not is_bullet:
-                    try:
-                        num_id_val = p._element.pPr.numPr.numId.val
-                        numbering = doc.part.numbering_part.numbering_definitions._numbering
-                        num_def = numbering.get_num(num_id_val)
-                        abstract_num = numbering.find_abstract_num(num_def.abstractNumId.val)
-                        if getattr(getattr(abstract_num, 'lvl_lst', [None])[0], 'numFmt', None) and abstract_num.lvl_lst[0].numFmt.val == 'bullet':
-                            is_bullet = True
-                    except Exception: pass
+        if not isinstance(child, CT_P):
+            current_num_id = None
+            continue
+        p = Paragraph(child, doc)
+        style_name = ((p.style.name if p.style else "") or "").lower()
+        is_empty = not p.text.strip()
+        is_heading = style_name.startswith('heading') or style_name.startswith('title') or style_name.startswith('заголовок')
 
-                # 2. Определяем уровень вложенности на основе отступа (htmldocx: 0.5in = level 1, 1.0in = level 2, ...)
-                ilvl = 0
-                try:
-                    if p.paragraph_format and p.paragraph_format.left_indent:
-                        inches = p.paragraph_format.left_indent.inches
-                        computed = int(round(inches / 0.5)) - 1
-                        if computed > 0:
-                            ilvl = computed
-                except Exception: pass
-                
-                ilvl = min(max(ilvl, 0), 8)
-                
-                # 3. Сброс numId при разрыве: если текущий элемент на уровне 0,
-                #    а предыдущий тоже был на уровне 0 (т.е. это новый верхний пункт),
-                #    НО между ними была пустая строка — сброс уже произошёл через ветку else.
-                #    Если же нет разрыва (непрерывный список), продолжаем тот же numId.
+        has_num_pr = False
+        existing_id = existing_ilvl = None
+        try:
+            pPr_elem = p._element.pPr
+            if pPr_elem is not None and pPr_elem.numPr is not None:
+                has_num_pr = True
+                if pPr_elem.numPr.numId is not None:
+                    existing_id = int(pPr_elem.numPr.numId.val)
+                if pPr_elem.numPr.ilvl is not None:
+                    existing_ilvl = int(pPr_elem.numPr.ilvl.val)
+        except Exception:
+            pass
 
-                try:
-                    if 'List Paragraph' in doc.styles:
-                        p.style = 'List Paragraph'
-                except Exception: pass
-
-                if is_bullet:
-                    if current_num_id_bullet is None:
-                        current_num_id_bullet = create_list_numbering(doc, True)
-                    target_num_id = current_num_id_bullet
-                else:
-                    if current_num_id_num is None:
-                        current_num_id_num = create_list_numbering(doc, False)
-                    target_num_id = current_num_id_num
-                
-                prev_ilvl = ilvl
-                
-                if target_num_id is not None:
-                    pPr = p._element.get_or_add_pPr()
-                    numPr = pPr.get_or_add_numPr()
-                    
-                    numId_el = numPr.get_or_add_numId()
-                    numId_el.set(qn('w:val'), str(target_num_id))
-                    
-                    ilvl_el = numPr.get_or_add_ilvl()
-                    ilvl_el.set(qn('w:val'), str(ilvl))
-            else:
-                if not is_empty:
-                    # Реальный текстовый разрыв (не пустая строка) — сбрасываем счётчики
-                    current_num_id_num = None
-                    current_num_id_bullet = None
-                    prev_ilvl = -1
-                elif is_empty and prev_ilvl == 0:
-                    # Пустая строка между пунктами верхнего уровня = новый независимый список
-                    current_num_id_num = None
-                    current_num_id_bullet = None
-                    prev_ilvl = -1
-        
-        elif isinstance(child, CT_Tbl):
-            current_num_id_num = None
-            current_num_id_bullet = None
-            prev_ilvl = -1
+        is_list_style = any(kw in style_name for kw in list_style_keywords)
+        if is_heading:
+            current_num_id = existing_id if has_num_pr else None
+            continue
+        if is_empty:
+            continue
+        if has_num_pr:
+            current_num_id = existing_id
+            _clear_direct_indent(p)
+            continue
+        if not is_list_style:
+            current_num_id = None
+            continue
+        if current_num_id is None:
+            current_num_id = create_list_numbering(doc, False)
+        if current_num_id is not None:
+            _apply_list_number(p, current_num_id, existing_ilvl or 0)
 
 def add_table_borders(doc):
     """
@@ -284,8 +256,8 @@ def auto_size_table_columns(doc):
     """
     section = doc.sections[0]
     page_width_dxa = max(int((section.page_width - section.left_margin - section.right_margin) / 635), 1)
-    MIN_RATIO = 0.07       # минимум 7% ширины страницы на столбец
-    MAX_RATIO = 0.65       # максимум 65% ширины страницы на столбец
+    MIN_RATIO = 0.12
+    MAX_RATIO = 0.50
 
     numeric_pattern = re.compile(r'^[\d\s.,+\-±%$€₽°×№#:\/\\()\[\]]+$')
 
@@ -330,8 +302,11 @@ def auto_size_table_columns(doc):
             # «Версия/редакция» превращалось в «В ерсия/ редак ция». Столбец
             # обязан вмещать самое длинное слово своей шапки целиком.
             header = texts[0] if texts else ""
-            longest_word = max((len(w) for w in re.split(r"[\s/]+", header) if w), default=0)
-            weights.append(max(weight, longest_word, 4))
+            longest_word = max(
+                (len(w) for t in texts for w in re.split(r"[\s/]+", t) if w),
+                default=0,
+            )
+            weights.append(max(weight, longest_word, len(header), 8))
 
         # Применяем ограничения min/max и нормализуем
         total = sum(weights)
@@ -462,13 +437,27 @@ def apply_paragraph_formatting(doc):
         is_list = has_num_pr or any(kw in style_lower for kw in LIST_STYLE_KEYWORDS)
 
         is_short_label = text.endswith(":") and len(text) <= 80
+        is_numbered_clause = bool(re.match(r"^\d+(\.\d+)*\.?\s", text))
 
         if is_heading:
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            p.paragraph_format.first_line_indent = None
-        elif is_list or is_short_label:
+            if has_num_pr or not (
+                style_lower.startswith("heading 1") or style_lower.startswith("title")
+            ):
+                p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            else:
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            if has_num_pr:
+                _clear_direct_indent(p)
+            else:
+                p.paragraph_format.first_line_indent = Cm(0)
+        elif has_num_pr:
             p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-            p.paragraph_format.first_line_indent = None
+            _clear_direct_indent(p)
+        elif is_list or is_short_label or is_numbered_clause:
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            indent = p.paragraph_format.first_line_indent
+            if indent is None or indent >= 0:
+                p.paragraph_format.first_line_indent = Cm(0)
         else:
             p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
             p.paragraph_format.first_line_indent = FIRST_LINE_INDENT
@@ -476,15 +465,9 @@ def apply_paragraph_formatting(doc):
 
 def strip_blockquote_markers(markdown_text: str) -> str:
     """
-    htmldocx рендерит Markdown-цитаты (строки '> ...') буквальным символом '>'
-    на каждой строке плюс схлопывает несколько строк цитаты в один абзац с
-    выравниванием по ширине - в документе это выглядит как рваные пробелы и
-    лишние символы '>'. Технические тексты обычно используют '>' как
-    неформальное визуальное выделение, а не как настоящую цитату, поэтому
-    убираем маркер целиком перед конвертацией - остальная пост-обработка
-    (нормализация списков, абзацев) сама разберётся с получившимся обычным
-    текстом. Должно выполняться ДО escape_stray_angle_brackets: иначе '>' уже
-    станет '&gt;' и markdown всё равно не распознает в нём цитату.
+    Технические тексты часто используют '>' как визуальное выделение, а не как
+    цитату Markdown. Маркер убираем целиком — иначе в Word он остаётся буквальным
+    символом на каждой строке.
     """
     parts = re.split(r'(```.*?```)', markdown_text, flags=re.DOTALL)
     for i in range(0, len(parts), 2):  # чётные индексы - вне кода, нечётные - внутри ```...```
@@ -508,107 +491,511 @@ def escape_stray_angle_brackets(markdown_text: str) -> str:
     return "".join(parts)
 
 
-def convert_markdown_to_docx(markdown_text: str, base_template_bytes: Optional[bytes] = None) -> bytes:
-    """
-    Конвертирует Markdown текст в DOCX документ.
+_HEADING_RE = re.compile(r'^(#{1,6})\s+(.*\S)\s*$')
+_HR_RE = re.compile(r'^(?:-{3,}|\*{3,}|_{3,})$')
+_TABLE_SEP_RE = re.compile(r'^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$')
+_GOST_LIST_RE = re.compile(
+    r'^(?P<indent>[ \t]*)(?P<nums>\d+(?:\.\d+){0,4})\.?(?:\s+)(?P<body>\S.*)$'
+)
+_MD_LIST_RE = re.compile(r'^(?P<indent>[ \t]*)(?:[-*+]|\d+\.)\s+(?P<body>.+)$')
+# 1.1 / 1.2.1 — пункты, не названия разделов. «1. Назначение» (один номер) сюда не входит.
+_NUMBERED_CLAUSE_RE = re.compile(r'^\d+\.\d+')
+_LEADING_NUMBER_RE = re.compile(r'^\d+(?:\.\d+){0,4}\.?\s+')
+_UNIT_START_RE = re.compile(
+    r'^(?:МПа|кПа|мм|см|км|кг|кВт|Вт|кВ|Гц|бар|об/мин|°C|°С|%)(?:\b|[ —–-]|$)',
+    re.IGNORECASE,
+)
+_INLINE_RE = re.compile(
+    r'\*\*(.+?)\*\*|__(.+?)__'
+    r'|(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)'
+    r'|(?<![A-Za-z0-9_])_(?!_)(.+?)(?<!_)_(?![A-Za-z0-9_])'
+    r'|`([^`]+)`'
+    r'|\[([^\]]+)\]\([^)]+\)'
+    r'|!\[([^\]]*)\]\([^)]+\)'
+)
+_CODE_INDICATORS = (
+    'def ', 'function ', 'class ', 'import ', 'const ', 'let ', 'var ', 'public ',
+    'private ', 'void ', 'return ', '{', '}', ';', '=>', '<?php', '#include',
+    'SELECT ', 'INSERT ', 'UPDATE ', 'CREATE TABLE', '<html', '<div', '</', '==', '!=',
+)
 
-    Args:
-        markdown_text: Исходный текст в формате Markdown
-        base_template_bytes: Байты базового шаблона DOCX (опционально)
 
-    Returns:
-        Байты сгенерированного DOCX файла
-    """
-    # -2. Убираем маркеры Markdown-цитат ('> ...'), которые htmldocx рендерит
-    # с лишними '>' и рваными пробелами (см. strip_blockquote_markers).
-    markdown_text = strip_blockquote_markers(markdown_text)
+def _looks_like_code(text: str) -> bool:
+    return any(ind in text for ind in _CODE_INDICATORS)
 
-    # -1. Защита от случайных '<'/'>' в тексте (формулы в угловых скобках и т.п.),
-    # которые markdown -> HTML конвертер иначе примет за HTML-теги и вырежет.
-    markdown_text = escape_stray_angle_brackets(markdown_text)
 
-    # 0. Препроцессинг текста
-    lines = markdown_text.split('\n')
-    fixed_lines = []
-    
-    for i, line in enumerate(lines):
-        # 1. Удаляем пустые пункты списков (строки вида "1. ", "2. ", "- " без текста)
-        stripped = line.strip()
-        if re.match(r'^\d+\.\s*$', stripped) or re.match(r'^[\*\-]\s*$', stripped):
-            continue
-        
-        # 2. Исправление таблиц
-        if "|" in line and i > 0 and lines[i-1].strip() and not lines[i-1].strip().startswith("|"):
-             if i + 1 < len(lines) and set(lines[i+1].strip()) <= set("|-:| "):
-                 fixed_lines.append("")
-        
-        # 3. Нормализация заголовков
-        if re.match(r'^\s*#{1,6}\s', line) and i > 0 and lines[i-1].strip():
-             fixed_lines.append("")
-        
-        # 4. Нормализация списков (вставляем пустую строку перед началом списка, если её нет)
-        if re.match(r'^\s*(\d+\.|\*|-)\s', line) and i > 0 and lines[i-1].strip():
-             if not re.match(r'^\s*(\d+\.|\*|-)\s', lines[i-1]):
-                 fixed_lines.append("")
-             
-        fixed_lines.append(line)
-        
-    markdown_text = "\n".join(fixed_lines)
-
-    # 5. Исправление сломанного форматирования жирного текста (удаляем пробелы внутри **)
-    # LLM часто генерируют "** текст **", что не парсится markdown.
-    markdown_text = re.sub(r'\*\*([^*]+?)\*\*', lambda m: '**' + m.group(1).strip() + '**', markdown_text)
-
-    # 6. Второй проход: надёжная вставка пустых строк вокруг блоков таблиц.
-    # Стандартный парсер markdown требует пустую строку перед таблицей.
-    # Первый проход (шаг 2) проверяет только следующую строку — ненадёжно.
-    # Этот проход явно оборачивает каждый блок '|'-строк пустыми строками.
-    pass2_lines = markdown_text.split('\n')
-    table_fixed = []
-    i2 = 0
-    while i2 < len(pass2_lines):
-        line2 = pass2_lines[i2]
-        if "|" in line2 and line2.strip().startswith("|"):
-            if table_fixed and table_fixed[-1].strip():
-                table_fixed.append("")
-            while i2 < len(pass2_lines) and "|" in pass2_lines[i2] and pass2_lines[i2].strip().startswith("|"):
-                table_fixed.append(pass2_lines[i2])
-                i2 += 1
-            if i2 < len(pass2_lines) and pass2_lines[i2].strip():
-                table_fixed.append("")
+def _add_formatted_runs(paragraph, text: str) -> None:
+    """Пишет в абзац текст с **жирным**, *курсивом* и ссылками как видимым текстом."""
+    text = (text or "").replace("\u00a0", " ")
+    text = text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&").replace("&quot;", '"')
+    pos = 0
+    for match in _INLINE_RE.finditer(text):
+        if match.start() > pos:
+            paragraph.add_run(text[pos:match.start()])
+        if match.group(1) is not None or match.group(2) is not None:
+            run = paragraph.add_run(match.group(1) or match.group(2))
+            run.bold = True
+        elif match.group(3) is not None or match.group(4) is not None:
+            run = paragraph.add_run(match.group(3) or match.group(4))
+            run.italic = True
+        elif match.group(5) is not None:
+            paragraph.add_run(match.group(5))
+        elif match.group(6) is not None:
+            paragraph.add_run(match.group(6))
         else:
-            table_fixed.append(line2)
-            i2 += 1
-    markdown_text = "\n".join(table_fixed)
+            paragraph.add_run(match.group(7) or "")
+        pos = match.end()
+    if pos < len(text):
+        paragraph.add_run(text[pos:])
+    if not paragraph.runs:
+        paragraph.add_run(text)
 
-    # 7. Де-фенсинг "случайных" блоков кода без указания языка.
-    # LLM иногда оборачивает обычный текст (примеры, цитаты, фрагменты для замены) в ``` ```,
-    # хотя это не код. markdown.fenced_code превращает такой блок в <pre><code>, а htmldocx
-    # рисует его моноширинным шрифтом — документ выглядит "рваным" по шрифтам.
-    # Если блок начинается с ``` без языка или с текстовым языком (```text), и не похож
-    # на код — убираем обёртку ``` и оставляем текст как обычные абзацы.
-    _CODE_INDICATORS = (
-        'def ', 'function ', 'class ', 'import ', 'const ', 'let ', 'var ', 'public ',
-        'private ', 'void ', 'return ', '{', '}', ';', '=>', '<?php', '#include',
-        'SELECT ', 'INSERT ', 'UPDATE ', 'CREATE TABLE', '<html', '<div', '</', '==', '!=',
+
+def _apply_list_number(paragraph, num_id, ilvl) -> None:
+    if not num_id:
+        return
+    pPr = paragraph._element.get_or_add_pPr()
+    numPr = pPr.get_or_add_numPr()
+    numId_el = numPr.get_or_add_numId()
+    numId_el.set(qn("w:val"), str(num_id))
+    ilvl_el = numPr.get_or_add_ilvl()
+    ilvl_el.set(qn("w:val"), str(_cap_ilvl(ilvl)))
+    # Прямой firstLine/left на абзаце перекрывает hanging из numbering.xml —
+    # именно так номера ИТТ уезжали в левое поле.
+    _clear_direct_indent(paragraph)
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+
+
+def _strip_leading_number(text: str) -> str:
+    return _LEADING_NUMBER_RE.sub("", text or "", count=1).strip()
+
+
+def _cap_ilvl(ilvl: int, floor: int = 0) -> int:
+    return min(max(int(ilvl), floor), MAX_LIST_ILVL)
+
+
+def _parse_number_tuple(text: str):
+    match = re.match(r"^(\d+(?:\.\d+){0,4})\.?\s+", (text or "").strip())
+    if not match:
+        return None
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def _continues_list(prev, new, *, allow_repeat: bool = False) -> bool:
+    """Тот же Word-список (ребёнок, сосед, дядя) или нет."""
+    if not prev or not new:
+        return False
+    if len(new) == len(prev) + 1 and new[:-1] == prev:
+        return True
+    if len(new) == len(prev) and new[:-1] == prev[:-1]:
+        if new[-1] > prev[-1]:
+            return True
+        # markdown часто пишет 1. 1. 1. — это один список, Word посчитает 1 2 3
+        if allow_repeat and new[-1] == prev[-1]:
+            return True
+    if len(new) < len(prev):
+        parent = prev[:len(new)]
+        if new[:-1] == parent[:-1] and new[-1] > parent[-1]:
+            return True
+        if len(new) == 1 and new[0] > prev[0]:
+            return True
+    return False
+
+
+def _body_attaches_to_heading(heading_tuple, body_tuple) -> bool:
+    """1.1 после «1. Раздел» — продолжение того же контура."""
+    if not heading_tuple or not body_tuple:
+        return False
+    return len(body_tuple) > len(heading_tuple) and body_tuple[:len(heading_tuple)] == heading_tuple
+
+
+def _relative_to_heading(heading_tuple, body_tuple):
+    """Писатель под разделом 2 снова пишет 1. / 1.1 / 2. — это 2.1 / 2.1.1 / 2.2."""
+    if not body_tuple:
+        return body_tuple
+    if heading_tuple and _body_attaches_to_heading(heading_tuple, body_tuple):
+        return body_tuple
+    if heading_tuple:
+        return tuple(heading_tuple) + tuple(body_tuple)
+    return body_tuple
+
+
+_DEF_DASH_RE = re.compile(r"\s[—–-]\s")
+
+
+def _is_nested_list_item(text: str) -> bool:
+    """Пункт вроде «договор…;» или «НИОКР — …» после фразы с двоеточием."""
+    body = _strip_leading_number(text or "") or (text or "").strip()
+    if not body:
+        return False
+    if body.endswith(";"):
+        return True
+    if _DEF_DASH_RE.search(body[:60]):
+        return True
+    return body[0].islower()
+
+
+def _place_clause(heading_tuple, last, raw, indent: int = 0):
+    """Куда в ГОСТ-контуре поставить пункт: абсолютный 2.1 или относительный 1. / 2.1."""
+    if not raw:
+        if heading_tuple:
+            return last, _cap_ilvl(indent, 1)
+        return last, _cap_ilvl(indent)
+    if heading_tuple:
+        if last == heading_tuple:
+            if len(raw) == len(last) + 1 and raw[:-1] == last:
+                return raw, _cap_ilvl(len(raw) - 1, 1)
+            rebased = tuple(heading_tuple) + tuple(raw)
+            return rebased, _cap_ilvl(len(rebased) - 1, 1)
+        if last and len(raw) == len(last) + 1 and raw[:-1] == last:
+            return raw, _cap_ilvl(len(raw) - 1, 1)
+        # Под заголовком 1. затем 1.1 — это 1.1 / 1.1.1, не два соседа 1.1.
+        # Сосед только если номер вырос: 1.1 затем 1.2.
+        if last and len(raw) == len(last) and raw[:-1] == last[:-1] and raw[-1] > last[-1]:
+            return raw, _cap_ilvl(len(raw) - 1, 1)
+        if last and len(raw) < len(last):
+            parent = last[:len(raw)]
+            if (
+                raw[:len(heading_tuple)] == heading_tuple
+                and raw[:-1] == parent[:-1]
+                and raw[-1] > parent[-1]
+            ):
+                return raw, _cap_ilvl(len(raw) - 1, 1)
+        rebased = tuple(heading_tuple) + tuple(raw)
+        return rebased, _cap_ilvl(len(rebased) - 1, 1)
+    if last and len(raw) == len(last) + 1 and raw[:-1] == last:
+        return raw, _cap_ilvl(len(raw) - 1)
+    if last and len(raw) == len(last) and raw[:-1] == last[:-1] and raw[-1] >= last[-1]:
+        return raw, _cap_ilvl(len(raw) - 1)
+    if last and len(raw) < len(last):
+        parent = last[:len(raw)]
+        if raw[:-1] == parent[:-1] and raw[-1] > parent[-1]:
+            return raw, _cap_ilvl(len(raw) - 1)
+    return raw, _cap_ilvl(len(raw) - 1)
+
+
+def _pick_body_list(doc, body_num_id, body_last, nt):
+    """Один numId, если номера продолжают контур; новый — если это отдельный перечень."""
+    if nt is None:
+        if body_num_id is None:
+            body_num_id = create_list_numbering(doc, False)
+        return body_num_id, body_last
+    if body_num_id is not None and _continues_list(body_last, nt, allow_repeat=True):
+        return body_num_id, nt
+    return create_list_numbering(doc, False), nt
+
+
+def _add_numbered_body(doc, text: str, num_id, ilvl: int):
+    body = _strip_leading_number(text) or text
+    paragraph = doc.add_paragraph()
+    _style_list_paragraph(doc, paragraph)
+    _add_formatted_runs(paragraph, body)
+    _apply_list_number(paragraph, num_id, ilvl)
+    return paragraph
+
+
+def _is_table_line(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("|") and stripped.count("|") >= 2
+
+
+def _split_table_row(line: str) -> list:
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [cell.strip() for cell in stripped.split("|")]
+
+
+def _indent_level(line: str) -> int:
+    expanded = line.replace("\t", "    ")
+    spaces = len(expanded) - len(expanded.lstrip(" "))
+    if spaces <= 0:
+        return 0
+    if spaces <= 4:
+        return 1
+    return min(spaces // 3, MAX_LIST_ILVL)
+
+
+def _classify_line(line: str, in_list: bool = False):
+    """clause | None. Номер в тексте — подсказка для Word, в абзац не копируется."""
+    gost = _GOST_LIST_RE.match(line)
+    if gost:
+        if not gost.group("indent") and not in_list and _UNIT_START_RE.match(gost.group("body")):
+            return None
+        return "clause", _indent_level(line), line.strip()
+    markdown_item = _MD_LIST_RE.match(line)
+    if markdown_item:
+        stripped = line.strip()
+        if stripped[:1] in "-*+":
+            return "clause", max(_indent_level(line), 1) if line[:1] in " \t" else 0, markdown_item.group("body")
+        return "clause", _indent_level(line), stripped
+    return None
+
+
+def _peek_number_tuple(lines, start: int):
+    j = start
+    while j < len(lines):
+        raw = lines[j]
+        stripped = raw.strip()
+        if not stripped:
+            j += 1
+            continue
+        if stripped.startswith("```") or _is_table_line(raw) or _HR_RE.match(stripped):
+            j += 1
+            continue
+        if _HEADING_RE.match(stripped):
+            return None
+        classified = _classify_line(raw)
+        if classified:
+            return _parse_number_tuple(classified[2])
+        j += 1
+    return None
+
+
+def _add_heading_native(doc, text: str, level: int):
+    level = max(1, min(int(level), 6))
+    title = text.strip().rstrip("#").rstrip()
+    try:
+        paragraph = doc.add_heading("", level=level)
+    except KeyError:
+        paragraph = doc.add_paragraph()
+        try:
+            paragraph.style = f"Heading {level}"
+        except Exception:
+            pass
+    _add_formatted_runs(paragraph, title)
+    paragraph.paragraph_format.first_line_indent = Cm(0)
+    if level <= 1:
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    else:
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    return paragraph
+
+
+def _add_table_native(doc, rows: list) -> None:
+    if not rows:
+        return
+    cols = max(len(row) for row in rows)
+    if cols <= 0:
+        return
+    normalized = [row + [""] * (cols - len(row)) for row in rows]
+    try:
+        table = doc.add_table(rows=len(normalized), cols=cols, style="Table Grid")
+    except Exception:
+        table = doc.add_table(rows=len(normalized), cols=cols)
+    for i, row in enumerate(normalized):
+        for j, value in enumerate(row):
+            paragraph = table.cell(i, j).paragraphs[0]
+            paragraph.text = ""
+            _add_formatted_runs(paragraph, value)
+
+
+def _style_list_paragraph(doc, paragraph) -> None:
+    # List Paragraph у python-docx держит left=720 без hanging. Вместе с
+    # нумерацией это выталкивает маркер в поле страницы — как на скриншотах.
+    # Стиль не ставим: номер и отступ задаёт только w:numPr.
+    return
+
+
+def _render_markdown_native(doc, markdown_text: str) -> None:
+    """Заголовки 1 / 2 / 3 и пункты 2.1 / 2.2 — один Word-список.
+
+    Писатель под каждым разделом часто начинает 1. 2. 3. заново. Это не новый
+    перечень: под «## 2 …» это 2.1 / 2.2, иначе по документу снова и снова
+    всплывают пункты 1 / 1.1 / 2.
+    """
+    lines = markdown_text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    i = 0
+    n = len(lines)
+    outline_id = None
+    section_anchor = None
+    body_num_id = None
+    body_last = None
+    nest_under = None
+    nest_ilvl = 1
+
+    def _outline():
+        nonlocal outline_id
+        if outline_id is None:
+            outline_id = create_list_numbering(doc, False)
+        return outline_id
+
+    def _emit_section_clause(nt, indent, text: str) -> None:
+        nonlocal body_last, body_num_id, nest_under, nest_ilvl
+        body_num_id = _outline()
+        nested = nest_under is not None and _is_nested_list_item(text)
+        if indent and body_last and body_last != section_anchor:
+            nested = True
+            if nest_under is None:
+                nest_under = body_last
+                nest_ilvl = _cap_ilvl(len(body_last) - 1, 1)
+        if nested and nest_under is not None:
+            rel = nt
+            if nt and body_last == nest_under and nt[0] == 1 and len(nt) > 1:
+                rel = nt[1:]
+            body_last, ilvl = _place_clause(nest_under, body_last, rel, indent)
+            ilvl = _cap_ilvl(nest_ilvl + 1)
+        else:
+            nest_under = None
+            body_last, ilvl = _place_clause(section_anchor, body_last, nt, indent)
+        _add_numbered_body(doc, text, body_num_id, ilvl)
+        plain = _strip_leading_number(text) or text
+        if plain.rstrip().endswith(":"):
+            nest_under = body_last
+            nest_ilvl = ilvl
+
+    while i < n:
+        raw = lines[i]
+        stripped = raw.strip()
+        if not stripped:
+            i += 1
+            continue
+
+        if stripped.startswith("```"):
+            block = []
+            i += 1
+            while i < n and lines[i].strip() != "```":
+                block.append(lines[i])
+                i += 1
+            if i < n:
+                i += 1
+            for block_line in block:
+                paragraph = doc.add_paragraph()
+                paragraph.add_run(block_line)
+            continue
+
+        heading = _HEADING_RE.match(stripped)
+        if heading:
+            title = heading.group(2).strip().rstrip("#").rstrip()
+            hashes = len(heading.group(1))
+            heading_tuple = _parse_number_tuple(title)
+            if hashes >= 3 and _NUMBERED_CLAUSE_RE.match(title):
+                nt = heading_tuple
+                if section_anchor:
+                    _emit_section_clause(nt, 0, title)
+                else:
+                    body_num_id, body_last = _pick_body_list(doc, body_num_id, body_last, nt)
+                    ilvl = _cap_ilvl(len(nt) - 1, 1) if nt else 1
+                    _add_numbered_body(doc, title, body_num_id, ilvl)
+                i += 1
+                continue
+            if heading_tuple and hashes >= 2:
+                num_id = _outline()
+                ilvl = _cap_ilvl(len(heading_tuple) - 1)
+                paragraph = _add_heading_native(
+                    doc, _strip_leading_number(title) or title, hashes,
+                )
+                _apply_list_number(paragraph, num_id, ilvl)
+                section_anchor = heading_tuple
+                body_num_id = num_id
+                body_last = heading_tuple
+                nest_under = None
+                i += 1
+                continue
+            _add_heading_native(doc, title, hashes)
+            if hashes >= 2:
+                section_anchor = None
+                nest_under = None
+            peeked = _peek_number_tuple(lines, i + 1)
+            if peeked is not None and not _continues_list(body_last, peeked, allow_repeat=True):
+                if not (body_num_id is not None and hashes == 1):
+                    body_num_id = None
+                    body_last = None
+            i += 1
+            continue
+
+        if _is_table_line(raw):
+            rows = []
+            while i < n and _is_table_line(lines[i]):
+                if not _TABLE_SEP_RE.match(lines[i].strip()):
+                    rows.append(_split_table_row(lines[i]))
+                i += 1
+            _add_table_native(doc, rows)
+            continue
+
+        classified = _classify_line(raw, in_list=False)
+        if classified and classified[0] == "clause":
+            indent, text = classified[1], classified[2]
+            nt = _parse_number_tuple(text)
+            if section_anchor:
+                _emit_section_clause(nt, indent, text)
+            elif indent and body_num_id is not None and not (nt and len(nt) > 1):
+                _add_numbered_body(doc, text, body_num_id, _cap_ilvl(indent))
+            else:
+                body_num_id, body_last = _pick_body_list(doc, body_num_id, body_last, nt)
+                ilvl = _cap_ilvl(len(nt) - 1) if nt else _cap_ilvl(indent)
+                _add_numbered_body(doc, text, body_num_id, ilvl)
+            i += 1
+            while i < n:
+                cont = lines[i]
+                if not cont.strip():
+                    break
+                if (
+                    _HEADING_RE.match(cont.strip())
+                    or _is_table_line(cont)
+                    or _classify_line(cont) is not None
+                    or cont.strip().startswith("```")
+                ):
+                    break
+                if cont[:1] in " \t":
+                    doc.paragraphs[-1].add_run(" " + cont.strip())
+                    i += 1
+                    continue
+                break
+            continue
+
+        if _HR_RE.match(stripped):
+            i += 1
+            continue
+
+        para_lines = [stripped]
+        i += 1
+        while i < n:
+            nxt = lines[i]
+            if not nxt.strip():
+                break
+            if (
+                _HEADING_RE.match(nxt.strip())
+                or _is_table_line(nxt)
+                or _classify_line(nxt, in_list=False) is not None
+                or nxt.strip().startswith("```")
+                or _HR_RE.match(nxt.strip())
+            ):
+                break
+            para_lines.append(nxt.strip())
+            i += 1
+        paragraph = doc.add_paragraph()
+        _add_formatted_runs(paragraph, " ".join(para_lines))
+
+
+def _preprocess_markdown_for_docx(markdown_text: str) -> str:
+    markdown_text = strip_blockquote_markers(markdown_text)
+    lines = markdown_text.split("\n")
+    fixed_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if re.match(r"^\d+\.\s*$", stripped) or re.match(r"^[\*\-]\s*$", stripped):
+            continue
+        fixed_lines.append(line)
+    markdown_text = "\n".join(fixed_lines)
+    markdown_text = re.sub(
+        r"\*\*([^*]+?)\*\*", lambda m: "**" + m.group(1).strip() + "**", markdown_text
     )
 
-    def _looks_like_code(text: str) -> bool:
-        return any(ind in text for ind in _CODE_INDICATORS)
-
     defenced = []
-    src_lines = markdown_text.split('\n')
+    src_lines = markdown_text.split("\n")
     i3 = 0
     while i3 < len(src_lines):
         line3 = src_lines[i3]
-        if re.match(r'^```(?:text|txt|markdown|md)?\s*$', line3.strip(), re.IGNORECASE):
+        if re.match(r"^```(?:text|txt|markdown|md)?\s*$", line3.strip(), re.IGNORECASE):
             block = []
             j3 = i3 + 1
-            while j3 < len(src_lines) and src_lines[j3].strip() != '```':
+            while j3 < len(src_lines) and src_lines[j3].strip() != "```":
                 block.append(src_lines[j3])
                 j3 += 1
-            if j3 < len(src_lines) and not _looks_like_code('\n'.join(block)):
-                # Закрывающий ``` найден, и содержимое не похоже на код — снимаем обёртку
+            if j3 < len(src_lines) and not _looks_like_code("\n".join(block)):
                 defenced.extend(block)
                 i3 = j3 + 1
                 continue
@@ -617,21 +1004,13 @@ def convert_markdown_to_docx(markdown_text: str, base_template_bytes: Optional[b
                 continue
         defenced.append(line3)
         i3 += 1
-    markdown_text = "\n".join(defenced)
+    return "\n".join(defenced)
 
-    # 1. Конвертируем Markdown в HTML
-    html_text = markdown.markdown(
-        markdown_text,
-        extensions=['tables', 'extra', 'fenced_code', 'nl2br']
-    )
-    
-    # htmldocx ломается и теряет списки (оставляя Normal абзацы), если Markdown парсер 
-    # оборачивает текст внутри <li> в параграфы <p>. Поэтому мы 'уплощаем' их.
-    html_text = re.sub(r'<li>\s*<p>', '<li>', html_text)
-    html_text = re.sub(r'</p>\s*(<(ol|ul)>)', r'\1', html_text)
-    html_text = re.sub(r'</p>\s*</li>', '</li>', html_text)
-    
-    # 2. Создаем документ и парсер
+
+def convert_markdown_to_docx(markdown_text: str, base_template_bytes: Optional[bytes] = None) -> bytes:
+    """Собирает .docx из markdown через python-docx (стили, заголовки, списки, таблицы)."""
+    markdown_text = _preprocess_markdown_for_docx(markdown_text)
+
     if base_template_bytes:
         doc = Document(io.BytesIO(base_template_bytes))
     else:
@@ -644,14 +1023,11 @@ def convert_markdown_to_docx(markdown_text: str, base_template_bytes: Optional[b
         _normalize_heading_styles(doc)
     except Exception as e:
         logger.warning("Не удалось привести стили документа: %s", e)
-    new_parser = HtmlToDocx()
-    
-    # 3. Парсим HTML и добавляем в документ
+
     try:
-        new_parser.add_html_to_document(html_text, doc)
-    except Exception as e:
-        # В случае ошибки добавляем текст как есть
-        print(f"HTMLDOCX CRITICAL ERROR: {e}")
+        _render_markdown_native(doc, markdown_text)
+    except Exception:
+        logger.exception("Не удалось собрать DOCX из markdown")
         doc.add_paragraph(CONVERSION_FAILED_MARKER)
         doc.add_paragraph(markdown_text)
     
@@ -689,9 +1065,15 @@ def convert_markdown_to_docx(markdown_text: str, base_template_bytes: Optional[b
     
     # 6. Исправляем нумерацию списков (сброс нумерации для новых списков)
     try:
+        _strip_heading_numbering(doc)
         fix_numbered_lists(doc)
     except Exception as e:
         print(f"List fix warning: {e}")
+
+    try:
+        _unify_body_fonts(doc)
+    except Exception as e:
+        print(f"Font unify warning: {e}")
 
     # 7. Выравнивание: заголовки по центру, списки по левому краю,
     # обычный текст по ширине с красной строкой. Skip when a customer
@@ -714,18 +1096,81 @@ def convert_markdown_to_docx(markdown_text: str, base_template_bytes: Optional[b
 
 _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
-# Стили, которыми htmldocx размечает результат. Если шаблон заказчика их не
-# определяет — а минимальный шаблон обычно определяет только свои — htmldocx
-# бросает "no style with name 'Heading 2'", convert_markdown_to_docx уходит в
-# аварийную ветку и кладёт в документ СЫРОЙ markdown. Молча: сводка при этом
-# всё равно сообщает, что оформление взято из шаблона.
+# Стили, которые python-docx ждёт для add_heading / списков / таблиц.
+# Если шаблон заказчика их не определяет, add_heading бросает
+# "no style with name 'Heading 2'", convert_markdown_to_docx уходит в
+# аварийную ветку и кладёт в документ СЫРОЙ markdown.
 _REQUIRED_STYLE_NAMES = (
     "Heading 1", "Heading 2", "Heading 3", "Heading 4", "Heading 5", "Heading 6",
-    # htmldocx верстает <ul> стилем List Bullet, а <ol> — List Number. Их
-    # отсутствие в шаблоне ронял конвертацию на первом же списке: заказчик
-    # получил документ с сырым markdown («- Заказчик – ООО ...») вместо текста.
     "List Bullet", "List Number", "List Paragraph", "Normal", "Table Grid",
 )
+
+
+def _set_rfonts(element, name: str) -> None:
+    """Пишет гарнитуру во все слоты w:rFonts (ascii/hAnsi/cs/eastAsia).
+
+    Одного style.font.name мало: htmldocx и шаблоны ГОСТ часто ставят Times
+    в ascii и другую гарнитуру в eastAsia — Word тогда рисует заголовок
+    одним шрифтом, а абзац другим.
+    """
+    rPr = element.find(qn('w:rPr'))
+    if rPr is None:
+        if element.tag == qn('w:rPr'):
+            rPr = element
+        else:
+            rPr = OxmlElement('w:rPr')
+            element.insert(0, rPr)
+    rFonts = rPr.find(qn('w:rFonts'))
+    if rFonts is None:
+        rFonts = OxmlElement('w:rFonts')
+        rPr.insert(0, rFonts)
+    for key in ('ascii', 'hAnsi', 'cs', 'eastAsia'):
+        rFonts.set(qn(f'w:{key}'), name)
+
+
+def _strip_numpr(element) -> None:
+    for numPr in list(element.findall(f".//{{{_W_NS}}}numPr")):
+        parent = numPr.getparent()
+        if parent is not None:
+            parent.remove(numPr)
+
+
+def _strip_heading_numbering(doc) -> None:
+    """Снимает нумерацию только со стилей Heading/Title.
+
+    Прямой numPr на абзаце заголовка — наш ГОСТ-контур (раздел 2 и пункты
+    2.1 в одном списке). Стилевой outline шаблона оставлять нельзя: он
+    делил счётчик со списками, и из 1.3 выходило 5.1.
+    """
+    for style in doc.styles:
+        name = (style.name or "").lower()
+        if name.startswith(("heading", "title", "заголовок")):
+            _strip_numpr(style.element)
+
+
+def _unify_body_fonts(doc) -> None:
+    """Все прогоны тела — гарнитура Normal. Колонтитулы не трогаем."""
+    try:
+        name = doc.styles["Normal"].font.name
+    except KeyError:
+        return
+    if not name:
+        return
+    for p in doc.paragraphs:
+        for run in p.runs:
+            if run.font.name in {"Courier New", "Consolas", "Lucida Console", "Courier", "Monaco", "Menlo"}:
+                continue
+            run.font.name = name
+            _set_rfonts(run._element, name)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    for run in p.runs:
+                        if run.font.name in {"Courier New", "Consolas", "Lucida Console", "Courier", "Monaco", "Menlo"}:
+                            continue
+                        run.font.name = name
+                        _set_rfonts(run._element, name)
 
 
 def _ensure_required_styles(doc) -> None:
@@ -804,8 +1249,9 @@ def _normalize_heading_styles(doc) -> None:
         wanted = Pt(base_size.pt + bump)
         if style.font.size is None or style.font.size < wanted:
             style.font.size = wanted
-        if base_name and style.font.name is None:
+        if base_name:
             style.font.name = base_name
+            _set_rfonts(style.element, base_name)
         if style.font.bold is None:
             style.font.bold = True
 
@@ -827,6 +1273,69 @@ def _left_align_table_cells(doc) -> None:
                     if paragraph.paragraph_format.alignment in (None, WD_ALIGN_PARAGRAPH.JUSTIFY):
                         paragraph.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.LEFT
                     paragraph.paragraph_format.first_line_indent = Cm(0)
+                    pPr = paragraph._element.get_or_add_pPr()
+                    if pPr.find(qn("w:suppressAutoHyphens")) is None:
+                        no_hyph = OxmlElement("w:suppressAutoHyphens")
+                        no_hyph.set(qn("w:val"), "true")
+                        pPr.append(no_hyph)
+
+
+_MATH_OR_SYMBOL_FONTS = frozenset({
+    "Cambria Math", "Symbol", "Wingdings", "Wingdings 2", "Wingdings 3",
+    "Webdings", "MT Extra", "MS Reference Specialty",
+})
+
+
+def _typeface_name(value: Optional[str]) -> Optional[str]:
+    name = (value or "").strip()
+    if not name or name in _MATH_OR_SYMBOL_FONTS:
+        return None
+    return name
+
+
+def _rfonts_typeface(r_fonts) -> Optional[str]:
+    if r_fonts is None:
+        return None
+    for key in ("ascii", "hAnsi", "cs"):
+        found = _typeface_name(r_fonts.get(qn(f"w:{key}")))
+        if found:
+            return found
+    return None
+
+
+def _run_typeface(run) -> Optional[str]:
+    found = _typeface_name(run.font.name)
+    if found:
+        return found
+    rPr = run._element.rPr
+    if rPr is None:
+        return None
+    return _rfonts_typeface(rPr.rFonts)
+
+
+def _doc_defaults_typeface(doc) -> tuple:
+    """Шрифт и размер из w:docDefaults — то, что Word рисует, когда у прогона нет rFonts.
+
+    У конвертированных .doc ИТТ так набран почти весь текст: Times New Roman 14
+    в docDefaults, на прогонах пусто, и одна формула в Cambria Math. Если брать
+    «любой названный шрифт», тело уезжает в математический шрифт.
+    """
+    from docx.shared import Pt
+
+    defaults = doc.styles.element.find(f"{{{_W_NS}}}docDefaults")
+    if defaults is None:
+        return None, None
+    rPr = defaults.find(f".//{{{_W_NS}}}rPr")
+    if rPr is None:
+        return None, None
+    name = _rfonts_typeface(rPr.find(f"{{{_W_NS}}}rFonts"))
+    size = None
+    sz = rPr.find(f"{{{_W_NS}}}sz")
+    if sz is not None:
+        raw = sz.get(qn("w:val"))
+        if raw and str(raw).isdigit():
+            size = Pt(int(raw) / 2)
+    return name, size
 
 
 def _promote_direct_formatting(doc) -> None:
@@ -854,8 +1363,9 @@ def _promote_direct_formatting(doc) -> None:
         for run in paragraph.runs:
             # Вес — в символах, а не в числе прогонов: одна подпись под
             # таблицей не должна перевешивать страницы основного текста.
-            if run.font.name:
-                names[run.font.name] += len(run.text)
+            typeface = _run_typeface(run)
+            if typeface:
+                names[typeface] += len(run.text)
             if run.font.size:
                 sizes[run.font.size] += len(run.text)
         fmt = paragraph.paragraph_format
@@ -867,6 +1377,7 @@ def _promote_direct_formatting(doc) -> None:
             aligns[fmt.alignment] += 1
 
     normal = doc.styles["Normal"]
+    default_name, default_size = _doc_defaults_typeface(doc)
     # Замер побеждает стиль, если им набрано большинство текста примера.
     # Проверено на конвертированном из .doc ИТТ: Normal там формально 10 pt,
     # а 96% символов набраны прямым форматированием в 14 pt — и документы
@@ -880,14 +1391,19 @@ def _promote_direct_formatting(doc) -> None:
         return value if weight >= majority else None
 
     dominant_name, dominant_size = _dominant(names), _dominant(sizes)
-    if dominant_name is not None:
-        normal.font.name = dominant_name
-    elif normal.font.name is None and names:
-        normal.font.name = names.most_common(1)[0][0]
+    if dominant_name:
+        chosen_name = dominant_name
+    elif not _typeface_name(normal.font.name):
+        chosen_name = default_name
+    else:
+        chosen_name = None
+    if chosen_name:
+        normal.font.name = chosen_name
+        _set_rfonts(normal.element, chosen_name)
     if dominant_size is not None:
         normal.font.size = dominant_size
-    elif normal.font.size is None and sizes:
-        normal.font.size = sizes.most_common(1)[0][0]
+    elif normal.font.size is None and default_size is not None:
+        normal.font.size = default_size
     fmt = normal.paragraph_format
     if fmt.first_line_indent is None and indents:
         fmt.first_line_indent = indents.most_common(1)[0][0]
@@ -935,6 +1451,8 @@ def blank_copy_of_template(template_bytes: bytes) -> Optional[bytes]:
 
         _ensure_required_styles(doc)
         _ensure_default_paragraph_style(doc)
+        _strip_heading_numbering(doc)
+        _normalize_heading_styles(doc)
         buffer = io.BytesIO()
         doc.save(buffer)
         return buffer.getvalue()
