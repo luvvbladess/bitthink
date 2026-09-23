@@ -8,11 +8,12 @@ import logging
 import base64
 import hashlib
 import asyncio
+import contextvars
 import zipfile
 import xml.etree.ElementTree as ET
 from collections import Counter
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from docx import Document
 import pdfplumber
@@ -21,8 +22,62 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# Thread-safe enough for asyncio.to_thread: the running task's context is copied
+# into the worker, so a callback set on the request task is visible per page.
+_progress_callback: contextvars.ContextVar[Optional[Callable[[int, int, str], None]]] = contextvars.ContextVar(
+    "document_parse_progress",
+    default=None,
+)
 
-async def extract_text_from_docx(file_data: bytes, extended_limits: bool = False) -> str:
+_PROGRESS_TITLES = {
+    "page": "Страница",
+    "file": "Файл",
+    "slide": "Слайд",
+    "sheet": "Лист",
+    "block": "Фрагмент",
+    "image": "Изображение",
+}
+
+
+def progress_label(done: int, total: int, unit: str) -> str:
+    title = _PROGRESS_TITLES.get(unit, "Шаг")
+    return f"{title} {done} из {total}"
+
+
+class _bind_progress:
+    """Install a parse callback for this task and the threads it spawns."""
+
+    def __init__(self, callback: Optional[Callable[[int, int, str], None]]):
+        self.callback = callback
+        self.token = None
+
+    def __enter__(self):
+        self.token = _progress_callback.set(self.callback)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self.token is not None:
+            _progress_callback.reset(self.token)
+        return False
+
+
+def _emit_progress(done: int, total: int, unit: str, state: dict) -> None:
+    """Report real completed units. One-step jobs stay silent: there is no intermediate fact to show."""
+    callback = _progress_callback.get()
+    if callback is None or total < 2 or done < 1:
+        return
+    done = min(int(done), int(total))
+    pct = done * 100 // total
+    if pct == state.get("pct") and done < total:
+        return
+    state["pct"] = pct
+    try:
+        callback(done, total, unit)
+    except Exception:
+        logger.debug("progress callback failed", exc_info=True)
+
+
+async def extract_text_from_docx(file_data: bytes, extended_limits: bool = False, on_progress=None) -> str:
     """Извлекает текст из DOCX файла в отдельном потоке."""
     max_chars = MAX_EXTRACT_CHARS_EXTENDED if extended_limits else MAX_EXTRACT_CHARS
 
@@ -30,8 +85,15 @@ async def extract_text_from_docx(file_data: bytes, extended_limits: bool = False
         try:
             doc = Document(io.BytesIO(file_data))
             text_parts = []
-            
-            for paragraph in doc.paragraphs:
+            paragraphs = list(doc.paragraphs)
+            rows = [row for table in doc.tables for row in table.rows]
+            total_units = len(paragraphs) + len(rows)
+            state = {"pct": -1}
+            done = 0
+
+            for paragraph in paragraphs:
+                done += 1
+                _emit_progress(done, total_units, "block", state)
                 if paragraph.text.strip():
                     prefix = ""
                     # Пытаемся определить, список ли это
@@ -48,15 +110,15 @@ async def extract_text_from_docx(file_data: bytes, extended_limits: bool = False
                     
                     text_parts.append(prefix + paragraph.text)
             
-            # Извлекаем текст из таблиц
-            for table in doc.tables:
-                for row in table.rows:
-                    row_text = []
-                    for cell in row.cells:
-                        if cell.text.strip():
-                            row_text.append(cell.text.strip())
-                    if row_text:
-                        text_parts.append(" | ".join(row_text))
+            for row in rows:
+                done += 1
+                _emit_progress(done, total_units, "block", state)
+                row_text = []
+                for cell in row.cells:
+                    if cell.text.strip():
+                        row_text.append(cell.text.strip())
+                if row_text:
+                    text_parts.append(" | ".join(row_text))
             
             result = "\n".join(text_parts)
             if len(result) > max_chars:
@@ -64,8 +126,9 @@ async def extract_text_from_docx(file_data: bytes, extended_limits: bool = False
             return result
         except Exception as e:
             return f"Ошибка при чтении DOCX: {str(e)}"
-            
-    return await asyncio.to_thread(_extract)
+
+    with _bind_progress(on_progress):
+        return await asyncio.to_thread(_extract)
 
 # Лимиты для извлечения изображений из PDF
 MAX_IMAGES_PER_PDF = 8
@@ -251,150 +314,161 @@ async def extract_tables_from_pdf_page(page) -> str:
         return ""
 
 
-async def extract_text_from_pdf(file_data: bytes, status_callback=None, user_id: int = None, extended_limits: bool = False) -> str:
+async def extract_text_from_pdf(file_data: bytes, status_callback=None, user_id: int = None, extended_limits: bool = False, on_progress=None) -> str:
     """
     Извлекает текст из PDF файла, включая распознавание текста на изображениях.
     Тяжёлое извлечение вынесено в поток. Большие PDF читаются частично, без pdfplumber на сотнях страниц.
     """
     max_pages = MAX_PDF_PAGES_EXTENDED if extended_limits else MAX_PDF_PAGES
     max_chars = MAX_EXTRACT_CHARS_EXTENDED if extended_limits else MAX_EXTRACT_CHARS
+    token = _progress_callback.set(on_progress)
     try:
-        def _extract_base_data():
-            max_pdf_bytes = MAX_PDF_BYTES_EXTENDED if extended_limits else MAX_PDF_BYTES
-            if len(file_data) > max_pdf_bytes:
-                mb = max_pdf_bytes // (1024 * 1024)
-                return (
-                    [f"PDF больше {mb} МБ. Пришлите выдержку или файл меньшего размера."],
-                    [],
-                    "",
-                )
-
-            parts: list[str] = []
-            img_metadata: list[tuple[bytes, int, int, int]] = []
-            plumber_pdf = None
-            notice = ""
-            with fitz.open(stream=file_data, filetype="pdf") as fitz_doc:
-                num_pages = len(fitz_doc)
-                take = min(num_pages, max_pages)
-                if num_pages > take:
-                    notice = (
-                        f"В файле {num_pages} страниц. {PAGES_TRUNCATED_MARKER} {take} – "
-                        "целиком такой том в чат не поместится.\n"
+        try:
+            def _extract_base_data():
+                max_pdf_bytes = MAX_PDF_BYTES_EXTENDED if extended_limits else MAX_PDF_BYTES
+                if len(file_data) > max_pdf_bytes:
+                    mb = max_pdf_bytes // (1024 * 1024)
+                    return (
+                        [f"PDF больше {mb} МБ. Пришлите выдержку или файл меньшего размера."],
+                        [],
+                        "",
                     )
-                if take <= MAX_PDF_TABLE_PAGES:
+
+                parts: list[str] = []
+                img_metadata: list[tuple[bytes, int, int, int]] = []
+                plumber_pdf = None
+                notice = ""
+                with fitz.open(stream=file_data, filetype="pdf") as fitz_doc:
+                    num_pages = len(fitz_doc)
+                    take = min(num_pages, max_pages)
+                    if num_pages > take:
+                        notice = (
+                            f"В файле {num_pages} страниц. {PAGES_TRUNCATED_MARKER} {take} – "
+                            "целиком такой том в чат не поместится.\n"
+                        )
+                    if take <= MAX_PDF_TABLE_PAGES:
+                        try:
+                            plumber_pdf = pdfplumber.open(io.BytesIO(file_data))
+                        except Exception:
+                            plumber_pdf = None
                     try:
-                        plumber_pdf = pdfplumber.open(io.BytesIO(file_data))
-                    except Exception:
-                        plumber_pdf = None
-                try:
-                    for p_num in range(take):
-                        page = fitz_doc[p_num]
-                        page_text = page.get_text().strip()
-                        page_content = f"--- Страница {p_num + 1} ---\n"
-                        if plumber_pdf is not None and p_num < len(plumber_pdf.pages):
+                        page_state = {"pct": -1}
+                        for p_num in range(take):
                             try:
-                                tables = plumber_pdf.pages[p_num].extract_tables()
-                            except Exception:
-                                tables = None
-                            if tables:
-                                md_tables = []
-                                for i, table in enumerate(tables):
-                                    if not table or not any(row for row in table if any(cell for cell in row)):
-                                        continue
-                                    cleaned_table = [
-                                        [(str(cell).strip().replace("\n", " ") if cell is not None else "") for cell in row]
-                                        for row in table
-                                    ]
-                                    if not cleaned_table:
-                                        continue
-                                    headers = cleaned_table[0]
-                                    md = f"\n[TABLE {i+1} START]\n| " + " | ".join(headers) + " |\n"
-                                    md += "| " + " | ".join(["---"] * len(headers)) + " |\n"
-                                    for row in cleaned_table[1:]:
-                                        md += "| " + " | ".join(row) + " |\n"
-                                    md += f"[TABLE {i+1} END]\n"
-                                    md_tables.append(md)
-                                if md_tables:
-                                    page_content += "\n--- ТАБЛИЦЫ ---\n" + "\n".join(md_tables) + "\n"
-                        usable = _pdf_text_is_usable(page_text)
-                        if usable:
-                            page_content += "\n--- ТЕКСТ ---\n" + page_text
-                        elif page_text:
-                            page_content += "\n[Текст слоя PDF без кириллицы – читаю страницу как изображение]\n"
-                        parts.append(page_content)
-                        if len(img_metadata) >= MAX_IMAGES_PER_PDF:
-                            continue
-                        if not usable:
-                            try:
-                                png = _page_png_for_ocr(page)
-                                if png and not _image_is_blank_or_black(png):
-                                    img_metadata.append((png, p_num, 0, 0))
-                            except Exception:
-                                logger.debug("PDF page raster failed page=%s", p_num, exc_info=True)
-                            continue
-                        for img_info in page.get_images(full=True):
-                            if len(img_metadata) >= MAX_IMAGES_PER_PDF:
-                                break
-                            try:
-                                xref = img_info[0]
-                                base_image = fitz_doc.extract_image(xref)
-                                if not base_image:
+                                page = fitz_doc[p_num]
+                                page_text = page.get_text().strip()
+                                page_content = f"--- Страница {p_num + 1} ---\n"
+                                if plumber_pdf is not None and p_num < len(plumber_pdf.pages):
+                                    try:
+                                        tables = plumber_pdf.pages[p_num].extract_tables()
+                                    except Exception:
+                                        tables = None
+                                    if tables:
+                                        md_tables = []
+                                        for i, table in enumerate(tables):
+                                            if not table or not any(row for row in table if any(cell for cell in row)):
+                                                continue
+                                            cleaned_table = [
+                                                [(str(cell).strip().replace("\n", " ") if cell is not None else "") for cell in row]
+                                                for row in table
+                                            ]
+                                            if not cleaned_table:
+                                                continue
+                                            headers = cleaned_table[0]
+                                            md = f"\n[TABLE {i+1} START]\n| " + " | ".join(headers) + " |\n"
+                                            md += "| " + " | ".join(["---"] * len(headers)) + " |\n"
+                                            for row in cleaned_table[1:]:
+                                                md += "| " + " | ".join(row) + " |\n"
+                                            md += f"[TABLE {i+1} END]\n"
+                                            md_tables.append(md)
+                                        if md_tables:
+                                            page_content += "\n--- ТАБЛИЦЫ ---\n" + "\n".join(md_tables) + "\n"
+                                usable = _pdf_text_is_usable(page_text)
+                                if usable:
+                                    page_content += "\n--- ТЕКСТ ---\n" + page_text
+                                elif page_text:
+                                    page_content += "\n[Текст слоя PDF без кириллицы – читаю страницу как изображение]\n"
+                                parts.append(page_content)
+                                if len(img_metadata) >= MAX_IMAGES_PER_PDF:
                                     continue
-                                img_bytes = base_image["image"]
-                                w, h = base_image.get("width", 0), base_image.get("height", 0)
-                                if (
-                                    len(img_bytes) >= MIN_IMAGE_SIZE
-                                    and w >= MIN_IMAGE_DIMENSION
-                                    and h >= MIN_IMAGE_DIMENSION
-                                    and not _image_is_blank_or_black(img_bytes)
-                                ):
-                                    img_metadata.append((img_bytes, p_num, w, h))
-                            except Exception:
-                                continue
-                finally:
-                    if plumber_pdf is not None:
-                        plumber_pdf.close()
-            return parts, img_metadata, notice
+                                if not usable:
+                                    try:
+                                        png = _page_png_for_ocr(page)
+                                        if png and not _image_is_blank_or_black(png):
+                                            img_metadata.append((png, p_num, 0, 0))
+                                    except Exception:
+                                        logger.debug("PDF page raster failed page=%s", p_num, exc_info=True)
+                                    continue
+                                for img_info in page.get_images(full=True):
+                                    if len(img_metadata) >= MAX_IMAGES_PER_PDF:
+                                        break
+                                    try:
+                                        xref = img_info[0]
+                                        base_image = fitz_doc.extract_image(xref)
+                                        if not base_image:
+                                            continue
+                                        img_bytes = base_image["image"]
+                                        w, h = base_image.get("width", 0), base_image.get("height", 0)
+                                        if (
+                                            len(img_bytes) >= MIN_IMAGE_SIZE
+                                            and w >= MIN_IMAGE_DIMENSION
+                                            and h >= MIN_IMAGE_DIMENSION
+                                            and not _image_is_blank_or_black(img_bytes)
+                                        ):
+                                            img_metadata.append((img_bytes, p_num, w, h))
+                                    except Exception:
+                                        continue
+                            finally:
+                                _emit_progress(p_num + 1, take, "page", page_state)
+                    finally:
+                        if plumber_pdf is not None:
+                            plumber_pdf.close()
+                return parts, img_metadata, notice
 
-        # Выполняем базовое извлечение
-        text_parts, images_to_process, notice = await asyncio.to_thread(_extract_base_data)
-        
-        # 2. Если есть изображения — запускаем OCR параллельно (Async OpenAI)
-        if images_to_process:
-            if status_callback: 
-                await status_callback(f"🖼 Найдено {len(images_to_process)} изображений. Распознаю текст...")
+            text_parts, images_to_process, notice = await asyncio.to_thread(_extract_base_data)
 
-            # Ограничиваем количество одновременных запросов к OpenAI
-            semaphore = asyncio.Semaphore(10)
-            
-            async def sem_ocr(img_data, idx, p_num, w, h):
-                async with semaphore:
-                    text = await _ocr_image_via_openai(img_data, user_id=user_id)
-                    return text, idx, p_num, w, h
+            if images_to_process:
+                if status_callback:
+                    await status_callback(f"🖼 Найдено {len(images_to_process)} изображений. Распознаю текст...")
 
-            ocr_tasks = [
-                sem_ocr(img[0], i, img[1], img[2], img[3]) 
-                for i, img in enumerate(images_to_process)
-            ]
-            ocr_results = await asyncio.gather(*ocr_tasks)
-            
-            # Добавляем результаты OCR к соответствующим страницам
-            for text, idx, p_num, w, h in ocr_results:
-                if not text.strip() or "[Не удалось распознать" in text: continue
-                if 0 <= p_num < len(text_parts):
-                    ocr_block = f"\n\n[📷 Изображение {idx+1} (стр. {p_num+1}, {w}x{h}px)]\n{text}\n[/Изображение {idx+1}]"
-                    text_parts[p_num] += ocr_block
+                semaphore = asyncio.Semaphore(10)
 
-            text_parts.insert(0, f"[ℹ️ Из PDF извлечено и распознано {len(images_to_process)} изображений]\n")
+                async def sem_ocr(img_data, idx, p_num, w, h):
+                    async with semaphore:
+                        text = await _ocr_image_via_openai(img_data, user_id=user_id)
+                        return text, idx, p_num, w, h
 
-        chunks = [notice] + text_parts if notice else text_parts
-        joined = "\n\n".join(item for item in chunks if item)
-        if len(joined) > max_chars:
-            joined = joined[:max_chars] + TEXT_TRUNCATED_NOTICE
-        return joined
-    except Exception as e:
-        logger.error(f"Error in extract_text_from_pdf: {e}", exc_info=True)
-        return f"Ошибка при чтении PDF: {str(e)}"
+                ocr_tasks = [
+                    sem_ocr(img[0], i, img[1], img[2], img[3])
+                    for i, img in enumerate(images_to_process)
+                ]
+                ocr_results = []
+                image_state = {"pct": -1}
+                done_images = 0
+                for finished in asyncio.as_completed(ocr_tasks):
+                    ocr_results.append(await finished)
+                    done_images += 1
+                    _emit_progress(done_images, len(ocr_tasks), "image", image_state)
+
+                for text, idx, p_num, w, h in ocr_results:
+                    if not text.strip() or "[Не удалось распознать" in text:
+                        continue
+                    if 0 <= p_num < len(text_parts):
+                        ocr_block = f"\n\n[📷 Изображение {idx+1} (стр. {p_num+1}, {w}x{h}px)]\n{text}\n[/Изображение {idx+1}]"
+                        text_parts[p_num] += ocr_block
+
+                text_parts.insert(0, f"[ℹ️ Из PDF извлечено и распознано {len(images_to_process)} изображений]\n")
+
+            chunks = [notice] + text_parts if notice else text_parts
+            joined = "\n\n".join(item for item in chunks if item)
+            if len(joined) > max_chars:
+                joined = joined[:max_chars] + TEXT_TRUNCATED_NOTICE
+            return joined
+        except Exception as e:
+            logger.error(f"Error in extract_text_from_pdf: {e}", exc_info=True)
+            return f"Ошибка при чтении PDF: {str(e)}"
+    finally:
+        _progress_callback.reset(token)
 
 
 async def extract_text_from_txt(file_data: bytes) -> str:
@@ -553,7 +627,8 @@ def _workbook_to_text(workbook, max_chars: int) -> tuple[str, bool]:
     found = False
     total = 0
     sheet_names = list(getattr(workbook, "sheetnames", []) or [])
-    for sheet_name in sheet_names:
+    sheet_state = {"pct": -1}
+    for sheet_index, sheet_name in enumerate(sheet_names, start=1):
         if total >= max_chars:
             break
         try:
@@ -578,6 +653,7 @@ def _workbook_to_text(workbook, max_chars: int) -> tuple[str, bool]:
                 break
         if len(lines) > 1:
             parts.append("\n".join(lines))
+        _emit_progress(sheet_index, len(sheet_names), "sheet", sheet_state)
     text = "\n\n".join(parts)
     return _truncate_extracted_text(text, max_chars), found
 
@@ -623,7 +699,9 @@ def _excel_from_pandas(file_data: bytes, max_chars: int, engine: Optional[str] =
     frames = pd.read_excel(io.BytesIO(file_data), **kwargs)
     parts = []
     total = 0
-    for sheet_name, frame in frames.items():
+    items = list(frames.items())
+    sheet_state = {"pct": -1}
+    for sheet_index, (sheet_name, frame) in enumerate(items, start=1):
         if frame is None or getattr(frame, "empty", True):
             continue
         lines = [f"### Лист: {sheet_name}"]
@@ -637,13 +715,14 @@ def _excel_from_pandas(file_data: bytes, max_chars: int, engine: Optional[str] =
                 break
         if len(lines) > 1:
             parts.append("\n".join(lines))
+        _emit_progress(sheet_index, len(items), "sheet", sheet_state)
         if total >= max_chars:
             break
     return _truncate_extracted_text("\n\n".join(parts), max_chars)
 
 
 async def extract_text_from_excel(
-    file_data: bytes, file_name: str = "", extended_limits: bool = False
+    file_data: bytes, file_name: str = "", extended_limits: bool = False, on_progress=None
 ) -> str:
     """Текст всех листов Excel (.xlsx/.xlsm/.xls) для базы знаний и шаблонов."""
     max_chars = MAX_EXTRACT_CHARS_EXTENDED if extended_limits else MAX_EXTRACT_CHARS
@@ -684,10 +763,11 @@ async def extract_text_from_excel(
             return f"Ошибка при чтении Excel ({file_name}): {errors[-1]}"
         return f"Файл Excel '{file_name}' пуст."
 
-    return await asyncio.to_thread(_extract)
+    with _bind_progress(on_progress):
+        return await asyncio.to_thread(_extract)
 
 
-async def extract_text_from_zip_document(file_data: bytes, file_name: str) -> Optional[str]:
+async def extract_text_from_zip_document(file_data: bytes, file_name: str, on_progress=None) -> Optional[str]:
     """Extract readable XML/HTML text from PPTX, OpenDocument and EPUB containers."""
     def _extract() -> Optional[str]:
         try:
@@ -701,6 +781,8 @@ async def extract_text_from_zip_document(file_data: bytes, file_name: str) -> Op
                     wanted = [n for n in names if n.lower().endswith((".xhtml", ".html", ".htm"))]
                 else:
                     wanted = [n for n in names if n in {"content.xml", "styles.xml"}]
+                slide_state = {"pct": -1}
+                unit = "slide" if suffix == ".pptx" else "block"
                 for index, name in enumerate(wanted):
                     raw = archive.read(name)
                     try:
@@ -712,6 +794,7 @@ async def extract_text_from_zip_document(file_data: bytes, file_name: str) -> Op
                     if text:
                         label = f"--- Слайд {index + 1} ---" if suffix == ".pptx" else f"--- Раздел {index + 1} ---"
                         parts.append(f"{label}\n{text}")
+                    _emit_progress(index + 1, len(wanted), unit, slide_state)
             if suffix == ".pptx":
                 try:
                     from studio.pptx_style import extract_pptx_visual_brief
@@ -724,7 +807,8 @@ async def extract_text_from_zip_document(file_data: bytes, file_name: str) -> Op
             return "\n\n".join(parts) or None
         except (zipfile.BadZipFile, OSError):
             return None
-    return await asyncio.to_thread(_extract)
+    with _bind_progress(on_progress):
+        return await asyncio.to_thread(_extract)
 
 
 # Оформление нового документа берётся из файла-шаблона, а из загрузки в базу
@@ -811,7 +895,7 @@ def load_source_docx(user_id, doc_name: str) -> Optional[bytes]:
         return None
 
 
-async def extract_zip_archive(file_data: bytes, archive_name: str, user_id: int = None, extended_limits: bool = False) -> list[tuple[str, str]]:
+async def extract_zip_archive(file_data: bytes, archive_name: str, user_id: int = None, extended_limits: bool = False, on_progress=None) -> list[tuple[str, str]]:
     """Разворачивает .zip и извлекает текст из каждого файла внутри через уже
     существующий extract_text_from_file — никакой новой логики парсинга форматов.
     Неподдерживаемые форматы внутри архива молча пропускаются (extract_text_from_file
@@ -855,13 +939,23 @@ async def extract_zip_archive(file_data: bytes, archive_name: str, user_id: int 
 
     entries = await asyncio.to_thread(_list_entries)
     results: list[tuple[str, str]] = []
-    for name, data in entries:
-        text = await extract_text_from_file(data, name, user_id=user_id, extended_limits=extended_limits)
-        if text:
-            stored_name = f"{archive_name}/{name}"
-            results.append((stored_name, text))
-            await asyncio.to_thread(store_source_docx, user_id, stored_name, data)
-    return results
+    file_state = {"pct": -1}
+    total = len(entries)
+    token = _progress_callback.set(on_progress)
+    try:
+        for index, (name, data) in enumerate(entries, start=1):
+            # Inner files keep their own parse quiet: the bar the user watches is files in the archive.
+            text = await extract_text_from_file(
+                data, name, user_id=user_id, extended_limits=extended_limits, on_progress=None
+            )
+            if text:
+                stored_name = f"{archive_name}/{name}"
+                results.append((stored_name, text))
+                await asyncio.to_thread(store_source_docx, user_id, stored_name, data)
+            _emit_progress(index, total, "file", file_state)
+        return results
+    finally:
+        _progress_callback.reset(token)
 
 
 _DOC_TEXT_RUN_RE = re.compile(
@@ -998,7 +1092,7 @@ async def extract_text_from_html(file_data: bytes) -> str:
     return await asyncio.to_thread(lambda: BeautifulSoup(text, "html.parser").get_text("\n", strip=True))
 
 
-async def extract_text_from_file(file_data: bytes, file_name: str, status_callback=None, user_id: int = None, extended_limits: bool = False) -> Optional[str]:
+async def extract_text_from_file(file_data: bytes, file_name: str, status_callback=None, user_id: int = None, extended_limits: bool = False, on_progress=None) -> Optional[str]:
     """
     Определяет тип файла и извлекает текст.
 
@@ -1013,19 +1107,48 @@ async def extract_text_from_file(file_data: bytes, file_name: str, status_callba
     """
     file_name_lower = file_name.lower()
     kind = sniff_document_kind(file_data, file_name)
+    token = _progress_callback.set(on_progress)
+    try:
+        return await _extract_text_from_file_body(
+            file_data,
+            file_name,
+            file_name_lower,
+            kind,
+            status_callback=status_callback,
+            user_id=user_id,
+            extended_limits=extended_limits,
+            on_progress=on_progress,
+        )
+    finally:
+        _progress_callback.reset(token)
 
+
+async def _extract_text_from_file_body(
+    file_data: bytes,
+    file_name: str,
+    file_name_lower: str,
+    kind: str,
+    status_callback=None,
+    user_id: int = None,
+    extended_limits: bool = False,
+    on_progress=None,
+) -> Optional[str]:
     if kind == "docx":
-        return await extract_text_from_docx(file_data, extended_limits=extended_limits)
+        return await extract_text_from_docx(file_data, extended_limits=extended_limits, on_progress=on_progress)
     if kind == "doc":
         return await extract_text_from_doc(file_data, extended_limits=extended_limits)
     if kind == "pdf":
         return await extract_text_from_pdf(
-            file_data, status_callback=status_callback, user_id=user_id, extended_limits=extended_limits
+            file_data,
+            status_callback=status_callback,
+            user_id=user_id,
+            extended_limits=extended_limits,
+            on_progress=on_progress,
         )
     if kind in {"xlsx", "xls", "xlsm"}:
-        return await extract_text_from_excel(file_data, file_name, extended_limits=extended_limits)
+        return await extract_text_from_excel(file_data, file_name, extended_limits=extended_limits, on_progress=on_progress)
     if kind in {"pptx", "odt", "ods", "odp", "epub"}:
-        return await extract_text_from_zip_document(file_data, file_name)
+        return await extract_text_from_zip_document(file_data, file_name, on_progress=on_progress)
     if kind == "rtf" or file_name_lower.endswith(".rtf"):
         return await extract_text_from_rtf(file_data)
     if kind in {"html", "htm"}:

@@ -1,10 +1,13 @@
-import { Box, CircularProgress, IconButton, Tooltip } from '@mui/material';
+import { Box, CircularProgress, IconButton, LinearProgress, Tooltip } from '@mui/material';
 import { FileText, FilePdf, FileXls, FileDoc, CheckCircle, WarningCircle, Trash } from '@phosphor-icons/react';
 
 export interface AttachmentInfo {
   name: string;
   size?: number;
   status: 'uploading' | 'done' | 'error';
+  /** 0–100 while bytes or parse units are known. null = work started, total not known yet. */
+  progress?: number | null;
+  progressLabel?: string;
   type?: 'document' | 'image' | 'generated';
   mime_type?: string;
   url?: string;
@@ -33,15 +36,18 @@ function formatSize(bytes?: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
 }
 
-export function DocumentAttachment({ name, size, status, type, url, note, onRemoveFromContext }: Props) {
+export function DocumentAttachment({ name, size, status, type, url, note, progress, progressLabel, onRemoveFromContext }: Props) {
   const Icon = iconForFile(name);
   const isImage = type === 'image';
   const canDownload = status === 'done' && !!url && type !== 'image';
+  const showProgress = status === 'uploading' && progress !== undefined;
+  const progressValue = typeof progress === 'number' ? Math.max(0, Math.min(100, progress)) : 0;
   const card = (
     <Box
       sx={{
         display: 'inline-flex',
-        alignItems: 'center',
+        flexDirection: showProgress ? 'column' : 'row',
+        alignItems: showProgress ? 'stretch' : 'center',
         gap: 1.25,
         px: 1.5,
         py: 1,
@@ -54,8 +60,9 @@ export function DocumentAttachment({ name, size, status, type, url, note, onRemo
         cursor: canDownload ? 'pointer' : 'default',
         '&:hover': canDownload ? { borderColor: 'primary.main', bgcolor: 'var(--bt-glow)' } : undefined,
       }}
-      {...(canDownload ? { component: 'a' as const, href: url, download: name, rel: 'noopener' } : {})}
+        {...(canDownload ? { component: 'a' as const, href: url, download: name, rel: 'noopener' } : {})}
     >
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, minWidth: 0 }}>
       <Box
         sx={{
           width: isImage ? 48 : 34,
@@ -80,13 +87,13 @@ export function DocumentAttachment({ name, size, status, type, url, note, onRemo
           {name}
         </Box>
         <Box sx={{ fontSize: '0.6875rem', color: 'text.muted' }}>
-          {status === 'uploading' && 'Загрузка...'}
+          {status === 'uploading' && (progressLabel || 'Загрузка...')}
           {status === 'done' && `${isImage ? 'Изображение' : note || (canDownload ? 'Скачать' : 'Документ')}${formatSize(size) ? ` · ${formatSize(size)}` : ''}`}
           {status === 'error' && 'Ошибка загрузки'}
         </Box>
       </Box>
       <Box sx={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 0.5 }}>
-        {status === 'uploading' && <CircularProgress size={16} thickness={5} sx={{ color: 'primary.light' }} />}
+        {status === 'uploading' && !showProgress && <CircularProgress size={16} thickness={5} sx={{ color: 'primary.light' }} />}
         {status === 'done' && <CheckCircle size={18} weight="fill" style={{ color: 'var(--bt-success)' }} />}
         {status === 'error' && <WarningCircle size={18} weight="fill" style={{ color: 'var(--bt-danger)' }} />}
         {status === 'done' && onRemoveFromContext && type !== 'generated' && (
@@ -110,6 +117,23 @@ export function DocumentAttachment({ name, size, status, type, url, note, onRemo
           </Tooltip>
         )}
       </Box>
+      </Box>
+      {showProgress && (
+        <LinearProgress
+          variant={progress === null ? 'indeterminate' : 'determinate'}
+          value={progress === null ? undefined : progressValue}
+          aria-label={progressLabel || 'Загрузка документа'}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={progress === null ? undefined : progressValue}
+          sx={{
+            height: 4,
+            borderRadius: 99,
+            bgcolor: 'var(--bt-overlay)',
+            '& .MuiLinearProgress-bar': { borderRadius: 99, bgcolor: 'primary.main' },
+          }}
+        />
+      )}
     </Box>
   );
   return card;
