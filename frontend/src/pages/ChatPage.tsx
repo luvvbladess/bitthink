@@ -69,6 +69,13 @@ function parseSearchFromText(text: string): { query: string; summary: string }[]
   return results.length ? results : undefined;
 }
 
+function keepLiveUploads(current: DisplayMessage[], derived: DisplayMessage[]): DisplayMessage[] {
+  const uploads = current.filter((message) => (
+    message.attachment?.status === 'uploading' && !derived.some((item) => item.id === message.id)
+  ));
+  return uploads.length ? [...derived, ...uploads] : derived;
+}
+
 export default function ChatPage() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
@@ -253,7 +260,7 @@ export default function ChatPage() {
           });
         }
 
-        setDisplayMessages(withError);
+        setDisplayMessages((current) => keepLiveUploads(current, withError));
 
         // If the socket reconnected during a long analysis, polling may see the
         // persisted assistant answer before a new `done` event can arrive.
@@ -284,7 +291,7 @@ export default function ChatPage() {
           setJobs((prev) => dropJob(prev, activeConvId));
         }
       } else {
-        setDisplayMessages(base);
+        setDisplayMessages((current) => keepLiveUploads(current, base));
       }
     }
   }, [activeConvId, messages, pendingContent, regeneratingId, jobErrors]);
