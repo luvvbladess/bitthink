@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Drawer, SwipeableDrawer, IconButton, Tooltip, useMediaQuery, useTheme } from '@mui/material';
-import { List as ListIcon, FileArrowDown, MagnifyingGlass, WarningCircle, SquareHalf } from '@phosphor-icons/react';
+import { List as ListIcon, FileArrowDown, MagnifyingGlass, WarningCircle, SquareHalf, Users } from '@phosphor-icons/react';
 import { headerIconBtnSx } from '@/theme/effects';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
@@ -25,6 +25,7 @@ import { dropJob, emptyJob, mergeRemoteJobs, upsertJob, type LiveJobPatch, type 
 import { DialogueJumpChip, DialogueJumpSheet } from '@/features/chat/DialogueJumpSheet';
 import { MIN_DIALOGUE_QUESTIONS, type DialogueJumpFn } from '@/features/chat/dialogueNav';
 import { BRAND_NAME, NEW_CHAT_TITLE } from '@/brand';
+import { ShareDialog } from '@/features/chat/ShareDialog';
 import { applyPageMeta } from '@/seo';
 
 // Same-origin by default so it goes through the reverse proxy (nginx routes
@@ -140,6 +141,7 @@ export default function ChatPage() {
     });
   };
   const [exporting, setExporting] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   // Id of the assistant message currently being replaced by a regenerate — hidden
   // from `base` below so the old answer doesn't flash alongside the new one while
   // the server hasn't confirmed the deletion/replacement yet.
@@ -153,23 +155,41 @@ export default function ChatPage() {
     staleTime: 5_000,
   });
 
-  const { data: messages = [] } = useQuery<{ id: string; role: string; content: string; attachment?: AttachmentInfo; search?: { query: string; summary: string }[] }[]>({
+  const activeConversation = conversations.find((conversation) => conversation.id === activeConvId);
+  const sharedRoom = Boolean(activeConversation?.shared);
+  const { data: messages = [] } = useQuery<{
+    id: string;
+    role: string;
+    content: string;
+    attachment?: AttachmentInfo;
+    search?: { query: string; summary: string }[];
+    author?: { name: string; avatar_url?: string | null } | null;
+    mine?: boolean;
+  }[]>({
     queryKey: ['messages', activeConvId],
     queryFn: () => apiFetch(`/conversations/${activeConvId}/messages`),
     enabled: !!activeConvId,
     staleTime: 3_000,
-    refetchInterval: thinking && activeConvId ? 2000 : false,
+    refetchInterval: thinking && activeConvId ? 2000 : sharedRoom ? 4000 : false,
   });
 
   // Restore the latest/active chat after a page reload instead of showing an
   // empty home screen while its messages and document cards still exist.
   useEffect(() => {
+    const openId = searchParams.get('c');
+    if (openId) {
+      setActiveConvId(openId);
+      const next = new URLSearchParams(searchParams);
+      next.delete('c');
+      setSearchParams(next, { replace: true });
+      return;
+    }
     if (openNewChat) return;
     if (!activeConvId && conversations.length) {
       const restored = conversations.find((conversation) => conversation.is_active) || conversations[0];
       setActiveConvId(restored.id);
     }
-  }, [activeConvId, conversations, openNewChat]);
+  }, [activeConvId, conversations, openNewChat, searchParams, setSearchParams]);
 
   useEffect(() => {
     if (activeConvId && messages) {
@@ -182,6 +202,8 @@ export default function ChatPage() {
           content: m.content,
           attachment: m.attachment,
           search: m.search,
+          author: m.author,
+          mine: m.mine,
         }));
 
       if (pendingContent.convId === activeConvId) {
@@ -198,9 +220,9 @@ export default function ChatPage() {
         );
         const withUser =
           pendingContent.userText && lastBaseUser?.content !== pendingContent.userText
-            ? [...base, { id: 'pending-user', role: 'user' as const, content: pendingContent.userText }]
+            ? [...base, { id: 'pending-user', role: 'user' as const, content: pendingContent.userText, mine: true }]
             : pendingContent.userText && imageBaseline && !persistedNewUser
-              ? [...base, { id: 'pending-user', role: 'user' as const, content: pendingContent.userText }]
+              ? [...base, { id: 'pending-user', role: 'user' as const, content: pendingContent.userText, mine: true }]
               : base;
 
         const lastBaseAssistant = [...withUser].reverse().find((m) => m.role === 'assistant');
@@ -354,6 +376,14 @@ export default function ChatPage() {
         return;
       }
 
+      if (msg.type === 'conversation_sync') {
+        const syncId = msg.payload?.conversation_id as string | undefined;
+        if (syncId) {
+          queryClient.invalidateQueries({ queryKey: ['messages', syncId] });
+          queryClient.invalidateQueries({ queryKey: ['conversations'] });
+        }
+        return;
+      }
       if (msg.type === 'jobs') {
         setJobs((prev) => mergeRemoteJobs(prev, msg.payload.jobs));
         return;
@@ -988,6 +1018,13 @@ export default function ChatPage() {
                 </IconButton>
               </Tooltip>
             )}
+            {activeConvId && (
+              <Tooltip title="Поделиться диалогом">
+                <IconButton onClick={() => setShareOpen(true)} sx={headerIconBtnSx} aria-label="Поделиться диалогом">
+                  <Users size={22} weight="bold" />
+                </IconButton>
+              </Tooltip>
+            )}
             <Tooltip title="Экспортировать ответ в DOCX">
               <span>
                 <IconButton
@@ -1061,6 +1098,7 @@ export default function ChatPage() {
           }
           onSuggestion={handleSend}
           hasCanvas={Boolean(canvasSource)}
+          people={sharedRoom}
           activeSourceId={sourceMessageId}
           onOpenSources={openSources}
           clarifyDocked={clarifyQuestions.length > 0}
@@ -1189,6 +1227,9 @@ export default function ChatPage() {
         onClose={() => setSourcesSheetOpen(false)}
         onOpen={() => setSourcesSheetOpen(true)}
       />
+      {activeConvId && (
+        <ShareDialog conversationId={activeConvId} open={shareOpen} onClose={() => setShareOpen(false)} />
+      )}
     </Box>
   );
 }

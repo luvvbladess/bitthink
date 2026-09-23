@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Box, Container, Typography, Stack, TextField, Alert, Link as MuiLink, IconButton } from '@mui/material';
 import { Eye, EyeSlash } from '@phosphor-icons/react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { GlassSurface } from '@/components/GlassSurface';
 import { PrimaryButton } from '@/components/IslandButton';
@@ -17,6 +17,7 @@ interface Props {
 
 export default function LoginPage({ mode }: Props) {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const setTokens = useAuthStore((s) => s.setTokens);
   const setUser = useAuthStore((s) => s.setUser);
   const [email, setEmail] = useState('');
@@ -50,7 +51,8 @@ export default function LoginPage({ mode }: Props) {
       setTokens(data.access_token, data.refresh_token);
       const me = await apiFetch('/auth/me');
       setUser(me);
-      navigate('/chat');
+      const next = searchParams.get('next') || '';
+      navigate(next.startsWith('/') && !next.startsWith('//') ? next : '/chat');
     } catch (err: any) {
       setError(err.message || 'Ошибка входа');
     } finally {
@@ -148,14 +150,14 @@ export default function LoginPage({ mode }: Props) {
               {mode === 'login' ? (
                 <>
                   Нет аккаунта?{' '}
-                  <MuiLink component={Link} to="/register" sx={{ color: 'primary.light' }}>
+                  <MuiLink component={Link} to={searchParams.get('next') ? `/register?next=${encodeURIComponent(searchParams.get('next') || '')}` : '/register'} sx={{ color: 'primary.light' }}>
                     Зарегистрироваться
                   </MuiLink>
                 </>
               ) : (
                 <>
                   Уже есть аккаунт?{' '}
-                  <MuiLink component={Link} to="/login" sx={{ color: 'primary.light' }}>
+                  <MuiLink component={Link} to={searchParams.get('next') ? `/login?next=${encodeURIComponent(searchParams.get('next') || '')}` : '/login'} sx={{ color: 'primary.light' }}>
                     Войти
                   </MuiLink>
                 </>

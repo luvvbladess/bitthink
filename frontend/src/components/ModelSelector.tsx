@@ -36,7 +36,7 @@ const ANSWER_MODES = [
   { id: 'research', label: 'Исследование', description: 'Глубокий разбор источников на Sol', model: 'gpt-6-sol', icon: Books },
   { id: 'astra', label: ASTRA_LABEL, description: 'Песочница GPT-6: код, договоры, файлы', model: 'gpt-6-astra', icon: Atom },
   { id: 'studio', label: STUDIO_LABEL, description: 'Живой холст: картинки, слайды, лендинг', model: 'studio', icon: Presentation },
-  { id: 'docgen', label: DOCGEN_LABEL, description: 'Большой .docx по Word, PDF, Excel и архивам', model: 'docgen', icon: FileText },
+  { id: 'docgen', label: DOCGEN_LABEL, description: 'Большой .docx или комплект документов по Word, PDF, Excel и архивам', model: 'docgen', icon: FileText },
   { id: 'computer', label: PILOT_LABEL, description: 'Сам зайдёт на сайт, почту или сервер', model: 'director', icon: Desktop },
 ] as const;
 

@@ -97,6 +97,13 @@ _SOURCE_FOR_AUTO_ZIP = {
     ".ini",
 }
 MAX_DELIVER_FILES = 8
+# Комплект из 18-40 документов не помещается в 8 отдельных вложений. Лишнее
+# раньше молча отрезалось: человек получал 8 файлов из 18 и не знал об этом.
+# Теперь, если файлов больше, чем влезает отдельными карточками, всё уходит
+# одним архивом с сохранением папок.
+MAX_BUNDLE_FILES = 200
+MAX_BUNDLE_BYTES = 40 * 1024 * 1024
+BUNDLE_NAME = "Комплект документов.zip"
 MAX_AUTO_ZIP_FILES = 40
 MAX_AUTO_ZIP_BYTES = 6 * 1024 * 1024
 MAX_GREP_HITS = 80
@@ -560,6 +567,51 @@ def _auto_zip_sources(root: Path, cutoff: float) -> Optional[dict[str, Any]]:
     }
 
 
+def _bundle_deliverables(entries: list[tuple[float, str, Path, int]]) -> Optional[dict[str, Any]]:
+    """Все готовые файлы задания одним архивом, папки сохраняются.
+
+    Собственные .zip модели в архив не кладутся, если рядом есть сами
+    документы: такой zip обычно и есть эти же документы, и комплект вышел бы
+    вдвое тяжелее. Что не влезло в лимит, перечислено в файле внутри архива,
+    чтобы недостача была видна, а не молча терялась.
+    """
+    import zipfile
+    from io import BytesIO
+
+    loose = [entry for entry in entries if entry[2].suffix.lower() != ".zip"]
+    chosen = sorted(loose or entries, key=lambda entry: entry[1].lower())
+    buffer = BytesIO()
+    packed = 0
+    total = 0
+    skipped: list[str] = []
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for _, rel, path, size in chosen:
+            if packed >= MAX_BUNDLE_FILES or total + size > MAX_BUNDLE_BYTES:
+                skipped.append(rel)
+                continue
+            try:
+                payload = path.read_bytes()
+            except OSError:
+                skipped.append(rel)
+                continue
+            archive.writestr(rel, payload)
+            packed += 1
+            total += len(payload)
+        if skipped and packed:
+            note = "Не поместились в архив (лимит размера), лежат в песочнице:\n" + "\n".join(skipped) + "\n"
+            archive.writestr("НЕ ВОШЛО В АРХИВ.txt", note.encode("utf-8"))
+    if packed < 1:
+        return None
+    data = buffer.getvalue()
+    return {
+        "path": BUNDLE_NAME,
+        "name": BUNDLE_NAME,
+        "size": len(data),
+        "files": packed,
+        "data_b64": base64.b64encode(data).decode("ascii"),
+    }
+
+
 def collect_deliverables(user_id: int, since: float = 0) -> str:
     """Newest user-facing files written during a job, as JSON with base64 bodies."""
     root = (workspaces_root() / f"u{user_id}").resolve()
@@ -571,6 +623,12 @@ def collect_deliverables(user_id: int, since: float = 0) -> str:
     found = _recent_workspace_files(root, cutoff, DELIVER_SUFFIXES)
     has_zip = any(path.suffix.lower() == ".zip" for _, _, path, _ in found)
     has_doc = any(path.suffix.lower() in _DOC_ARTIFACT_SUFFIXES for _, _, path, _ in found)
+    direct = [entry for entry in found if entry[2].suffix.lower() in _DIRECT_DELIVER]
+    direct_bytes = sum(size for _, _, _, size in direct)
+    if len(direct) > MAX_DELIVER_FILES or direct_bytes > MAX_FILE_BYTES:
+        bundle = _bundle_deliverables(direct)
+        if bundle:
+            return json.dumps([bundle], ensure_ascii=False)
     items = []
     total = 0
     for _, rel, path, size in found:

@@ -105,6 +105,18 @@ _SIZE_REQUEST_RE = re.compile(
     r"(тыс\.?|тысяч[иа]?|к)?\s*(страниц\w*|стр\.|раздел\w*)",
     re.IGNORECASE,
 )
+# «Подготовь комплект документов», «переработай документы и разработай
+# недостающие» — много файлов, но число не названо. Раньше такой запрос шёл
+# как один документ: комплект превращался в оглавление одного тома.
+_DOCUMENT_SET_RE = re.compile(
+    r"(?i)(?:комплект\w*\s+(?:из\s+)?(?:\d{1,3}\s+)?(?:документ|файл|форм)"
+    r"|(?:пакет|набор|перечень|реестр)\w*\s+документ"
+    r"|недостающ\w*\s+(?:документ|форм)"
+    r"|переработ\w*\s+(?:\w+\s+){0,2}документ\w*\s+и\s+разработ"
+    r"|кажд\w*\s+документ\w*\s+(?:отдельн|свой)\w*\s+файл)"
+)
+# Потолок комплекта, число документов в котором планировщик решает сам.
+MAX_SET_DOCUMENTS = 60
 # «1000 документов», «10 документов». Не «документацию»: это один том, не N файлов.
 _DOC_COUNT_RE = re.compile(
     r"(\d[\d\s]{0,9}?)\s*(?:[-–—]\s*(\d[\d\s]{0,9}?)\s*)?"
@@ -244,6 +256,10 @@ class Section:
     complexity: str  # "simple" | "complex"
     chapter: str = ""  # заголовок главы при двухуровневом плане, иначе пусто
     document: str = ""  # название отдельного файла, если заказано несколько документов
+    # Что это за документ комплекта: «Переработка: <исходник>. Что изменить…»
+    # или «Разработка: …». Без этого писатель раздела видел только свой раздел
+    # и не знал, что документ нужно переделать из конкретного исходного файла.
+    document_brief: str = ""
 
 
 def _tokenize(text: str) -> set:
@@ -298,6 +314,11 @@ def _requested_documents(text: str) -> Optional[int]:
     if best <= 0:
         return None
     return min(best, MAX_DOCUMENTS)
+
+
+def _wants_document_set(text: str) -> bool:
+    """Комплект отдельных файлов, число которых человек не назвал."""
+    return bool(_DOCUMENT_SET_RE.search(text or ""))
 
 
 def _unique_doc_names(chunks: List[Chunk]) -> List[str]:
@@ -654,7 +675,11 @@ def _scope_chunks_for_section(
     templates_for_section: Set[str] = {chosen} if chosen else templates
 
     related_knowledge = knowledge_names
-    if section.document and knowledge_names:
+    # Документ комплекта опирается на общие файлы: задание, требования к
+    # оформлению, данные. Сужение базы до «файлов этой темы» (как для ИТТ на
+    # разные узлы) отрезало бы именно их.
+    set_member = (section.document_brief or "").lstrip().lower().startswith(("переработка", "разработка"))
+    if section.document and knowledge_names and not set_member:
         digests = digests or {}
         common = _common_digest_tokens(digests) if digests else set(_DIGEST_STOP)
         query = " ".join(
@@ -747,6 +772,29 @@ def _extract_source_chunks(user_id: int) -> Tuple[List[Chunk], List[str], List[s
             truncated.append(name)
         chunks.extend(_split_into_chunks(name, body, len(chunks)))
     return chunks, truncated, skipped
+
+
+def _rework_source(section: Section, chunks: List[Chunk]) -> Optional[str]:
+    """Исходный файл, который переделывается в этот документ комплекта.
+
+    Планировщик пишет в brief документа «Переработка: <имя файла>». Ищем
+    самое длинное совпадающее имя: полный путь в архиве или хотя бы имя
+    файла без папок и расширения.
+    """
+    brief = (section.document_brief or "").strip()
+    if not brief.lower().startswith("переработка"):
+        return None
+    haystack = brief.lower().replace("\\", "/")
+    best: Optional[str] = None
+    best_len = 0
+    for name in _unique_doc_names(chunks):
+        full = name.lower().replace("\\", "/")
+        base = full.rsplit("/", 1)[-1]
+        stem = re.sub(r"\.[^.]+$", "", base)
+        for candidate in (full, base, stem):
+            if len(candidate) >= 4 and candidate in haystack and len(candidate) > best_len:
+                best, best_len = name, len(candidate)
+    return best
 
 
 def _select_relevant_chunks(
@@ -996,7 +1044,28 @@ async def _plan_outline(
     classification_hint = _classify_documents_hint(chunks)
     document_previews = _document_previews(chunks)
 
-    if as_documents and as_chapters:
+    set_request = as_documents and as_chapters and (
+        not want_count or _wants_document_set(f"{user_text}\n{extra_instruction}")
+    )
+    if set_request:
+        count_line = (
+            f"верни ровно {want_count} элементов, все названия разные. " if want_count
+            else f"число документов определи по заданию и исходному комплекту, не больше {MAX_SET_DOCUMENTS}. "
+        )
+        size_instruction = (
+            "Это перечень отдельных документов КОМПЛЕКТА: " + count_line
+            + "Каждый элемент — отдельный файл, не глава одного тома и не раздел документа. "
+            "Сначала каждый документ исходного комплекта, который по заданию нужно переработать: "
+            "title — название итогового документа, brief начинай «Переработка: <точное имя исходного файла>.» "
+            "и перечисли, что изменить по заданию и требованиям к оформлению. "
+            "Затем каждый документ, которого в исходном комплекте нет, но он нужен по заданию: "
+            "brief начинай «Разработка:», дальше назначение документа и из каких данных его писать. "
+            "Файлы самого задания, требований к оформлению и вспомогательных данных — источники, "
+            "а не документы комплекта: в перечень их не включай. "
+            "Если в задании перечислены документы — в перечне должны быть все, в том же порядке. "
+            "Поле document оставь пустым: именем файла станет title.\n"
+        )
+    elif as_documents and as_chapters:
         size_instruction = (
             f"Это перечень отдельных документов: верни ровно {want_count} элементов, "
             f"и все {want_count} названий должны быть разными. "
@@ -1120,6 +1189,12 @@ async def _expand_chapter(
         "complexity=complex — для расчётов, таблиц с цифрами, юридических формулировок, "
         "технических требований с точными значениями. Остальное — simple.\n"
     )
+    if chapter.brief.lstrip().lower().startswith("переработка"):
+        prompt += (
+            "Это переработка существующего документа из исходного комплекта: сохрани его "
+            "структуру разделов и порядок, добавь недостающие по заданию разделы, "
+            "а в brief каждого раздела укажи, что в нём изменить.\n"
+        )
     if _wants_itt(f"{user_text}\n{chapter.title}"):
         numbered = "; ".join(
             f"{i} {name}" for i, name in enumerate(_ITT_INNER_SECTIONS, 1)
@@ -1155,10 +1230,11 @@ async def _expand_chapter(
         logger.warning("docgen chapter '%s' produced no sections, kept as one", chapter.title)
         return [Section(id=0, title=chapter.title, brief=chapter.brief,
                         complexity=chapter.complexity, chapter=chapter.title,
-                        document=chapter.document)]
+                        document=chapter.document, document_brief=chapter.document_brief)]
     inherited = sections[:per_chapter]
     for section in inherited:
         section.chapter = chapter.title
+        section.document_brief = chapter.document_brief
         # The chapter-level plan is where "10 separate documents of 5000 pages"
         # is decided; expansion JSON has no `document` field, so without this
         # stamp a two-level run silently collapses back into one file.
@@ -1247,15 +1323,22 @@ async def _top_up_documents(
             "docgen: планировщик вернул %d документов из %d, дозапрашиваю %d",
             len(chapters), want, missing,
         )
-        extra, _, failed = await _plan_outline(
-            user_text, chunks, user_id,
-            extra_instruction=(
-                f"{extra_instruction}\nУже запланированы документы: {have}. "
+        if _wants_document_set(f"{user_text}\n{extra_instruction}") and not _wants_itt(user_text):
+            what = (
+                f"Верни ТОЛЬКО ещё {missing} других документов комплекта, не повторяя перечисленные: "
+                "сначала непокрытые документы исходного комплекта («Переработка: …»), "
+                "затем недостающие по заданию («Разработка: …»)."
+            )
+        else:
+            what = (
                 f"Верни ТОЛЬКО ещё {missing} других документов на другие узлы, "
                 "не повторяя перечисленные. "
                 "title — узел/изделие («ИТТ на …»), не раздел шаблона "
                 "(Общие сведения, Назначение, Технические требования)."
-            ),
+            )
+        extra, _, failed = await _plan_outline(
+            user_text, chunks, user_id,
+            extra_instruction=f"{extra_instruction}\nУже запланированы документы: {have}. {what}",
             want_count=missing, as_chapters=True, as_documents=True,
         )
         if failed or not extra:
@@ -1285,14 +1368,26 @@ async def _plan_as_documents(
     user_id: int,
     extra_instruction: str,
     status_msg: Any,
-    documents_wanted: int,
+    documents_wanted: Optional[int],
     target_sections: Optional[int],
 ) -> Tuple[List[Section], Set[str], bool]:
     """План на N отдельных файлов: имена из архивов, если они уже лежат
-    по файлу на документ, иначе — один вызов планировщика на перечень."""
+    по файлу на документ, иначе — один вызов планировщика на перечень.
+
+    documents_wanted=None — комплект без названного числа («переработай
+    комплект и разработай недостающие»): состав решает планировщик по заданию
+    и исходному комплекту, в пределах MAX_SET_DOCUMENTS, без добора до числа.
+    """
     heuristic = _heuristic_template_names(chunks)
     knowledge_names = [n for n in _unique_doc_names(chunks) if n not in heuristic]
-    seed = _seed_document_titles(documents_wanted, knowledge_names, heuristic)
+    # Комплект с заданием и требованиями к оформлению — не «по файлу на
+    # документ»: среди исходников лежат само задание и данные, и совпади их
+    # число с заказом, «Задание.docx» стал бы одним из документов комплекта.
+    is_set = _wants_document_set(f"{user_text}\n{extra_instruction}")
+    seed = (
+        _seed_document_titles(documents_wanted, knowledge_names, heuristic)
+        if documents_wanted and not is_set else None
+    )
     template_names: Set[str] = set(heuristic)
     digests = _file_digests(chunks)
 
@@ -1325,7 +1420,7 @@ async def _plan_as_documents(
         # усмотрение модели: она вернула разделы всего двух документов из
         # десяти. Перечислить десять названий — задача, которую модель
         # выполняет надёжно, а дальше каждый документ раскрывается отдельно.
-        want = min(documents_wanted, MAX_DOCUMENTS)
+        want = min(documents_wanted, MAX_DOCUMENTS) if documents_wanted else None
         chapters, template_names, failed = await _plan_outline(
             user_text, chunks, user_id, extra_instruction,
             want_count=want, as_chapters=True, as_documents=True,
@@ -1336,10 +1431,13 @@ async def _plan_as_documents(
         # повторами, добор просит слишком мало, и файлов выходит меньше заказа.
         chapters = _dedupe_by_title(chapters)
         chapters = [c for c in chapters if not _is_section_heading_title(c.title)]
-        chapters = await _top_up_documents(
-            chapters, want, user_text, chunks, user_id, extra_instruction,
-        )
-        chapters = chapters[:want]
+        if want:
+            chapters = await _top_up_documents(
+                chapters, want, user_text, chunks, user_id, extra_instruction,
+            )
+            chapters = chapters[:want]
+        else:
+            chapters = chapters[:MAX_SET_DOCUMENTS]
         if heuristic:
             template_names = template_names | heuristic
         # Имя документа здесь — всегда его название, что бы модель ни положила
@@ -1351,6 +1449,9 @@ async def _plan_as_documents(
         for chapter in chapters:
             chapter.title = _prepare_document_title(chapter.title, user_text)
             chapter.document = chapter.title
+
+    for chapter in chapters:
+        chapter.document_brief = chapter.document_brief or chapter.brief
 
     # Без указанного объёма документ получал ОДИН раздел: в готовых ИТТ было
     # по три заголовка на файл. Документ такого рода — это несколько разделов
@@ -1396,6 +1497,11 @@ async def _plan_document(
         return await _plan_as_documents(
             user_text, chunks, user_id, extra_instruction, status_msg,
             documents_wanted, target,
+        )
+    if not documents_wanted and _wants_document_set(combined):
+        return await _plan_as_documents(
+            user_text, chunks, user_id, extra_instruction, status_msg,
+            None, target,
         )
 
     if not target or target <= SINGLE_CALL_SECTION_LIMIT:
@@ -1644,6 +1750,15 @@ def _section_context(
         section, chunks, template_names, assigned_templates, digests,
     )
     relevant = _select_relevant_chunks(section.title, section.brief, scoped)
+    source = _rework_source(section, chunks)
+    if source:
+        # Переработка: текст исходного документа идёт первым, иначе писатель
+        # раздела сочинит документ заново по соседним файлам.
+        own = _select_relevant_chunks(
+            section.title, section.brief, [c for c in chunks if c.doc_name == source], top_k=3,
+        )
+        seen_ids = {c.id for c in own}
+        relevant = own + [c for c in relevant if c.id not in seen_ids]
     block = _build_context_block(relevant, MAX_CHUNK_CHARS_PER_SECTION, templates_for_section)
     return _apply_replacements(block, replacements) if replacements else block
 
@@ -1676,6 +1791,8 @@ async def _write_section(
         )
     if section.document:
         prompt_parts.append(f"Документ: {section.document}")
+        if section.document_brief and section.document_brief != section.brief:
+            prompt_parts.append(f"Что это за документ комплекта: {section.document_brief}")
         tmpl = (assigned_templates or {}).get(section.document)
         if tmpl:
             prompt_parts.append(
@@ -1850,10 +1967,74 @@ async def get_docgen_response(
         # the mode would re-ask forever. is_clarify_reply(user_text) still
         # covers the chip path (including "skipped") unchanged.
         if not is_clarify_reply(user_text) and not _replacement_table(user_text)[1]:
+            original, revisions = _set_request_chain(messages, user_text)
+            if revisions:
+                # Правка состава комплекта («убери 5-й, добавь акт приёмки»):
+                # план строится заново по исходному запросу плюс правкам, а не
+                # по одной короткой правке, из которой комплект не собрать.
+                return await _confirm_before_generating(
+                    original, user_id, status_msg, extra_instruction="\n".join(revisions),
+                )
             return await _confirm_before_generating(user_text, user_id, status_msg)
         return await _run_docgen_after_confirmation(messages, user_text, user_id, status_msg)
     finally:
         billing_pool.reset(token)
+
+
+_SET_PROPOSAL_MARKER = "Состав комплекта"
+# Правка состава — короткое сообщение («убери 5-й, добавь акт», «нужно 20
+# документов»). Длинный текст или новый заказ комплекта — новый запрос.
+MAX_REVISION_CHARS = 600
+
+
+def _looks_like_new_request(text: str) -> bool:
+    # «Добавь недостающий документ X» — тоже слова комплекта, но это правка:
+    # новым заказом считаем только развёрнутый текст.
+    length = len(text or "")
+    return length > MAX_REVISION_CHARS or (_wants_document_set(text) and length > 250)
+
+
+def _set_request_chain(messages: List[Dict[str, Any]], user_text: str) -> Tuple[str, List[str]]:
+    """Исходный запрос комплекта и правки состава, в порядке написания.
+
+    Правка — обычное сообщение пользователя сразу после подтверждения, где
+    был показан «Состав комплекта». Цепочка раскручивается назад: после
+    второй правки нужны и исходный запрос, и обе правки. Нет предложения
+    состава перед сообщением — правок нет, запрос сам по себе исходный.
+    """
+    from clarify import is_clarify_reply
+
+    items = [m for m in (messages or []) if isinstance(m, dict)]
+    last_user = next((m for m in reversed(items) if m.get("role") == "user"), None)
+    if last_user is None or str(last_user.get("content") or "") != user_text:
+        items = items + [{"role": "user", "content": user_text}]
+
+    def is_request(message: Dict[str, Any]) -> bool:
+        content = str(message.get("content") or "")
+        return (
+            message.get("role") == "user"
+            and not is_clarify_reply(content)
+            and not _replacement_table(content)[1]
+        )
+
+    revisions: List[str] = []
+    index = len(items) - 1
+    while index >= 0:
+        while index >= 0 and not is_request(items[index]):
+            index -= 1
+        if index < 0:
+            break
+        content = str(items[index].get("content") or "")
+        prev_assistant = next(
+            (str(m.get("content") or "") for m in reversed(items[:index]) if m.get("role") == "assistant"),
+            "",
+        )
+        if _SET_PROPOSAL_MARKER in prev_assistant and not _looks_like_new_request(content):
+            revisions.insert(0, content)
+            index -= 1
+            continue
+        return content, revisions
+    return (revisions[0] if revisions else user_text), revisions[1:]
 
 
 def _recover_original_request(messages: List[Dict[str, Any]], user_text: str) -> str:
@@ -2065,8 +2246,76 @@ def _estimate_cost_usd(outline: List[Section], has_sources: bool) -> float:
     return total
 
 
+MAX_PROPOSAL_ROWS = 60
+PROPOSAL_BRIEF_CHARS = 220
+
+
+def _document_set_proposal(outline: List[Section]) -> List[str]:
+    """Состав комплекта до запуска: что переработать, что разработать.
+
+    Без этого подтверждение показывало только «Документов: 18», и человек не
+    мог проверить, те ли это восемнадцать, пока не заплатил за генерацию.
+    Для одного документа список не нужен — там он совпадал бы с оглавлением.
+    """
+    order: List[str] = []
+    briefs: Dict[str, str] = {}
+    for section in outline:
+        name = (section.document or "").strip()
+        if not name or name in briefs:
+            continue
+        order.append(name)
+        briefs[name] = (section.document_brief or "").strip()
+    if len(order) < 2:
+        return []
+    reworked = sum(1 for n in order if briefs[n].lower().startswith("переработка"))
+    developed = sum(1 for n in order if briefs[n].lower().startswith("разработка"))
+    header = "Состав комплекта"
+    if reworked or developed:
+        header += f" (переработать: {reworked}, разработать заново: {developed})"
+    lines = ["", f"{header}:"]
+    for index, name in enumerate(order[:MAX_PROPOSAL_ROWS], 1):
+        brief = re.sub(r"\s+", " ", briefs[name])
+        if len(brief) > PROPOSAL_BRIEF_CHARS:
+            brief = brief[:PROPOSAL_BRIEF_CHARS].rstrip() + "…"
+        lines.append(f"{index}. {name}" + (f" – {brief}" if brief else ""))
+    if len(order) > MAX_PROPOSAL_ROWS:
+        lines.append(f"… и ещё {len(order) - MAX_PROPOSAL_ROWS}")
+    lines.append(
+        "Если состав не тот – просто напишите сообщением, какие документы добавить, убрать "
+        "или переименовать: план пересоберу с учётом правки и снова покажу перед запуском."
+    )
+    lines.append("")
+    return lines
+
+
+def _delivered_set_registry(outline: List[Section]) -> str:
+    """Реестр готового комплекта для итогового сообщения: что переработано,
+    что разработано. Пусто, если документ один или план не про комплект."""
+    order: List[str] = []
+    status: Dict[str, str] = {}
+    for section in outline:
+        name = (section.document or "").strip()
+        if not name or name in status:
+            continue
+        brief = (section.document_brief or "").strip().lower()
+        order.append(name)
+        status[name] = (
+            "переработан" if brief.startswith("переработка")
+            else "разработан" if brief.startswith("разработка")
+            else ""
+        )
+    if len(order) < 2 or not any(status.values()):
+        return ""
+    lines = ["Реестр комплекта:"]
+    for index, name in enumerate(order[:MAX_PROPOSAL_ROWS], 1):
+        lines.append(f"{index}. {name}" + (f" – {status[name]}" if status[name] else ""))
+    if len(order) > MAX_PROPOSAL_ROWS:
+        lines.append(f"… и ещё {len(order) - MAX_PROPOSAL_ROWS}")
+    return "\n".join(lines)
+
+
 async def _confirm_before_generating(
-    user_text: str, user_id: int, status_msg: Any
+    user_text: str, user_id: int, status_msg: Any, extra_instruction: str = "",
 ) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
     """Phase one: plan, then ask — never write a single section. One planner
     call is cheap next to the thousands of writer calls it would otherwise
@@ -2077,7 +2326,7 @@ async def _confirm_before_generating(
     await _update_status(status_msg, "📄 Читаю исходники и строю план документа...")
     chunks, truncated_sources, skipped_sources = await asyncio.to_thread(_extract_source_chunks, user_id)
     outline, template_names, planning_failed = await _plan_document(
-        user_text, chunks, user_id, status_msg=status_msg
+        user_text, chunks, user_id, extra_instruction, status_msg=status_msg
     )
     candidates = await asyncio.to_thread(_find_replacement_candidates, chunks)
     candidates = await _label_replacement_candidates(candidates, user_id)
@@ -2093,7 +2342,7 @@ async def _confirm_before_generating(
     knowledge_names = [n for n in doc_names if n not in template_names] if template_names else doc_names
 
     planned_documents = len({s.document for s in outline if s.document}) or 1
-    requested_documents = _requested_documents(user_text)
+    requested_documents = _requested_documents(f"{user_text}\n{extra_instruction}")
     lines = [
         (f"Документов: {planned_documents}, разделов: {total}, примерно {approx_pages} стр."
          if planned_documents > 1
@@ -2106,6 +2355,7 @@ async def _confirm_before_generating(
             f"Заказано документов: {requested_documents}, в плане только {planned_documents}. "
             "Отмените и переформулируйте перечень, если нужны все."
         )
+    lines += _document_set_proposal(outline)
     lines += [
         f"Оценка стоимости API: не больше ${approx_cost:.2f} (по потолку контекста на раздел)."
         + (
@@ -2226,8 +2476,13 @@ async def _run_docgen_after_confirmation(
     if wants_placeholders and not table_reply:
         replacements = _replacements_offered_in(messages)
     original_request = _recover_original_request(messages, user_text)
+    extra_instruction = user_text
+    chain_original, revisions = _set_request_chain(messages, user_text)
+    if revisions:
+        original_request = chain_original
+        extra_instruction = "\n".join(revisions + [user_text])
     return await _run_docgen(
-        original_request, user_id, status_msg, extra_instruction=user_text, replacements=replacements
+        original_request, user_id, status_msg, extra_instruction=extra_instruction, replacements=replacements
     )
 
 
@@ -2330,11 +2585,28 @@ async def _run_docgen(
         digests=digests,
         title_texts=match_texts,
     )
+    # Переработанный документ комплекта без отдельного шаблона сохраняет
+    # оформление своего исходника (поля, стили, колонтитулы), а не уходит в
+    # стандартный Word. Явно указанный шаблон оформления важнее.
+    rework_blanks: Dict[str, bytes] = {}
+    if not blanks:
+        sources: Dict[str, str] = {}
+        for section in outline:
+            if section.document and section.document not in sources:
+                source = _rework_source(section, chunks)
+                if source:
+                    sources[section.document] = source
+        if sources:
+            source_blanks = await asyncio.to_thread(_template_blanks, user_id, set(sources.values()))
+            rework_blanks = {
+                title: source_blanks[source] for title, source in sources.items() if source in source_blanks
+            }
 
     from docx_generator import convert_markdown_to_docx
     files: List[Dict[str, Any]] = []
     used_names: Set[str] = set()
     used_templates: Set[str] = set()
+    kept_source_formatting = 0
     full_markdown = ""
     try:
         for title, markdown_text in documents:
@@ -2355,6 +2627,9 @@ async def _run_docgen(
                 template_bytes = blanks[tmpl_name]
             if template_bytes and tmpl_name:
                 used_templates.add(tmpl_name)
+            if template_bytes is None and title in rework_blanks:
+                template_bytes = rework_blanks[title]
+                kept_source_formatting += 1
             docx_bytes = await asyncio.to_thread(
                 convert_markdown_to_docx, markdown_text, template_bytes
             )
@@ -2386,6 +2661,11 @@ async def _run_docgen(
             summary += f" Оформление: каждому документу свой шаблон ({len(used_templates)} шт.)."
         else:
             summary += " Оформление взято из файла-шаблона."
+    elif kept_source_formatting:
+        summary += (
+            f" Переработанные документы ({kept_source_formatting}) сохранили оформление своих исходников, "
+            "новые — стандартное."
+        )
     else:
         summary += (
             " Оформление — стандартное: файла-шаблона в формате .docx среди исходников не нашлось."
@@ -2418,6 +2698,9 @@ async def _run_docgen(
             summary += f" Оставлены метки [УКАЗАТЬ: …] вместо не указанных значений: {placeholder_count}."
     if pdf_attached:
         summary += " К каждому .docx приложен PDF для просмотра."
+    registry = _delivered_set_registry(outline)
+    if registry:
+        summary += "\n\n" + registry
     # Десять отдельных вложений в переписке — десять карточек, которые качают
     # по одной. Когда документов больше одного, отдаётся архив.
     if docx_count > 1:

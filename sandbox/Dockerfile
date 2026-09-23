@@ -19,11 +19,17 @@ RUN pip install --no-cache-dir \
         openpyxl \
         pillow \
         python-pptx \
+        python-docx \
         matplotlib
 
 WORKDIR /opt/sandbox
 COPY sandbox/server.py /opt/sandbox/server.py
 COPY sandbox/sitecustomize.py /usr/local/lib/python3.12/site-packages/sitecustomize.py
+# Та же сборка markdown → .docx, что у режима «Документы»: Пилот собирает
+# комплект файлов `from bt_docx import convert_markdown_to_docx`, а не пишет
+# python-docx вручную на каждый документ. Без python-docx в образе Пилот
+# делал один файл и сообщал, что создавать DOCX ему нечем.
+COPY backend/app/bot_core/docx_generator.py /usr/local/lib/python3.12/site-packages/bt_docx.py
 COPY backend/app/services/workspace_fs.py /opt/sandbox/workspace_fs.py
 
 ENV WORKSPACES_DIR=/workspaces \

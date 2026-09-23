@@ -6,6 +6,9 @@ import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { downloadBlob } from '@/api/client';
 import { DocumentAttachment, AttachmentInfo } from './DocumentAttachment';
+import { UserAvatar } from '@/components/UserAvatar';
+import { BrandIcon } from '@/components/BrandMark';
+import { BRAND_NAME } from '@/brand';
 import { ChatImage } from './ChatImage';
 import { CLARIFY_ACK, isClarifyReply, splitSearch } from './clarify';
 import { modeSwitchFromSearch } from './modeSwitch';
@@ -30,6 +33,9 @@ interface Props {
   onOpenSources?: () => void;
   onEditImage?: (url: string) => void;
   onAcceptMode?: (model: string) => void;
+  people?: boolean;
+  author?: { name: string; avatar_url?: string | null } | null;
+  mine?: boolean;
 }
 
 const ALLOWED_IMAGE_DATA_URI = /^data:image\/(png|jpe?g|gif|webp);base64,/i;
@@ -208,8 +214,12 @@ export function ChatMessage({
   onOpenSources,
   onEditImage,
   onAcceptMode,
+  people = false,
+  author,
+  mine = false,
 }: Props) {
   const isUser = role === 'user';
+  const alignEnd = people ? isUser && mine : isUser;
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(content);
@@ -245,7 +255,7 @@ export function ChatMessage({
       sx={{
         display: 'flex',
         flexDirection: 'column',
-        alignItems: isUser ? 'flex-end' : 'flex-start',
+        alignItems: alignEnd ? 'flex-end' : 'flex-start',
         width: '100%',
         minWidth: 0,
         // Clip only user bubbles; assistant lists need room for 10.+ markers.
@@ -253,6 +263,18 @@ export function ChatMessage({
         mb: isUser ? 1.5 : 2,
       }}
     >
+      {people && (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 0.5, flexDirection: alignEnd ? 'row-reverse' : 'row' }}>
+          {isUser ? (
+            <UserAvatar user={{ first_name: author?.name, avatar_url: author?.avatar_url }} sx={{ width: 28, height: 28, fontSize: '0.8rem' }} />
+          ) : (
+            <BrandIcon size={28} />
+          )}
+          <Box component="span" sx={{ fontSize: '0.75rem', fontWeight: 600, color: 'text.secondary' }}>
+            {isUser ? (author?.name || 'Участник') : BRAND_NAME}
+          </Box>
+        </Box>
+      )}
       {!isUser && <ReasoningTrace reasoning={reasoning} />}
       {attachment ? (
         attachment.type === 'image' && attachment.status === 'done' && attachment.url ? (

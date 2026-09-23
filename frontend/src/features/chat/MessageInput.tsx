@@ -503,7 +503,7 @@ export function MessageInput({
         {editingImage
           ? 'Опишите правку. Картинка останется в этой беседе'
           : isDocgen
-            ? `${DOCGEN_LABEL}: Word, PDF, Excel или zip — соберёт .docx. Перед запуском спросит подтверждение`
+            ? `${DOCGEN_LABEL}: Word, PDF, Excel или zip — соберёт .docx или целый комплект файлов. Перед запуском покажет состав и спросит подтверждение`
           : isStudio
             ? 'Готовый макет на холсте правится чатом. Можно прикрепить образец PPTX или PDF и файл ТЗ'
           : isComputer

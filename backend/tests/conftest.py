@@ -26,6 +26,7 @@ _EXTRA_COLUMNS = {
     "messages": {
         "attachment": "ALTER TABLE messages ADD COLUMN attachment TEXT",
         "search": "ALTER TABLE messages ADD COLUMN search TEXT",
+        "author_user_id": "ALTER TABLE messages ADD COLUMN author_user_id BIGINT",
     },
 }
 

@@ -50,6 +50,13 @@ class ConversationOut(BaseModel):
     message_count: int
     document_count: int
     is_active: bool
+    shared: bool = False
+    role: str = "owner"
+
+
+class MessageAuthor(BaseModel):
+    name: str
+    avatar_url: Optional[str] = None
 
 
 class MessageOut(BaseModel):
@@ -59,6 +66,8 @@ class MessageOut(BaseModel):
     created_at: str
     attachment: Optional[dict] = None
     search: Optional[list[dict]] = None
+    author: Optional[MessageAuthor] = None
+    mine: bool = False
 
 
 class ChatMessage(BaseModel):
