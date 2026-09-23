@@ -211,7 +211,7 @@ async def _generate_and_send(
         search=search_results or None,
         attachment=attachment,
     )
-    await asyncio.to_thread(chat_access.scrub_recent, bot_user_id)
+    await asyncio.to_thread(chat_access.scrub_recent, bot_user_id, conversation_id)
     schedule_memory_refresh(bot_user_id)
 
     if send_extras and (reasoning_text or search_results):

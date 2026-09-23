@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import logging
 import re
 import threading
 from pathlib import Path
@@ -10,6 +11,7 @@ import conversations
 from app.config import get_settings
 
 _PLACEHOLDER_TITLE_RE = re.compile(r"^(Новый чат|Новая беседа|Беседа #\d+)$")
+logger = logging.getLogger(__name__)
 
 
 def derive_conversation_title(content: str) -> str:
@@ -36,6 +38,22 @@ class ConversationRepository:
 
     def _bot_id(self, web_user_id: str) -> int:
         return self._web_user_id_to_bot_id(web_user_id)
+
+    async def notify_room(self, conv_id: Optional[str]) -> None:
+        """Сообщить остальным участникам общего диалога, что история изменилась."""
+        if not conv_id:
+            return
+        try:
+            emails = await asyncio.to_thread(self._manager.participant_emails, conv_id)
+            if not emails:
+                return
+            from app.services.generation_hub import hub
+
+            payload = {"type": "conversation_sync", "payload": {"conversation_id": conv_id}}
+            for email in emails:
+                await hub.broadcast(email, payload)
+        except Exception:
+            logger.exception("Failed to notify shared conversation %s", conv_id)
 
     async def ensure_user(self, web_user_id: str, profile: Optional[dict] = None) -> int:
         bot_id = self._bot_id(web_user_id)
@@ -70,6 +88,7 @@ class ConversationRepository:
     async def get_conversations(self, web_user_id: str) -> list[dict]:
         bot_id = self._bot_id(web_user_id)
         convs = await asyncio.to_thread(self._manager.get_conversations, bot_id)
+        roles = await asyncio.to_thread(self._manager.conversation_roles, bot_id, [c.id for c in convs])
         return [
             {
                 "id": c.id,
@@ -79,6 +98,8 @@ class ConversationRepository:
                 "message_count": len(c.messages),
                 "document_count": len(c.documents),
                 "is_active": c.id == getattr(self._manager, "_active_conversations", {}).get(bot_id),
+                "shared": c.id in roles,
+                "role": roles.get(c.id, "owner"),
             }
             for c in convs
         ]
@@ -94,6 +115,8 @@ class ConversationRepository:
             "message_count": 0,
             "document_count": 0,
             "is_active": True,
+            "shared": False,
+            "role": "owner",
         }
 
     async def set_active_conversation(self, web_user_id: str, conv_id: str) -> bool:
@@ -138,10 +161,15 @@ class ConversationRepository:
     def _get_messages_sync(self, bot_id: int, conv_id: Optional[str]) -> list[dict]:
         with self._mutate_lock:
             if conv_id:
-                self._manager.set_active_conversation(bot_id, conv_id)
-            conv = self._manager.get_active_conversation(bot_id)
+                conv = self._manager.conversation_view(bot_id, conv_id)
+            else:
+                conv = self._manager.get_active_conversation(bot_id)
         if not conv:
             return []
+        owner_id = self._manager.conversation_owner(conv.id)
+        author_ids = [owner_id] if owner_id else []
+        author_ids += [m.author_user_id for m in conv.messages if getattr(m, "author_user_id", None)]
+        cards = self._manager.author_cards(author_ids)
         result = []
         for idx, msg in enumerate(conv.messages):
             content = msg.content
@@ -152,6 +180,10 @@ class ConversationRepository:
                 search = search or extract_domain_sources(content)
                 if search:
                     content = strip_source_links(content)
+            author_id = getattr(msg, "author_user_id", None)
+            if msg.role == "user" and not author_id:
+                author_id = owner_id
+            author = cards.get(author_id) if msg.role == "user" and author_id else None
             result.append({
                 "id": f"{conv.id}_{idx}",
                 "role": msg.role,
@@ -159,6 +191,8 @@ class ConversationRepository:
                 "attachment": getattr(msg, "attachment", None),
                 "search": search,
                 "created_at": getattr(msg, "created_at", conv.created_at),
+                "author": author,
+                "mine": msg.role == "user" and author_id == bot_id,
             })
         return result
 
@@ -171,9 +205,12 @@ class ConversationRepository:
         attachment: Optional[dict] = None, search: Optional[list[dict]] = None,
     ) -> dict:
         with self._mutate_lock:
-            if conv_id:
+            if conv_id and role != "assistant":
                 self._manager.set_active_conversation(bot_id, conv_id)
-            msg = self._manager.add_message(bot_id, role, content, attachment=attachment, search=search)
+            msg = self._manager.add_message(
+                bot_id, role, content, attachment=attachment, search=search,
+                conv_id=conv_id, author_user_id=bot_id if role == "user" else None,
+            )
             conv = self._manager.get_active_conversation(bot_id)
         return {
             "id": f"{conv.id}_{len(conv.messages) - 1}",
@@ -189,40 +226,39 @@ class ConversationRepository:
         attachment: Optional[dict] = None, search: Optional[list[dict]] = None,
     ) -> dict:
         bot_id = self._bot_id(web_user_id)
-        return await asyncio.to_thread(self._add_message_sync, bot_id, role, content, conv_id, attachment, search)
+        result = await asyncio.to_thread(self._add_message_sync, bot_id, role, content, conv_id, attachment, search)
+        await self.notify_room(conv_id)
+        return result
 
     def _get_messages_for_api_sync(self, bot_id: int, conv_id: Optional[str]) -> list[dict]:
         with self._mutate_lock:
             if conv_id:
                 self._manager.set_active_conversation(bot_id, conv_id)
-            return self._manager.get_messages_for_api(bot_id, bot_config.SYSTEM_PROMPT, requesting_user_id=bot_id)
+            return self._manager.get_messages_for_api(
+                bot_id, bot_config.SYSTEM_PROMPT, requesting_user_id=bot_id, conv_id=conv_id,
+            )
 
     async def get_messages_for_api(self, web_user_id: str, conv_id: Optional[str] = None) -> list[dict]:
         bot_id = self._bot_id(web_user_id)
         return await asyncio.to_thread(self._get_messages_for_api_sync, bot_id, conv_id)
 
     def _get_documents_sync(self, bot_id: int, conv_id: Optional[str]) -> list[dict]:
-        if conv_id:
-            self._manager.set_active_conversation(bot_id, conv_id)
-        return self._manager.get_documents(bot_id)
+        return self._manager.get_documents(bot_id, conv_id=conv_id)
 
     async def get_documents(self, web_user_id: str, conv_id: Optional[str] = None) -> list[dict]:
         bot_id = self._bot_id(web_user_id)
         return await asyncio.to_thread(self._get_documents_sync, bot_id, conv_id)
 
     def _add_document_sync(self, bot_id: int, filename: str, content: str, conv_id: Optional[str]) -> None:
-        if conv_id:
-            self._manager.set_active_conversation(bot_id, conv_id)
-        self._manager.add_document(bot_id, filename, content)
+        self._manager.add_document(bot_id, filename, content, conv_id=conv_id)
 
     async def add_document(self, web_user_id: str, filename: str, content: str, conv_id: Optional[str] = None) -> None:
         bot_id = self._bot_id(web_user_id)
         await asyncio.to_thread(self._add_document_sync, bot_id, filename, content, conv_id)
+        await self.notify_room(conv_id)
 
     def _remove_document_sync(self, bot_id: int, filename: str, conv_id: Optional[str]) -> bool:
-        if conv_id:
-            self._manager.set_active_conversation(bot_id, conv_id)
-        return self._manager.remove_document(bot_id, filename)
+        return self._manager.remove_document(bot_id, filename, conv_id=conv_id)
 
     async def remove_document(self, web_user_id: str, filename: str, conv_id: Optional[str] = None) -> bool:
         bot_id = self._bot_id(web_user_id)
@@ -230,9 +266,7 @@ class ConversationRepository:
 
     async def remove_attachment(self, web_user_id: str, filename: str, conv_id: Optional[str] = None) -> Optional[dict]:
         bot_id = self._bot_id(web_user_id)
-        if conv_id:
-            await asyncio.to_thread(self._manager.set_active_conversation, bot_id, conv_id)
-        return await asyncio.to_thread(self._manager.remove_attachment, bot_id, filename)
+        return await asyncio.to_thread(self._manager.remove_attachment, bot_id, filename, conv_id)
 
     def _clear_documents_sync(self, bot_id: int, conv_id: Optional[str]) -> bool:
         if conv_id:

@@ -25,6 +25,8 @@ export interface DisplayMessage {
   attachment?: AttachmentInfo;
   reasoning?: string;
   search?: SearchItem[];
+  author?: { name: string; avatar_url?: string | null } | null;
+  mine?: boolean;
 }
 
 interface Props {
@@ -38,6 +40,7 @@ interface Props {
   onEditImage?: (url: string) => void;
   onSuggestion?: (text: string) => void;
   hasCanvas?: boolean;
+  people?: boolean;
   activeSourceId?: string;
   onOpenSources?: (messageId: string) => void;
   clarifyDocked?: boolean;
@@ -105,6 +108,7 @@ export function ChatWindow({
   onEditImage,
   onSuggestion,
   hasCanvas = false,
+  people = false,
   activeSourceId,
   onOpenSources,
   clarifyDocked = false,
@@ -524,6 +528,9 @@ export function ChatWindow({
               onEdit={msg.role === 'user' && !isClarifyReply(msg.content) ? (text) => onEditMessage?.(msg.id, text) : undefined}
               onEditImage={onEditImage}
               onAcceptMode={(model) => selectModel.mutateAsync(model)}
+              people={people}
+              author={msg.author}
+              mine={msg.mine}
             />
             {msg.id === lastAssistantId && nextChips.length > 0 && (
               <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mt: 1, mb: 1.5, pl: { xs: 0, sm: 0.5 } }}>

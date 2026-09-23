@@ -23,6 +23,8 @@ export interface ConversationItem {
   title: string;
   message_count: number;
   is_active: boolean;
+  shared?: boolean;
+  role?: 'owner' | 'member';
 }
 
 interface Props {
@@ -308,6 +310,7 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
                             }}
                           />
                         )}
+                        <Box sx={{ minWidth: 0 }}>
                         <Typography
                           sx={{
                             fontWeight: active ? 600 : 500,
@@ -321,10 +324,16 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
                         >
                           {conv.title}
                         </Typography>
+                        {conv.shared && (
+                          <Typography sx={{ fontSize: '0.6875rem', color: 'text.secondary', lineHeight: 1.2 }}>
+                            Общий
+                          </Typography>
+                        )}
+                        </Box>
                       </Box>
                     )}
                   </Box>
-                  {editingId !== conv.id && (
+                  {editingId !== conv.id && conv.role !== 'member' && (
                     <Box
                       sx={{
                         display: 'flex',

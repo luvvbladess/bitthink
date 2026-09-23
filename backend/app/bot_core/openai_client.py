@@ -323,9 +323,14 @@ async def get_chat_response(
     on_reasoning_delta: Optional[Any] = None,
     force_web_search: bool = False,
     use_skills: bool = True,
+    max_tool_loops: Optional[int] = None,
 ) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
     """
     Получает ответ от OpenAI через Responses API, потоково (stream=True).
+
+    max_tool_loops — сколько ходов с вызовами инструментов разрешено. По
+    умолчанию 6 (Astra — 12). Сотруднику Пилота, собирающему комплект файлов,
+    передаётся больше: шесть ходов кончались на первом же документе.
     Поддерживает: нативный web_search, reasoning, visualize_data, vision.
 
     on_reasoning_delta(text: str), если передан, вызывается на каждый кусочек
@@ -395,6 +400,8 @@ async def get_chat_response(
         total_cache_write_tokens = 0
 
         max_loops = 12 if is_astra else 6
+        if max_tool_loops:
+            max_loops = max(max_loops, min(int(max_tool_loops), 30))
         search_count = 0
         MAX_SEARCHES = 6
         for loop_i in range(max_loops):

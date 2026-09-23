@@ -1,3 +1,4 @@
+import asyncio
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -45,6 +46,33 @@ async def delete_conversation(conv_id: str, user_id: str = Depends(get_current_u
 @router.post("/{conv_id}/clear")
 async def clear_conversation(conv_id: str, user_id: str = Depends(get_current_user)):
     ok = await repo.clear_conversation(user_id, conv_id)
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    return {"ok": True}
+
+
+@router.get("/{conv_id}/share")
+async def share_status(conv_id: str, user_id: str = Depends(get_current_user)):
+    bot_id = await repo.ensure_user(user_id)
+    status_payload = await asyncio.to_thread(repo._manager.share_status, bot_id, conv_id)
+    if status_payload is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    return status_payload
+
+
+@router.post("/{conv_id}/share")
+async def create_share(conv_id: str, user_id: str = Depends(get_current_user)):
+    bot_id = await repo.ensure_user(user_id)
+    token = await asyncio.to_thread(repo._manager.create_share, bot_id, conv_id)
+    if not token:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    return await asyncio.to_thread(repo._manager.share_status, bot_id, conv_id)
+
+
+@router.delete("/{conv_id}/share")
+async def revoke_share(conv_id: str, user_id: str = Depends(get_current_user)):
+    bot_id = await repo.ensure_user(user_id)
+    ok = await asyncio.to_thread(repo._manager.revoke_share, bot_id, conv_id)
     if not ok:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return {"ok": True}

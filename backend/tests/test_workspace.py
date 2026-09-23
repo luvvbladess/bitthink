@@ -252,3 +252,61 @@ def test_sandbox_remote_payload_keeps_authenticated_user(monkeypatch):
     assert captured["user_id"] == 94199
     assert captured["op"] == "grep"
     assert captured["pattern"] == "x"
+
+
+def test_collect_deliverables_bundles_a_document_set_instead_of_dropping(tmp_path, monkeypatch):
+    """18 документов комплекта: раньше приходили первые 8, остальные молча
+    терялись. Теперь, если отдельными карточками не влезает, всё уходит
+    одним архивом с папками."""
+    import base64
+    import json
+    import time
+    import zipfile
+    from io import BytesIO
+
+    from app.services.workspace_fs import BUNDLE_NAME, MAX_DELIVER_FILES, user_root
+
+    monkeypatch.setenv("WORKSPACES_DIR", str(tmp_path))
+    uid = 94030
+    folder = user_root(uid) / "komplekt"
+    folder.mkdir()
+    for i in range(1, 19):
+        (folder / f"{i:02d}_Документ.docx").write_bytes(b"PK\x03\x04fake-docx")
+    (folder / "src").mkdir()
+    (folder / "src" / "01_Документ.md").write_text("текст", encoding="utf-8")
+    (folder / "build.py").write_text("print(1)\n", encoding="utf-8")
+
+    payload = json.loads(collect_deliverables(uid, time.time() - 30))
+    assert len(payload) == 1 and payload[0]["name"] == BUNDLE_NAME, [p["name"] for p in payload]
+    with zipfile.ZipFile(BytesIO(base64.b64decode(payload[0]["data_b64"]))) as archive:
+        names = archive.namelist()
+    docx = [n for n in names if n.endswith(".docx")]
+    assert len(docx) == 18 > MAX_DELIVER_FILES
+    assert "komplekt/18_Документ.docx" in names
+    assert not any(n.endswith((".py", ".md")) for n in names), "scripts and drafts are not deliverables"
+
+
+def test_collect_deliverables_keeps_small_sets_as_separate_files(tmp_path, monkeypatch):
+    import json
+    import time
+
+    from app.services.workspace_fs import user_root
+
+    monkeypatch.setenv("WORKSPACES_DIR", str(tmp_path))
+    uid = 94031
+    root = user_root(uid)
+    for i in range(3):
+        (root / f"doc{i}.docx").write_bytes(b"PK\x03\x04fake-docx")
+    payload = json.loads(collect_deliverables(uid, time.time() - 30))
+    assert sorted(p["name"] for p in payload) == ["doc0.docx", "doc1.docx", "doc2.docx"]
+
+
+def test_director_detects_document_package_tasks():
+    import director_router as dr
+
+    assert dr._is_document_package_task("Подготовь комплект документов по заданию")
+    assert dr._is_document_package_task("Документы 1-5 из реестра komplekt/00_Реестр.md")
+    assert dr._is_document_package_task("нужно 18 документов")
+    assert dr._is_document_package_task("переработай имеющиеся документы")
+    assert not dr._is_document_package_task("найди курс доллара")
+    assert not dr._is_document_package_task("разбери договор")

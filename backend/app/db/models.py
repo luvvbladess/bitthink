@@ -55,9 +55,40 @@ class Message(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     attachment: Mapped[str | None] = mapped_column(Text, nullable=True)
     search: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Кто написал реплику в общем диалоге. Пусто у ответов ассистента и у
+    # старых сообщений личных чатов — там автор и есть владелец беседы.
+    author_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     conversation: Mapped["Conversation"] = relationship("Conversation", back_populates="messages")
+
+
+class ConversationShare(Base):
+    """Ссылка, по которой в беседу заходят другие люди."""
+
+    __tablename__ = "conversation_shares"
+
+    token: Mapped[str] = mapped_column(String(64), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    created_by: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ConversationMember(Base):
+    """Участник общего диалога. Владелец живёт в conversations.user_id и сюда не пишется."""
+
+    __tablename__ = "conversation_members"
+    __table_args__ = (UniqueConstraint("conversation_id", "user_id", name="uq_conversation_member"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Document(Base):

@@ -87,10 +87,10 @@ def redact_for_user(user_id: int, text: str) -> str:
     return redact_text(text, secrets)
 
 
-def scrub_recent(user_id: int) -> None:
+def scrub_recent(user_id: int, conv_id: str | None = None) -> None:
     from conversations import conversation_manager
 
-    conversation_manager.redact_recent_messages(user_id, store.secret_values(user_id))
+    conversation_manager.redact_recent_messages(user_id, store.secret_values(user_id), conv_id=conv_id)
 
 
 def public_summary(user_id: int) -> str:

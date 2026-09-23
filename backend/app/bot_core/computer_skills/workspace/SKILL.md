@@ -14,7 +14,7 @@ description: Личная песочница: файлы, pip, Python. Сам р
 - `pip_install` – пакеты с PyPI в личный venv (requests, pandas, openpyxl и что нужно)
 - `python_run` – файл `.py` из песочницы
 
-Уже есть в образе: requests, beautifulsoup4, lxml, pandas, openpyxl. Остальное – pip_install, потом python_run.
+Уже есть в образе: requests, beautifulsoup4, lxml, pandas, openpyxl, python-docx, python-pptx, matplotlib и `bt_docx` (markdown → .docx, см. скил documents). Остальное – pip_install, потом python_run.
 
 Как работать:
 1. Посмотри `workspace_ls` или `workspace_glob`, не выдумывай файлы.

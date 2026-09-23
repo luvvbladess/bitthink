@@ -25,6 +25,8 @@ from app.db.models import (
     AllowedContext,
     BaseTemplate,
     Conversation,
+    ConversationMember,
+    ConversationShare,
     CustomPrompt,
     Document,
     Message,
@@ -618,6 +620,7 @@ class MessageData:
     timestamp: str = field(default_factory=_now_iso)
     attachment: Optional[dict] = None
     search: Optional[List[Dict[str, str]]] = None
+    author_user_id: Optional[int] = None
 
     def to_dict(self) -> dict:
         data = {"role": self.role, "content": self.content, "timestamp": self.timestamp}
@@ -676,6 +679,7 @@ class ConversationData:
                     timestamp=m.created_at.isoformat(),
                     attachment=_attachment(m),
                     search=_search(m),
+                    author_user_id=getattr(m, "author_user_id", None),
                 )
                 for m in sorted(conv.messages, key=lambda item: item.id)
             ],
@@ -1407,6 +1411,150 @@ class DatabaseConversationManager:
             return True
 
     # ------------------------------------------------------------------
+    # Shared conversations
+    # ------------------------------------------------------------------
+    def _allows(self, session: Session, user_id: int, conv: Conversation) -> bool:
+        if conv.user_id == user_id:
+            return True
+        return (
+            session.query(ConversationMember)
+            .filter_by(conversation_id=conv.id, user_id=user_id)
+            .first()
+            is not None
+        )
+
+    def _open_conv(self, session: Session, user_id: int, conv_id: Optional[str] = None) -> Optional[Conversation]:
+        """Беседа, в которую писать. Явный id — если человек владелец или участник.
+        Без id — его личная активная, как раньше."""
+        if conv_id:
+            conv = session.get(Conversation, conv_id)
+            if conv and self._allows(session, user_id, conv):
+                return conv
+            return None
+        return session.query(Conversation).filter_by(user_id=user_id, is_active=True).first()
+
+    def conversation_view(self, user_id: int, conv_id: str) -> Optional[ConversationData]:
+        with SyncSessionLocal() as session:
+            conv = self._open_conv(session, user_id, conv_id)
+            return ConversationData.from_model(conv) if conv else None
+
+    def conversation_owner(self, conv_id: str) -> Optional[int]:
+        with SyncSessionLocal() as session:
+            conv = session.get(Conversation, conv_id)
+            return conv.user_id if conv else None
+
+    def is_shared(self, conv_id: str) -> bool:
+        with SyncSessionLocal() as session:
+            return (
+                session.query(ConversationMember).filter_by(conversation_id=conv_id).first() is not None
+            )
+
+    def participant_emails(self, conv_id: str) -> List[str]:
+        """Почты участников, которым слать живое обновление. Пусто, если диалог личный."""
+        with SyncSessionLocal() as session:
+            conv = session.get(Conversation, conv_id)
+            if not conv:
+                return []
+            member_ids = [
+                row.user_id
+                for row in session.query(ConversationMember).filter_by(conversation_id=conv_id).all()
+            ]
+            if not member_ids:
+                return []
+            ids = set(member_ids)
+            ids.add(conv.user_id)
+            rows = session.query(User).filter(User.bot_user_id.in_(ids)).all()
+            return [row.email for row in rows if row.email]
+
+    def author_cards(self, bot_ids: List[int]) -> Dict[int, dict]:
+        ids = [item for item in dict.fromkeys(bot_ids) if item]
+        if not ids:
+            return {}
+        with SyncSessionLocal() as session:
+            rows = session.query(User).filter(User.bot_user_id.in_(ids)).all()
+        cards = {}
+        for row in rows:
+            name = (row.first_name or "").strip() or str(row.email or "").split("@", 1)[0] or "Участник"
+            cards[row.bot_user_id] = {"name": name, "avatar_url": row.avatar_url}
+        return cards
+
+    def create_share(self, user_id: int, conv_id: str) -> Optional[str]:
+        import secrets
+        with SyncSessionLocal() as session:
+            conv = session.query(Conversation).filter_by(id=conv_id, user_id=user_id).first()
+            if not conv:
+                return None
+            current = (
+                session.query(ConversationShare)
+                .filter_by(conversation_id=conv_id, revoked=False)
+                .order_by(ConversationShare.created_at.desc())
+                .first()
+            )
+            if current:
+                return current.token
+            token = secrets.token_urlsafe(18)
+            session.add(ConversationShare(token=token, conversation_id=conv_id, created_by=user_id, revoked=False))
+            session.commit()
+            return token
+
+    def revoke_share(self, user_id: int, conv_id: str) -> bool:
+        with SyncSessionLocal() as session:
+            conv = session.query(Conversation).filter_by(id=conv_id, user_id=user_id).first()
+            if not conv:
+                return False
+            session.query(ConversationShare).filter_by(conversation_id=conv_id, revoked=False).update({"revoked": True})
+            session.query(ConversationMember).filter_by(conversation_id=conv_id).delete()
+            session.commit()
+            return True
+
+    def share_status(self, user_id: int, conv_id: str) -> Optional[dict]:
+        with SyncSessionLocal() as session:
+            conv = session.get(Conversation, conv_id)
+            if not conv or not self._allows(session, user_id, conv):
+                return None
+            share = (
+                session.query(ConversationShare)
+                .filter_by(conversation_id=conv_id, revoked=False)
+                .order_by(ConversationShare.created_at.desc())
+                .first()
+            )
+            members = session.query(ConversationMember).filter_by(conversation_id=conv_id).all()
+            owner_id = conv.user_id
+            token = share.token if share else None
+            ids = [owner_id] + [row.user_id for row in members]
+            shared = bool(share) or bool(members)
+        cards = self.author_cards(ids)
+        people = []
+        for bot_id in ids:
+            card = cards.get(bot_id) or {"name": "Участник", "avatar_url": None}
+            people.append({**card, "owner": bot_id == owner_id})
+        return {
+            "shared": shared,
+            "token": token if owner_id == user_id else None,
+            "role": "owner" if owner_id == user_id else "member",
+            "people": people,
+        }
+
+    def join_share(self, user_id: int, token: str) -> Optional[dict]:
+        with SyncSessionLocal() as session:
+            share = session.query(ConversationShare).filter_by(token=token, revoked=False).first()
+            if not share:
+                return None
+            conv = session.get(Conversation, share.conversation_id)
+            if not conv:
+                return None
+            if conv.user_id != user_id:
+                exists = (
+                    session.query(ConversationMember)
+                    .filter_by(conversation_id=conv.id, user_id=user_id)
+                    .first()
+                )
+                if not exists:
+                    session.add(ConversationMember(conversation_id=conv.id, user_id=user_id))
+                    session.commit()
+            return {"id": conv.id, "title": conv.title}
+
+    # ------------------------------------------------------------------
     # Conversations
     # ------------------------------------------------------------------
     def _conv_id(self) -> str:
@@ -1415,8 +1563,58 @@ class DatabaseConversationManager:
 
     def get_conversations(self, user_id: int) -> List[ConversationData]:
         with SyncSessionLocal() as session:
-            convs = session.query(Conversation).filter_by(user_id=user_id).order_by(Conversation.created_at.desc()).all()
-            return [ConversationData.from_model(c) for c in convs]
+            owned = session.query(Conversation).filter_by(user_id=user_id).order_by(Conversation.created_at.desc()).all()
+            joined_ids = [
+                row.conversation_id
+                for row in session.query(ConversationMember).filter_by(user_id=user_id).all()
+            ]
+            seen = {conv.id for conv in owned}
+            joined = []
+            if joined_ids:
+                joined = (
+                    session.query(Conversation)
+                    .filter(Conversation.id.in_(joined_ids))
+                    .order_by(Conversation.updated_at.desc())
+                    .all()
+                )
+            return [ConversationData.from_model(c) for c in owned + [c for c in joined if c.id not in seen]]
+
+    def conversation_roles(self, user_id: int, conv_ids: List[str]) -> Dict[str, str]:
+        """id беседы → owner | member. Нужно списку чатов, чтобы отметить общие."""
+        if not conv_ids:
+            return {}
+        with SyncSessionLocal() as session:
+            owned = {
+                row.id
+                for row in session.query(Conversation).filter(
+                    Conversation.id.in_(conv_ids), Conversation.user_id == user_id
+                ).all()
+            }
+            member = {
+                row.conversation_id
+                for row in session.query(ConversationMember).filter(
+                    ConversationMember.user_id == user_id,
+                    ConversationMember.conversation_id.in_(conv_ids),
+                ).all()
+            }
+            shared = {
+                row.conversation_id
+                for row in session.query(ConversationMember).filter(
+                    ConversationMember.conversation_id.in_(conv_ids)
+                ).all()
+            }
+            shared |= {
+                row.conversation_id
+                for row in session.query(ConversationShare).filter(
+                    ConversationShare.conversation_id.in_(conv_ids),
+                    ConversationShare.revoked.is_(False),
+                ).all()
+            }
+        roles = {}
+        for conv_id in conv_ids:
+            if conv_id in member or conv_id in shared:
+                roles[conv_id] = "owner" if conv_id in owned else "member"
+        return roles
 
     def get_active_conversation(self, user_id: int) -> Optional[ConversationData]:
         with SyncSessionLocal() as session:
@@ -1440,9 +1638,13 @@ class DatabaseConversationManager:
 
     def set_active_conversation(self, user_id: int, conv_id: str) -> Optional[ConversationData]:
         with SyncSessionLocal() as session:
-            conv = session.query(Conversation).filter_by(user_id=user_id, id=conv_id).first()
-            if not conv:
+            conv = session.get(Conversation, conv_id)
+            if not conv or not self._allows(session, user_id, conv):
                 return None
+            # Чужую беседу не делаем «активной» у владельца: иначе гость
+            # переключал бы его личные чаты. Писать в неё всё равно можно по id.
+            if conv.user_id != user_id:
+                return ConversationData.from_model(conv)
             session.query(Conversation).filter_by(user_id=user_id, is_active=True).update({"is_active": False})
             conv.is_active = True
             session.commit()
@@ -1467,7 +1669,7 @@ class DatabaseConversationManager:
         """Used by regenerate: drop the most recent message of a given role so
         the model can be re-run against the same preceding context."""
         with SyncSessionLocal() as session:
-            conv = session.query(Conversation).filter_by(user_id=user_id, id=conv_id).first()
+            conv = self._open_conv(session, user_id, conv_id)
             if not conv:
                 return False
             msg = (
@@ -1486,7 +1688,7 @@ class DatabaseConversationManager:
         """Used by edit-and-resend: drop every message after the first keep_count,
         so an edited user message can be resent as if the rest never happened."""
         with SyncSessionLocal() as session:
-            conv = session.query(Conversation).filter_by(user_id=user_id, id=conv_id).first()
+            conv = self._open_conv(session, user_id, conv_id)
             if not conv:
                 return False
             msgs = session.query(Message).filter_by(conversation_id=conv_id).order_by(Message.id.asc()).all()
@@ -1524,11 +1726,15 @@ class DatabaseConversationManager:
     def add_message(
         self, user_id: int, role: str, content: str, max_messages: int = 2_000,
         attachment: Optional[dict] = None, search: Optional[List[Dict[str, str]]] = None,
+        conv_id: Optional[str] = None, author_user_id: Optional[int] = None,
     ) -> MessageData:
         import json
         with SyncSessionLocal() as session:
-            conv = session.query(Conversation).filter_by(user_id=user_id, is_active=True).first()
+            conv = self._open_conv(session, user_id, conv_id)
             if not conv:
+                # Явный id чужой беседы не подменяем новым личным чатом.
+                if conv_id:
+                    raise PermissionError("Нет доступа к беседе")
                 conv_data = self.create_conversation(user_id)
                 conv = session.query(Conversation).filter_by(id=conv_data.id).first()
             msg = Message(
@@ -1537,6 +1743,7 @@ class DatabaseConversationManager:
                 content=content,
                 attachment=json.dumps(attachment, ensure_ascii=False) if attachment else None,
                 search=json.dumps(search, ensure_ascii=False) if search else None,
+                author_user_id=author_user_id if role == "user" else None,
             )
             session.add(msg)
             session.commit()
@@ -1554,14 +1761,14 @@ class DatabaseConversationManager:
                 search=search,
             )
 
-    def redact_recent_messages(self, user_id: int, secret_values: list[str], limit: int = 8) -> None:
+    def redact_recent_messages(self, user_id: int, secret_values: list[str], limit: int = 8, conv_id: Optional[str] = None) -> None:
         values = [item for item in secret_values if item and len(item) >= 4]
         if not values:
             return
         from app.security.redact import redact_text
 
         with SyncSessionLocal() as session:
-            conv = session.query(Conversation).filter_by(user_id=user_id, is_active=True).first()
+            conv = self._open_conv(session, user_id, conv_id)
             if not conv:
                 return
             rows = (
@@ -1580,9 +1787,9 @@ class DatabaseConversationManager:
             if changed:
                 session.commit()
 
-    def add_document(self, user_id: int, filename: str, content: str) -> None:
+    def add_document(self, user_id: int, filename: str, content: str, conv_id: Optional[str] = None) -> None:
         with SyncSessionLocal() as session:
-            conv = session.query(Conversation).filter_by(user_id=user_id, is_active=True).first()
+            conv = self._open_conv(session, user_id, conv_id)
             if not conv:
                 return
             existing = session.query(Document).filter_by(conversation_id=conv.id, filename=filename).first()
@@ -1592,9 +1799,9 @@ class DatabaseConversationManager:
                 session.add(Document(conversation_id=conv.id, filename=filename, content=content))
             session.commit()
 
-    def get_documents(self, user_id: int) -> List[dict]:
+    def get_documents(self, user_id: int, conv_id: Optional[str] = None) -> List[dict]:
         with SyncSessionLocal() as session:
-            conv = session.query(Conversation).filter_by(user_id=user_id, is_active=True).first()
+            conv = self._open_conv(session, user_id, conv_id)
             if not conv:
                 return []
             docs = session.query(Document).filter_by(conversation_id=conv.id).all()
@@ -1779,9 +1986,9 @@ class DatabaseConversationManager:
                 lines.append(line)
             return "\n".join(lines)
 
-    def remove_document(self, user_id: int, filename: str) -> bool:
+    def remove_document(self, user_id: int, filename: str, conv_id: Optional[str] = None) -> bool:
         with SyncSessionLocal() as session:
-            conv = session.query(Conversation).filter_by(user_id=user_id, is_active=True).first()
+            conv = self._open_conv(session, user_id, conv_id)
             if not conv:
                 return False
             docs = [
@@ -1795,11 +2002,11 @@ class DatabaseConversationManager:
             session.commit()
             return True
 
-    def remove_attachment(self, user_id: int, filename: str) -> Optional[dict]:
+    def remove_attachment(self, user_id: int, filename: str, conv_id: Optional[str] = None) -> Optional[dict]:
         """Remove an attachment card and return its metadata for file cleanup."""
         import json
         with SyncSessionLocal() as session:
-            conv = session.query(Conversation).filter_by(user_id=user_id, is_active=True).first()
+            conv = self._open_conv(session, user_id, conv_id)
             if not conv:
                 return None
             for message in session.query(Message).filter_by(conversation_id=conv.id).order_by(Message.id.desc()).all():
@@ -1817,10 +2024,7 @@ class DatabaseConversationManager:
 
     def clear_documents(self, user_id: int, conv_id: Optional[str] = None) -> bool:
         with SyncSessionLocal() as session:
-            if conv_id:
-                conv = session.query(Conversation).filter_by(user_id=user_id, id=conv_id).first()
-            else:
-                conv = session.query(Conversation).filter_by(user_id=user_id, is_active=True).first()
+            conv = self._open_conv(session, user_id, conv_id)
             if not conv:
                 return False
             session.query(Document).filter_by(conversation_id=conv.id).delete()
@@ -1916,7 +2120,10 @@ class DatabaseConversationManager:
             ],
         })
 
-    def get_messages_for_api(self, context_id: Union[int, str], system_prompt: str, requesting_user_id: Optional[int] = None) -> List[dict]:
+    def get_messages_for_api(
+        self, context_id: Union[int, str], system_prompt: str,
+        requesting_user_id: Optional[int] = None, conv_id: Optional[str] = None,
+    ) -> List[dict]:
         user_id = requesting_user_id or context_id
         messages = [{"role": "system", "content": system_prompt}]
 
@@ -1928,7 +2135,11 @@ class DatabaseConversationManager:
             selected = "auto"
         document_budget, history_budget, recent_budget = packing_char_budgets(selected)
 
-        conv = self.get_active_conversation(user_id)
+        if conv_id and isinstance(user_id, int):
+            conv = self.conversation_view(int(user_id), str(conv_id))
+        else:
+            conv = self.get_active_conversation(user_id) if isinstance(user_id, int) else None
+        shared = bool(conv and self.is_shared(conv.id))
         recent_user_messages: List[str] = []
         for message in (conv.messages if conv else []):
             if message.role != "user":
@@ -1958,7 +2169,7 @@ class DatabaseConversationManager:
                     continue
                 force_filenames.add(name)
         docs = build_document_contexts(
-            self.get_documents(user_id),
+            self.get_documents(int(user_id), conv_id=conv.id if conv else None) if isinstance(user_id, int) else [],
             current_query,
             max_chars=document_budget,
             force_filenames=force_filenames,
@@ -1977,25 +2188,49 @@ class DatabaseConversationManager:
                 ),
             })
 
-        if isinstance(user_id, int):
+        if shared:
+            messages.append({
+                "role": "system",
+                "content": (
+                    "Это общий диалог нескольких людей с ассистентом. "
+                    "Реплики людей помечены именем в начале. Отвечай на последнее сообщение, "
+                    "учитывая общую историю и файлы этой беседы. "
+                    "Личные заметки и настройки отдельных участников сюда не входят."
+                ),
+            })
+        elif isinstance(user_id, int):
             from app.memory import memory_system_message
 
             mem_msg = memory_system_message(self.get_user_memory(user_id))
             if mem_msg:
                 messages.append(mem_msg)
 
-        active_prompt = self.get_active_custom_prompt(user_id) if isinstance(user_id, int) else None
+        active_prompt = None if shared else (self.get_active_custom_prompt(user_id) if isinstance(user_id, int) else None)
         if active_prompt:
             messages.append({"role": "system", "content": active_prompt})
 
         if conv:
+            speaker_names: Dict[int, str] = {}
+            if shared:
+                author_ids = [m.author_user_id for m in conv.messages if m.author_user_id]
+                owner_id = self.conversation_owner(conv.id)
+                if owner_id:
+                    author_ids.append(owner_id)
+                speaker_names = {
+                    bot_id: card["name"] for bot_id, card in self.author_cards(author_ids).items()
+                }
             for msg in pack_chat_history(
                 conv.messages,
                 current_query,
                 max_chars=history_budget,
                 recent_chars=recent_budget,
             ):
-                messages.append({"role": msg.role, "content": self._clean_text(msg.content)})
+                content = self._clean_text(msg.content)
+                if shared and msg.role == "user":
+                    speaker_id = msg.author_user_id or self.conversation_owner(conv.id)
+                    label = speaker_names.get(speaker_id or 0) or "Участник"
+                    content = f"{label}: {content}"
+                messages.append({"role": msg.role, "content": content})
             image_parts = self._image_parts_for_conversation(conv, current_query)
             if not image_parts:
                 leftover = [

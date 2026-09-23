@@ -1,10 +1,11 @@
 import { useEffect } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { Box } from '@mui/material';
 import { AnimatePresence, motion } from 'framer-motion';
 import LoginPage from '@/pages/LoginPage';
 import LandingPage from '@/pages/LandingPage';
 import ChatPage from '@/pages/ChatPage';
+import JoinPage from '@/pages/JoinPage';
 import SettingsPage from '@/pages/SettingsPage';
 import BillingPage from '@/pages/BillingPage';
 import AdminLayout from '@/pages/admin/AdminLayout';
@@ -18,7 +19,9 @@ import { apiFetch } from '@/api/client';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.accessToken);
-  return token ? <>{children}</> : <Navigate to="/login" replace />;
+  const location = useLocation();
+  const next = `${location.pathname}${location.search}`;
+  return token ? <>{children}</> : <Navigate to={`/login?next=${encodeURIComponent(next)}`} replace />;
 }
 
 const pageTransition = {
@@ -101,6 +104,14 @@ export default function App() {
                 <motion.div key="chat" {...pageTransition} style={{ height: '100dvh', overflow: 'hidden' }}>
                   <ChatPage />
                 </motion.div>
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/join/:token"
+            element={
+              <PrivateRoute>
+                <JoinPage />
               </PrivateRoute>
             }
           />
