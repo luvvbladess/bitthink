@@ -240,11 +240,16 @@ async def get_smart_response(
     model = conversation_manager.get_user_model(user_id)
     reasoning_effort = conversation_manager.get_user_reasoning_effort(user_id)
     sub = conversation_manager.get_subscription(user_id)
-    from app.billing.plans import clamp_model, canonical_tier
+    from app.billing.plans import allowed_models, clamp_model, canonical_tier
     from app.billing.quota import assert_can_use, usage_view
+    from mode_switch import pack_mode_switch, suggest_mode_switch
 
     tier = canonical_tier(sub.get("tier"))
     model = clamp_model(tier, model)
+    # Before quota: a mode hint must not spend a reply or start a model call.
+    suggestion = suggest_mode_switch(model, user_text, allowed=allowed_models(tier))
+    if suggestion:
+        return suggestion["text"], [], "", pack_mode_switch(suggestion)
     pool = "computer" if model in {"director", "studio", "docgen"} else "chat"
     view = usage_view(sub)
     if (
