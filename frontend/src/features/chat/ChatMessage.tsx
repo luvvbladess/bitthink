@@ -8,6 +8,8 @@ import { downloadBlob } from '@/api/client';
 import { DocumentAttachment, AttachmentInfo } from './DocumentAttachment';
 import { ChatImage } from './ChatImage';
 import { CLARIFY_ACK, isClarifyReply, splitSearch } from './clarify';
+import { modeSwitchFromSearch } from './modeSwitch';
+import { ModeSwitchCard } from './ModeSwitchCard';
 import { parseSources } from './sources';
 import { SourcesCountButton } from './SourcesPanel';
 import { ReasoningTrace, SearchItem } from './ReasoningTrace';
@@ -27,6 +29,7 @@ interface Props {
   sourcesActive?: boolean;
   onOpenSources?: () => void;
   onEditImage?: (url: string) => void;
+  onAcceptMode?: (model: string) => void;
 }
 
 const ALLOWED_IMAGE_DATA_URI = /^data:image\/(png|jpe?g|gif|webp);base64,/i;
@@ -204,6 +207,7 @@ export function ChatMessage({
   sourcesActive,
   onOpenSources,
   onEditImage,
+  onAcceptMode,
 }: Props) {
   const isUser = role === 'user';
   const [copied, setCopied] = useState(false);
@@ -211,6 +215,7 @@ export function ChatMessage({
   const [editValue, setEditValue] = useState(content);
   const { sources } = splitSearch(search);
   const parsedSources = parseSources(sources);
+  const modeSwitch = !isUser ? modeSwitchFromSearch(search) : null;
   const visibleContent = isUser && isClarifyReply(content) ? CLARIFY_ACK : content;
 
   const handleCopy = async () => {
@@ -350,6 +355,9 @@ export function ChatMessage({
           >
             {normalizeMarkdown(visibleContent)}
           </ReactMarkdown>
+          {modeSwitch && onAcceptMode && (
+            <ModeSwitchCard suggestion={modeSwitch} onAccept={() => onAcceptMode(modeSwitch.model)} />
+          )}
         </Box>
       )}
       {visibleContent && !editing && (
@@ -400,7 +408,7 @@ export function ChatMessage({
                   </IconButton>
                 </Tooltip>
               )}
-              {isLastAssistant && onRegenerate && (
+              {isLastAssistant && onRegenerate && !modeSwitch && (
                 <Tooltip title="Повторить ответ">
                   <IconButton size="small" onClick={onRegenerate} aria-label="Повторить ответ" sx={{ color: 'text.muted' }}>
                     <ArrowClockwise size={14} />

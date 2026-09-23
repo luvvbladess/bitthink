@@ -93,6 +93,121 @@ export async function apiFetch(path: string, options: RequestInit & { timeoutMs?
   }
 }
 
+export interface FormProgressEvent {
+  type?: string;
+  done?: number;
+  total?: number;
+  label?: string;
+  detail?: string;
+  [key: string]: unknown;
+}
+
+/** Multipart upload that can report real byte progress and newline-delimited server events. */
+export function apiFormDataProgress(
+  path: string,
+  formData: FormData,
+  options: {
+    signal?: AbortSignal;
+    timeoutMs?: number;
+    headers?: Record<string, string>;
+    onUploadProgress?: (loaded: number, total: number) => void;
+    onEvent?: (event: FormProgressEvent) => void;
+  } = {},
+): Promise<Record<string, unknown>> {
+  const send = (token: string | null) =>
+    new Promise<XMLHttpRequest>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      let carry = '';
+      let parsedLength = 0;
+      const consume = (flushTail: boolean) => {
+        const chunk = xhr.responseText.slice(parsedLength);
+        parsedLength = xhr.responseText.length;
+        carry += chunk;
+        const lines = carry.split('\n');
+        carry = flushTail ? '' : (lines.pop() ?? '');
+        const pending = flushTail ? [...lines, carry].filter(Boolean) : lines;
+        if (flushTail) carry = '';
+        for (const line of pending) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            options.onEvent?.(JSON.parse(trimmed) as FormProgressEvent);
+          } catch {
+            // A non-event body (plain JSON error) is handled by the caller.
+          }
+        }
+      };
+      xhr.open('POST', `${API_BASE}${path}`);
+      if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+      for (const [key, value] of Object.entries(options.headers || {})) xhr.setRequestHeader(key, value);
+      if (options.timeoutMs) xhr.timeout = options.timeoutMs;
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) options.onUploadProgress?.(event.loaded, event.total);
+      };
+      xhr.onprogress = () => consume(false);
+      const abort = () => xhr.abort();
+      options.signal?.addEventListener('abort', abort, { once: true });
+      xhr.onabort = () => reject(Object.assign(new Error('Запрос остановлен'), { name: 'AbortError' }));
+      xhr.ontimeout = () => reject(new Error('Превышено время ожидания'));
+      xhr.onerror = () => reject(new Error('Не удалось загрузить файл'));
+      xhr.onload = () => {
+        consume(true);
+        options.signal?.removeEventListener('abort', abort);
+        resolve(xhr);
+      };
+      xhr.send(formData);
+    });
+
+  const run = async (token: string | null, allowRefresh: boolean): Promise<Record<string, unknown>> => {
+    const xhr = await send(token);
+    if (xhr.status === 401 && allowRefresh && useAuthStore.getState().refreshToken) {
+      const next = await refreshAccessToken();
+      if (!next) {
+        useAuthStore.getState().logout();
+        throw new Error('HTTP 401');
+      }
+      return run(next, false);
+    }
+    if (xhr.status >= 400) {
+      let detail = `HTTP ${xhr.status}`;
+      try {
+        const data = JSON.parse(xhr.responseText);
+        detail = data.detail || data.message || detail;
+      } catch {
+        // keep the status text
+      }
+      throw new Error(typeof detail === 'string' ? detail : `HTTP ${xhr.status}`);
+    }
+    const events: FormProgressEvent[] = [];
+    let sawEvent = false;
+    for (const line of xhr.responseText.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const event = JSON.parse(trimmed) as FormProgressEvent;
+        if (event && typeof event === 'object' && typeof event.type === 'string') {
+          sawEvent = true;
+          events.push(event);
+        }
+      } catch {
+        sawEvent = false;
+        break;
+      }
+    }
+    if (sawEvent) {
+      const failure = [...events].reverse().find((event) => event.type === 'error');
+      if (failure) throw new Error(String(failure.detail || 'Не удалось прочитать документ'));
+      const result = [...events].reverse().find((event) => event.type === 'result');
+      if (!result) throw new Error('Сервер не закончил разбор документа');
+      const { type: _type, ...rest } = result;
+      return rest;
+    }
+    return JSON.parse(xhr.responseText);
+  };
+
+  return run(useAuthStore.getState().accessToken, true);
+}
+
 export async function apiFormData(path: string, formData: FormData, options?: { signal?: AbortSignal; timeoutMs?: number }) {
   const timed = withTimeout({ signal: options?.signal }, options?.timeoutMs);
   let token = useAuthStore.getState().accessToken;
