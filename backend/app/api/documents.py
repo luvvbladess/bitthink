@@ -5,13 +5,27 @@ import zipfile
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi.responses import StreamingResponse
 
 from app.auth import get_current_user
 from app.config import get_settings
 from app.core.repository import repo
 
 router = APIRouter()
+
+PROGRESS_HEADER = "x-document-progress"
+
+
+def _wants_progress(request: Request) -> bool:
+    return (request.headers.get(PROGRESS_HEADER) or "").strip() == "1"
+
+
+async def _ndjson(work):
+    from app.services.document_progress import encode_event, iter_work_events
+
+    async for event in iter_work_events(work):
+        yield encode_event(event)
 
 IMAGE_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff",
@@ -83,6 +97,7 @@ async def list_documents(user_id: str = Depends(get_current_user)):
 
 @router.post("")
 async def upload_document(
+    request: Request,
     file: UploadFile = File(...),
     conversation_id: Optional[str] = Form(None),
     user_id: str = Depends(get_current_user),
@@ -106,38 +121,47 @@ async def upload_document(
         from document_parser import extract_zip_archive
 
         bot_user_id = await repo.ensure_user(user_id)
-        try:
-            documents = await extract_zip_archive(contents, filename, user_id=bot_user_id, extended_limits=extended_limits)
-        except MemoryError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail="Архив слишком тяжёлый для разбора.",
-            ) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except (zipfile.BadZipFile, OSError) as exc:
-            raise HTTPException(
-                status_code=400,
-                detail="Не удалось прочитать архив — файл повреждён или не является zip.",
-            ) from exc
-        if not documents:
-            raise HTTPException(status_code=400, detail="В архиве не найдено файлов, которые можно прочитать")
-        for doc_name, text in documents:
-            await repo.add_document(user_id, doc_name, text, conv_id=conversation_id)
-        msg = await repo.add_message(
-            user_id,
-            "user",
-            filename,
-            conv_id=conversation_id,
-            attachment={
-                "name": filename,
-                "size": len(contents),
-                "status": "done",
-                "type": "document",
-                "note": f"{len(documents)} файлов",
-            },
-        )
-        return {"ok": True, "kind": "archive", "filename": filename, "documents": len(documents), "message": msg}
+
+        async def finish_archive(report=None):
+            try:
+                documents = await extract_zip_archive(
+                    contents,
+                    filename,
+                    user_id=bot_user_id,
+                    extended_limits=extended_limits,
+                    on_progress=report,
+                )
+            except MemoryError as exc:
+                raise HTTPException(status_code=400, detail="Архив слишком тяжёлый для разбора.") from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except (zipfile.BadZipFile, OSError) as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Не удалось прочитать архив — файл повреждён или не является zip.",
+                ) from exc
+            if not documents:
+                raise HTTPException(status_code=400, detail="В архиве не найдено файлов, которые можно прочитать")
+            for doc_name, text in documents:
+                await repo.add_document(user_id, doc_name, text, conv_id=conversation_id)
+            msg = await repo.add_message(
+                user_id,
+                "user",
+                filename,
+                conv_id=conversation_id,
+                attachment={
+                    "name": filename,
+                    "size": len(contents),
+                    "status": "done",
+                    "type": "document",
+                    "note": f"{len(documents)} файлов",
+                },
+            )
+            return {"ok": True, "kind": "archive", "filename": filename, "documents": len(documents), "message": msg}
+
+        if _wants_progress(request):
+            return StreamingResponse(_ndjson(finish_archive), media_type="application/x-ndjson")
+        return await finish_archive()
 
     if not is_image and ext not in DOCUMENT_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"Формат {ext or 'без расширения'} пока нельзя прочитать")
@@ -175,33 +199,42 @@ async def upload_document(
         )
         return {"ok": True, "kind": "image", "filename": filename, "message": msg}
 
-    from document_parser import extract_text_from_file
+    from document_parser import extract_text_from_file, store_source_docx
 
     bot_user_id = await repo.ensure_user(user_id)
-    try:
-        text = await extract_text_from_file(contents, filename, user_id=bot_user_id, extended_limits=extended_limits)
-    except MemoryError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail="Файл слишком тяжёлый для разбора. Пришлите часть документа или меньше страниц.",
-        ) from exc
-    if text is None:
-        raise HTTPException(status_code=400, detail="Could not extract text from file")
 
-    await repo.add_document(user_id, filename, text, conv_id=conversation_id)
-    # Оригинал .docx нужен режиму «Документы» как основа оформления: из базы
-    # доступен только извлечённый текст, по нему стили не восстановить.
-    from document_parser import store_source_docx
+    async def finish_document(report=None):
+        try:
+            text = await extract_text_from_file(
+                contents,
+                filename,
+                user_id=bot_user_id,
+                extended_limits=extended_limits,
+                on_progress=report,
+            )
+        except MemoryError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Файл слишком тяжёлый для разбора. Пришлите часть документа или меньше страниц.",
+            ) from exc
+        if text is None:
+            raise HTTPException(status_code=400, detail="Could not extract text from file")
+        await repo.add_document(user_id, filename, text, conv_id=conversation_id)
+        # Оригинал .docx нужен режиму «Документы» как основа оформления: из базы
+        # доступен только извлечённый текст, по нему стили не восстановить.
+        await asyncio.to_thread(store_source_docx, bot_user_id, filename, contents)
+        msg = await repo.add_message(
+            user_id,
+            "user",
+            filename,
+            conv_id=conversation_id,
+            attachment={"name": filename, "size": len(contents), "status": "done", "type": "document"},
+        )
+        return {"ok": True, "kind": "document", "filename": filename, "length": len(text), "message": msg}
 
-    await asyncio.to_thread(store_source_docx, bot_user_id, filename, contents)
-    msg = await repo.add_message(
-        user_id,
-        "user",
-        filename,
-        conv_id=conversation_id,
-        attachment={"name": filename, "size": len(contents), "status": "done", "type": "document"},
-    )
-    return {"ok": True, "kind": "document", "filename": filename, "length": len(text), "message": msg}
+    if _wants_progress(request):
+        return StreamingResponse(_ndjson(finish_document), media_type="application/x-ndjson")
+    return await finish_document()
 
 
 @router.delete("/{filename}")

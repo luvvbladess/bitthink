@@ -17,6 +17,7 @@ export function splitSearch(search?: SearchItem[] | null): {
   const sources: SearchItem[] = [];
   let questions: ClarifyQuestion[] = [];
   for (const item of search || []) {
+    if (item?.query === '__mode_switch__') continue;
     if (item?.query !== CLARIFY_QUERY) {
       if (item?.query || item?.summary) sources.push(item);
       continue;

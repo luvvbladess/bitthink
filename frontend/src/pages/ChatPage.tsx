@@ -13,7 +13,7 @@ import { MessageInput } from '@/features/chat/MessageInput';
 import { AttachmentInfo } from '@/features/chat/DocumentAttachment';
 import { lastChatImageUrl } from '@/features/chat/chatImages';
 import { useWebSocket } from '@/hooks/useWebSocket';
-import { apiFetch, apiFormData, downloadBlob, exportDocx as requestDocx } from '@/api/client';
+import { apiFetch, apiFormData, apiFormDataProgress, downloadBlob, exportDocx as requestDocx } from '@/api/client';
 import { useAuthStore } from '@/stores/authStore';
 import { CHAT_COL } from '@/features/chat/chatColumn';
 import { QuotaNotice } from '@/features/chat/QuotaNotice';
@@ -67,6 +67,13 @@ function parseSearchFromText(text: string): { query: string; summary: string }[]
     results.push({ query: title || 'Источник', summary: url });
   }
   return results.length ? results : undefined;
+}
+
+function keepLiveUploads(current: DisplayMessage[], derived: DisplayMessage[]): DisplayMessage[] {
+  const uploads = current.filter((message) => (
+    message.attachment?.status === 'uploading' && !derived.some((item) => item.id === message.id)
+  ));
+  return uploads.length ? [...derived, ...uploads] : derived;
 }
 
 export default function ChatPage() {
@@ -253,7 +260,7 @@ export default function ChatPage() {
           });
         }
 
-        setDisplayMessages(withError);
+        setDisplayMessages((current) => keepLiveUploads(current, withError));
 
         // If the socket reconnected during a long analysis, polling may see the
         // persisted assistant answer before a new `done` event can arrive.
@@ -284,7 +291,7 @@ export default function ChatPage() {
           setJobs((prev) => dropJob(prev, activeConvId));
         }
       } else {
-        setDisplayMessages(base);
+        setDisplayMessages((current) => keepLiveUploads(current, base));
       }
     }
   }, [activeConvId, messages, pendingContent, regeneratingId, jobErrors]);
@@ -696,6 +703,7 @@ export default function ChatPage() {
     // There is no artificial file-count limit; progress stays visible for long batches.
     const UPLOAD_CONCURRENCY = 3;
     const UPLOAD_TIMEOUT_MS = isDocgen ? 600_000 : 180_000;
+    const LARGE_DOCUMENT_BYTES = 1024 * 1024;
     let lastError: string | undefined;
     let finished = 0;
 
@@ -706,14 +714,51 @@ export default function ChatPage() {
       formData.append('conversation_id', conversationId!);
       const controller = new AbortController();
       const timer = window.setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
+      const largeDocument = !file.type.startsWith('image/') && file.size >= LARGE_DOCUMENT_BYTES;
+      const paintProgress = (progress: number | null, progressLabel: string) => {
+        setDisplayMessages((current) => current.map((message) => message.id === uploadId ? {
+          ...message,
+          attachment: { ...message.attachment!, progress, progressLabel },
+        } : message));
+      };
       try {
-        const res = await apiFormData('/documents', formData, { signal: controller.signal });
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          const errMsg = errData.detail || errData.message || (res.status === 413 ? 'Файл слишком большой для загрузки' : `HTTP ${res.status}`);
-          throw new Error(errMsg);
+        let data: { message?: { id: string; role: string; content: string; attachment?: AttachmentInfo } };
+        if (largeDocument) {
+          paintProgress(0, 'Загрузка 0%');
+          data = await apiFormDataProgress('/documents', formData, {
+            signal: controller.signal,
+            timeoutMs: UPLOAD_TIMEOUT_MS,
+            headers: { 'X-Document-Progress': '1' },
+            onUploadProgress: (loaded, total) => {
+              if (total <= 0) {
+                paintProgress(null, 'Загрузка');
+                return;
+              }
+              if (loaded >= total) {
+                paintProgress(null, 'Разбираю документ');
+                return;
+              }
+              const pct = Math.round((loaded * 100) / total);
+              paintProgress(pct, `Загрузка ${pct}%`);
+            },
+            onEvent: (event) => {
+              if (event.type !== 'progress') return;
+              const done = Number(event.done);
+              const total = Number(event.total);
+              if (!Number.isFinite(done) || !Number.isFinite(total) || total < 2) return;
+              const pct = Math.max(0, Math.min(100, Math.round((done * 100) / total)));
+              paintProgress(pct, String(event.label || `Разбор ${done} из ${total}`));
+            },
+          }) as { message?: { id: string; role: string; content: string; attachment?: AttachmentInfo } };
+        } else {
+          const res = await apiFormData('/documents', formData, { signal: controller.signal });
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            const errMsg = errData.detail || errData.message || (res.status === 413 ? 'Файл слишком большой для загрузки' : `HTTP ${res.status}`);
+            throw new Error(errMsg);
+          }
+          data = await res.json();
         }
-        const data = await res.json();
         successCount += 1;
         const persisted = data.message as { id: string; role: string; content: string; attachment?: AttachmentInfo } | undefined;
         setDisplayMessages((current) => current.map((message) => message.id === uploadId ? {

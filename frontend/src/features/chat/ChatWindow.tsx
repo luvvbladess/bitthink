@@ -523,6 +523,7 @@ export function ChatWindow({
               onRegenerate={onRegenerate}
               onEdit={msg.role === 'user' && !isClarifyReply(msg.content) ? (text) => onEditMessage?.(msg.id, text) : undefined}
               onEditImage={onEditImage}
+              onAcceptMode={(model) => selectModel.mutateAsync(model)}
             />
             {msg.id === lastAssistantId && nextChips.length > 0 && (
               <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mt: 1, mb: 1.5, pl: { xs: 0, sm: 0.5 } }}>
