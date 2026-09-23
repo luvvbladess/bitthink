@@ -16,11 +16,12 @@ from app.db.engine import sync_engine
 def _ensure_runtime_tables() -> None:
     from sqlalchemy import inspect, text
 
-    from app.db.models import ConversationMember, ConversationShare, UserSkill
+    from app.db.models import ConversationAside, ConversationMember, ConversationShare, UserSkill
 
     UserSkill.__table__.create(bind=sync_engine, checkfirst=True)
     ConversationShare.__table__.create(bind=sync_engine, checkfirst=True)
     ConversationMember.__table__.create(bind=sync_engine, checkfirst=True)
+    ConversationAside.__table__.create(bind=sync_engine, checkfirst=True)
     inspector = inspect(sync_engine)
     if "messages" in inspector.get_table_names():
         columns = {column["name"] for column in inspector.get_columns("messages")}

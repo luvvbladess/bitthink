@@ -70,6 +70,18 @@ class MessageOut(BaseModel):
     mine: bool = False
 
 
+class AsideCreate(BaseModel):
+    content: str = Field(min_length=1, max_length=4000)
+
+
+class AsideOut(BaseModel):
+    id: int
+    content: str
+    created_at: str
+    author: Optional[MessageAuthor] = None
+    mine: bool = False
+
+
 class ChatMessage(BaseModel):
     content: str = Field(min_length=1)
     conversation_id: Optional[str] = None

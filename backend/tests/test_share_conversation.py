@@ -38,9 +38,19 @@ def test_member_writes_and_uploads_into_the_shared_conversation():
     assert manager.conversation_roles(guest, [owned.id])[owned.id] == "member"
     assert manager.conversation_roles(owner, [owned.id])[owned.id] == "owner"
 
+    posted = manager.add_aside(guest, owned.id, "это людям, не ассистенту")
+    assert posted and posted["mine"] is True
+    notes = manager.list_asides(owner, owned.id)
+    assert notes and notes[0]["content"] == "это людям, не ассистенту"
+    assert notes[0]["mine"] is False
+    api = manager.get_messages_for_api(owner, "системный", requesting_user_id=owner, conv_id=owned.id)
+    blob = "\n".join(item.get("content") or "" for item in api)
+    assert "это людям, не ассистенту" not in blob
+
     assert manager.revoke_share(owner, owned.id)
     assert manager.conversation_view(guest, owned.id) is None
     assert manager.join_share(guest, token) is None
+    assert manager.list_asides(guest, owned.id) is None
 
     manager.delete_conversation(owner, owned.id)
     manager.delete_conversation(owner, other.id)
