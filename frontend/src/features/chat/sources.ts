@@ -36,7 +36,10 @@ export function parseSources(items?: SearchItem[] | null): ParsedSource[] {
   const result: ParsedSource[] = [];
   for (const item of items || []) {
     const url = sourceUrl(item.summary || '');
-    const key = url || `${item.query}|${item.summary}`;
+    // Pilot also stores its employees' task briefs here ("load_skill prices…").
+    // Without a link they are internal notes, not sources.
+    if (!url) continue;
+    const key = url;
     if (!key || seen.has(key)) continue;
     seen.add(key);
     const domain = sourceDomain(url || item.query || '');

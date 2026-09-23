@@ -132,8 +132,8 @@ def _default_clarify_questions(user_text: str) -> list[dict[str, Any]]:
     if kind in {"landing", "dashboard", "app"}:
         return [
             {
-                "prompt": "О чём макет?",
-                "options": ["Лендинг", "Дашборд", "Прототип экранов", "Слайды", "Другое"],
+                "prompt": "Что сделать?",
+                "options": ["Картинка", "Лендинг", "Дашборд", "Прототип экранов", "Слайды"],
             }
         ]
     return [
@@ -472,18 +472,93 @@ async def get_studio_response(
         billing_pool.reset(token)
 
 
+def _chat_image_bytes(user_id: int, *, current_turn_only: bool) -> list[bytes]:
+    """Фото, загруженные в беседу: только этого хода или последние из всей беседы."""
+    try:
+        from conversations import conversation_manager
+
+        conv = conversation_manager.get_active_conversation(int(user_id))
+    except Exception:
+        logger.debug("Studio: no conversation for chat images", exc_info=True)
+        return []
+    messages = list(getattr(conv, "messages", None) or []) if conv else []
+    start = 0
+    if current_turn_only:
+        last_assistant = max(
+            (index for index, message in enumerate(messages) if getattr(message, "role", "") == "assistant"),
+            default=-1,
+        )
+        start = last_assistant + 1
+    found: list[bytes] = []
+    for message in messages[start:]:
+        attachment = getattr(message, "attachment", None) or {}
+        if not conversation_manager._is_image_attachment(attachment):
+            continue
+        path = conversation_manager._attachment_disk_path(attachment)
+        try:
+            if path and path.is_file():
+                found.append(path.read_bytes())
+        except OSError:
+            logger.warning("Studio: cannot read chat image %s", path)
+    return found[-4:]
+
+
 async def _run_studio(
     messages: List[Dict[str, Any]],
     user_text: str,
     user_id: int,
     status_msg: Any,
 ) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
-    from studio.html_canvas import load_previous_html, resolve_studio_job, wants_pptx_file
+    from studio.html_canvas import (
+        HTML_KINDS,
+        detect_kind_explicit,
+        is_image_canvas,
+        load_previous_html,
+        resolve_studio_job,
+        wants_image_edit,
+        wants_pptx_file,
+    )
 
     previous_html = load_previous_html(user_id)
+    had_canvas = bool(previous_html)
+    explicit = detect_kind_explicit(user_text)
+
+    # Ответ на уточнение «Что сделать? – Картинка»: рисуем по исходной просьбе.
+    from clarify import is_clarify_reply
+
+    if is_clarify_reply(user_text) and re.search(r"[–-]\s*Картинка\b", user_text):
+        original = ""
+        for message in reversed(messages or []):
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if isinstance(content, str) and content.strip() and not is_clarify_reply(content):
+                original = content.strip()
+                break
+        return await _run_image_studio(messages, original or user_text, user_id, status_msg)
+    html_canvas_open = bool(previous_html) and not is_image_canvas(previous_html)
+
+    # Фото, приложенное к этому сообщению: «убери фон», «сделай в стиле аниме».
+    # Раньше оно уходило в сборку лендинга, и Студия отвечала макетом вместо правки.
+    if explicit not in HTML_KINDS and (not html_canvas_open or explicit == "image" or wants_image_edit(user_text)):
+        turn_images = _chat_image_bytes(user_id, current_turn_only=True)
+        if turn_images:
+            return await _run_image_studio(
+                messages, user_text, user_id, status_msg, source_images=turn_images,
+            )
+
     kind, previous_html, iterating = resolve_studio_job(user_text, previous_html)
     if wants_pptx_file(user_text) and not iterating:
         return await _run_pptx_studio(messages, user_text, user_id, status_msg)
+
+    # Фото из беседы без открытого холста: правка по словам «фон», «цвет», «убери».
+    if kind != "image" and explicit is None and not had_canvas and wants_image_edit(user_text):
+        older_images = _chat_image_bytes(user_id, current_turn_only=False)
+        if older_images:
+            return await _run_image_studio(
+                messages, user_text, user_id, status_msg, source_images=older_images[-1:],
+            )
+
     if kind == "image":
         return await _run_image_studio(
             messages,
@@ -508,6 +583,7 @@ async def _run_image_studio(
     status_msg: Any,
     *,
     previous_html: str = "",
+    source_images: list[bytes] | None = None,
 ) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
     from handlers.core import sanitize_response_text
     from studio.html_canvas import (
@@ -519,7 +595,8 @@ async def _run_image_studio(
     )
 
     iterating = bool(previous_html and is_image_canvas(previous_html))
-    await _update_status(status_msg, "Правлю изображение" if iterating else "Рисую изображение")
+    editing = iterating or bool(source_images)
+    await _update_status(status_msg, "Правлю изображение" if editing else "Рисую изображение")
     debit_images = None
     try:
         from app.billing.quota import QuotaError, assert_can_generate_image, debit_images as _debit_images
@@ -535,11 +612,13 @@ async def _run_image_studio(
 
     data_url: str | None = None
     err: str | None = None
-    if iterating:
+    if source_images:
+        data_url, err = await edit_image(source_images, user_text, size="1024x1024", quality="high")
+    elif iterating:
         raw = extract_embedded_image_bytes(previous_html)
         if raw:
             data_url, err = await edit_image(raw, user_text, size="1024x1024", quality="high")
-    if not data_url:
+    if not data_url and not source_images:
         data_url, err = await generate_image(user_text, size="1024x1024", quality="high")
     if not data_url or not (
         data_url.startswith("data:image/") or data_url.startswith("https://") or data_url.startswith("/")
@@ -564,7 +643,7 @@ async def _run_image_studio(
             "canvas": True,
         }
     ]
-    if iterating:
+    if editing:
         answer = f"Картинка «{title}» обновлена на холсте. Напишите, что ещё поменять, или скачайте PNG."
     else:
         answer = f"Картинка «{title}» на холсте справа. Правится следующим сообщением, скачивается как PNG."

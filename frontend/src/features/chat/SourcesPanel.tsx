@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Box, IconButton, SwipeableDrawer, useMediaQuery, useTheme } from '@mui/material';
+import { Box, IconButton, SwipeableDrawer } from '@mui/material';
 import { ArrowSquareOut, CaretDown, MagnifyingGlass, X } from '@phosphor-icons/react';
 import { floatingPanelSx } from '@/theme/effects';
 import type { ParsedSource } from './sources';
@@ -241,6 +241,7 @@ export function SourcesRail({
             '&::-webkit-scrollbar': { width: 6 },
             '&::-webkit-scrollbar-track': { background: 'transparent' },
             '&::-webkit-scrollbar-thumb': { bgcolor: 'var(--bt-line)', borderRadius: 99 },
+            '&::-webkit-scrollbar-button': { display: 'none', width: 0, height: 0 },
           }}
         >
           {sources.map((source) => (
@@ -269,9 +270,6 @@ export function SourcesSheet({
   allCount?: number;
   onShowAll?: () => void;
 }) {
-  const theme = useTheme();
-  const isMobile = useMediaQuery(theme.breakpoints.down('lg'));
-  if (!isMobile) return null;
   return (
     <SwipeableDrawer
       anchor="bottom"

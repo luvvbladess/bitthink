@@ -53,15 +53,27 @@ _DASH_HINT = re.compile(
 _APP_HINT = re.compile(
     r"(?i)\b(прототип\w*|интерфейс\w*|ui[\s-]?kit|экран прило|мобильн\w*|app ui|макет приложения)\b"
 )
+_IMAGE_NOUN = (
+    r"(?:картин\w*|изображен\w*|фото(?!отч)\w*|фотк\w*|арт\b|арты\b|обложк\w*|аватар\w*|иллюстрац\w*|"
+    r"рисун\w*|постер\w*|плакат\w*|логотип\w*|лого\b|баннер\w*|стикер\w*|обои\b|открытк\w*|"
+    r"портрет\w*|пейзаж\w*|image|picture|illustration|photo|artwork|poster|logo)"
+)
 _IMAGE_HINT = re.compile(
     r"(?i)(?:"
-    r"\bнарисуй(?:те)?\b|\bнарисовать\b|"
-    r"\bdraw\s+(?:me\b|an?\b|the\b)?"
-    r"|(?:сгенерируй(?:те)?|создай(?:те)?|сделай(?:те)?|хочу|нужна|нужно)\s+"
-    r"(?:картинк|изображен|фото(?!отчет)|арт\b|обложк|аватар|иллюстрац)"
-    r"|generate\s+(?:an?\s+)?(?:image|picture|illustration)"
-    r"|create\s+(?:an?\s+)?(?:image|picture)"
+    r"\bнарису\w*|\bдорису\w*|\bперерису\w*|\bизобрази\w*|"
+    r"\bdraw\b|\bpaint\b|"
+    # «сгенерируй мне, пожалуйста, картинку», «сделай красивую обложку»
+    r"\b(?:сгенериру\w*|генериру\w*|созда\w*|сдела\w*|хочу|нуж\w*|покажи|придумай|generate|create|make)"
+    r"(?:\s+[\w,.-]+){0,4}?\s+" + _IMAGE_NOUN +
+    # «картинку кота», «фото собаки в стиле аниме» — существительное первым словом
+    r"|^\s*" + _IMAGE_NOUN +
     r")"
+)
+# Правка фото/картинки: «убери фон», «сделай его рыжим», «поменяй цвет».
+_IMAGE_EDIT_HINT = re.compile(
+    r"(?i)\b(?:фон\w*|стил\w*|цвет\w*|убери\w*|удали\w*|добав\w*|замени\w*|поменя\w*|измени\w*|"
+    r"отредактир\w*|отретушир\w*|ретуш\w*|дорису\w*|перерису\w*|сделай\s+(?:его|её|ее|их|это|фото|картинк\w*)|"
+    r"улучш\w*|раскрас\w*|обрежь|кадрир\w*|свет\w*|тёмн\w*|темн\w*|ярч\w*)"
 )
 _NEW_WORK = re.compile(
     r"(?i)\b(с нуля|заново|другая тема|новый (сайт|лендинг|проект|макет|питч)|вместо этого)\b"
@@ -100,6 +112,13 @@ def detect_kind_explicit(user_text: str) -> str | None:
 
 def detect_kind(user_text: str) -> str:
     return detect_kind_explicit(user_text) or "landing"
+
+
+def wants_image_edit(user_text: str) -> bool:
+    return bool(_IMAGE_EDIT_HINT.search(user_text or "") or _IMAGE_HINT.search(user_text or ""))
+
+
+HTML_KINDS = _HTML_KINDS
 
 
 def resolve_studio_job(user_text: str, previous_html: str | None) -> tuple[str, str, bool]:

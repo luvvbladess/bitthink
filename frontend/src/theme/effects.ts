@@ -132,7 +132,9 @@ export const headerIconBtnSx = {
   [HOVER_FINE]: {
     '&:hover': {
       color: 'primary.light',
-      bgcolor: 'var(--bt-glow)',
+      // --bt-glow is a 12% wash. Using it as the whole fill makes the button
+      // disappear into the page. Keep the solid plate and only tint it.
+      bgcolor: 'color-mix(in srgb, var(--bt-elevated) 78%, #21a0ce)',
       borderColor: 'var(--bt-line)',
     },
   },

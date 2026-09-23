@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Box, Dialog, DialogContent, DialogTitle, IconButton, Typography } from '@mui/material';
-import { Copy, Check, LinkBreak, Users } from '@phosphor-icons/react';
+import { Copy, Check, LinkBreak, Users, X } from '@phosphor-icons/react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/api/client';
 import { UserAvatar } from '@/components/UserAvatar';
@@ -54,9 +54,12 @@ export function ShareDialog({ conversationId, open, onClose }: { conversationId:
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="xs">
-      <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+      <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1, pr: 1 }}>
         <Users size={20} />
-        Общий диалог
+        <Box component="span" sx={{ flex: 1 }}>Общий диалог</Box>
+        <IconButton onClick={onClose} aria-label="Закрыть" sx={{ color: 'text.primary', bgcolor: 'var(--bt-elevated)', border: '1px solid var(--bt-hairline)', '&:hover': { bgcolor: 'color-mix(in srgb, var(--bt-elevated) 78%, #21a0ce)' } }}>
+          <X size={18} />
+        </IconButton>
       </DialogTitle>
       <DialogContent>
         <Typography sx={{ fontSize: '0.875rem', color: 'text.secondary', mb: 2 }}>

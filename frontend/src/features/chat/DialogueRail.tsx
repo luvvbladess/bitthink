@@ -107,7 +107,7 @@ export function DialogueRail({ scroller, questions, onJump }: Props) {
         bottom: 156,
         width: 32,
         zIndex: 2,
-        right: 'max(8px, calc((100% - 768px) / 2 - 40px))',
+        right: { xs: 12, md: 'max(12px, calc((100% - 768px) / 2 - 40px))' },
         pointerEvents: 'none',
       }}
     >

@@ -191,12 +191,12 @@ export function MessageInput({
           : 'Голосовой ввод';
 
   useEffect(() => {
-    if (imageModeRequest > 0 && !isStudio && !isDocgen) setImageMode(true);
-  }, [imageModeRequest, isStudio, isDocgen]);
+    if (imageModeRequest > 0 && !isDocgen) setImageMode(true);
+  }, [imageModeRequest, isDocgen]);
 
   useEffect(() => {
-    if (isStudio || isDocgen) setImageMode(false);
-  }, [isStudio, isDocgen]);
+    if (isDocgen) setImageMode(false);
+  }, [isDocgen]);
 
   const pendingImages = pendingFiles.filter((file) => file.type.startsWith('image/'));
   const editingImage = imageMode && (pendingImages.length > 0 || Boolean(editSourceUrl));

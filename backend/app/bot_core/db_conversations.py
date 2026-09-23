@@ -25,6 +25,7 @@ from app.db.models import (
     AllowedContext,
     BaseTemplate,
     Conversation,
+    ConversationAside,
     ConversationMember,
     ConversationShare,
     CustomPrompt,
@@ -1553,6 +1554,62 @@ class DatabaseConversationManager:
                     session.add(ConversationMember(conversation_id=conv.id, user_id=user_id))
                     session.commit()
             return {"id": conv.id, "title": conv.title}
+
+    def list_asides(self, user_id: int, conv_id: str) -> Optional[List[dict]]:
+        with SyncSessionLocal() as session:
+            conv = self._open_conv(session, user_id, conv_id)
+            if not conv:
+                return None
+            rows = (
+                session.query(ConversationAside)
+                .filter_by(conversation_id=conv_id)
+                .order_by(ConversationAside.id.asc())
+                .all()
+            )
+            packed = [
+                {
+                    "id": row.id,
+                    "content": row.content,
+                    "created_at": row.created_at.isoformat() if row.created_at else "",
+                    "author_user_id": row.author_user_id,
+                }
+                for row in rows
+            ]
+        cards = self.author_cards([item["author_user_id"] for item in packed])
+        result = []
+        for item in packed:
+            author_id = item.pop("author_user_id")
+            item["author"] = cards.get(author_id) or {"name": "Участник", "avatar_url": None}
+            item["mine"] = author_id == user_id
+            result.append(item)
+        return result
+
+    def add_aside(self, user_id: int, conv_id: str, content: str) -> Optional[dict]:
+        text = (content or "").strip()
+        if not text:
+            return None
+        with SyncSessionLocal() as session:
+            conv = self._open_conv(session, user_id, conv_id)
+            if not conv:
+                return None
+            row = ConversationAside(
+                conversation_id=conv.id,
+                author_user_id=user_id,
+                content=text[:4000],
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            created = row.created_at.isoformat() if row.created_at else ""
+            aside_id = row.id
+        card = self.author_cards([user_id]).get(user_id) or {"name": "Участник", "avatar_url": None}
+        return {
+            "id": aside_id,
+            "content": text[:4000],
+            "created_at": created,
+            "author": card,
+            "mine": True,
+        }
 
     # ------------------------------------------------------------------
     # Conversations

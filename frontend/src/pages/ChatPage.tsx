@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Box, Drawer, SwipeableDrawer, IconButton, Tooltip, useMediaQuery, useTheme } from '@mui/material';
-import { List as ListIcon, FileArrowDown, MagnifyingGlass, WarningCircle, SquareHalf, Users } from '@phosphor-icons/react';
+import { List as ListIcon, FileArrowDown, MagnifyingGlass, WarningCircle, SquareHalf, Users, ChatsCircle } from '@phosphor-icons/react';
 import { headerIconBtnSx } from '@/theme/effects';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
@@ -26,6 +26,7 @@ import { DialogueJumpChip, DialogueJumpSheet } from '@/features/chat/DialogueJum
 import { MIN_DIALOGUE_QUESTIONS, type DialogueJumpFn } from '@/features/chat/dialogueNav';
 import { BRAND_NAME, NEW_CHAT_TITLE } from '@/brand';
 import { ShareDialog } from '@/features/chat/ShareDialog';
+import { RoomChat } from '@/features/chat/RoomChat';
 import { applyPageMeta } from '@/seo';
 
 // Same-origin by default so it goes through the reverse proxy (nginx routes
@@ -80,7 +81,10 @@ function keepLiveUploads(current: DisplayMessage[], derived: DisplayMessage[]): 
 export default function ChatPage() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
-  const isWide = useMediaQuery(theme.breakpoints.up('lg'));
+  // Sources dock beside the reply only when the 768px reading column plus its
+  // gutters still fit next to the sidebar and a 292px panel. Narrower screens
+  // open them from the header instead of squeezing the text.
+  const isWide = useMediaQuery('(min-width:1440px)');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sourcesSheetOpen, setSourcesSheetOpen] = useState(false);
   const [dialogueSheetOpen, setDialogueSheetOpen] = useState(false);
@@ -108,13 +112,13 @@ export default function ChatPage() {
   const thinking = Boolean(live?.thinking);
   const statusText = live?.statusText || '';
   const pendingContent = useMemo(() => ({
-    convId: live?.convId || activeConvId,
-    userText: live?.userText || '',
-    text: live?.text || '',
+    convId: live?.convId,
+    userText: live?.convId === activeConvId ? (live?.userText || '') : '',
+    text: live?.convId === activeConvId ? (live?.text || '') : '',
     thinking,
-    file: live?.file,
-    reasoning: live?.reasoning,
-    search: live?.search,
+    file: live?.convId === activeConvId ? live?.file : undefined,
+    reasoning: live?.convId === activeConvId ? live?.reasoning : undefined,
+    search: live?.convId === activeConvId ? live?.search : undefined,
   }), [live, activeConvId, thinking]);
   const generatingIds = Object.keys(jobs).filter((id) => jobs[id]?.thinking);
   const { data: models } = useQuery({ queryKey: ['models'], queryFn: () => apiFetch('/models'), staleTime: 10_000 });
@@ -142,6 +146,7 @@ export default function ChatPage() {
   };
   const [exporting, setExporting] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const [roomOpenById, setRoomOpenById] = useState<Record<string, boolean>>({});
   // Id of the assistant message currently being replaced by a regenerate — hidden
   // from `base` below so the old answer doesn't flash alongside the new one while
   // the server hasn't confirmed the deletion/replacement yet.
@@ -157,7 +162,7 @@ export default function ChatPage() {
 
   const activeConversation = conversations.find((conversation) => conversation.id === activeConvId);
   const sharedRoom = Boolean(activeConversation?.shared);
-  const { data: messages = [] } = useQuery<{
+  const messagesQuery = useQuery<{
     id: string;
     role: string;
     content: string;
@@ -172,6 +177,8 @@ export default function ChatPage() {
     staleTime: 3_000,
     refetchInterval: thinking && activeConvId ? 2000 : sharedRoom ? 4000 : false,
   });
+  const messagesReady = Boolean(activeConvId) && messagesQuery.isSuccess && !messagesQuery.isPlaceholderData;
+  const messages = messagesReady ? (messagesQuery.data ?? []) : [];
 
   // Restore the latest/active chat after a page reload instead of showing an
   // empty home screen while its messages and document cards still exist.
@@ -191,8 +198,14 @@ export default function ChatPage() {
     }
   }, [activeConvId, conversations, openNewChat, searchParams, setSearchParams]);
 
+  useLayoutEffect(() => {
+    setDisplayMessages([]);
+    setSourceMessageId(undefined);
+    setSourcesSheetOpen(false);
+  }, [activeConvId]);
+
   useEffect(() => {
-    if (activeConvId && messages) {
+    if (!activeConvId || !messagesReady) return;
       const base = messages
         .filter((m) => m.role === 'user' || m.role === 'assistant')
         .filter((m) => m.id !== regeneratingId)
@@ -315,8 +328,7 @@ export default function ChatPage() {
       } else {
         setDisplayMessages((current) => keepLiveUploads(current, base));
       }
-    }
-  }, [activeConvId, messages, pendingContent, regeneratingId, jobErrors]);
+  }, [activeConvId, messages, messagesReady, pendingContent, regeneratingId, jobErrors]);
 
   const createMutation = useMutation({
     mutationFn: () => apiFetch('/conversations', { method: 'POST', body: JSON.stringify({ title: NEW_CHAT_TITLE }) }),
@@ -380,6 +392,7 @@ export default function ChatPage() {
         const syncId = msg.payload?.conversation_id as string | undefined;
         if (syncId) {
           queryClient.invalidateQueries({ queryKey: ['messages', syncId] });
+          queryClient.invalidateQueries({ queryKey: ['asides', syncId] });
           queryClient.invalidateQueries({ queryKey: ['conversations'] });
         }
         return;
@@ -876,7 +889,7 @@ export default function ChatPage() {
   }, [activeConvId]);
 
   const openSources = (messageId: string) => {
-    if (isWide) {
+    if (isWide && !isStudio) {
       setSourceMessageId((current) => (current === messageId ? undefined : messageId));
       return;
     }
@@ -944,7 +957,7 @@ export default function ChatPage() {
         </Box>
       )}
 
-      <Box sx={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
+      <Box sx={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', overflow: 'hidden', position: 'relative' }}>
       <Box
         sx={{
           ...(isStudio && !isMobile
@@ -984,7 +997,7 @@ export default function ChatPage() {
             )}
           </Box>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, pointerEvents: 'auto' }}>
-            {!isWide && allSources.length > 0 && (
+            {(!isWide || isStudio) && allSources.length > 0 && (
               <Tooltip title={sourcesLabel(allSources.length)}>
                 <IconButton
                   onClick={() => {
@@ -1022,6 +1035,21 @@ export default function ChatPage() {
               <Tooltip title="Поделиться диалогом">
                 <IconButton onClick={() => setShareOpen(true)} sx={headerIconBtnSx} aria-label="Поделиться диалогом">
                   <Users size={22} weight="bold" />
+                </IconButton>
+              </Tooltip>
+            )}
+            {sharedRoom && activeConvId && (
+              <Tooltip title="Переписка между людьми, без ассистента">
+                <IconButton
+                  onClick={() => setRoomOpenById((prev) => ({ ...prev, [activeConvId]: !prev[activeConvId] }))}
+                  sx={{
+                    ...headerIconBtnSx,
+                    ...(roomOpenById[activeConvId] ? { color: 'primary.light', borderColor: 'var(--bt-line)', bgcolor: 'color-mix(in srgb, var(--bt-elevated) 78%, #21a0ce)' } : {}),
+                  }}
+                  aria-label="Переписка между людьми"
+                  aria-pressed={Boolean(roomOpenById[activeConvId])}
+                >
+                  <ChatsCircle size={22} weight="bold" />
                 </IconButton>
               </Tooltip>
             )}
@@ -1088,7 +1116,7 @@ export default function ChatPage() {
           onRegenerate={handleRegenerate}
           onEditMessage={handleEditMessage}
           onEditImage={
-            isStudio || isDocgen
+            isDocgen
               ? undefined
               : (url) => {
                   setForcedEditUrl(url);
@@ -1157,29 +1185,38 @@ export default function ChatPage() {
             />
           </Box>
         </Box>
-        {isWide && allSources.length > 0 && !isStudio && (
-          <Box
-            sx={{
-              display: { xs: 'none', lg: 'block' },
-              position: 'absolute',
-              top: 80,
-              right: { lg: 20, xl: 28 },
-              width: 268,
-              zIndex: 2,
-              pointerEvents: 'none',
-              '& > *': { pointerEvents: 'auto' },
-            }}
-          >
-            <SourcesRail
-              key={sourceMessageId || 'all'}
-              sources={focusedSources}
-              scoped={Boolean(focusedSourceMessage)}
-              allCount={allSources.length}
-              onShowAll={() => setSourceMessageId(undefined)}
-            />
-          </Box>
-        )}
       </Box>
+      {isWide && messagesReady && allSources.length > 0 && !isStudio && (
+        <Box
+          sx={{
+            display: 'flex',
+            flexDirection: 'column',
+            width: 292,
+            flexShrink: 0,
+            minHeight: 0,
+            pt: '72px',
+            pr: 2,
+            pb: 2,
+            boxSizing: 'border-box',
+          }}
+        >
+          <SourcesRail
+            key={`${activeConvId || 'none'}-${sourceMessageId || 'all'}`}
+            sources={focusedSources}
+            scoped={Boolean(focusedSourceMessage)}
+            allCount={allSources.length}
+            onShowAll={() => setSourceMessageId(undefined)}
+          />
+        </Box>
+      )}
+      {sharedRoom && activeConvId && (
+        <RoomChat
+          key={activeConvId}
+          conversationId={activeConvId}
+          open={Boolean(roomOpenById[activeConvId])}
+          onClose={() => setRoomOpenById((prev) => ({ ...prev, [activeConvId]: false }))}
+        />
+      )}
       {isStudio && !isMobile && (
         <DesignCanvas source={canvasSource} thinking={thinking} statusText={statusText} />
       )}
@@ -1218,15 +1255,17 @@ export default function ChatPage() {
         onOpen={() => setDialogueSheetOpen(true)}
         onJump={(id) => dialogueJumpRef.current?.(id)}
       />
-      <SourcesSheet
-        sources={focusedSources}
-        scoped={Boolean(focusedSourceMessage)}
-        allCount={allSources.length}
-        onShowAll={() => setSourceMessageId(undefined)}
-        open={sourcesSheetOpen}
-        onClose={() => setSourcesSheetOpen(false)}
-        onOpen={() => setSourcesSheetOpen(true)}
-      />
+      {(!isWide || isStudio) && (
+        <SourcesSheet
+          sources={focusedSources}
+          scoped={Boolean(focusedSourceMessage)}
+          allCount={allSources.length}
+          onShowAll={() => setSourceMessageId(undefined)}
+          open={sourcesSheetOpen}
+          onClose={() => setSourcesSheetOpen(false)}
+          onOpen={() => setSourcesSheetOpen(true)}
+        />
+      )}
       {activeConvId && (
         <ShareDialog conversationId={activeConvId} open={shareOpen} onClose={() => setShareOpen(false)} />
       )}
