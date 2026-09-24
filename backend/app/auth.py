@@ -80,13 +80,15 @@ def create_refresh_token(data: dict) -> str:
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
-def decode_token(token: str) -> dict:
+def decode_token(token: str, *, expected_type: Optional[str] = None) -> dict:
     settings = get_settings()
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         user_id: str = payload.get("sub")
         if user_id is None:
             raise JWTError("No subject")
+        if expected_type is not None and payload.get("type") != expected_type:
+            raise JWTError("Wrong token type")
         return payload
     except JWTError as exc:
         raise HTTPException(
@@ -103,14 +105,14 @@ async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] =
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    payload = decode_token(credentials.credentials)
+    payload = decode_token(credentials.credentials, expected_type="access")
     return payload["sub"]
 
 
 async def get_current_user_ws(token: str) -> str:
     if not token:
         raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION, reason="Missing token")
-    payload = decode_token(token)
+    payload = decode_token(token, expected_type="access")
     return payload["sub"]
 
 
@@ -121,7 +123,7 @@ async def require_admin(credentials: Optional[HTTPAuthorizationCredentials] = De
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    payload = decode_token(credentials.credentials)
+    payload = decode_token(credentials.credentials, expected_type="access")
     email = payload["sub"]
     from sqlalchemy import select
     from app.db.engine import AsyncSessionLocal

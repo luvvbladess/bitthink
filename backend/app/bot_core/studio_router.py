@@ -477,7 +477,7 @@ def _chat_image_bytes(user_id: int, *, current_turn_only: bool) -> list[bytes]:
     try:
         from conversations import conversation_manager
 
-        conv = conversation_manager.get_active_conversation(int(user_id))
+        conv = conversation_manager.conversation_for_turn(int(user_id))
     except Exception:
         logger.debug("Studio: no conversation for chat images", exc_info=True)
         return []

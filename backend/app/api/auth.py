@@ -78,9 +78,7 @@ async def login(data: UserLogin, session: AsyncSession = Depends(get_db)):
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh(token_data: dict, session: AsyncSession = Depends(get_db)):
     try:
-        payload = decode_token(token_data.get("refresh_token", ""))
-        if payload.get("type") != "refresh":
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token type")
+        payload = decode_token(token_data.get("refresh_token", ""), expected_type="refresh")
         email = payload["sub"]
         result = await session.execute(select(User).where(User.email == email))
         user = result.scalar_one_or_none()

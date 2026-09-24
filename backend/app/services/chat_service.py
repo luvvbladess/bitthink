@@ -127,6 +127,7 @@ async def _generate_and_send(
     send_extras: Optional[Callable[[str, list], Coroutine[Any, Any, None]]],
     send_reasoning_delta: Optional[Callable[[str], Coroutine[Any, Any, None]]],
     conversation_id: Optional[str] = None,
+    supersede_message_id: Optional[int] = None,
 ) -> None:
     """Shared tail of run_chat/regenerate_chat: call the model, persist the
     assistant reply, and stream it back. Both callers have already prepared
@@ -151,9 +152,12 @@ async def _generate_and_send(
     bind_status(safe_status)
     await push_status("think", "Думаю")
     started = time.time()
-    response_text, generated_files, reasoning_text, search_results = await get_smart_response(
-        bot_user_id, prompt_content, api_messages, status_msg, on_reasoning_delta=None
-    )
+    from turn_scope import turn_conversation
+
+    with turn_conversation(conversation_id):
+        response_text, generated_files, reasoning_text, search_results = await get_smart_response(
+            bot_user_id, prompt_content, api_messages, status_msg, on_reasoning_delta=None
+        )
     try:
         from app.services.sandbox_client import collect_workspace_files
 
@@ -210,7 +214,11 @@ async def _generate_and_send(
         conv_id=conversation_id,
         search=search_results or None,
         attachment=attachment,
+        supersede_message_id=supersede_message_id,
     )
+    from app.billing.quota import clear_quota_charge
+
+    clear_quota_charge()
     await asyncio.to_thread(chat_access.scrub_recent, bot_user_id, conversation_id)
     schedule_memory_refresh(bot_user_id)
 
@@ -287,22 +295,27 @@ async def run_chat(
             send_status, send_chunk, send_file, send_extras, send_reasoning_delta,
             conversation_id=conversation_id,
         )
-    except Exception as exc:
-        from app.billing.quota import QuotaError
+    except asyncio.CancelledError:
+        from app.billing.quota import refund_quota_charge
 
+        refund_quota_charge()
+        raise
+    except Exception as exc:
+        from app.billing.quota import QuotaError, refund_quota_charge
+
+        refund_quota_charge()
         if isinstance(exc, QuotaError):
             logger.info("Chat quota: %s", exc)
         else:
             logger.exception("Chat error")
         await send_status("")
-        
-        # Rollback the user's text prompt
+
+        # Only this sender's own prompt. Another person's message in a shared room stays.
         await repo.delete_last_message(web_user_id, conversation_id, "user")
-        
-        # Clean up any trailing attachment messages that were uploaded for this failed prompt
+
         messages_after = await repo.get_messages(web_user_id, conversation_id)
         for last_msg in reversed(messages_after):
-            if last_msg["role"] != "user":
+            if last_msg["role"] != "user" or not last_msg.get("mine"):
                 break
             att = last_msg.get("attachment")
             if att:
@@ -312,9 +325,8 @@ async def run_chat(
                         await repo.remove_document(web_user_id, name, conv_id=conversation_id)
                     await repo.remove_attachment(web_user_id, name, conv_id=conversation_id)
             else:
-                # Stop if we hit a user message that isn't an attachment
                 break
-                
+
         raise
 
 
@@ -328,11 +340,14 @@ async def regenerate_chat(
     send_extras: Optional[Callable[[str, list], Coroutine[Any, Any, None]]] = None,
     send_reasoning_delta: Optional[Callable[[str], Coroutine[Any, Any, None]]] = None,
 ) -> None:
-    """Drop the last assistant reply and ask the model to answer the same
-    preceding user message again."""
+    """Ask the model to answer the same preceding user message again.
+    The previous assistant reply stays until the new one is stored."""
 
     bot_user_id = await repo.ensure_user(web_user_id)
     await repo.set_active_conversation(web_user_id, conversation_id)
+
+    if not await repo.can_regenerate(web_user_id, conversation_id):
+        raise PermissionError("Нельзя повторить чужой ответ")
 
     messages = await repo.get_messages(web_user_id, conversation_id)
     if not messages or messages[-1]["role"] != "assistant":
@@ -340,23 +355,32 @@ async def regenerate_chat(
     last_user = next((m for m in reversed(messages[:-1]) if m["role"] == "user"), None)
     if not last_user:
         raise ValueError("Не найдено предыдущее сообщение пользователя")
-
-    await repo.delete_last_message(web_user_id, conversation_id, "assistant")
+    previous_id = await repo.last_assistant_message_id(web_user_id, conversation_id)
 
     if send_meta:
         await send_meta(conversation_id)
 
     api_messages = await repo.get_messages_for_api(web_user_id, conversation_id)
+    # The model should not see the answer it is replacing.
+    if api_messages and api_messages[-1].get("role") == "assistant":
+        api_messages = api_messages[:-1]
 
     try:
         await _generate_and_send(
             bot_user_id, web_user_id, last_user["content"], api_messages,
             send_status, send_chunk, send_file, send_extras, send_reasoning_delta,
             conversation_id=conversation_id,
+            supersede_message_id=previous_id,
         )
-    except Exception as exc:
-        from app.billing.quota import QuotaError
+    except asyncio.CancelledError:
+        from app.billing.quota import refund_quota_charge
 
+        refund_quota_charge()
+        raise
+    except Exception as exc:
+        from app.billing.quota import QuotaError, refund_quota_charge
+
+        refund_quota_charge()
         if isinstance(exc, QuotaError):
             logger.info("Chat regenerate quota: %s", exc)
         else:

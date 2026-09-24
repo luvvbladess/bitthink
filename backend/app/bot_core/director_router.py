@@ -334,7 +334,7 @@ def _turn_has_images(user_id: int) -> bool:
         from conversations import conversation_manager
         from routing import current_turn_has_files
 
-        conv = conversation_manager.get_active_conversation(int(user_id))
+        conv = conversation_manager.conversation_for_turn(int(user_id))
         _, has_images = current_turn_has_files(conv.messages if conv else [])
         return bool(has_images)
     except Exception:

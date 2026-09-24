@@ -111,7 +111,10 @@ async def truncate_messages(conv_id: str, data: dict, user_id: str = Depends(get
     keep_count = data.get("keep_count")
     if not isinstance(keep_count, int) or keep_count < 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid keep_count")
-    ok = await repo.truncate_messages(user_id, conv_id, keep_count)
+    try:
+        ok = await repo.truncate_messages(user_id, conv_id, keep_count)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     if not ok:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return {"ok": True}

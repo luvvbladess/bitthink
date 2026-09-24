@@ -94,10 +94,10 @@ class ConversationRepository:
                 "id": c.id,
                 "title": c.title,
                 "created_at": c.created_at,
-                "updated_at": c.created_at,
+                "updated_at": getattr(c, "updated_at", None) or c.created_at,
                 "message_count": len(c.messages),
                 "document_count": len(c.documents),
-                "is_active": c.id == getattr(self._manager, "_active_conversations", {}).get(bot_id),
+                "is_active": bool(getattr(c, "is_active", False)) and getattr(c, "owner_id", None) == bot_id,
                 "shared": c.id in roles,
                 "role": roles.get(c.id, "owner"),
             }
@@ -111,7 +111,7 @@ class ConversationRepository:
             "id": conv.id,
             "title": conv.title,
             "created_at": conv.created_at,
-            "updated_at": conv.created_at,
+            "updated_at": getattr(conv, "updated_at", None) or conv.created_at,
             "message_count": 0,
             "document_count": 0,
             "is_active": True,
@@ -203,6 +203,7 @@ class ConversationRepository:
     def _add_message_sync(
         self, bot_id: int, role: str, content: str, conv_id: Optional[str],
         attachment: Optional[dict] = None, search: Optional[list[dict]] = None,
+        supersede_message_id: Optional[int] = None,
     ) -> dict:
         with self._mutate_lock:
             if conv_id and role != "assistant":
@@ -210,8 +211,16 @@ class ConversationRepository:
             msg = self._manager.add_message(
                 bot_id, role, content, attachment=attachment, search=search,
                 conv_id=conv_id, author_user_id=bot_id if role == "user" else None,
+                supersede_message_id=supersede_message_id,
             )
-            conv = self._manager.get_active_conversation(bot_id)
+            # The row was written to this conversation, even when the author has
+            # no personal active chat (a guest in a shared room).
+            if conv_id:
+                conv = self._manager.conversation_view(bot_id, conv_id)
+            else:
+                conv = self._manager.get_active_conversation(bot_id)
+        if conv is None:
+            raise RuntimeError("Сообщение записано, но беседа не найдена")
         return {
             "id": f"{conv.id}_{len(conv.messages) - 1}",
             "role": msg.role,
@@ -224,10 +233,13 @@ class ConversationRepository:
     async def add_message(
         self, web_user_id: str, role: str, content: str, conv_id: Optional[str] = None,
         attachment: Optional[dict] = None, search: Optional[list[dict]] = None,
+        supersede_message_id: Optional[int] = None,
     ) -> dict:
         bot_id = self._bot_id(web_user_id)
-        result = await asyncio.to_thread(self._add_message_sync, bot_id, role, content, conv_id, attachment, search)
-        await self.notify_room(conv_id)
+        result = await asyncio.to_thread(
+            self._add_message_sync, bot_id, role, content, conv_id, attachment, search, supersede_message_id,
+        )
+        await self.notify_room(conv_id or (result["id"].rsplit("_", 1)[0] if result.get("id") else None))
         return result
 
     def _get_messages_for_api_sync(self, bot_id: int, conv_id: Optional[str]) -> list[dict]:
@@ -309,6 +321,14 @@ class ConversationRepository:
     async def delete_last_message(self, web_user_id: str, conv_id: str, role: str) -> bool:
         bot_id = self._bot_id(web_user_id)
         return await asyncio.to_thread(self._manager.delete_last_message, bot_id, conv_id, role)
+
+    async def can_regenerate(self, web_user_id: str, conv_id: str) -> bool:
+        bot_id = self._bot_id(web_user_id)
+        return await asyncio.to_thread(self._manager.can_regenerate, bot_id, conv_id)
+
+    async def last_assistant_message_id(self, web_user_id: str, conv_id: str) -> Optional[int]:
+        bot_id = self._bot_id(web_user_id)
+        return await asyncio.to_thread(self._manager.last_assistant_message_id, bot_id, conv_id)
 
     async def truncate_messages(self, web_user_id: str, conv_id: str, keep_count: int) -> bool:
         bot_id = self._bot_id(web_user_id)

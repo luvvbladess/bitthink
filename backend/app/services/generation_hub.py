@@ -59,7 +59,15 @@ class GenerationHub:
     def running_count(self, user_id: str) -> int:
         return sum(1 for (uid, _), task in self._tasks.items() if uid == user_id and not task.done())
 
-    def is_running(self, user_id: str, conversation_id: str) -> bool:
+    def has_pending(self, user_id: str) -> bool:
+        return any(
+            uid == user_id and str(cid).startswith("pending:") and task and not task.done()
+            for (uid, cid), task in self._tasks.items()
+        )
+
+    def is_running(self, user_id: str, conversation_id: Optional[str]) -> bool:
+        if not conversation_id:
+            return self.has_pending(user_id)
         task = self._tasks.get((user_id, conversation_id))
         return bool(task and not task.done())
 
@@ -133,6 +141,8 @@ class GenerationHub:
         self._tasks.pop((user_id, conversation_id), None)
 
     def start_task(self, user_id: str, conversation_id: str, coro) -> asyncio.Task:
+        if str(conversation_id).startswith("pending:") and self.has_pending(user_id):
+            raise RuntimeError("already running")
         key = (user_id, conversation_id)
         existing = self._tasks.get(key)
         if existing and not existing.done():
@@ -141,22 +151,39 @@ class GenerationHub:
         self._tasks[key] = task
         return task
 
-    def cancel(self, user_id: str, conversation_id: str) -> bool:
+    def cancel(self, user_id: str, conversation_id: Optional[str]) -> bool:
+        if not conversation_id:
+            return self.cancel_pending(user_id)
         task = self._tasks.get((user_id, conversation_id))
         if task and not task.done():
             task.cancel()
             return True
         return False
 
-    def bind(self, user_id: str, conversation_id: Optional[str]) -> "BoundSenders":
-        return BoundSenders(self, user_id, conversation_id)
+    def cancel_pending(self, user_id: str) -> bool:
+        cancelled = False
+        for (uid, cid), task in list(self._tasks.items()):
+            if uid == user_id and str(cid).startswith("pending:") and task and not task.done():
+                task.cancel()
+                cancelled = True
+        return cancelled
+
+    def bind(self, user_id: str, conversation_id: Optional[str], job_key: Optional[str] = None) -> "BoundSenders":
+        return BoundSenders(self, user_id, conversation_id, job_key or conversation_id)
 
 
 class BoundSenders:
-    def __init__(self, hub: GenerationHub, user_id: str, conversation_id: Optional[str]) -> None:
+    def __init__(
+        self,
+        hub: GenerationHub,
+        user_id: str,
+        conversation_id: Optional[str],
+        job_key: Optional[str] = None,
+    ) -> None:
         self.hub = hub
         self.user_id = user_id
         self.conversation_id = conversation_id
+        self.job_key = job_key or conversation_id
 
     def _cid(self) -> Optional[str]:
         return self.conversation_id
@@ -197,9 +224,10 @@ class BoundSenders:
         await self._emit("file", payload)
 
     async def send_meta(self, conv_id: str) -> None:
-        previous = self.conversation_id
+        previous = self.job_key
         if previous and previous != conv_id:
             self.hub.rekey(self.user_id, previous, conv_id)
+        self.job_key = conv_id
         self.conversation_id = conv_id
         self.hub.upsert_job(self.user_id, conv_id, thinking=True)
         await self._emit("meta", {"conversation_id": conv_id})
