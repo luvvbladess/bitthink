@@ -105,6 +105,8 @@ class EditorDocument(Base):
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     created_by: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # Кто сохранил последнюю правку; None – файл ещё не меняли.
+    edited_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

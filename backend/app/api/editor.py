@@ -113,7 +113,8 @@ def version_path(doc_id: str, version: int) -> Path:
 
 
 def _prune_versions(doc_id: str, current: int) -> None:
-    for old in range(1, current - KEEP_VERSIONS + 1):
+    # v1 – исходник, его не трогаем: к нему всегда можно вернуться.
+    for old in range(2, current - KEEP_VERSIONS + 1):
         try:
             version_path(doc_id, old).unlink(missing_ok=True)
         except OSError:
@@ -194,10 +195,15 @@ def _record(doc_id: str):
         return record
 
 
-def store_saved_version(doc_id: str, data: bytes, bump: bool) -> int:
+def store_saved_version(doc_id: str, data: bytes, bump: bool, edited_by: Optional[int] = None) -> int:
     """Записать сохранённый файл. bump – все закрыли документ: следующее открытие
     получит новый key и свежий файл. Принудительное сохранение пишет поверх
-    текущей версии, чтобы не разорвать живую сессию."""
+    текущей версии, чтобы не разорвать живую сессию.
+
+    Правка становится файлом беседы: карточка в чате, ИИ, Пилот и «Документы»
+    дальше работают с ней. Исходник остаётся версией v1."""
+    from datetime import datetime, timezone
+
     from app.db.engine import SyncSessionLocal
     from app.db.models import EditorDocument
 
@@ -211,11 +217,40 @@ def store_saved_version(doc_id: str, data: bytes, bump: bool) -> int:
         path.write_bytes(data)
         if bump:
             record.version = version
+        if edited_by:
+            record.edited_by = int(edited_by)
+        record.updated_at = datetime.now(timezone.utc)
         session.commit()
         conv_id, filename, created_by = record.conversation_id, record.filename, record.created_by
     _prune_versions(doc_id, version)
+    _write_back(conv_id, filename, created_by, data)
     _refresh_chat_text(conv_id, filename, created_by, data)
     return version
+
+
+def _write_back(conv_id: str, filename: str, bot_id: int, data: bytes) -> None:
+    """Положить правку туда, откуда файл беседы читают все остальные."""
+    try:
+        conv = repo._manager.conversation_view(int(bot_id), conv_id)
+        found = _find_attachment(conv, filename) if conv else None
+        if not found:
+            return
+        attachment, author = found
+        url = str(attachment.get("url") or "")
+        if url.startswith("/uploads/"):
+            root = get_settings().UPLOAD_DIR.resolve()
+            target = (root / url.removeprefix("/uploads/")).resolve()
+            if target.is_relative_to(root) and target.is_file():
+                target.write_bytes(data)
+            return
+        from document_parser import _source_store_path
+
+        path = _source_store_path(int(author or conv.owner_id), filename)
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+    except Exception:
+        logger.exception("Editor: write-back failed for %s", filename)
 
 
 def _docx_text(data: bytes) -> str:
@@ -237,6 +272,108 @@ def _refresh_chat_text(conv_id: str, filename: str, bot_id: int, data: bytes) ->
         conversation_manager.add_document(int(bot_id), filename, _docx_text(data), conv_id=conv_id)
     except Exception:
         logger.exception("Editor: chat text refresh failed for %s", filename)
+
+
+# ---------------------------------------------------------------- files of a conversation
+
+def _editor_records(conv_id: str) -> dict:
+    from app.db.engine import SyncSessionLocal
+    from app.db.models import EditorDocument
+
+    with SyncSessionLocal() as session:
+        rows = session.query(EditorDocument).filter_by(conversation_id=conv_id).all()
+        for row in rows:
+            session.expunge(row)
+    return {row.filename: row for row in rows}
+
+
+def _iso(value) -> str:
+    return value.isoformat() if hasattr(value, "isoformat") else str(value or "")
+
+
+def sign_file_link(conv_id: str, filename: str, ttl: int = 3600) -> str:
+    settings = get_settings()
+    payload = {"conv": conv_id, "name": filename, "p": "download", "exp": int(time.time()) + ttl}
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+
+def check_file_link(token: str) -> tuple[str, str]:
+    settings = get_settings()
+    try:
+        payload = jwt.decode(token or "", settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    except JWTError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Ссылка устарела, обновите список файлов") from exc
+    if payload.get("p") != "download":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Ссылка недействительна")
+    return str(payload.get("conv") or ""), str(payload.get("name") or "")
+
+
+def _has_stored_source(conv, filename: str, author: Optional[int]) -> bool:
+    if not filename.lower().endswith((".docx", ".doc")):
+        return False
+    from document_parser import _source_store_path
+
+    for owner in dict.fromkeys([author, conv.owner_id]):
+        path = _source_store_path(int(owner), filename) if owner else None
+        if path is not None and path.is_file():
+            return True
+    return False
+
+
+def conversation_files(conv) -> list[dict]:
+    """Все файлы беседы: кто и когда загрузил, кто и когда последний раз правил."""
+    records = _editor_records(conv.id)
+    found: dict[str, dict] = {}
+    for message in conv.messages:
+        attachment = message.attachment or {}
+        for item in [attachment, *(attachment.get("files") or [])]:
+            name = str((item or {}).get("name") or "").strip() if isinstance(item, dict) else ""
+            if not name or item.get("status") == "error":
+                continue
+            author = message.author_user_id or (conv.owner_id if message.role == "user" else None)
+            found[name] = {
+                "name": name,
+                "kind": str(item.get("type") or "document"),
+                "size": int(item.get("size") or 0),
+                "url": str(item.get("url") or ""),
+                "uploaded_at": message.timestamp,
+                "uploaded_by_id": author,
+                "from_assistant": message.role == "assistant",
+            }
+    people = {row.edited_by for row in records.values() if row.edited_by}
+    people |= {item["uploaded_by_id"] for item in found.values() if item["uploaded_by_id"]}
+    cards = repo._manager.author_cards(list(people))
+    files = []
+    for name, item in found.items():
+        record = records.get(name)
+        edited = bool(record and (record.version > 1 or record.edited_by))
+        has_bytes = bool(item["url"]) or bool(record) or _has_stored_source(conv, name, item["uploaded_by_id"])
+        files.append({
+            "name": name,
+            "kind": item["kind"],
+            "size": item["size"],
+            "uploaded_at": item["uploaded_at"],
+            "uploaded_by": "Bit-Think" if item["from_assistant"] else (cards.get(item["uploaded_by_id"]) or {}).get("name") or "Участник",
+            "editable": name.lower().endswith((".docx", ".doc")) and has_bytes,
+            "edited_at": _iso(record.updated_at) if edited else None,
+            "edited_by": (cards.get(record.edited_by) or {}).get("name") if edited and record.edited_by else None,
+            "version": record.version if record else 1,
+            "download_url": (
+                f"/conversations/{conv.id}/files/download?t={sign_file_link(conv.id, name)}" if has_bytes else None
+            ),
+        })
+    files.sort(key=lambda f: f["edited_at"] or f["uploaded_at"], reverse=True)
+    return files
+
+
+def file_bytes(conv, filename: str) -> Optional[bytes]:
+    """Текущая версия файла беседы: правка из редактора или то, что загрузили."""
+    record = _editor_records(conv.id).get(filename)
+    if record:
+        path = version_path(record.id, record.version)
+        if path.is_file():
+            return path.read_bytes()
+    return source_bytes(conv, filename)
 
 
 # ---------------------------------------------------------------- access
@@ -330,7 +467,12 @@ async def document_callback(doc_id: str, request: Request, t: str = ""):
         except httpx.HTTPError:
             logger.exception("Editor: saved file download failed for %s", doc_id)
             return {"error": 1}
-        await asyncio.to_thread(store_saved_version, doc_id, response.content, state == 2)
+        users = [str(item) for item in (body.get("users") or [])]
+        edited_by = int(users[0]) if users and users[0].isdigit() else None
+        await asyncio.to_thread(store_saved_version, doc_id, response.content, state == 2, edited_by)
+        record = await asyncio.to_thread(_record, doc_id)
+        # Участники общей беседы увидят новую версию в списке файлов сразу.
+        await repo.notify_room(record.conversation_id)
     return {"error": 0}
 
 

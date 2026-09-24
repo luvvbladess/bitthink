@@ -1537,6 +1537,33 @@ class DatabaseConversationManager:
             rows = session.query(User).filter(User.bot_user_id.in_(ids)).all()
             return [row.email for row in rows if row.email]
 
+    def _editor_edit_notes(self, conv_id: str) -> Dict[str, str]:
+        """Файлы беседы, изменённые в редакторе: имя → «изменён 24.09.2026 13:20, Мария, версия 3»."""
+        from zoneinfo import ZoneInfo
+
+        from app.db.models import EditorDocument
+
+        with SyncSessionLocal() as session:
+            rows = [
+                (row.filename, row.version, row.edited_by, row.updated_at)
+                for row in session.query(EditorDocument).filter_by(conversation_id=conv_id).all()
+                if row.version > 1 or row.edited_by
+            ]
+        if not rows:
+            return {}
+        cards = self.author_cards([edited_by for _, _, edited_by, _ in rows if edited_by])
+        notes = {}
+        for filename, version, edited_by, updated_at in rows:
+            when = ""
+            if updated_at is not None:
+                stamp = updated_at if updated_at.tzinfo else updated_at.replace(tzinfo=timezone.utc)
+                when = f" {stamp.astimezone(ZoneInfo('Europe/Moscow')).strftime('%d.%m.%Y %H:%M')} по Москве"
+            who = f", правил {cards[edited_by]['name']}" if edited_by in cards else ""
+            notes[filename] = (
+                f"Изменён в редакторе{when}{who}, версия {version}. Это текущая версия файла."
+            )
+        return notes
+
     def author_cards(self, bot_ids: List[int]) -> Dict[int, dict]:
         ids = [item for item in dict.fromkeys(bot_ids) if item]
         if not ids:
@@ -2379,10 +2406,26 @@ class DatabaseConversationManager:
             max_chars=document_budget,
             force_filenames=force_filenames,
         )
+        edit_notes = self._editor_edit_notes(conv.id) if conv else {}
         for doc in docs:
+            # Имя файла – первой строкой: по ней его находят сжатие контекста и поиск.
+            note = edit_notes.get(doc["filename"])
+            header = f"Пользователь предоставил документ для контекста: {doc['filename']}"
+            if note:
+                header += f"\n{note}"
             messages.append({
                 "role": "system",
-                "content": f"Пользователь предоставил документ для контекста: {doc['filename']}\n\nСодержание:\n{doc['content']}\n\nИспользуй эту информацию при ответе.",
+                "content": f"{header}\n\nСодержание:\n{doc['content']}\n\nИспользуй эту информацию при ответе.",
+            })
+        if edit_notes:
+            messages.append({
+                "role": "system",
+                "content": (
+                    "Файлы этой беседы правили в редакторе: " + ", ".join(f"«{name}»" for name in edit_notes) + ". "
+                    "Работай с их текущей версией выше. Если в истории переписки цитировался или обсуждался "
+                    "прежний текст, он мог устареть: сверяйся с документом, а не с репликами. "
+                    "Новый файл по такому документу собирай из текущей версии."
+                ),
             })
         if docs:
             messages.append({

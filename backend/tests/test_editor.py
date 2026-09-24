@@ -72,6 +72,33 @@ def test_members_share_one_document_and_saves_version_it(editor):
     manager.delete_conversation(881_001, conv.id)
 
 
+def test_edit_becomes_the_chat_file_and_the_assistant_knows(editor):
+    settings = get_settings()
+    manager, conv = _room_with_contract(settings, 881_031, 881_032)
+    doc_id, _ = editor._open_record(conv.id, "Договор.docx", 881_031, lambda: editor.source_bytes(conv, "Договор.docx"))
+    edited = _docx("Срок оплаты 10 рабочих дней.")
+    # Автосохранение во время правки (без повышения версии) уже обновляет файл беседы.
+    editor.store_saved_version(doc_id, edited, bump=False, edited_by=881_032)
+
+    stored = settings.UPLOAD_DIR / "generated" / "abcdef0123456789" / ("0" * 32 + ".docx")
+    assert stored.read_bytes() == edited  # карточка в чате отдаёт правку
+    assert editor.version_path(doc_id, 1).is_file()  # исходник остался v1
+
+    files = editor.conversation_files(manager.conversation_view(881_032, conv.id))
+    item = next(f for f in files if f["name"] == "Договор.docx")
+    assert item["uploaded_by"] == "Bit-Think" and item["edited_at"] and item["editable"]
+    conv_id, name = editor.check_file_link(item["download_url"].split("t=", 1)[1])
+    assert (conv_id, name) == (conv.id, "Договор.docx")
+    assert editor.file_bytes(conv, "Договор.docx") == edited
+
+    manager.add_message(881_031, "user", "какой срок оплаты в договоре?", conv_id=conv.id, author_user_id=881_031)
+    api = manager.get_messages_for_api(881_031, "системный", requesting_user_id=881_031, conv_id=conv.id)
+    blob = "\n".join(str(m.get("content") or "") for m in api)
+    assert "Изменён в редакторе" in blob and "10 рабочих дней" in blob
+    assert "Работай с их текущей версией" in blob
+    manager.delete_conversation(881_031, conv.id)
+
+
 def test_callback_requires_document_server_signature(editor):
     settings = get_settings()
     manager, conv = _room_with_contract(settings, 881_011, 881_012)
