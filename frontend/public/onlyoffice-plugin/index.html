@@ -105,6 +105,12 @@
         plugin.callCommand(function () {
           var doc = Api.GetDocument();
           var was = doc.IsTrackRevisions();
+          // Тройной клик берёт и конец абзаца. Замена удалила бы его, и после
+          // «принять» пункт слипся бы со следующим.
+          var range = doc.GetRangeBySelect();
+          if (range && /[\r\n]$/.test(range.GetText()) && range.GetEndPos() > range.GetStartPos()) {
+            doc.GetRange(range.GetStartPos(), range.GetEndPos() - 1).Select();
+          }
           doc.SetTrackRevisions(true);
           return was;
         }, false, false, function (wasTracking) {
