@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.db import models as _db_models  # noqa: F401 — register tables for create_all
-from app.api import admin, auth, chat, conversations, models_router, documents, media, billing, usage, connectors, memory, skills, share
+from app.api import admin, auth, chat, conversations, models_router, documents, editor, media, billing, usage, connectors, memory, skills, share
 from app.db.base import Base
 from app.db.engine import sync_engine
 
@@ -17,9 +17,10 @@ from app.db.engine import sync_engine
 def _ensure_runtime_tables() -> None:
     from sqlalchemy import inspect, text
 
-    from app.db.models import ConversationAside, ConversationMember, ConversationShare, UserSkill
+    from app.db.models import ConversationAside, ConversationMember, ConversationShare, EditorDocument, UserSkill
 
     UserSkill.__table__.create(bind=sync_engine, checkfirst=True)
+    EditorDocument.__table__.create(bind=sync_engine, checkfirst=True)
     ConversationShare.__table__.create(bind=sync_engine, checkfirst=True)
     ConversationMember.__table__.create(bind=sync_engine, checkfirst=True)
     ConversationAside.__table__.create(bind=sync_engine, checkfirst=True)
@@ -75,6 +76,7 @@ def create_app() -> FastAPI:
     app.include_router(chat.router, prefix="/chat", tags=["chat"])
     app.include_router(models_router.router, prefix="/models", tags=["models"])
     app.include_router(documents.router, prefix="/documents", tags=["documents"])
+    app.include_router(editor.router, prefix="/editor", tags=["editor"])
     app.include_router(media.router, prefix="/media", tags=["media"])
     app.include_router(billing.router, prefix="/billing", tags=["billing"])
     app.include_router(usage.router, prefix="/usage", tags=["usage"])

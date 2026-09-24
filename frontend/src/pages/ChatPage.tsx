@@ -26,6 +26,7 @@ import { DialogueJumpChip, DialogueJumpSheet } from '@/features/chat/DialogueJum
 import { MIN_DIALOGUE_QUESTIONS, type DialogueJumpFn } from '@/features/chat/dialogueNav';
 import { BRAND_NAME, NEW_CHAT_TITLE } from '@/brand';
 import { ShareDialog } from '@/features/chat/ShareDialog';
+import { DocumentEditorDialog } from '@/features/editor/DocumentEditor';
 import { RoomChat } from '@/features/chat/RoomChat';
 import { applyPageMeta } from '@/seo';
 
@@ -1270,6 +1271,7 @@ export default function ChatPage() {
       {activeConvId && (
         <ShareDialog conversationId={activeConvId} open={shareOpen} onClose={() => setShareOpen(false)} />
       )}
+      <DocumentEditorDialog conversationId={activeConvId} />
     </Box>
   );
 }

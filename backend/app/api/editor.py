@@ -1,0 +1,417 @@
+"""Документ беседы в OnlyOffice: открыть, сохранить версию, ИИ-правка фрагмента.
+
+Все, кто открыл документ с одним key, правят его вместе вживую – это делает
+сам сервер документов. Мы отдаём файл, принимаем сохранения и пишем текст
+по выделенному фрагменту для плагина «ИИ-правка».
+"""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import logging
+import time
+import uuid
+from pathlib import Path
+from typing import Any, Optional
+from urllib.parse import urlsplit
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import FileResponse
+from jose import JWTError, jwt
+
+from app.auth import get_current_user
+from app.config import get_settings
+from app.core.repository import repo
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+PLUGIN_GUID = "asc.{7B1E5A2C-3D4F-4A6B-9C8D-1E2F3A4B5C6D}"
+LINK_TTL = 12 * 3600
+KEEP_VERSIONS = 10
+MAX_CONTEXT_CHARS = 40_000
+MAX_SELECTION_CHARS = 20_000
+_SAVE_STATUSES = {2, 6}  # 2 – все закрыли документ, 6 – принудительное сохранение
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def _enabled() -> bool:
+    return bool(get_settings().ONLYOFFICE_JWT_SECRET)
+
+
+def _require_enabled() -> None:
+    if not _enabled():
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Редактор документов не настроен")
+
+
+# ---------------------------------------------------------------- links
+
+def sign_link(doc_id: str, purpose: str, user: int = 0, ttl: int = LINK_TTL) -> str:
+    """Подписанная ссылка на одно действие с одним документом."""
+    settings = get_settings()
+    payload = {"doc": doc_id, "p": purpose, "u": int(user), "exp": int(time.time()) + ttl}
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+
+def check_link(token: str, doc_id: str, purpose: str) -> dict:
+    settings = get_settings()
+    try:
+        payload = jwt.decode(token or "", settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    except JWTError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Ссылка недействительна") from exc
+    if payload.get("doc") != doc_id or payload.get("p") != purpose:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Ссылка недействительна")
+    return payload
+
+
+def _ds_token(payload: dict) -> str:
+    return jwt.encode(payload, get_settings().ONLYOFFICE_JWT_SECRET, algorithm="HS256")
+
+
+def read_callback(body: dict, authorization: str = "") -> dict:
+    """Тело колбэка сервера документов, проверенное его JWT. Без подписи – отказ."""
+    secret = get_settings().ONLYOFFICE_JWT_SECRET
+    token = body.get("token")
+    header = (authorization or "").removeprefix("Bearer ").strip()
+    try:
+        if token:
+            return jwt.decode(token, secret, algorithms=["HS256"])
+        if header:
+            decoded = jwt.decode(header, secret, algorithms=["HS256"])
+            return decoded.get("payload") or decoded
+    except JWTError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Неверная подпись") from exc
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет подписи")
+
+
+def internal_download_url(url: str) -> str:
+    """Файл забираем только у своего сервера документов, какой бы хост ни был в ссылке.
+
+    Сервер строит ссылку от адреса, по которому к нему пришёл браузер
+    (https://сайт/onlyoffice/cache/...). Путь сохраняем, хост меняем на внутренний.
+    """
+    settings = get_settings()
+    parts = urlsplit(url or "")
+    path = parts.path or "/"
+    prefix = urlsplit(settings.ONLYOFFICE_PUBLIC_URL).path.rstrip("/")
+    if prefix and path.startswith(prefix + "/"):
+        path = path[len(prefix):]
+    query = f"?{parts.query}" if parts.query else ""
+    return f"{settings.ONLYOFFICE_INTERNAL_URL.rstrip('/')}{path}{query}"
+
+
+# ---------------------------------------------------------------- storage
+
+def _doc_dir(doc_id: str) -> Path:
+    # Не в UPLOAD_DIR: всё оттуда раздаётся статикой по /uploads.
+    return get_settings().DATA_DIR / "editor" / doc_id
+
+
+def version_path(doc_id: str, version: int) -> Path:
+    return _doc_dir(doc_id) / f"v{int(version)}.docx"
+
+
+def _prune_versions(doc_id: str, current: int) -> None:
+    for old in range(1, current - KEEP_VERSIONS + 1):
+        try:
+            version_path(doc_id, old).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _find_attachment(conv, filename: str) -> Optional[tuple[dict, Optional[int]]]:
+    """Карточка файла в переписке и её автор. Последняя с таким именем."""
+    for message in reversed(conv.messages):
+        attachment = message.attachment or {}
+        for item in [attachment, *(attachment.get("files") or [])]:
+            if isinstance(item, dict) and str(item.get("name") or "") == filename:
+                return item, message.author_user_id
+    return None
+
+
+def source_bytes(conv, filename: str) -> Optional[bytes]:
+    """Исходный .docx из переписки: сгенерированный файл или оригинал загрузки."""
+    found = _find_attachment(conv, filename)
+    if not found:
+        return None
+    attachment, author = found
+    url = str(attachment.get("url") or "")
+    if url.startswith("/uploads/"):
+        root = get_settings().UPLOAD_DIR.resolve()
+        candidate = (root / url.removeprefix("/uploads/")).resolve()
+        if candidate.is_relative_to(root) and candidate.is_file():
+            return candidate.read_bytes()
+    from document_parser import load_source_docx
+
+    for owner in dict.fromkeys([author, conv.owner_id]):
+        if owner:
+            data = load_source_docx(int(owner), filename)
+            if data:
+                return data
+    return None
+
+
+def _open_record(conv_id: str, filename: str, bot_id: int, data_loader) -> tuple[str, int]:
+    """(id, version) документа беседы. Первый раз – копия исходника как v1."""
+    from sqlalchemy.exc import IntegrityError
+
+    from app.db.engine import SyncSessionLocal
+    from app.db.models import EditorDocument
+
+    with SyncSessionLocal() as session:
+        record = session.query(EditorDocument).filter_by(conversation_id=conv_id, filename=filename).first()
+        if record and version_path(record.id, record.version).is_file():
+            return record.id, record.version
+        data = data_loader()
+        if not data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Исходный .docx не найден")
+        if record is None:
+            record = EditorDocument(id=uuid.uuid4().hex, conversation_id=conv_id, filename=filename, version=1, created_by=bot_id)
+            session.add(record)
+            try:
+                session.commit()
+            except IntegrityError:
+                # Второй участник открыл тот же файл одновременно – берём его запись.
+                session.rollback()
+                record = session.query(EditorDocument).filter_by(conversation_id=conv_id, filename=filename).one()
+        path = version_path(record.id, record.version)
+        if not path.is_file():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        return record.id, record.version
+
+
+def _record(doc_id: str):
+    from app.db.engine import SyncSessionLocal
+    from app.db.models import EditorDocument
+
+    with SyncSessionLocal() as session:
+        record = session.get(EditorDocument, doc_id)
+        if record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Документ не найден")
+        session.expunge(record)
+        return record
+
+
+def store_saved_version(doc_id: str, data: bytes, bump: bool) -> int:
+    """Записать сохранённый файл. bump – все закрыли документ: следующее открытие
+    получит новый key и свежий файл. Принудительное сохранение пишет поверх
+    текущей версии, чтобы не разорвать живую сессию."""
+    from app.db.engine import SyncSessionLocal
+    from app.db.models import EditorDocument
+
+    with SyncSessionLocal() as session:
+        record = session.get(EditorDocument, doc_id)
+        if record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Документ не найден")
+        version = record.version + 1 if bump else record.version
+        path = version_path(doc_id, version)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        if bump:
+            record.version = version
+        session.commit()
+        conv_id, filename, created_by = record.conversation_id, record.filename, record.created_by
+    _prune_versions(doc_id, version)
+    _refresh_chat_text(conv_id, filename, created_by, data)
+    return version
+
+
+def _docx_text(data: bytes) -> str:
+    from docx import Document
+
+    document = Document(io.BytesIO(data))
+    lines = [paragraph.text for paragraph in document.paragraphs]
+    for table in document.tables:
+        for row in table.rows:
+            lines.append(" | ".join(cell.text for cell in row.cells))
+    return "\n".join(line for line in lines if line.strip())
+
+
+def _refresh_chat_text(conv_id: str, filename: str, bot_id: int, data: bytes) -> None:
+    """Чат должен видеть исправленный документ, а не версию до правок."""
+    try:
+        from conversations import conversation_manager
+
+        conversation_manager.add_document(int(bot_id), filename, _docx_text(data), conv_id=conv_id)
+    except Exception:
+        logger.exception("Editor: chat text refresh failed for %s", filename)
+
+
+# ---------------------------------------------------------------- access
+
+async def _conversation_for(web_user_id: str, conv_id: str):
+    bot_id = await repo.ensure_user(web_user_id)
+    conv = await asyncio.to_thread(repo._manager.conversation_view, bot_id, conv_id)
+    if conv is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Беседа не найдена")
+    return bot_id, conv
+
+
+def _allowed(bot_id: int, conv_id: str) -> bool:
+    return repo._manager.conversation_view(int(bot_id), conv_id) is not None
+
+
+# ---------------------------------------------------------------- routes
+
+@router.get("/config")
+async def editor_config():
+    return {"enabled": _enabled()}
+
+
+@router.post("/open")
+async def open_document(data: dict, user_id: str = Depends(get_current_user)):
+    _require_enabled()
+    settings = get_settings()
+    conv_id = str(data.get("conversation_id") or "")
+    filename = str(data.get("filename") or "").strip()
+    if not conv_id or not filename.lower().endswith((".docx", ".doc")):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Открыть можно .docx из этой беседы")
+    bot_id, conv = await _conversation_for(user_id, conv_id)
+    doc_id, version = await asyncio.to_thread(
+        _open_record, conv.id, filename, bot_id, lambda: source_bytes(conv, filename)
+    )
+    names = await asyncio.to_thread(repo._manager.author_cards, [bot_id])
+    backend = settings.BACKEND_INTERNAL_URL.rstrip("/")
+    app_url = (settings.PUBLIC_APP_URL or str(data.get("origin") or "")).rstrip("/")
+    if not app_url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Нет адреса приложения")
+    title = filename if filename.lower().endswith(".docx") else f"{filename}x"
+    config: dict[str, Any] = {
+        "documentType": "word",
+        "document": {
+            "fileType": "docx",
+            "key": f"{doc_id}-{version}",
+            "title": title,
+            "url": f"{backend}/editor/{doc_id}/file?t={sign_link(doc_id, 'file')}",
+            "permissions": {"edit": True, "comment": True, "review": True, "download": True, "print": True},
+        },
+        "editorConfig": {
+            "mode": "edit",
+            "lang": "ru",
+            "callbackUrl": f"{backend}/editor/{doc_id}/callback?t={sign_link(doc_id, 'callback', ttl=30 * 24 * 3600)}",
+            "user": {"id": str(bot_id), "name": (names.get(bot_id) or {}).get("name") or "Участник"},
+            "customization": {"forcesave": True, "comments": True, "compactHeader": True, "uiTheme": "theme-light"},
+            "plugins": {"autostart": [PLUGIN_GUID], "pluginsData": [f"{app_url}/onlyoffice-plugin/config.json"]},
+        },
+    }
+    config["token"] = _ds_token(config)
+    return {
+        "doc_id": doc_id,
+        "server": settings.ONLYOFFICE_PUBLIC_URL.rstrip("/"),
+        "config": config,
+        "ai_token": sign_link(doc_id, "ai", user=bot_id),
+    }
+
+
+@router.get("/{doc_id}/file")
+async def document_file(doc_id: str, t: str = ""):
+    check_link(t, doc_id, "file")
+    record = await asyncio.to_thread(_record, doc_id)
+    path = version_path(doc_id, record.version)
+    if not path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Файл не найден")
+    return FileResponse(path, media_type=DOCX_MIME)
+
+
+@router.post("/{doc_id}/callback")
+async def document_callback(doc_id: str, request: Request, t: str = ""):
+    check_link(t, doc_id, "callback")
+    body = read_callback(await request.json(), request.headers.get("authorization", ""))
+    state = int(body.get("status") or 0)
+    if state in _SAVE_STATUSES and body.get("url"):
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                response = await client.get(internal_download_url(str(body["url"])))
+                response.raise_for_status()
+        except httpx.HTTPError:
+            logger.exception("Editor: saved file download failed for %s", doc_id)
+            return {"error": 1}
+        await asyncio.to_thread(store_saved_version, doc_id, response.content, state == 2)
+    return {"error": 0}
+
+
+EDIT_SYSTEM_PROMPT = (
+    "Ты редактор деловых и юридических документов на русском. Тебе дают выделенный фрагмент "
+    "документа и просьбу, что с ним сделать. Верни ТОЛЬКО новый текст фрагмента, которым его "
+    "заменят в документе: без пояснений, вступлений, кавычек вокруг, markdown и заголовков. "
+    "Сохраняй нумерацию пунктов, термины и стиль документа. Не выдумывай реквизиты, суммы и даты: "
+    "если значения нет в документе и просьбе, оставь как было. Если выделения нет – напиши текст "
+    "для вставки по просьбе. Не используй длинное тире «—», только «–»."
+)
+
+
+def _clean_ai_text(text: str) -> str:
+    text = (text or "").strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+        text = text.rsplit("```", 1)[0]
+    text = text.strip()
+    if len(text) >= 2 and text[0] in "«\"" and text[-1] in "»\"":
+        text = text[1:-1].strip()
+    return text.replace("—", "–")
+
+
+@router.post("/{doc_id}/ai")
+async def ai_edit(doc_id: str, data: dict, request: Request):
+    """Текст для выделенного фрагмента. Доступ – по ai-ссылке из /open: плагин
+    работает внутри редактора и не видит сессию приложения."""
+    _require_enabled()
+    token = (request.headers.get("authorization") or "").removeprefix("Bearer ").strip()
+    bot_id = int(check_link(token, doc_id, "ai").get("u") or 0)
+    record = await asyncio.to_thread(_record, doc_id)
+    if not bot_id or not await asyncio.to_thread(_allowed, bot_id, record.conversation_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа к документу")
+    instruction = str(data.get("instruction") or "").strip()
+    selection = str(data.get("selection") or "")[:MAX_SELECTION_CHARS]
+    comment = str(data.get("comment") or "").strip()
+    if not instruction and not comment:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Напишите, что сделать с фрагментом")
+
+    from app.billing.plans import clamp_model
+    from app.billing.quota import QuotaError, assert_can_use, usage_view
+    from conversations import conversation_manager
+    from openai_client import get_chat_response
+
+    sub = await asyncio.to_thread(conversation_manager.get_subscription, bot_id)
+    view = usage_view(sub)
+    model = clamp_model(view["tier"], "gpt-6-sol")
+    charged = view["tier"] == "free"
+    try:
+        await asyncio.to_thread(assert_can_use, bot_id, "chat", model)
+        if charged:
+            limit = int(view["free_daily"]["replies_limit"] or 0)
+            if not await asyncio.to_thread(conversation_manager.consume_daily_counter, bot_id, "daily_gpt54", limit):
+                raise QuotaError("Лимит на сегодня закончился.", "quota")
+    except QuotaError as exc:
+        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)) from exc
+
+    path = version_path(doc_id, record.version)
+    context = ""
+    if path.is_file():
+        try:
+            context = (await asyncio.to_thread(_docx_text, path.read_bytes()))[:MAX_CONTEXT_CHARS]
+        except Exception:
+            logger.debug("Editor: context extraction failed", exc_info=True)
+    request_text = (
+        f"Документ «{record.filename}» (последняя сохранённая версия, для контекста):\n{context}\n\n"
+        f"Выделенный фрагмент:\n{selection or '(ничего не выделено)'}\n\n"
+        + (f"Комментарий к фрагменту:\n{comment}\n\n" if comment else "")
+        + f"Просьба:\n{instruction or 'Исправь фрагмент по комментарию.'}"
+    )
+    answer, _, _, _ = await get_chat_response(
+        [{"role": "system", "content": EDIT_SYSTEM_PROMPT}, {"role": "user", "content": request_text}],
+        model=model,
+        user_id=bot_id,
+        use_tools=False,
+        reasoning_effort="low",
+        use_skills=False,
+    )
+    if not answer or answer.startswith("❌"):
+        if charged:
+            await asyncio.to_thread(conversation_manager.refund_daily_counter, bot_id, "daily_gpt54")
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Модель не ответила, попробуйте ещё раз")
+    return {"text": _clean_ai_text(answer)}

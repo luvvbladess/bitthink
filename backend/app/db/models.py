@@ -91,6 +91,25 @@ class ConversationMember(Base):
     joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class EditorDocument(Base):
+    """Документ беседы, открытый в OnlyOffice. Версия растёт с каждым сохранением:
+    ключ key = id-version, и все, кто открыл ту же версию, правят её вместе."""
+
+    __tablename__ = "editor_documents"
+    __table_args__ = (UniqueConstraint("conversation_id", "filename"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_by: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class ConversationAside(Base):
     """Переписка людей в беседе. Ассистент её не читает и не отвечает."""
 

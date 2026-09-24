@@ -61,6 +61,16 @@ class Settings(BaseSettings):
     UPLOAD_DIR: Path = Path(__file__).resolve().parent.parent / "uploads"
     DATA_DIR: Path = PROJECT_ROOT / "data"
 
+    # OnlyOffice Docs. Without the JWT secret the editor stays off.
+    # PUBLIC_URL – where the browser loads the editor (same site, see nginx.conf).
+    # INTERNAL_URL – how the backend reaches the document server for saved files.
+    # BACKEND_INTERNAL_URL – how the document server reaches the backend.
+    ONLYOFFICE_JWT_SECRET: str = ""
+    ONLYOFFICE_PUBLIC_URL: str = "/onlyoffice"
+    ONLYOFFICE_INTERNAL_URL: str = "http://onlyoffice"
+    BACKEND_INTERNAL_URL: str = "http://backend:8000"
+    PUBLIC_APP_URL: str = ""
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def parse_cors_origins(cls, value):

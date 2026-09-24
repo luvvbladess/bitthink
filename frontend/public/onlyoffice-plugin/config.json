@@ -1,0 +1,23 @@
+{
+  "name": "ИИ-правка",
+  "nameLocale": { "ru": "ИИ-правка", "en": "AI edit" },
+  "guid": "asc.{7B1E5A2C-3D4F-4A6B-9C8D-1E2F3A4B5C6D}",
+  "version": "1.0.0",
+  "variations": [
+    {
+      "description": "Bit-Think: переписать выделенный фрагмент по просьбе",
+      "url": "index.html",
+      "icons": ["icon.png", "icon.png"],
+      "isViewer": false,
+      "EditorsSupport": ["word"],
+      "isVisual": true,
+      "isModal": false,
+      "isInsideMode": true,
+      "initDataType": "text",
+      "initData": "",
+      "isUpdateOleOnResize": false,
+      "buttons": [],
+      "events": ["onTargetPositionChanged"]
+    }
+  ]
+}

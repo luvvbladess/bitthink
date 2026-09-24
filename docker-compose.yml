@@ -56,6 +56,24 @@ services:
       - backend
     restart: unless-stopped
 
+  # Document editor, opt-in: docker compose --profile editor up -d
+  # The frontend nginx serves it under /onlyoffice/ on the same site. Set
+  # ONLYOFFICE_JWT_SECRET in .env – the backend signs editor configs with the
+  # same secret and checks it on every save callback. Needs about 2-4 GB RAM.
+  onlyoffice:
+    image: onlyoffice/documentserver:8.2
+    profiles: ["editor"]
+    environment:
+      - JWT_ENABLED=true
+      - JWT_SECRET=${ONLYOFFICE_JWT_SECRET:-}
+      - JWT_HEADER=Authorization
+      # Documents come from http://backend:8000 on the compose network.
+      - ALLOW_PRIVATE_IP_ADDRESS=true
+    volumes:
+      - onlyoffice_data:/var/www/onlyoffice/Data
+      - onlyoffice_logs:/var/log/onlyoffice
+    restart: unless-stopped
+
   sandbox:
     build:
       context: .
@@ -88,6 +106,8 @@ services:
 
 volumes:
   postgres_data:
+  onlyoffice_data:
+  onlyoffice_logs:
 
 networks:
   sandbox_net:
