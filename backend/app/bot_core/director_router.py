@@ -86,6 +86,46 @@ def _is_document_package_task(text: str) -> bool:
     return bool(_DOC_PACKAGE_RE.search(text or ""))
 
 
+# «Сделай аннотационный отчёт», «оформи в Word», «собери таблицу в xlsx».
+# Одного .docx сотруднику с шестью ходами тоже не хватало: скил, чтение
+# исходников, запись текста – и ходы кончались до сборки файла.
+_FILE_REQUEST_RE = re.compile(
+    r"(?i)(?:сдела|созда|подготов|собер|собра|сформир|оформ|выпуст|сгенерир|состав|разработ|напиш)\w*"
+    r"\s+(?:\S+\s+){0,3}?(?:отч[её]т|документ|файл|таблиц|презентац|справк|аннотац|docx|word|ворд|xlsx|pptx|pdf)"
+    r"|(?:\bв|\bво|формат\w*)\s+(?:word|ворд\w*|docx|xlsx|excel|эксел\w*|pdf|pptx)\b"
+)
+
+
+def _wants_file(text: str) -> bool:
+    return bool(_FILE_REQUEST_RE.search(text or ""))
+
+
+async def _new_file_names(user_id: int, since: float) -> List[str] | None:
+    """Файлы, которые песочница отдаст в чат за этот ход. None – проверить не вышло."""
+    try:
+        from app.services.sandbox_client import collect_workspace_files
+
+        files = await collect_workspace_files(int(user_id), since)
+    except Exception:
+        logger.debug("Director: deliverables check failed", exc_info=True)
+        return None
+    return [str(item.get("filename") or item.get("name") or "") for item in files]
+
+
+def _file_builder_employee(user_text: str) -> Dict[str, str]:
+    return {
+        "role": "Сборка файла",
+        "task": (
+            "load_skill documents. Пользователь просил файл, но в песочнице его пока нет. "
+            f"Запрос: «{(user_text or '')[:600]}». "
+            "Возьми текст и данные из результатов коллег и из песочницы (workspace_glob), допиши недостающее, "
+            "собери файл: .docx через bt_docx, либо .xlsx/.pdf/.pptx, если просили этот формат. "
+            "В конце workspace_glob: файл должен лежать. Не пиши, что нет доступа к созданию DOCX."
+        ),
+        "model": FALLBACK_EMPLOYEE_MODEL,
+    }
+
+
 def _astra_fallback(allowed: list[str]) -> str:
     for model in ("gpt-6-sol", FALLBACK_EMPLOYEE_MODEL):
         if model in allowed:
@@ -612,7 +652,8 @@ async def _execute_employee(
             search = [{"query": task, "summary": answer[:600]}] if answer else []
         else:
             from openai_client import get_chat_response
-            loops = PACKAGE_EMPLOYEE_TOOL_LOOPS if _is_document_package_task(task) else None
+            builds_file = _is_document_package_task(task) or _wants_file(task) or "docx" in (task or "").lower()
+            loops = PACKAGE_EMPLOYEE_TOOL_LOOPS if builds_file else None
             answer, _, reasoning, search = await get_chat_response(
                 employee_messages, model=model, user_id=user_id, use_tools=True, max_tool_loops=loops,
             )
@@ -776,6 +817,8 @@ async def _plan_round(
         "Не назначай скил, которого нет в каталоге. "
         "В task пиши, какой готовый вывод нужен: как применить, ограничение, что проверить. "
         "Не оставляй полуфабрикат, из-за которого пользователь спросит «а как именно».\n"
+        "Если просят файл (отчёт, документ, Word, таблицу) – текст и сборку файла поручай одному сотруднику. "
+        "Текст и «параметры оформления» без собранного файла – не результат: status=done только после workspace_glob с файлом.\n"
         "Если счёт, разбор файла или повторные вычисления дешевле скриптом – найми сотрудника с python_run/pip_install, не жуй сырьё токенами.\n"
         "Если просят комплект документов (переработать имеющиеся и разработать недостающие, «18 документов» и т. п.) – "
         "это много отдельных .docx, а не один файл и не только структура. Раунд 1: один сотрудник с load_skill documents "
@@ -839,11 +882,20 @@ async def _compose_answer(
     user_id: int,
     history_text: str = "",
     document_context: str = "",
+    built_files: List[str] | None = None,
 ) -> Tuple[str, str]:
     """Свести заметки сотрудников в обычный ответ чата — без отчёта и нумерации разделов."""
     from openai_client import get_chat_response
 
     history_block = f"\n\nИстория диалога:\n{history_text}\n" if history_text else ""
+    # Факт из песочницы, а не пересказ сотрудника: без него сборщик писал
+    # «файл не выпущен», когда файл уже лежал и уходил кнопкой в чат.
+    files_block = (
+        "Собраны и придут кнопкой скачивания в этом ответе: " + ", ".join(built_files) + ". "
+        "Не пиши, что эти файлы не созданы.\n\n"
+        if built_files
+        else ""
+    )
     doc_block = f"\n\nДокументы пользователя:\n{document_context}\n" if document_context else ""
     preferences_block = _preference_context(user_id)
     prefs_block = f"{preferences_block}\n\n" if preferences_block else ""
@@ -874,6 +926,7 @@ async def _compose_answer(
         "Не пиши, что нет доступа к созданию DOCX, если сотрудники файлы собрали.\n\n"
         f"{history_block}"
         f"Вопрос пользователя:\n{original_task}\n\n"
+        f"{files_block}"
         f"{doc_block}"
         f"Заметки сотрудников:\n{_format_journal_for_prompt(journal)}\n\n"
         "Убери повторы. Если каких-то данных нет из-за ошибки — скажи об этом коротко, не выдумывай."
@@ -979,7 +1032,11 @@ async def _run_director(
     status_msg: Any,
 ) -> "Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]":
     import asyncio
+    import time
 
+    started = time.time()
+    wants_file = _wants_file(user_text)
+    forced_build = False
     document_context = _extract_document_context(messages)
     history_text = _format_chat_history(messages)
     try:
@@ -1010,7 +1067,16 @@ async def _run_director(
             return questions[0]["prompt"], [], "", pack_search(questions)
 
         if plan["status"] == "done" or not plan["new_employees"]:
-            break
+            # Просили файл, а в песочнице пусто: планировщик закрывал задачу на
+            # «текст и параметры оформления готовы». Один раз досылаем сборщика.
+            if not wants_file or forced_build or len(journal) >= MAX_EMPLOYEES:
+                break
+            if await _new_file_names(user_id, started) != []:
+                break
+            forced_build = True
+            plan = _clamp_employee_plan(
+                {"status": "continue", "new_employees": [_file_builder_employee(user_text)]}, user_id
+            )
 
         hired = plan["new_employees"]
         if len(hired) == 1:
@@ -1045,8 +1111,9 @@ async def _run_director(
         return _sanitize_answer(answer), [], reasoning, search
 
     await _update_status(status_msg, "Пишу ответ")
+    built_files = await _new_file_names(user_id, started) if wants_file else None
     answer, compose_reasoning = await _compose_answer(
-        user_text, journal, user_id, history_text, document_context
+        user_text, journal, user_id, history_text, document_context, built_files=built_files
     )
     answer = _sanitize_answer(answer)
 
