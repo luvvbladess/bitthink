@@ -120,6 +120,10 @@ def test_phone_edit_lands_as_tracked_change_and_waits_for_desktop_editors(editor
     editor._EDITING[doc_id] = {"881042"}
     body = {"index": item["index"], "base_text": item["text"], "text": "Срок оплаты 10 рабочих дней."}
     assert client.post(f"/editor/{doc_id}/paragraphs", json=body, headers=auth).status_code == 423
+    # Their own desktop session counts too: it would save over the phone edit.
+    editor._EDITING[doc_id] = {str(owner)}
+    assert client.get(f"/editor/{doc_id}/paragraphs", headers=auth).json()["busy"] == ["вы"]
+    assert client.post(f"/editor/{doc_id}/paragraphs", json=body, headers=auth).status_code == 423
     editor._EDITING.pop(doc_id)
 
     saved = client.post(f"/editor/{doc_id}/paragraphs", json=body, headers=auth)
