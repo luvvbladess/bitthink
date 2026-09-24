@@ -227,6 +227,13 @@ export function ChatMessage({
   const parsedSources = parseSources(sources);
   const modeSwitch = !isUser ? modeSwitchFromSearch(search) : null;
   const visibleContent = isUser && isClarifyReply(content) ? CLARIFY_ACK : content;
+  // A reply can carry several files (Pilot writes a set of documents); every one
+  // gets its own card. Only the first one used to be drawn.
+  const attachmentItems: AttachmentInfo[] = attachment ? (attachment.files?.length ? attachment.files : [attachment]) : [];
+  // An upload's message text is just the file name; a reply's text is the answer
+  // itself and belongs above its files.
+  const trimmedContent = (visibleContent || '').trim();
+  const textBesideFiles = Boolean(trimmedContent) && !attachmentItems.some((item) => item.name === trimmedContent);
 
   const handleCopy = async () => {
     try {
@@ -276,18 +283,7 @@ export function ChatMessage({
         </Box>
       )}
       {!isUser && <ReasoningTrace reasoning={reasoning} />}
-      {attachment ? (
-        attachment.type === 'image' && attachment.status === 'done' && attachment.url ? (
-          <ChatImage
-            src={attachment.url}
-            alt={attachment.name}
-            onEdit={attachment.url.startsWith('/uploads/') && onEditImage ? () => onEditImage(attachment.url!) : undefined}
-            onRemove={onRemoveAttachment}
-          />
-        ) : (
-          <DocumentAttachment {...attachment} onRemoveFromContext={onRemoveAttachment} />
-        )
-      ) : editing ? (
+      {attachment && !textBesideFiles ? null : editing ? (
         <Box sx={{ width: '100%', maxWidth: { xs: '92%', md: '78%' } }}>
           <TextField
             value={editValue}
@@ -379,6 +375,37 @@ export function ChatMessage({
           </ReactMarkdown>
           {modeSwitch && onAcceptMode && (
             <ModeSwitchCard suggestion={modeSwitch} onAccept={() => onAcceptMode(modeSwitch.model)} />
+          )}
+        </Box>
+      )}
+      {attachmentItems.length > 0 && (
+        <Box
+          sx={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: alignEnd ? 'flex-end' : 'flex-start',
+            gap: 1,
+            mt: textBesideFiles && !editing ? 1.25 : 0,
+            width: '100%',
+            minWidth: 0,
+          }}
+        >
+          {attachmentItems.map((item, index) =>
+            item.type === 'image' && item.status === 'done' && item.url ? (
+              <ChatImage
+                key={`${item.url}-${index}`}
+                src={item.url}
+                alt={item.name}
+                onEdit={item.url.startsWith('/uploads/') && onEditImage ? () => onEditImage(item.url!) : undefined}
+                onRemove={attachmentItems.length === 1 ? onRemoveAttachment : undefined}
+              />
+            ) : (
+              <DocumentAttachment
+                key={`${item.name}-${index}`}
+                {...item}
+                onRemoveFromContext={attachmentItems.length === 1 ? onRemoveAttachment : undefined}
+              />
+            ),
           )}
         </Box>
       )}
