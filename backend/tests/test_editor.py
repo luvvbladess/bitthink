@@ -99,6 +99,48 @@ def test_edit_becomes_the_chat_file_and_the_assistant_knows(editor):
     manager.delete_conversation(881_031, conv.id)
 
 
+def test_phone_edit_lands_as_tracked_change_and_waits_for_desktop_editors(editor):
+    from app.auth import create_access_token
+    from app.core.repository import repo
+
+    settings = get_settings()
+    email = "phone-owner@example.ru"
+    owner = repo._bot_id(email)
+    manager, conv = _room_with_contract(settings, owner, 881_042)
+    from app.main import app
+    doc_id, _ = editor._open_record(conv.id, "Договор.docx", owner, lambda: editor.source_bytes(conv, "Договор.docx"))
+    client = TestClient(app)
+    auth = {"Authorization": f"Bearer {create_access_token({'sub': email})}"}
+
+    listed = client.get(f"/editor/{doc_id}/paragraphs", headers=auth).json()
+    item = listed["paragraphs"][0]
+    assert item["text"] == "Срок оплаты 30 дней." and listed["busy"] == []
+
+    # Someone has it open in OnlyOffice on a computer: the phone waits.
+    editor._EDITING[doc_id] = {"881042"}
+    body = {"index": item["index"], "base_text": item["text"], "text": "Срок оплаты 10 рабочих дней."}
+    assert client.post(f"/editor/{doc_id}/paragraphs", json=body, headers=auth).status_code == 423
+    editor._EDITING.pop(doc_id)
+
+    saved = client.post(f"/editor/{doc_id}/paragraphs", json=body, headers=auth)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["version"] == 2
+    # Same stale text again: the paragraph already changed.
+    assert client.post(f"/editor/{doc_id}/paragraphs", json=body, headers=auth).status_code == 409
+
+    stored = settings.UPLOAD_DIR / "generated" / "abcdef0123456789" / ("0" * 32 + ".docx")
+    from docx import Document
+
+    xml = Document(io.BytesIO(stored.read_bytes())).element.xml
+    assert "w:del " in xml and "w:ins " in xml  # the chat file carries the tracked change
+    files = editor.conversation_files(manager.conversation_view(owner, conv.id))
+    assert files[0]["version"] == 2 and files[0]["edited_at"]
+
+    stranger = {"Authorization": f"Bearer {create_access_token({'sub': 'stranger@example.ru'})}"}
+    assert client.get(f"/editor/{doc_id}/paragraphs", headers=stranger).status_code == 404
+    manager.delete_conversation(owner, conv.id)
+
+
 def test_callback_requires_document_server_signature(editor):
     settings = get_settings()
     manager, conv = _room_with_contract(settings, 881_011, 881_012)
