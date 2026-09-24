@@ -87,6 +87,21 @@ export function RoomChat({
         minHeight: 0,
         overflow: 'hidden',
         ...floatingPanelSx,
+        // Phone: a full screen of its own, clear of the notch and the home bar.
+        // dvh follows the on-screen keyboard, so the input stays visible.
+        '@media (max-width: 899.95px)': {
+          position: 'fixed',
+          inset: 0,
+          zIndex: 1300,
+          width: '100%',
+          height: '100dvh',
+          borderRadius: 0,
+          border: 'none',
+          // The panel colour is translucent glass; full screen needs a solid page under it.
+          bgcolor: 'background.default',
+          pt: 'env(safe-area-inset-top)',
+          pb: 'env(safe-area-inset-bottom)',
+        },
         '@media (prefers-reduced-motion: no-preference)': {
           animation: 'room-chat-in 0.2s cubic-bezier(0.23, 1, 0.32, 1)',
         },

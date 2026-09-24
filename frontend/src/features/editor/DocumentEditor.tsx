@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Box, Dialog, IconButton, Typography, CircularProgress } from '@mui/material';
+import { Box, Dialog, IconButton, Typography, CircularProgress, ToggleButton, ToggleButtonGroup, useMediaQuery, useTheme } from '@mui/material';
+import { PhoneEdit } from '@/features/editor/PhoneEdit';
 import { X } from '@phosphor-icons/react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { create } from 'zustand';
@@ -73,6 +74,20 @@ export function DocumentEditorDialog({ conversationId }: { conversationId?: stri
   };
   const [loading, setLoading] = useState(false);
   const editorRef = useRef<{ destroyEditor: () => void } | null>(null);
+  // Phones get the OnlyOffice viewer plus our own clause editor (free OnlyOffice
+  // cannot edit on mobile, and its plugins do not run there).
+  const theme = useTheme();
+  const isPhone = useMediaQuery(theme.breakpoints.down('md'));
+  const [session, setSession] = useState<{ docId: string; aiToken: string } | null>(null);
+  const [phoneTab, setPhoneTab] = useState<'view' | 'edit'>('view');
+  const [reload, setReload] = useState(0);
+
+  useEffect(() => {
+    if (!filename) {
+      setSession(null);
+      setPhoneTab('view');
+    }
+  }, [filename]);
 
   useEffect(() => {
     if (!filename || !conversationId) return;
@@ -83,8 +98,9 @@ export function DocumentEditorDialog({ conversationId }: { conversationId?: stri
       try {
         const opened = await apiFetch('/editor/open', {
           method: 'POST',
-          body: JSON.stringify({ conversation_id: conversationId, filename, origin: window.location.origin }),
+          body: JSON.stringify({ conversation_id: conversationId, filename, origin: window.location.origin, mobile: isPhone }),
         });
+        setSession({ docId: opened.doc_id, aiToken: opened.ai_token });
         sessionStorage.setItem(EDITOR_SESSION_KEY, JSON.stringify({ docId: opened.doc_id, aiToken: opened.ai_token }));
         await loadEditorScript(opened.server);
         if (cancelled || !window.DocsAPI) return;
@@ -92,7 +108,7 @@ export function DocumentEditorDialog({ conversationId }: { conversationId?: stri
           ...opened.config,
           width: '100%',
           height: '100%',
-          events: { onAppReady: () => setLoading(false) },
+          events: { onAppReady: () => setLoading(false), onDocumentReady: () => setLoading(false) },
         });
       } catch (e: any) {
         if (!cancelled) {
@@ -106,29 +122,62 @@ export function DocumentEditorDialog({ conversationId }: { conversationId?: stri
       editorRef.current?.destroyEditor();
       editorRef.current = null;
     };
-  }, [filename, conversationId]);
+  }, [filename, conversationId, isPhone, reload]);
 
   return (
     <Dialog fullScreen open={Boolean(filename)} onClose={close} aria-label="Редактор документа">
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 2, py: 1, borderBottom: '1px solid var(--bt-hairline)' }}>
-        <Typography sx={{ fontWeight: 800, letterSpacing: '-0.02em', color: 'primary.light', flexShrink: 0 }}>Bit Office</Typography>
-        <Typography sx={{ fontWeight: 600, flexGrow: 1, minWidth: 0 }} noWrap>
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 1,
+          px: { xs: 1, md: 2 },
+          pt: { xs: 'max(6px, env(safe-area-inset-top))', md: 1 },
+          pb: { xs: 0.75, md: 1 },
+          borderBottom: '1px solid var(--bt-hairline)',
+        }}
+      >
+        <Typography sx={{ fontWeight: 800, letterSpacing: '-0.02em', color: 'primary.light', flexShrink: 0, display: { xs: 'none', sm: 'block' } }}>
+          Bit Office
+        </Typography>
+        <Typography sx={{ fontWeight: 600, flexGrow: 1, minWidth: 0, fontSize: { xs: '0.875rem', md: '1rem' }, pl: { xs: 1, sm: 0 } }} noWrap>
           {filename}
         </Typography>
         <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary', display: { xs: 'none', md: 'block' } }}>
           Правки сохраняются в файл беседы сами, примерно раз в минуту. Участники видят их сразу.
         </Typography>
-        <IconButton onClick={close} aria-label="Закрыть редактор">
+        {isPhone && session && (
+          <ToggleButtonGroup
+            exclusive
+            size="small"
+            value={phoneTab}
+            onChange={(_, next) => next && setPhoneTab(next)}
+            aria-label="Просмотр или правка"
+            sx={{ flexShrink: 0, '& .MuiToggleButton-root': { px: 1.25, minHeight: 36, textTransform: 'none', fontWeight: 600 } }}
+          >
+            <ToggleButton value="view">Документ</ToggleButton>
+            <ToggleButton value="edit">Править</ToggleButton>
+          </ToggleButtonGroup>
+        )}
+        <IconButton onClick={close} aria-label="Закрыть редактор" sx={{ width: 44, height: 44, flexShrink: 0 }}>
           <X size={20} />
         </IconButton>
       </Box>
       <Box sx={{ position: 'relative', flex: '1 1 0', minHeight: 0 }}>
         {(loading || error) && (
-          <Box sx={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1.5 }}>
+          <Box sx={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1.5, p: 2, textAlign: 'center' }}>
             {error ? <Typography color="error">{error}</Typography> : <CircularProgress size={24} />}
           </Box>
         )}
         <div id={HOST_ID} />
+        {isPhone && session && phoneTab === 'edit' && (
+          <PhoneEdit
+            docId={session.docId}
+            aiToken={session.aiToken}
+            // A saved clause is a new version: reopen the viewer on it.
+            onSaved={() => setReload((value) => value + 1)}
+          />
+        )}
       </Box>
     </Dialog>
   );

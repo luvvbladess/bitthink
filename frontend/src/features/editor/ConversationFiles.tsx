@@ -90,6 +90,7 @@ export function ConversationFilesDrawer({ conversationId, open, onClose }: { con
                   <Tooltip title="Открыть в редакторе">
                     <IconButton
                       size="small"
+                      sx={{ width: 44, height: 44 }}
                       onClick={() => {
                         onClose();
                         openEditor(file.name);
@@ -102,7 +103,7 @@ export function ConversationFilesDrawer({ conversationId, open, onClose }: { con
                 )}
                 {file.download_url && (
                   <Tooltip title={file.edited_at ? 'Скачать текущую версию' : 'Скачать'}>
-                    <IconButton size="small" component="a" href={`${API_BASE}${file.download_url}`} aria-label={`Скачать ${file.name}`}>
+                    <IconButton size="small" sx={{ width: 44, height: 44 }} component="a" href={`${API_BASE}${file.download_url}`} aria-label={`Скачать ${file.name}`}>
                       <DownloadSimple size={18} />
                     </IconButton>
                   </Tooltip>

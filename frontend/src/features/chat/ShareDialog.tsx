@@ -51,6 +51,16 @@ export function ShareDialog({ conversationId, open, onClose }: { conversationId:
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1500);
   };
+  // Phones: the system share sheet (Telegram, WhatsApp, mail) beats copy and paste.
+  const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+  const shareLink = async () => {
+    if (!link) return;
+    try {
+      await navigator.share({ title: 'Общий диалог в Bit-Think', text: 'Присоединяйся к диалогу', url: link });
+    } catch {
+      // The person closed the sheet.
+    }
+  };
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="xs">
@@ -69,7 +79,7 @@ export function ShareDialog({ conversationId, open, onClose }: { conversationId:
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, mb: 2 }}>
             {data.people.map((person) => (
               <Box key={person.name + (person.owner ? '-owner' : '')} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <UserAvatar user={person} sx={{ width: 28, height: 28, fontSize: '0.8rem' }} />
+                <UserAvatar user={{ first_name: person.name, avatar_url: person.avatar_url }} sx={{ width: 28, height: 28, fontSize: '0.8rem' }} />
                 <Typography sx={{ fontSize: '0.875rem' }}>
                   {person.name}{person.owner ? ' · владелец' : ''}
                 </Typography>
@@ -87,9 +97,16 @@ export function ShareDialog({ conversationId, open, onClose }: { conversationId:
             <Typography sx={{ flex: 1, minWidth: 0, fontSize: '0.8125rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {link}
             </Typography>
-            <IconButton onClick={copy} aria-label="Скопировать ссылку">
+            <IconButton onClick={copy} aria-label="Скопировать ссылку" sx={{ width: 44, height: 44 }}>
               {copied ? <Check size={18} /> : <Copy size={18} />}
             </IconButton>
+          </Box>
+        )}
+        {link && canShare && (
+          <Box sx={{ mt: 1.5 }}>
+            <PrimaryButton onClick={shareLink} fullWidth>
+              Отправить ссылку
+            </PrimaryButton>
           </Box>
         )}
         {isOwner && data?.token && (

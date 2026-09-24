@@ -36,6 +36,15 @@ _SAVE_STATUSES = {2, 6}  # 2 – все закрыли документ, 6 – �
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
+# doc_id → ids of people with the document open for editing in OnlyOffice.
+# Filled from callbacks (status 1 lists current editors, 2/4 mean everyone left).
+# ponytail: in-process memory, fine for the single uvicorn worker; after a
+# backend restart it is empty until the next callback. Move to the DB if the
+# backend ever runs several workers.
+_EDITING: dict[str, set[str]] = {}
+_PHONE_LOCKS: dict[str, asyncio.Lock] = {}
+
+
 def _enabled() -> bool:
     return bool(get_settings().ONLYOFFICE_JWT_SECRET)
 
@@ -433,6 +442,13 @@ async def open_document(data: dict, user_id: str = Depends(get_current_user)):
             "plugins": {"autostart": [PLUGIN_GUID], "pluginsData": [f"{app_url}/onlyoffice-plugin/config.json"]},
         },
     }
+    if data.get("mobile"):
+        # Free OnlyOffice only views on phones; edits there go through
+        # /paragraphs as tracked changes. Viewers join the live session key.
+        config["type"] = "mobile"
+        config["editorConfig"]["mode"] = "view"
+        config["editorConfig"].pop("plugins", None)
+        config["document"]["permissions"] = {"edit": False, "comment": False, "review": False, "download": True, "print": True}
     config["token"] = _ds_token(config)
     return {
         "doc_id": doc_id,
@@ -457,6 +473,10 @@ async def document_callback(doc_id: str, request: Request, t: str = ""):
     check_link(t, doc_id, "callback")
     body = read_callback(await request.json(), request.headers.get("authorization", ""))
     state = int(body.get("status") or 0)
+    if state == 1:
+        _EDITING[doc_id] = {str(item) for item in (body.get("users") or [])}
+    elif state in (2, 3, 4):
+        _EDITING.pop(doc_id, None)
     if state in _SAVE_STATUSES and body.get("url"):
         import httpx
 
@@ -474,6 +494,69 @@ async def document_callback(doc_id: str, request: Request, t: str = ""):
         # Участники общей беседы увидят новую версию в списке файлов сразу.
         await repo.notify_room(record.conversation_id)
     return {"error": 0}
+
+
+def _editing_names(doc_id: str, except_id: int) -> list[str]:
+    ids = [int(item) for item in _EDITING.get(doc_id, set()) if item.isdigit() and int(item) != except_id]
+    if not ids:
+        return []
+    cards = repo._manager.author_cards(ids)
+    return [(cards.get(item) or {}).get("name") or "участник" for item in ids]
+
+
+@router.get("/{doc_id}/paragraphs")
+async def document_paragraphs(doc_id: str, user_id: str = Depends(get_current_user)):
+    """Пункты текущей версии для правки с телефона."""
+    from app.services.tracked_edit import list_paragraphs
+
+    record = await asyncio.to_thread(_record, doc_id)
+    bot_id, _ = await _conversation_for(user_id, record.conversation_id)
+    path = version_path(doc_id, record.version)
+    if not path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Файл не найден")
+    paragraphs = await asyncio.to_thread(list_paragraphs, path.read_bytes())
+    busy = await asyncio.to_thread(_editing_names, doc_id, bot_id)
+    return {"version": record.version, "paragraphs": paragraphs, "busy": busy}
+
+
+@router.post("/{doc_id}/paragraphs")
+async def edit_paragraph(doc_id: str, data: dict, user_id: str = Depends(get_current_user)):
+    """Заменить один пункт как правку рецензирования и сделать это новой версией файла."""
+    from app.services.tracked_edit import EditConflict, EditRejected, replace_paragraph
+
+    record = await asyncio.to_thread(_record, doc_id)
+    bot_id, _ = await _conversation_for(user_id, record.conversation_id)
+    busy = await asyncio.to_thread(_editing_names, doc_id, bot_id)
+    if busy:
+        # Their live session would save over this file when they close it.
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED,
+            detail=f"Документ сейчас правят на компьютере ({', '.join(busy)}). Попробуйте, когда его закроют.",
+        )
+    try:
+        index = int(data.get("index"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Не указан пункт") from exc
+    text = str(data.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Пустой текст пункта")
+    cards = await asyncio.to_thread(repo._manager.author_cards, [bot_id])
+    author = (cards.get(bot_id) or {}).get("name") or "Участник"
+    # Two phones saving at once must not write over each other's version.
+    async with _PHONE_LOCKS.setdefault(doc_id, asyncio.Lock()):
+        record = await asyncio.to_thread(_record, doc_id)
+        path = version_path(doc_id, record.version)
+        try:
+            edited = await asyncio.to_thread(
+                replace_paragraph, path.read_bytes(), index, str(data.get("base_text") or ""), text, author,
+            )
+        except EditConflict as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except EditRejected as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        version = await asyncio.to_thread(store_saved_version, doc_id, edited, True, bot_id)
+    await repo.notify_room(record.conversation_id)
+    return {"version": version}
 
 
 EDIT_SYSTEM_PROMPT = (

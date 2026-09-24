@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Box, Drawer, SwipeableDrawer, IconButton, Tooltip, useMediaQuery, useTheme } from '@mui/material';
-import { List as ListIcon, FileArrowDown, MagnifyingGlass, WarningCircle, SquareHalf, Users, ChatsCircle, FolderSimple } from '@phosphor-icons/react';
+import { Box, Drawer, SwipeableDrawer, IconButton, Tooltip, Menu, MenuItem, ListItemIcon, ListItemText, useMediaQuery, useTheme } from '@mui/material';
+import { List as ListIcon, FileArrowDown, MagnifyingGlass, WarningCircle, SquareHalf, Users, ChatsCircle, FolderSimple, DotsThree, Sun, Moon } from '@phosphor-icons/react';
+import { useColorMode } from '@/theme/ColorMode';
 import { headerIconBtnSx } from '@/theme/effects';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
@@ -150,6 +151,8 @@ export default function ChatPage() {
   const [shareOpen, setShareOpen] = useState(false);
   const [roomOpenById, setRoomOpenById] = useState<Record<string, boolean>>({});
   const [filesOpen, setFilesOpen] = useState(false);
+  const [moreAnchor, setMoreAnchor] = useState<HTMLElement | null>(null);
+  const colorMode = useColorMode();
   // Id of the assistant message currently being replaced by a regenerate — hidden
   // from `base` below so the old answer doesn't flash alongside the new one while
   // the server hasn't confirmed the deletion/replacement yet.
@@ -1036,14 +1039,14 @@ export default function ChatPage() {
                 </IconButton>
               </Tooltip>
             )}
-            {activeConvId && (
+            {activeConvId && !isMobile && (
               <Tooltip title="Файлы беседы">
                 <IconButton onClick={() => setFilesOpen(true)} sx={headerIconBtnSx} aria-label="Файлы беседы">
                   <FolderSimple size={22} weight="bold" />
                 </IconButton>
               </Tooltip>
             )}
-            {activeConvId && (
+            {activeConvId && !isMobile && (
               <Tooltip title="Поделиться диалогом">
                 <IconButton onClick={() => setShareOpen(true)} sx={headerIconBtnSx} aria-label="Поделиться диалогом">
                   <Users size={22} weight="bold" />
@@ -1065,19 +1068,66 @@ export default function ChatPage() {
                 </IconButton>
               </Tooltip>
             )}
-            <Tooltip title="Экспортировать ответ в DOCX">
-              <span>
-                <IconButton
-                  onClick={exportDocx}
-                  disabled={exporting || !displayMessages.some((m) => m.role === 'assistant')}
-                  sx={headerIconBtnSx}
-                  aria-label="Экспортировать ответ в DOCX"
-                >
-                  <FileArrowDown size={22} weight="bold" />
-                </IconButton>
-              </span>
-            </Tooltip>
-            <ColorModeToggle />
+            {!isMobile && (
+              <Tooltip title="Экспортировать ответ в DOCX">
+                <span>
+                  <IconButton
+                    onClick={exportDocx}
+                    disabled={exporting || !displayMessages.some((m) => m.role === 'assistant')}
+                    sx={headerIconBtnSx}
+                    aria-label="Экспортировать ответ в DOCX"
+                  >
+                    <FileArrowDown size={22} weight="bold" />
+                  </IconButton>
+                </span>
+              </Tooltip>
+            )}
+            {!isMobile && <ColorModeToggle />}
+            {isMobile && (
+              // Seven round buttons do not fit a phone; the rarely used ones live here.
+              <IconButton
+                onClick={(event) => setMoreAnchor(event.currentTarget)}
+                sx={headerIconBtnSx}
+                aria-label="Ещё действия"
+                aria-haspopup="menu"
+                aria-expanded={Boolean(moreAnchor)}
+              >
+                <DotsThree size={22} weight="bold" />
+              </IconButton>
+            )}
+            <Menu
+              anchorEl={moreAnchor}
+              open={Boolean(moreAnchor)}
+              onClose={() => setMoreAnchor(null)}
+              anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+              transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+              slotProps={{ paper: { sx: { minWidth: 240, mt: 0.75, borderRadius: '14px' } } }}
+            >
+              {activeConvId && (
+                <MenuItem onClick={() => { setMoreAnchor(null); setFilesOpen(true); }} sx={{ minHeight: 48 }}>
+                  <ListItemIcon><FolderSimple size={20} /></ListItemIcon>
+                  <ListItemText>Файлы беседы</ListItemText>
+                </MenuItem>
+              )}
+              {activeConvId && (
+                <MenuItem onClick={() => { setMoreAnchor(null); setShareOpen(true); }} sx={{ minHeight: 48 }}>
+                  <ListItemIcon><Users size={20} /></ListItemIcon>
+                  <ListItemText>Поделиться диалогом</ListItemText>
+                </MenuItem>
+              )}
+              <MenuItem
+                disabled={exporting || !displayMessages.some((m) => m.role === 'assistant')}
+                onClick={() => { setMoreAnchor(null); exportDocx(); }}
+                sx={{ minHeight: 48 }}
+              >
+                <ListItemIcon><FileArrowDown size={20} /></ListItemIcon>
+                <ListItemText>Ответ в DOCX</ListItemText>
+              </MenuItem>
+              <MenuItem onClick={() => { setMoreAnchor(null); colorMode.toggle(); }} sx={{ minHeight: 48 }}>
+                <ListItemIcon>{colorMode.mode === 'dark' ? <Sun size={20} /> : <Moon size={20} />}</ListItemIcon>
+                <ListItemText>{colorMode.mode === 'dark' ? 'Светлая тема' : 'Тёмная тема'}</ListItemText>
+              </MenuItem>
+            </Menu>
             <AccountMenu />
           </Box>
         </Box>
