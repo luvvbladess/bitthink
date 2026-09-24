@@ -312,6 +312,78 @@ def test_director_detects_document_package_tasks():
     assert not dr._is_document_package_task("разбери договор")
 
 
+def test_director_file_choice_line_is_parsed_and_removed():
+    import director_router as dr
+
+    files = ["01_ПМИ_СПО.docx", "01_Программа_и_методика_испытаний_СПО.docx", "02_Протокол_испытаний_СПО.docx"]
+    answer = "Готово, собрал ПМИ и протокол.\n\n**Файлы для пользователя:** «01_ПМИ_СПО.docx»; 02_Протокол_испытаний_СПО.docx"
+    text, chosen = dr._split_file_choice(answer, files)
+    assert text == "Готово, собрал ПМИ и протокол."
+    assert chosen == ["01_ПМИ_СПО.docx", "02_Протокол_испытаний_СПО.docx"]
+    # No line, or names that are not real files: no decision, everything goes out.
+    assert dr._split_file_choice("Готово.", files) == ("Готово.", None)
+    assert dr._split_file_choice("Готово.\nФайлы для пользователя: итог.docx", files)[1] is None
+
+
+def test_only_chosen_deliverables_reach_the_chat():
+    from turn_scope import choose_deliverables, pick_deliverables
+
+    files = [{"filename": "01_ПМИ_СПО.docx"}, {"filename": "черновик.docx"}, {"filename": "02_Протокол.docx"}]
+    choose_deliverables(["01_ПМИ_СПО.docx", "02_Протокол.docx"])
+    assert [f["filename"] for f in pick_deliverables(files)] == ["01_ПМИ_СПО.docx", "02_Протокол.docx"]
+    # The choice is used once; the next reply without a choice gets everything.
+    assert len(pick_deliverables(files)) == 3
+    # A choice that matches nothing must not lose the work.
+    choose_deliverables(["нет_такого.docx"])
+    assert len(pick_deliverables(files)) == 3
+
+
+def test_director_picks_final_files_at_the_end(monkeypatch):
+    import asyncio
+
+    import director_router as dr
+    from turn_scope import pick_deliverables
+
+    candidates = ["01_ПМИ.docx", "01_ПМИ_черновик.docx", "02_Протокол.docx"]
+    seen = {}
+
+    async def fake_plan(_task, journal, _user_id, document_context="", history_text=""):
+        if journal:
+            return {"status": "done", "new_employees": []}
+        return {"status": "continue", "new_employees": [{"role": "Документы", "task": "собери", "model": "gpt-6-luna"}]}
+
+    async def fake_exec(employee, round_num, journal, user_id, document_context="", history_text="", has_images=False):
+        return {**employee, "round": round_num, "status": "ok", "result": "ok", "reasoning": "", "search": []}
+
+    async def fake_files(_user_id, _since):
+        return candidates
+
+    async def fake_compose(_task, _journal, _user_id, history_text="", document_context="", built_files=None):
+        seen["offered"] = built_files
+        return "Готово.\nФайлы для пользователя: 01_ПМИ.docx; 02_Протокол.docx", ""
+
+    async def fake_status(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(dr, "_plan_round", fake_plan)
+    monkeypatch.setattr(dr, "_execute_employee", fake_exec)
+    monkeypatch.setattr(dr, "_new_file_names", fake_files)
+    monkeypatch.setattr(dr, "_compose_answer", fake_compose)
+    monkeypatch.setattr(dr, "_update_status", fake_status)
+    monkeypatch.setattr(dr, "_sanitize_answer", lambda text: text)
+    monkeypatch.setattr(dr, "_turn_has_images", lambda _uid: False)
+    monkeypatch.setattr(dr, "_clamp_employee_plan", lambda plan, *_a, **_k: plan)
+
+    async def run():
+        answer, *_ = await dr.get_director_response([{"role": "user", "content": "сделай ПМИ и протокол"}], "сделай ПМИ и протокол", 1, None)
+        return answer, pick_deliverables([{"filename": name} for name in candidates])
+
+    answer, delivered = asyncio.run(run())
+    assert answer == "Готово."
+    assert seen["offered"] == candidates
+    assert [f["filename"] for f in delivered] == ["01_ПМИ.docx", "02_Протокол.docx"]
+
+
 def test_director_detects_file_requests():
     import director_router as dr
 

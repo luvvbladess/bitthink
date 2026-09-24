@@ -882,6 +882,28 @@ async def _plan_round(
         return {"status": "done", "new_employees": []}
 
 
+FILE_CHOICE_LABEL = "Файлы для пользователя"
+_FILE_CHOICE_RE = re.compile(rf"(?im)^[\s*_>`-]*{FILE_CHOICE_LABEL}[\s*_`]*[:：]\s*(.*?)[\s*_`]*$")
+
+
+def _split_file_choice(answer: str, candidates: List[str] | None) -> Tuple[str, List[str] | None]:
+    """Вырезать строку «Файлы для пользователя: …» и вернуть выбранные имена из списка кандидатов.
+
+    None – выбора нет или он не совпал ни с одним файлом: тогда уходит всё, как раньше.
+    """
+    matches = list(_FILE_CHOICE_RE.finditer(answer or ""))
+    if not matches:
+        return answer, None
+    cleaned = _FILE_CHOICE_RE.sub("", answer).rstrip()
+    known = {name.casefold(): name for name in (candidates or [])}
+    chosen = []
+    for raw in re.split(r"[;,\n]", matches[-1].group(1)):
+        name = raw.strip(" \t«»\"'`*_")
+        if name.casefold() in known and known[name.casefold()] not in chosen:
+            chosen.append(known[name.casefold()])
+    return cleaned, (chosen or None)
+
+
 async def _compose_answer(
     original_task: str,
     journal: List[Dict[str, Any]],
@@ -896,12 +918,22 @@ async def _compose_answer(
     history_block = f"\n\nИстория диалога:\n{history_text}\n" if history_text else ""
     # Факт из песочницы, а не пересказ сотрудника: без него сборщик писал
     # «файл не выпущен», когда файл уже лежал и уходил кнопкой в чат.
-    files_block = (
-        "Собраны и придут кнопкой скачивания в этом ответе: " + ", ".join(built_files) + ". "
-        "Не пиши, что эти файлы не созданы.\n\n"
-        if built_files
-        else ""
-    )
+    if built_files and len(built_files) > 1:
+        # Сотрудники оставляют черновики и дубли; в чат уходит только то, что выберет сборщик.
+        files_block = (
+            "За этот ответ в песочнице появились файлы: " + "; ".join(built_files) + ".\n"
+            "Реши, какие отдать пользователю: только итоговые версии того, что он просил. "
+            "Без черновиков, дублей одного документа под разными именами, промежуточных и служебных файлов. "
+            "Выбранные придут кнопками скачивания, не пиши, что они не созданы. "
+            f"Последней строкой ответа напиши ровно: «{FILE_CHOICE_LABEL}: имя1; имя2» – точными именами из списка.\n\n"
+        )
+    elif built_files:
+        files_block = (
+            "Собраны и придут кнопкой скачивания в этом ответе: " + ", ".join(built_files) + ". "
+            "Не пиши, что эти файлы не созданы.\n\n"
+        )
+    else:
+        files_block = ""
     doc_block = f"\n\nДокументы пользователя:\n{document_context}\n" if document_context else ""
     preferences_block = _preference_context(user_id)
     prefs_block = f"{preferences_block}\n\n" if preferences_block else ""
@@ -1117,10 +1149,16 @@ async def _run_director(
         return _sanitize_answer(answer), [], reasoning, search
 
     await _update_status(status_msg, "Пишу ответ")
-    built_files = await _new_file_names(user_id, started) if wants_file else None
+    # Всегда, а не только когда просили файл: сотрудник мог собрать его по ходу дела.
+    built_files = await _new_file_names(user_id, started)
     answer, compose_reasoning = await _compose_answer(
         user_text, journal, user_id, history_text, document_context, built_files=built_files
     )
+    if built_files and len(built_files) > 1:
+        from turn_scope import choose_deliverables
+
+        answer, chosen = _split_file_choice(answer, built_files)
+        choose_deliverables(chosen)
     answer = _sanitize_answer(answer)
 
     reasoning_sections = [
