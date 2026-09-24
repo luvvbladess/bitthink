@@ -304,7 +304,7 @@ def test_director_builds_history_once_and_reuses_it_across_rounds(monkeypatch):
             "search": [],
         }
 
-    async def fake_compose(_task, _journal, _user_id, history_text="", document_context=""):
+    async def fake_compose(_task, _journal, _user_id, history_text="", document_context="", **_kw):
         seen.append(("compose", history_text))
         return "ответ", ""
 

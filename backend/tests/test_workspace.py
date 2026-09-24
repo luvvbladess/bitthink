@@ -310,3 +310,58 @@ def test_director_detects_document_package_tasks():
     assert dr._is_document_package_task("переработай имеющиеся документы")
     assert not dr._is_document_package_task("найди курс доллара")
     assert not dr._is_document_package_task("разбери договор")
+
+
+def test_director_detects_file_requests():
+    import director_router as dr
+
+    assert dr._wants_file("Сделай аннотационный отчет.")
+    assert dr._wants_file("подготовь отчёт по этапу 1")
+    assert dr._wants_file("оформи это в Word")
+    assert dr._wants_file("собери таблицу в формате xlsx")
+    assert not dr._wants_file("что написано в отчете?")
+    assert not dr._wants_file("найди курс доллара")
+
+
+def test_director_hires_builder_when_requested_file_is_missing(monkeypatch):
+    """Планировщик закрыл задачу на тексте без файла: Пилот один раз досылает сборщика."""
+    import asyncio
+
+    import director_router as dr
+
+    hired: list[str] = []
+    checks = iter([[], ["Аннотационный отчет.docx"]])
+    composed: dict = {}
+
+    async def fake_plan(_task, journal, _user_id, document_context="", history_text=""):
+        if journal:
+            return {"status": "done", "new_employees": []}
+        return {"status": "continue", "new_employees": [{"role": "Текст", "task": "напиши текст", "model": "gpt-6-luna"}]}
+
+    async def fake_exec(employee, round_num, journal, user_id, document_context="", history_text="", has_images=False):
+        hired.append(employee["role"])
+        return {**employee, "round": round_num, "status": "ok", "result": "ok", "reasoning": "", "search": []}
+
+    async def fake_files(_user_id, _since):
+        return next(checks)
+
+    async def fake_compose(_task, _journal, _user_id, history_text="", document_context="", built_files=None):
+        composed["files"] = built_files
+        return "готово", ""
+
+    async def fake_status(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(dr, "_plan_round", fake_plan)
+    monkeypatch.setattr(dr, "_execute_employee", fake_exec)
+    monkeypatch.setattr(dr, "_new_file_names", fake_files)
+    monkeypatch.setattr(dr, "_compose_answer", fake_compose)
+    monkeypatch.setattr(dr, "_update_status", fake_status)
+    monkeypatch.setattr(dr, "_sanitize_answer", lambda text: text)
+    monkeypatch.setattr(dr, "_turn_has_images", lambda _uid: False)
+    monkeypatch.setattr(dr, "_clamp_employee_plan", lambda plan, *_a, **_k: plan)
+
+    text = "Сделай аннотационный отчет."
+    asyncio.run(dr.get_director_response([{"role": "user", "content": text}], text, 1, None))
+    assert hired == ["Текст", "Сборка файла"]
+    assert composed["files"] == ["Аннотационный отчет.docx"]
