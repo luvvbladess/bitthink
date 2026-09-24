@@ -74,6 +74,24 @@ def test_pilot_forces_research_rounds_instead_of_instant_answer():
     assert packed_has_images([{"role": "user", "content": [{"type": "input_image", "image_url": "data:image/jpeg;base64,xx"}]}])
 
 
+def test_old_photo_in_chat_does_not_turn_pilot_into_photo_search():
+    """В чате есть картинка, но вопрос про комплект документов: команда планировщика остаётся."""
+    from director_router import _ensure_research_plan
+
+    text = (
+        "Так, это модельный комплект. Под модельным комплектом мы понимаем полный готовый комплект "
+        "документов, в котором отсутствующие пока показатели заменяем на обоснованные значения. Это понятно?"
+    )
+    assert not wants_photo_research(text, True)
+    for other in ("найди ошибку в договоре", "что нам делать дальше", "где в договоре срок оплаты", "что это значит"):
+        assert not wants_photo_research(other, True), other
+    team = {"status": "continue", "new_employees": [{"role": "Документы", "task": "реестр", "model": "gpt-6-luna"}]}
+    plan = _ensure_research_plan(1, team, text, [], wants_photo_research(text, True))
+    assert [item["role"] for item in plan["new_employees"]] == ["Документы"]
+    photo = _ensure_research_plan(1, team, "где снято это фото?", [], True)
+    assert [item["role"] for item in photo["new_employees"]] == ["Поиск по фото", "Документы"]
+
+
 def test_image_search_without_photo_explains_what_is_missing():
     result = asyncio.run(run_computer_tool("image_search", {}, user_id=93951))
     assert "фото" in result.lower()
