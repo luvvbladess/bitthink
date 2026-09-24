@@ -162,6 +162,10 @@ async def _generate_and_send(
         from app.services.sandbox_client import collect_workspace_files
 
         extra_files = await collect_workspace_files(bot_user_id, started)
+        # Pilot picks the final files at the end; drafts and duplicates stay in the sandbox.
+        from turn_scope import pick_deliverables
+
+        extra_files = pick_deliverables(extra_files)
         if extra_files:
             generated_files = list(generated_files or []) + extra_files
     except Exception:
