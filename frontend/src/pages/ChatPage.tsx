@@ -152,6 +152,25 @@ export default function ChatPage() {
   const [roomOpenById, setRoomOpenById] = useState<Record<string, boolean>>({});
   const [filesOpen, setFilesOpen] = useState(false);
   const [moreAnchor, setMoreAnchor] = useState<HTMLElement | null>(null);
+  // The composer floats over the message list and grows (long drafts, the mode
+  // hint under it, the clarify card). Publish its real height so the list's
+  // bottom padding and the scroll arrows follow it instead of a fixed guess.
+  const composerDockRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const dock = composerDockRef.current;
+    const column = dock?.parentElement;
+    if (!dock || !column || typeof ResizeObserver === 'undefined') return;
+    const publish = () => {
+      const height = Math.ceil(dock.getBoundingClientRect().height);
+      column.style.setProperty('--bt-composer-h', `${height}px`);
+      // The dock already includes its fade strip on top; a small gap is enough.
+      column.style.setProperty('--bt-composer-h-pad', `${height + 16}px`);
+    };
+    publish();
+    const observer = new ResizeObserver(publish);
+    observer.observe(dock);
+    return () => observer.disconnect();
+  }, []);
   const colorMode = useColorMode();
   // Id of the assistant message currently being replaced by a regenerate — hidden
   // from `base` below so the old answer doesn't flash alongside the new one while
@@ -1196,6 +1215,7 @@ export default function ChatPage() {
           splitPane={Boolean(isStudio && !isMobile)}
         />
         <Box
+          ref={composerDockRef}
           sx={{
             position: 'absolute',
             left: 0,
