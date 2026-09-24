@@ -19,6 +19,40 @@ async def create_conversation(data: ConversationCreate, user_id: str = Depends(g
     return await repo.create_conversation(user_id, title=data.title)
 
 
+@router.get("/{conv_id}/files")
+async def list_conversation_files(conv_id: str, user_id: str = Depends(get_current_user)):
+    from app.api.editor import _conversation_for, conversation_files
+
+    _, conv = await _conversation_for(user_id, conv_id)
+    return await asyncio.to_thread(conversation_files, conv)
+
+
+@router.get("/{conv_id}/files/download")
+async def download_conversation_file(conv_id: str, t: str = ""):
+    """По ссылке из списка файлов: её выдают только участникам беседы, живёт час."""
+    import mimetypes
+    from urllib.parse import quote
+
+    from fastapi.responses import Response
+
+    from app.api.editor import check_file_link, file_bytes
+
+    linked_conv, filename = check_file_link(t)
+    if linked_conv != conv_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Ссылка недействительна")
+    owner = await asyncio.to_thread(repo._manager.conversation_owner, conv_id)
+    conv = await asyncio.to_thread(repo._manager.conversation_view, owner, conv_id) if owner else None
+    data = await asyncio.to_thread(file_bytes, conv, filename) if conv else None
+    if not data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Файл не найден")
+    media = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    return Response(
+        content=data,
+        media_type=media,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}", "Cache-Control": "private, no-store"},
+    )
+
+
 @router.post("/{conv_id}/activate")
 async def activate_conversation(conv_id: str, user_id: str = Depends(get_current_user)):
     ok = await repo.set_active_conversation(user_id, conv_id)

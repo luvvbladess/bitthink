@@ -75,6 +75,9 @@ services:
     volumes:
       - onlyoffice_data:/var/www/onlyoffice/Data
       - onlyoffice_logs:/var/log/onlyoffice
+      # Save a changed document every minute while people edit it, so the chat
+      # file and the assistant stay current without closing the editor.
+      - ./onlyoffice/local-production-linux.json:/etc/onlyoffice/documentserver/local-production-linux.json:ro
     restart: unless-stopped
 
   sandbox:

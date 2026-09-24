@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Box, Dialog, IconButton, Typography, CircularProgress } from '@mui/material';
 import { X } from '@phosphor-icons/react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { create } from 'zustand';
 import { apiFetch } from '@/api/client';
 
@@ -61,8 +61,16 @@ function loadEditorScript(server: string): Promise<void> {
 const HOST_ID = 'bt-onlyoffice-editor';
 
 export function DocumentEditorDialog({ conversationId }: { conversationId?: string }) {
-  const { filename, close } = useEditorStore();
+  const { filename, close: closeStore } = useEditorStore();
+  const queryClient = useQueryClient();
   const [error, setError] = useState('');
+  const close = () => {
+    closeStore();
+    // The document server sends the final save a few seconds after the last editor leaves.
+    const refresh = () => queryClient.invalidateQueries({ queryKey: ['conversation-files', conversationId] });
+    refresh();
+    window.setTimeout(refresh, 20_000);
+  };
   const [loading, setLoading] = useState(false);
   const editorRef = useRef<{ destroyEditor: () => void } | null>(null);
 
@@ -103,11 +111,12 @@ export function DocumentEditorDialog({ conversationId }: { conversationId?: stri
   return (
     <Dialog fullScreen open={Boolean(filename)} onClose={close} aria-label="Редактор документа">
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 2, py: 1, borderBottom: '1px solid var(--bt-hairline)' }}>
+        <Typography sx={{ fontWeight: 800, letterSpacing: '-0.02em', color: 'primary.light', flexShrink: 0 }}>Bit Office</Typography>
         <Typography sx={{ fontWeight: 600, flexGrow: 1, minWidth: 0 }} noWrap>
           {filename}
         </Typography>
         <Typography sx={{ fontSize: '0.75rem', color: 'text.secondary', display: { xs: 'none', md: 'block' } }}>
-          Правки сохраняются сами. Участники беседы, открывшие этот файл, видят их сразу.
+          Правки сохраняются в файл беседы сами, примерно раз в минуту. Участники видят их сразу.
         </Typography>
         <IconButton onClick={close} aria-label="Закрыть редактор">
           <X size={20} />

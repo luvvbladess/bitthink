@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Box, Drawer, SwipeableDrawer, IconButton, Tooltip, useMediaQuery, useTheme } from '@mui/material';
-import { List as ListIcon, FileArrowDown, MagnifyingGlass, WarningCircle, SquareHalf, Users, ChatsCircle } from '@phosphor-icons/react';
+import { List as ListIcon, FileArrowDown, MagnifyingGlass, WarningCircle, SquareHalf, Users, ChatsCircle, FolderSimple } from '@phosphor-icons/react';
 import { headerIconBtnSx } from '@/theme/effects';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
@@ -27,6 +27,7 @@ import { MIN_DIALOGUE_QUESTIONS, type DialogueJumpFn } from '@/features/chat/dia
 import { BRAND_NAME, NEW_CHAT_TITLE } from '@/brand';
 import { ShareDialog } from '@/features/chat/ShareDialog';
 import { DocumentEditorDialog } from '@/features/editor/DocumentEditor';
+import { ConversationFilesDrawer, filesQueryKey } from '@/features/editor/ConversationFiles';
 import { RoomChat } from '@/features/chat/RoomChat';
 import { applyPageMeta } from '@/seo';
 
@@ -148,6 +149,7 @@ export default function ChatPage() {
   const [exporting, setExporting] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [roomOpenById, setRoomOpenById] = useState<Record<string, boolean>>({});
+  const [filesOpen, setFilesOpen] = useState(false);
   // Id of the assistant message currently being replaced by a regenerate — hidden
   // from `base` below so the old answer doesn't flash alongside the new one while
   // the server hasn't confirmed the deletion/replacement yet.
@@ -395,6 +397,7 @@ export default function ChatPage() {
           queryClient.invalidateQueries({ queryKey: ['messages', syncId] });
           queryClient.invalidateQueries({ queryKey: ['asides', syncId] });
           queryClient.invalidateQueries({ queryKey: ['conversations'] });
+          queryClient.invalidateQueries({ queryKey: filesQueryKey(syncId) });
         }
         return;
       }
@@ -1034,6 +1037,13 @@ export default function ChatPage() {
               </Tooltip>
             )}
             {activeConvId && (
+              <Tooltip title="Файлы беседы">
+                <IconButton onClick={() => setFilesOpen(true)} sx={headerIconBtnSx} aria-label="Файлы беседы">
+                  <FolderSimple size={22} weight="bold" />
+                </IconButton>
+              </Tooltip>
+            )}
+            {activeConvId && (
               <Tooltip title="Поделиться диалогом">
                 <IconButton onClick={() => setShareOpen(true)} sx={headerIconBtnSx} aria-label="Поделиться диалогом">
                   <Users size={22} weight="bold" />
@@ -1272,6 +1282,7 @@ export default function ChatPage() {
         <ShareDialog conversationId={activeConvId} open={shareOpen} onClose={() => setShareOpen(false)} />
       )}
       <DocumentEditorDialog conversationId={activeConvId} />
+      <ConversationFilesDrawer conversationId={activeConvId} open={filesOpen} onClose={() => setFilesOpen(false)} />
     </Box>
   );
 }
