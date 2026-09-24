@@ -1,5 +1,6 @@
 import { Box, CircularProgress, IconButton, LinearProgress, Tooltip } from '@mui/material';
-import { FileText, FilePdf, FileXls, FileDoc, CheckCircle, WarningCircle, Trash } from '@phosphor-icons/react';
+import { FileText, FilePdf, FileXls, FileDoc, CheckCircle, WarningCircle, Trash, PencilSimpleLine } from '@phosphor-icons/react';
+import { isEditableDocument, useEditorEnabled, useEditorStore } from '@/features/editor/DocumentEditor';
 
 export interface AttachmentInfo {
   name: string;
@@ -39,6 +40,9 @@ function formatSize(bytes?: number): string {
 export function DocumentAttachment({ name, size, status, type, url, note, progress, progressLabel, onRemoveFromContext }: Props) {
   const Icon = iconForFile(name);
   const isImage = type === 'image';
+  const editorEnabled = useEditorEnabled();
+  const openEditor = useEditorStore((state) => state.open);
+  const canEdit = editorEnabled && status === 'done' && isEditableDocument(name);
   const canDownload = status === 'done' && !!url && type !== 'image';
   const showProgress = status === 'uploading' && progress !== undefined;
   const progressValue = typeof progress === 'number' ? Math.max(0, Math.min(100, progress)) : 0;
@@ -95,6 +99,23 @@ export function DocumentAttachment({ name, size, status, type, url, note, progre
       <Box sx={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 0.5 }}>
         {status === 'uploading' && !showProgress && <CircularProgress size={16} thickness={5} sx={{ color: 'primary.light' }} />}
         {status === 'done' && <CheckCircle size={18} weight="fill" style={{ color: 'var(--bt-success)' }} />}
+        {canEdit && (
+          <Tooltip title="Открыть в редакторе">
+            <IconButton
+              size="small"
+              onClick={(e) => {
+                // The card itself is a download link.
+                e.preventDefault();
+                e.stopPropagation();
+                openEditor(name);
+              }}
+              sx={{ color: 'text.secondary', p: 0.5, ml: 0.25, '&:hover': { color: 'primary.light', bgcolor: 'var(--bt-glow)' } }}
+              aria-label="Открыть документ в редакторе"
+            >
+              <PencilSimpleLine size={16} />
+            </IconButton>
+          </Tooltip>
+        )}
         {status === 'error' && <WarningCircle size={18} weight="fill" style={{ color: 'var(--bt-danger)' }} />}
         {status === 'done' && onRemoveFromContext && type !== 'generated' && (
           <Tooltip title="Удалить из контекста">
