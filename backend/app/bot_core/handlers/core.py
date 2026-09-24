@@ -240,18 +240,18 @@ async def get_smart_response(
     model = conversation_manager.get_user_model(user_id)
     reasoning_effort = conversation_manager.get_user_reasoning_effort(user_id)
     sub = conversation_manager.get_subscription(user_id)
-    from app.billing.plans import allowed_models, clamp_model, canonical_tier
-    from app.billing.quota import assert_can_use, usage_view
+    from app.billing.plans import allowed_models, clamp_model
+    from app.billing.quota import QuotaError, assert_can_use, note_quota_charge, usage_view
     from mode_switch import pack_mode_switch, suggest_mode_switch
 
-    tier = canonical_tier(sub.get("tier"))
+    view = usage_view(sub)
+    tier = view["tier"]
     model = clamp_model(tier, model)
     # Before quota: a mode hint must not spend a reply or start a model call.
     suggestion = suggest_mode_switch(model, user_text, allowed=allowed_models(tier))
     if suggestion:
         return suggestion["text"], [], "", pack_mode_switch(suggestion)
     pool = "computer" if model in {"director", "studio", "docgen"} else "chat"
-    view = usage_view(sub)
     if (
         pool == "chat"
         and not view["unlimited"]
@@ -262,11 +262,15 @@ async def get_smart_response(
     ):
         model = "gpt-5-nano"
     assert_can_use(user_id, pool, model)
+    charged_field = None
+    charged_limit = 0
     if view["tier"] == "free":
         if model == "kimi-k2.6":
-            conversation_manager.update_subscription_limits(user_id, "daily_nano_mini", 1)
+            charged_field = "daily_nano_mini"
+            charged_limit = int(view["free_daily"]["searches_limit"] or 0)
         elif model != "director":
-            conversation_manager.update_subscription_limits(user_id, "daily_gpt54", 1)
+            charged_field = "daily_gpt54"
+            charged_limit = int(view["free_daily"]["replies_limit"] or 0)
     elif (
         pool == "chat"
         and not view["unlimited"]
@@ -274,7 +278,12 @@ async def get_smart_response(
         and view["chat"]["remaining"] <= 0
         and model == "gpt-5-nano"
     ):
-        conversation_manager.increment_nano_cushion(user_id)
+        charged_field = "nano_cushion_used"
+        charged_limit = int(view["nano_cushion"]["limit"] or 0)
+    if charged_field:
+        if not conversation_manager.consume_daily_counter(user_id, charged_field, charged_limit):
+            raise QuotaError("Лимит на сегодня закончился. Завтра снова, либо оформите Pro.", "quota")
+        note_quota_charge(user_id, charged_field)
 
     if not user_text:
         logger.warning(f"Empty user_text in get_smart_response for user {user_id}")
@@ -302,7 +311,7 @@ async def get_smart_response(
     from search_engine import build_grounded_web_context
     from routing import current_turn_has_files, openai_tool_flags, packed_has_open_documents, turn_requires_web
 
-    conv = conversation_manager.get_active_conversation(user_id)
+    conv = conversation_manager.conversation_for_turn(user_id)
     has_documents, has_images = current_turn_has_files(conv.messages if conv else [])
     if packed_has_open_documents(messages):
         has_documents = True

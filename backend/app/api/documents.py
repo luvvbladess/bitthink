@@ -91,8 +91,8 @@ async def _save_chat_image(contents: bytes, filename: str, user_id: str) -> tupl
 
 
 @router.get("")
-async def list_documents(user_id: str = Depends(get_current_user)):
-    return await repo.get_documents(user_id)
+async def list_documents(conversation_id: Optional[str] = None, user_id: str = Depends(get_current_user)):
+    return await repo.get_documents(user_id, conv_id=conversation_id)
 
 
 @router.post("")
@@ -238,7 +238,11 @@ async def upload_document(
 
 
 @router.delete("/{filename}")
-async def delete_document(filename: str, user_id: str = Depends(get_current_user)):
+async def delete_document(
+    filename: str,
+    conversation_id: Optional[str] = None,
+    user_id: str = Depends(get_current_user),
+):
     # Имена собираются ДО удаления: у архива удаляются и все его файлы, а
     # какие именно это были, потом уже не узнать. Оригиналы .docx лежат на
     # диске отдельно от базы, и без этой уборки остаются там навсегда.
@@ -247,14 +251,14 @@ async def delete_document(filename: str, user_id: str = Depends(get_current_user
     bot_user_id = await repo.ensure_user(user_id)
     doomed = [
         str(doc.get("filename") or "")
-        for doc in (await repo.get_documents(user_id) or [])
+        for doc in (await repo.get_documents(user_id, conv_id=conversation_id) or [])
         if str(doc.get("filename") or "") == filename
         or str(doc.get("filename") or "").startswith(f"{filename}/")
     ]
-    ok = await repo.remove_document(user_id, filename)
+    ok = await repo.remove_document(user_id, filename, conv_id=conversation_id)
     if ok and doomed:
         await asyncio.to_thread(drop_source_docx, bot_user_id, doomed)
-    attachment = await repo.remove_attachment(user_id, filename)
+    attachment = await repo.remove_attachment(user_id, filename, conv_id=conversation_id)
     if attachment and attachment.get("url"):
         upload_root = get_settings().UPLOAD_DIR.resolve()
         candidate = (upload_root / str(attachment["url"]).removeprefix("/uploads/")).resolve()

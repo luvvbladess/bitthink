@@ -124,10 +124,22 @@ def refresh_windows(sub: dict[str, Any], now_ts: int | None = None) -> dict[str,
     return sub
 
 
+def effective_tier(sub: dict[str, Any]) -> str:
+    """Paid plans with a past expires_at behave as the free tier."""
+    tier = canonical_tier(sub.get("tier"))
+    if tier == "free":
+        return "free"
+    expires = int(sub.get("expires_at") or 0)
+    if expires and expires <= int(time.time()):
+        return "free"
+    return tier
+
+
 def apply_token_debit(sub: dict[str, Any], pool: str, amount: int) -> dict[str, Any]:
     refresh_windows(sub)
-    plan = plan_for(sub.get("tier"))
-    if plan.get("unlimited") or canonical_tier(sub.get("tier")) == "free" or amount <= 0:
+    tier = effective_tier(sub)
+    plan = plan_for(tier)
+    if plan.get("unlimited") or tier == "free" or amount <= 0:
         return sub
     now_ts = int(time.time())
     started = int(sub.get("session_started_at") or 0)
@@ -174,7 +186,8 @@ def _window(
 
 def usage_view(sub: dict[str, Any]) -> dict[str, Any]:
     refresh_windows(sub)
-    tier = canonical_tier(sub.get("tier"))
+    stored = sub.get("tier_raw") or sub.get("tier") or "free"
+    tier = effective_tier({**sub, "tier": stored})
     plan = plan_for(tier)
     unlimited = bool(plan.get("unlimited"))
     chat_limit = 0 if unlimited else int(plan.get("chat_tokens") or 0)
@@ -230,7 +243,7 @@ def usage_view(sub: dict[str, Any]) -> dict[str, Any]:
     midnight = next_midnight_ts(now)
     return {
         "tier": tier,
-        "tier_raw": sub.get("tier") or "free",
+        "tier_raw": stored,
         "name": plan["name"],
         "expires_at": sub.get("expires_at") or 0,
         "period": sub.get("period_start") or "",
@@ -351,6 +364,27 @@ def debit_model_usage(
 
 def debit_images(user_id: int, count: int = 1) -> None:
     _manager().debit_plan_images(user_id, count)
+
+
+_pending_charge: ContextVar[tuple[int, str] | None] = ContextVar("pending_quota_charge", default=None)
+
+
+def note_quota_charge(user_id: int, field: str) -> None:
+    """Remember a free-tier counter this turn already consumed, so a failed reply can give it back."""
+    _pending_charge.set((int(user_id), field))
+
+
+def clear_quota_charge() -> None:
+    _pending_charge.set(None)
+
+
+def refund_quota_charge() -> None:
+    pending = _pending_charge.get()
+    _pending_charge.set(None)
+    if not pending:
+        return
+    user_id, field = pending
+    _manager().refund_daily_counter(user_id, field)
 
 
 def assert_can_generate_image(user_id: int) -> None:

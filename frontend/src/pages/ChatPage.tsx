@@ -718,7 +718,8 @@ export default function ChatPage() {
     const msg = displayMessages.find((m) => m.id === messageId && m.attachment);
     if (!msg?.attachment) return;
     try {
-      await apiFetch(`/documents/${encodeURIComponent(msg.attachment.name)}`, { method: 'DELETE' });
+      const scope = activeConvId ? `?conversation_id=${encodeURIComponent(activeConvId)}` : '';
+      await apiFetch(`/documents/${encodeURIComponent(msg.attachment.name)}${scope}`, { method: 'DELETE' });
       queryClient.invalidateQueries({ queryKey: ['conversations'] });
     } catch (e: any) {
       setDisplayMessages((m) => [

@@ -31,7 +31,7 @@ async def _authenticate_ws(websocket: WebSocket) -> str:
     if not token:
         raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION, reason="Missing token")
     try:
-        payload = decode_token(token)
+        payload = decode_token(token, expected_type="access")
         return payload["sub"]
     except Exception as e:
         raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid token") from e
@@ -121,8 +121,7 @@ async def chat_websocket(websocket: WebSocket):
                     continue
                 if msg_type == "stop":
                     conv_id = (parsed.get("payload") or {}).get("conversation_id")
-                    if conv_id:
-                        hub.cancel(user_id, conv_id)
+                    hub.cancel(user_id, conv_id)
                     continue
                 await queue.put(raw)
         except WebSocketDisconnect:
@@ -153,9 +152,7 @@ async def chat_websocket(websocket: WebSocket):
                 continue
 
             if msg_type == "stop":
-                conv_id = payload.get("conversation_id")
-                if conv_id:
-                    hub.cancel(user_id, conv_id)
+                hub.cancel(user_id, payload.get("conversation_id"))
                 continue
 
             if msg_type == "message":
@@ -164,7 +161,8 @@ async def chat_websocket(websocket: WebSocket):
                 if not content:
                     await websocket.send_json({"type": "error", "payload": {"message": "Empty message"}})
                     continue
-                if conversation_id and hub.is_running(user_id, conversation_id):
+                job_key = conversation_id or f"pending:{uuid.uuid4().hex}"
+                if hub.is_running(user_id, conversation_id):
                     await websocket.send_json({
                         "type": "error",
                         "payload": {"message": "Этот чат ещё отвечает. Дождитесь окончания или остановите ответ.", "conversation_id": conversation_id},
@@ -176,11 +174,9 @@ async def chat_websocket(websocket: WebSocket):
                         "payload": {"message": "Слишком много ответов сразу. Дождитесь одного из них.", "conversation_id": conversation_id},
                     })
                     continue
-                senders = hub.bind(user_id, conversation_id)
-                job_key = conversation_id or f"pending:{uuid.uuid4().hex}"
+                senders = hub.bind(user_id, conversation_id, job_key=job_key)
                 if conversation_id:
                     hub.upsert_job(user_id, conversation_id, user_text=content, thinking=True, status_text="Думаю", text="")
-                await senders.send_thinking()
                 coro = run_chat(
                     user_id,
                     content,
@@ -192,8 +188,17 @@ async def chat_websocket(websocket: WebSocket):
                     send_extras=senders.send_extras,
                     send_reasoning_delta=senders.send_reasoning_delta,
                 )
-
-                hub.start_task(user_id, job_key, _run_job(user_id, job_key, coro, senders))
+                try:
+                    # Claim the job before any await so a second new-chat message
+                    # cannot start another pending stream on this event loop.
+                    hub.start_task(user_id, job_key, _run_job(user_id, job_key, coro, senders))
+                except RuntimeError:
+                    await websocket.send_json({
+                        "type": "error",
+                        "payload": {"message": "Этот чат ещё отвечает. Дождитесь окончания или остановите ответ.", "conversation_id": conversation_id},
+                    })
+                    continue
+                await senders.send_thinking()
             elif msg_type == "regenerate":
                 conversation_id = payload.get("conversation_id")
                 if not conversation_id:

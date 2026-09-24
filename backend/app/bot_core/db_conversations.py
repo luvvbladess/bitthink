@@ -11,6 +11,8 @@ import hashlib
 import logging
 import math
 import re
+import secrets
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -639,6 +641,9 @@ class ConversationData:
     messages: List[MessageData] = field(default_factory=list)
     documents: List[dict] = field(default_factory=list)
     created_at: str = field(default_factory=_now_iso)
+    updated_at: str = ""
+    is_active: bool = False
+    owner_id: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -689,6 +694,9 @@ class ConversationData:
                 for d in sorted(conv.documents, key=lambda item: item.id)
             ],
             created_at=conv.created_at.isoformat(),
+            updated_at=(conv.updated_at or conv.created_at).isoformat(),
+            is_active=bool(conv.is_active),
+            owner_id=int(conv.user_id),
         )
 
 
@@ -715,6 +723,7 @@ class DatabaseConversationManager:
         self._base_template_name_cache: Dict[int, str] = {}
         self._active_custom_prompt: Dict[int, Optional[str]] = {}
         self._user_tasks: Dict[int, asyncio.Task] = {}
+        self._quota_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Context allow-list
@@ -920,8 +929,12 @@ class DatabaseConversationManager:
             if account is not None and account.role == "admin" and canonical_tier(sub.tier) == "free":
                 sub.tier = "creator"
             session.commit()
-            return {
-                "tier": sub.tier,
+            from app.billing.quota import effective_tier
+
+            raw_tier = sub.tier
+            payload = {
+                "tier": raw_tier,
+                "tier_raw": raw_tier,
                 "expires_at": sub.expires_at,
                 "daily_nano_mini": sub.daily_nano_mini,
                 "daily_gpt54": sub.daily_gpt54,
@@ -945,6 +958,8 @@ class DatabaseConversationManager:
                 "week_chat_used": sub.week_chat_used or 0,
                 "week_computer_used": sub.week_computer_used or 0,
             }
+            payload["tier"] = effective_tier(payload)
+            return payload
 
     def update_subscription_limits(self, user_id: int, field: str, value: int = 1) -> None:
         with SyncSessionLocal() as session:
@@ -1030,31 +1045,86 @@ class DatabaseConversationManager:
             self.set_subscription_tier(bot_id, chosen, duration_days, from_today=True)
         return {"reset": len(targets), "skipped_admins": len(admin_ids), "tier": chosen}
 
+    def _lock_subscription(self, session: Session, user_id: int) -> Subscription:
+        """Create the row if needed, then lock it for a check-and-update."""
+        self._get_or_create_subscription(session, user_id)
+        query = session.query(Subscription).filter_by(user_id=user_id)
+        bind = session.get_bind()
+        if bind is not None and bind.dialect.name != "sqlite":
+            query = query.with_for_update()
+        return query.one()
+
     def debit_plan_tokens(self, user_id: int, pool: str, amount: int, model: str = "") -> None:
         if amount <= 0:
             return
         from app.billing.quota import apply_token_debit
 
-        with SyncSessionLocal() as session:
-            sub = self._get_or_create_subscription(session, user_id)
-            data = _subscription_payload(sub)
-            apply_token_debit(data, pool, amount)
-            _apply_subscription_payload(sub, data)
-            session.commit()
+        with self._quota_lock:
+            with SyncSessionLocal() as session:
+                sub = self._lock_subscription(session, user_id)
+                data = _subscription_payload(sub)
+                apply_token_debit(data, pool, amount)
+                _apply_subscription_payload(sub, data)
+                session.commit()
 
     def debit_plan_images(self, user_id: int, count: int = 1) -> None:
         if count <= 0:
             return
         from app.billing.plans import plan_for
+        from app.billing.quota import effective_tier
 
-        with SyncSessionLocal() as session:
-            sub = self._get_or_create_subscription(session, user_id)
-            self._reset_daily_if_needed(sub)
-            if plan_for(sub.tier).get("unlimited"):
+        with self._quota_lock:
+            with SyncSessionLocal() as session:
+                sub = self._lock_subscription(session, user_id)
+                self._reset_daily_if_needed(sub)
+                tier = effective_tier(_subscription_payload(sub))
+                if plan_for(tier).get("unlimited"):
+                    session.commit()
+                    return
+                sub.images_used = (sub.images_used or 0) + count
                 session.commit()
-                return
-            sub.images_used = (sub.images_used or 0) + count
-            session.commit()
+
+    _DAILY_COUNTERS = frozenset({
+        "daily_gpt54",
+        "daily_nano_mini",
+        "daily_director",
+        "daily_images",
+        "daily_docs",
+        "nano_cushion_used",
+    })
+
+    def consume_daily_counter(self, user_id: int, field: str, limit: int) -> bool:
+        """Atomically increment a free-tier counter when it is still under limit."""
+        if field not in self._DAILY_COUNTERS:
+            raise ValueError(field)
+        limit = int(limit or 0)
+        with self._quota_lock:
+            with SyncSessionLocal() as session:
+                sub = self._lock_subscription(session, user_id)
+                self._reset_daily_if_needed(sub)
+                current = int(getattr(sub, field) or 0)
+                if limit and current >= limit:
+                    session.commit()
+                    return False
+                setattr(sub, field, current + 1)
+                session.commit()
+                return True
+
+    def refund_daily_counter(self, user_id: int, field: str) -> None:
+        if field not in self._DAILY_COUNTERS:
+            return
+        with self._quota_lock:
+            with SyncSessionLocal() as session:
+                sub = session.query(Subscription).filter_by(user_id=user_id).first()
+                if not sub:
+                    return
+                bind = session.get_bind()
+                if bind is not None and bind.dialect.name != "sqlite":
+                    sub = session.query(Subscription).filter_by(user_id=user_id).with_for_update().one()
+                current = int(getattr(sub, field) or 0)
+                if current > 0:
+                    setattr(sub, field, current - 1)
+                session.commit()
 
     def increment_nano_cushion(self, user_id: int) -> None:
         with SyncSessionLocal() as session:
@@ -1616,7 +1686,7 @@ class DatabaseConversationManager:
     # ------------------------------------------------------------------
     def _conv_id(self) -> str:
         now = datetime.now()
-        return f"conv_{now.strftime('%Y%m%d_%H%M%S')}_{now.strftime('%f')[:4]}"
+        return f"conv_{now.strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(4)}"
 
     def get_conversations(self, user_id: int) -> List[ConversationData]:
         with SyncSessionLocal() as session:
@@ -1679,19 +1749,28 @@ class DatabaseConversationManager:
             return ConversationData.from_model(conv) if conv else None
 
     def create_conversation(self, user_id: int, title: Optional[str] = None) -> ConversationData:
-        with SyncSessionLocal() as session:
-            # Deactivate current active
-            session.query(Conversation).filter_by(user_id=user_id, is_active=True).update({"is_active": False})
-            conv = Conversation(
-                id=self._conv_id(),
-                user_id=user_id,
-                title=title or "Новый чат",
-                is_active=True,
-            )
-            session.add(conv)
-            session.commit()
-            session.refresh(conv)
-            return ConversationData.from_model(conv)
+        from sqlalchemy.exc import IntegrityError
+
+        last_error: Exception | None = None
+        for _ in range(5):
+            try:
+                with SyncSessionLocal() as session:
+                    session.query(Conversation).filter_by(user_id=user_id, is_active=True).update({"is_active": False})
+                    conv = Conversation(
+                        id=self._conv_id(),
+                        user_id=user_id,
+                        title=title or "Новый чат",
+                        is_active=True,
+                    )
+                    session.add(conv)
+                    session.commit()
+                    session.refresh(conv)
+                    return ConversationData.from_model(conv)
+            except IntegrityError as exc:
+                last_error = exc
+        if last_error:
+            raise last_error
+        raise RuntimeError("Не удалось создать беседу")
 
     def set_active_conversation(self, user_id: int, conv_id: str) -> Optional[ConversationData]:
         with SyncSessionLocal() as session:
@@ -1723,23 +1802,61 @@ class DatabaseConversationManager:
             session.commit()
 
     def delete_last_message(self, user_id: int, conv_id: str, role: str) -> bool:
-        """Used by regenerate: drop the most recent message of a given role so
-        the model can be re-run against the same preceding context."""
+        """Drop this user's own latest message of a role. User rows of other people stay."""
         with SyncSessionLocal() as session:
             conv = self._open_conv(session, user_id, conv_id)
             if not conv:
                 return False
-            msg = (
+            rows = (
                 session.query(Message)
-                .filter_by(conversation_id=conv_id, role=role)
+                .filter_by(conversation_id=conv.id, role=role)
+                .order_by(Message.id.desc())
+                .all()
+            )
+            for msg in rows:
+                if role == "user":
+                    author = msg.author_user_id
+                    if author is None:
+                        if conv.user_id != user_id:
+                            continue
+                    elif author != user_id:
+                        continue
+                session.delete(msg)
+                session.commit()
+                return True
+            return False
+
+    def can_regenerate(self, user_id: int, conv_id: str) -> bool:
+        """Owner may retry any trailing answer. A guest may retry only their own question."""
+        with SyncSessionLocal() as session:
+            conv = self._open_conv(session, user_id, conv_id)
+            if not conv:
+                return False
+            msgs = session.query(Message).filter_by(conversation_id=conv.id).order_by(Message.id.asc()).all()
+            if not msgs or msgs[-1].role != "assistant":
+                return False
+            if conv.user_id == user_id:
+                return True
+            previous_user = next((item for item in reversed(msgs[:-1]) if item.role == "user"), None)
+            if previous_user is None:
+                return False
+            author = previous_user.author_user_id or conv.user_id
+            return author == user_id
+
+    def last_assistant_message_id(self, user_id: int, conv_id: str) -> Optional[int]:
+        with SyncSessionLocal() as session:
+            conv = self._open_conv(session, user_id, conv_id)
+            if not conv:
+                return None
+            last = (
+                session.query(Message)
+                .filter_by(conversation_id=conv.id)
                 .order_by(Message.id.desc())
                 .first()
             )
-            if not msg:
-                return False
-            session.delete(msg)
-            session.commit()
-            return True
+            if last is None or last.role != "assistant":
+                return None
+            return int(last.id)
 
     def truncate_after(self, user_id: int, conv_id: str, keep_count: int) -> bool:
         """Used by edit-and-resend: drop every message after the first keep_count,
@@ -1749,6 +1866,13 @@ class DatabaseConversationManager:
             if not conv:
                 return False
             msgs = session.query(Message).filter_by(conversation_id=conv_id).order_by(Message.id.asc()).all()
+            if conv.user_id != user_id:
+                for item in msgs[keep_count:]:
+                    if item.role != "user":
+                        continue
+                    author = item.author_user_id or conv.user_id
+                    if author != user_id:
+                        raise PermissionError("Нельзя удалить чужие реплики")
             for m in msgs[keep_count:]:
                 session.delete(m)
             session.commit()
@@ -1784,6 +1908,7 @@ class DatabaseConversationManager:
         self, user_id: int, role: str, content: str, max_messages: int = 2_000,
         attachment: Optional[dict] = None, search: Optional[List[Dict[str, str]]] = None,
         conv_id: Optional[str] = None, author_user_id: Optional[int] = None,
+        supersede_message_id: Optional[int] = None,
     ) -> MessageData:
         import json
         with SyncSessionLocal() as session:
@@ -1803,6 +1928,12 @@ class DatabaseConversationManager:
                 author_user_id=author_user_id if role == "user" else None,
             )
             session.add(msg)
+            session.flush()
+            if supersede_message_id:
+                previous = session.get(Message, int(supersede_message_id))
+                if previous is not None and previous.conversation_id == conv.id and previous.id != msg.id:
+                    session.delete(previous)
+            conv.updated_at = datetime.now(timezone.utc)
             session.commit()
             # Trim to last max_messages
             all_msgs = session.query(Message).filter_by(conversation_id=conv.id).order_by(Message.id.asc()).all()
@@ -1856,7 +1987,22 @@ class DatabaseConversationManager:
                 session.add(Document(conversation_id=conv.id, filename=filename, content=content))
             session.commit()
 
+    def _scoped_conv_id(self, conv_id: Optional[str] = None) -> Optional[str]:
+        if conv_id:
+            return conv_id
+        from turn_scope import turn_conversation_id
+
+        return turn_conversation_id()
+
+    def conversation_for_turn(self, user_id: int) -> Optional[ConversationData]:
+        """Conversation the current reply is about, else the caller's active chat."""
+        conv_id = self._scoped_conv_id(None)
+        if conv_id:
+            return self.conversation_view(int(user_id), str(conv_id))
+        return self.get_active_conversation(user_id)
+
     def get_documents(self, user_id: int, conv_id: Optional[str] = None) -> List[dict]:
+        conv_id = self._scoped_conv_id(conv_id)
         with SyncSessionLocal() as session:
             conv = self._open_conv(session, user_id, conv_id)
             if not conv:
@@ -1881,8 +2027,8 @@ class DatabaseConversationManager:
         return candidate
 
     def list_chat_image_files(self, user_id: int) -> List[dict]:
-        """Фото в активном чате: имя, путь, mime. Порядок как в переписке."""
-        conv = self.get_active_conversation(user_id)
+        """Фото беседы текущего ответа: имя, путь, mime. Порядок как в переписке."""
+        conv = self.conversation_for_turn(user_id)
         if not conv:
             return []
         items: List[dict] = []
@@ -1929,7 +2075,7 @@ class DatabaseConversationManager:
         return {"name": match["name"], "mime": match["mime"], "bytes": data}
 
     def vision_parts_for_chat(self, user_id: int, query: str = "") -> List[dict]:
-        conv = self.get_active_conversation(user_id)
+        conv = self.conversation_for_turn(user_id)
         if not conv:
             return []
         return self._image_parts_for_conversation(conv, query)
@@ -2044,6 +2190,7 @@ class DatabaseConversationManager:
             return "\n".join(lines)
 
     def remove_document(self, user_id: int, filename: str, conv_id: Optional[str] = None) -> bool:
+        conv_id = self._scoped_conv_id(conv_id)
         with SyncSessionLocal() as session:
             conv = self._open_conv(session, user_id, conv_id)
             if not conv:
@@ -2062,6 +2209,7 @@ class DatabaseConversationManager:
     def remove_attachment(self, user_id: int, filename: str, conv_id: Optional[str] = None) -> Optional[dict]:
         """Remove an attachment card and return its metadata for file cleanup."""
         import json
+        conv_id = self._scoped_conv_id(conv_id)
         with SyncSessionLocal() as session:
             conv = self._open_conv(session, user_id, conv_id)
             if not conv:
