@@ -223,9 +223,11 @@ def _current_date_note() -> str:
     )
 
 
+# Только слова про сам снимок. «найд», «что на», «где в» ловили «найди ошибку»,
+# «что нам делать», «где в договоре» – и Пилот искал по фото вместо работы.
 PHOTO_RESEARCH_MARKERS = (
-    "фото", "картин", "изображ", "скрин", "где сня", "локац", "найд",
-    "что на", "что это", "ориентир", "где в", "сделано данное",
+    "фото", "фотк", "снимк", "снимок", "картин", "изображ", "скрин", "где сня",
+    "локац", "ориентир", "сделано данное", "это место", "за место",
 )
 _RESEARCH_MARKERS = PHOTO_RESEARCH_MARKERS + (
     "где ", "кто ", "когда", "актуаль", "сейчас", "на данный",
@@ -337,7 +339,11 @@ def _ensure_research_plan(
     journal: List[Dict[str, Any]],
     has_images: bool,
 ) -> Dict[str, Any]:
-    """Пилот – исследователь: первый раунд не бывает пустым, второй – сверка."""
+    """Пилот – исследователь: первый раунд не бывает пустым, второй – сверка.
+
+    has_images – вопрос про фото из чата (wants_photo_research), а не просто
+    «в чате когда-то была картинка»: иначе любой запрос превращался в поиск по фото.
+    """
     if plan.get("status") == "clarify" and plan.get("questions"):
         return plan
     employees = list(plan.get("new_employees") or [])
@@ -345,9 +351,9 @@ def _ensure_research_plan(
         return plan
     if round_num == 1:
         if has_images:
-            employees = [item for item in employees if _hires_image_search([item])]
-            if not employees:
-                employees = [_photo_search_employee()]
+            # Сотрудник по фото добавляется к команде планировщика, а не заменяет её.
+            if not _hires_image_search(employees):
+                employees = [_photo_search_employee(), *employees]
             return {"status": "continue", "new_employees": employees}
         if not employees and needs_research(user_text, False):
             return {"status": "continue", "new_employees": _web_research_employees(user_text)}
@@ -1050,7 +1056,7 @@ async def _run_director(
 
     journal: List[Dict[str, Any]] = []
     round_num = 0
-    has_images = packed_has_images(messages) or _turn_has_images(user_id)
+    has_images = wants_photo_research(user_text, packed_has_images(messages) or _turn_has_images(user_id))
 
     while round_num < MAX_ROUNDS and len(journal) < MAX_EMPLOYEES:
         round_num += 1
