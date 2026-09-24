@@ -6,7 +6,7 @@ import { ActivityFeed } from '@/components/ActivityFeed';
 import { AttachmentInfo } from './DocumentAttachment';
 import { ReasoningTrace, SearchItem } from './ReasoningTrace';
 import { DialogueRail } from './DialogueRail';
-import { type DialogueJumpFn, messageOffset, scrollToQuestion } from './dialogueNav';
+import { type DialogueJumpFn, MIN_DIALOGUE_QUESTIONS, messageOffset, scrollToQuestion } from './dialogueNav';
 import { CHAT_COL, CLARIFY_SCROLL_PAD, COMPOSER_SCROLL_PAD, HEADER_SCROLL_PAD } from './chatColumn';
 import { isClarifyMessage, isClarifyReply } from './clarify';
 import { useQuery } from '@tanstack/react-query';
@@ -280,7 +280,11 @@ export function ChatWindow({
         ...CHAT_COL,
         ...(splitPane ? { maxWidth: '100%', px: { xs: 1.25, sm: 1.75 } } : {}),
         pt: HEADER_SCROLL_PAD,
-        pb: clarifyDocked ? CLARIFY_SCROLL_PAD : COMPOSER_SCROLL_PAD,
+        // --bt-composer-h-pad follows the measured composer dock (ChatPage); the
+        // constants only cover the first paint before it is measured.
+        pb: clarifyDocked
+          ? { xs: `var(--bt-composer-h-pad, ${CLARIFY_SCROLL_PAD.xs})`, md: `var(--bt-composer-h-pad, ${CLARIFY_SCROLL_PAD.md})` }
+          : { xs: `var(--bt-composer-h-pad, ${COMPOSER_SCROLL_PAD.xs})`, md: `var(--bt-composer-h-pad, ${COMPOSER_SCROLL_PAD.md})` },
         flexGrow: 1,
         display: 'flex',
         flexDirection: 'column',
@@ -574,7 +578,13 @@ export function ChatWindow({
           position: 'absolute',
           zIndex: 3,
           right: splitPane ? 12 : { xs: 12, md: 'max(12px, calc((100% - 768px) / 2 - 4px))' },
-          bottom: { xs: 148, md: 156 },
+          // Above the composer; on phones also above the «Вопросы» chip that sits on it.
+          bottom: {
+            xs: questionTicks.length >= MIN_DIALOGUE_QUESTIONS
+              ? 'calc(var(--bt-composer-h, 140px) + 66px)'
+              : 'calc(var(--bt-composer-h, 140px) + 8px)',
+            md: 'calc(var(--bt-composer-h, 148px) + 8px)',
+          },
           display: 'flex',
           flexDirection: 'column',
           border: '1px solid var(--bt-hairline)',
