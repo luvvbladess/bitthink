@@ -1137,10 +1137,10 @@ class DatabaseConversationManager:
     # Model
     # ------------------------------------------------------------------
     def get_user_model(self, user_id: int) -> str:
-        from config import DEFAULT_MODEL
+        # Новый человек без выбора – «Авто», как и показывает интерфейс, а не Nano.
         with SyncSessionLocal() as session:
             sub = session.query(Subscription).filter_by(user_id=user_id).first()
-            return sub.selected_model if sub and sub.selected_model else DEFAULT_MODEL
+            return sub.selected_model if sub and sub.selected_model else "auto"
 
     def set_user_model(self, user_id: int, model: str) -> None:
         with SyncSessionLocal() as session:

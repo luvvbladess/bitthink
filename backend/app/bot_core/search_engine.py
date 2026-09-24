@@ -23,17 +23,25 @@ def query_requires_web(query: str) -> bool:
     text = (query or "").lower().strip()
     if not text:
         return False
+    # Only unmistakable cases. «Сейчас», «последний пункт», «курсовая», «ценность»
+    # used to send ordinary chat to the search hop, which sees neither the files
+    # nor the memory of this chat. Everything else: the answer model has
+    # web_search and decides itself.
     patterns = (
         r"\bзагугл\w*\b",
         r"\b(?:поищ|найд)\w*\s+(?:в\s+)?(?:интернет|сет|веб)\w*\b",
         r"\b(?:web|internet)\s*search\b",
-        r"\b(?:сегодня|сейчас|вчера|актуальн\w*|последн\w*|свеж\w*)\b",
+        r"\bновост\w*",
+        r"\b(?:что|кто)\s+(?:сегодня|сейчас|вчера)\b",
+        r"\b(?:последн|новейш|свеж|актуальн)\w*\s+(?:верси|релиз|обновлен|данн|курс|цен|расписан|результат)\w*",
         r"\b(?:на|в)\s+(?:данный|текущий)\s+момент\b",
         r"\b(?:at\s+the\s+moment|currently|right\s+now|as\s+of\s+now)\b",
-        r"\b(?:рейтинг\w*|популярн\w*|бестселлер\w*|топ[-\s]?\d*)\b",
+        r"\bтоп[-\s]?\d+\b",
         r"\bсам(?:ый|ая|ое|ые|ым|ыми|ых|ому|ую)\s+(?:крут\w*|сильн\w*|мощн\w*)\b",
         r"\b(?:мете|мета|тир[-\s]?лист|tier[\s-]?list|патч.?нот\w*|patch\s*notes)\b",
-        r"\b(?:цен\w*|стоимост\w*|курс\w*|котиров\w*|погод\w*)\b",
+        r"\bцен(?:а|ы|у|е|ой|ам|ами|ах)?\b|\bсколько\s+стоит\b",
+        r"\bкурс\w*\s+(?:доллар|евро|рубл|юан|тенге|валют|биткоин|btc|eth|крипт|акци)\w*",
+        r"\b(?:котиров\w*|погод\w*|биткоин\w*|bitcoin)\b",
         r"https?://",
     )
     return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)

@@ -372,6 +372,12 @@ COMPUTER_TOOLS_RESPONSES = [_responses_tool(*spec) for spec in _TOOL_SPECS]
 COMPUTER_TOOLS_CHAT = [_chat_tool(*spec) for spec in _TOOL_SPECS]
 COMPUTER_TOOL_NAMES = {spec[0] for spec in _TOOL_SPECS}
 
+# Авто: только чтение – страницы, файлы и прошлые разговоры этого человека.
+# Почта, SSH, коннекторы и песочница остаются за Пилотом и его тарифом.
+CHAT_TOOL_NAMES = {"browse_page", "read_chat_document", "list_chat_files", "search_chats", "recent_chats"}
+CHAT_TOOLS_RESPONSES = [tool for tool in COMPUTER_TOOLS_RESPONSES if tool["name"] in CHAT_TOOL_NAMES]
+CHAT_TOOLS_CHAT = [tool for tool in COMPUTER_TOOLS_CHAT if tool["function"]["name"] in CHAT_TOOL_NAMES]
+
 
 def _clamp(text: str, limit: int = MAX_TOOL_OUTPUT) -> str:
     text = text or ""

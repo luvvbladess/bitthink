@@ -560,6 +560,70 @@ def test_explicit_and_volatile_queries_require_web_search():
     assert str(datetime.now().year) in _search_today_note()
 
 
+def test_ordinary_chat_words_do_not_send_auto_to_the_search_hop():
+    for text in (
+        "я сейчас пишу диплом, помоги со структурой",
+        "поясни последний пункт",
+        "в чём ценность ООП",
+        "помоги с курсовой",
+        "курсор прыгает в vscode, почему",
+        "сделай текст свежее и живее",
+        "какой самый популярный паттерн для этого",
+        "а сейчас объясни проще",
+    ):
+        assert not query_requires_web(text), text
+    for text in ("курс доллара", "сколько стоит iPhone 18", "что сейчас происходит в мире", "последняя версия python"):
+        assert query_requires_web(text), text
+
+
+def test_auto_chat_tools_are_read_only(monkeypatch):
+    """Авто видит поиск, страницы и файлы чата, но не почту и SSH – даже если модель назовёт их сама."""
+    import openai_client
+
+    offered: list[set] = []
+    ran: list[str] = []
+    turns = iter([
+        SimpleNamespace(type="function_call", name="ssh_exec", arguments='{"host": "x", "command": "ls"}', call_id="c1"),
+        SimpleNamespace(type="message", content=[SimpleNamespace(type="output_text", text="готово", annotations=[])]),
+    ])
+
+    class FakeResponses:
+        async def create(self, **kwargs):
+            offered.append({tool.get("name") or tool.get("type") for tool in kwargs.get("tools") or []})
+            response = SimpleNamespace(output=[next(turns)], usage=None)
+
+            async def stream():
+                yield SimpleNamespace(type="response.completed", response=response)
+
+            return stream()
+
+    async def fake_run(name, _args, _user_id):
+        ran.append(name)
+        return "ok"
+
+    import computer_tools
+
+    monkeypatch.setattr(openai_client, "client", SimpleNamespace(responses=FakeResponses()))
+    monkeypatch.setattr(computer_tools, "run_computer_tool", fake_run)
+    text, *_ = asyncio.run(openai_client.get_chat_response(
+        [{"role": "user", "content": "привет"}], model="gpt-6-luna", use_tools=True, chat_tools=True,
+    ))
+    assert text == "готово"
+    assert {"web_search", "visualize_data", "browse_page", "read_chat_document"} <= offered[0]
+    assert "ssh_exec" not in offered[0] and "gmail_send" not in offered[0]
+    assert ran == []
+
+
+def test_short_follow_up_keeps_the_thread_model():
+    from routing import route_for_turn
+
+    hard = "Проанализируй архитектуру и сделай ревью кода"
+    assert route_for_turn("а почему?", hard, True)[0] == "deepseek-v4-pro"
+    assert route_for_turn("а почему?", hard, False)[0] == "gpt-6-sol"
+    assert route_for_turn("а почему?", "как дела?", True)[0] == "deepseek-v4-flash"
+    assert route_for_turn("а почему?", "", True)[0] == "deepseek-v4-flash"
+
+
 def test_openai_search_fallback_forces_tool_and_parses_all_source_shapes(monkeypatch):
     captured = {}
     response = SimpleNamespace(output=[

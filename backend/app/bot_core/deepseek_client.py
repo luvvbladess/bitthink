@@ -86,6 +86,7 @@ async def get_deepseek_response(
     use_tools: bool = True,
     on_reasoning_delta: Optional[Any] = None,
     reasoning_enabled: bool = True,
+    chat_tools: bool = False,
 ) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
     """
     Получает ответ от DeepSeek через Chat Completions API, потоково (stream=True).
@@ -112,8 +113,13 @@ async def get_deepseek_response(
         messages,
         use_skills=True,
         user_id=user_id,
-        sandbox=bool(use_tools),
+        sandbox=bool(use_tools and not chat_tools),
     )
+    from computer_tools import CHAT_TOOL_NAMES, CHAT_TOOLS_CHAT, COMPUTER_TOOL_NAMES, COMPUTER_TOOLS_CHAT
+
+    # Авто получает только чтение: страницы, файлы и прошлые чаты, не почту и SSH.
+    extra_tools = CHAT_TOOLS_CHAT if chat_tools else COMPUTER_TOOLS_CHAT
+    offered_tools = CHAT_TOOL_NAMES if chat_tools else COMPUTER_TOOL_NAMES
     current_messages = []
     for msg in messages:
         # Убеждаемся, что передаем только стандартные поля (role, content, name, tool_calls и т.д.)
@@ -156,8 +162,7 @@ async def get_deepseek_response(
         if use_tools and search_count < MAX_SEARCHES:
             active_tools.append(WEB_SEARCH_TOOL_DEEPSEEK)
         if use_tools:
-            from computer_tools import COMPUTER_TOOLS_CHAT
-            active_tools = active_tools + COMPUTER_TOOLS_CHAT
+            active_tools = active_tools + extra_tools
 
         content_parts: List[str] = []
         loop_reasoning_parts: List[str] = []
@@ -321,8 +326,8 @@ async def get_deepseek_response(
                     logger.error(f"Web search error: {e}")
                     tool_result = f"❌ Ошибка поиска: {str(e)}"
             else:
-                from computer_tools import COMPUTER_TOOL_NAMES, run_computer_tool
-                if func_name in COMPUTER_TOOL_NAMES:
+                from computer_tools import run_computer_tool
+                if use_tools and func_name in offered_tools:
                     try:
                         args = json.loads(func_args_str or "{}")
                     except json.JSONDecodeError:

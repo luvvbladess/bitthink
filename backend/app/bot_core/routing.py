@@ -141,3 +141,14 @@ def best_route(user_text: str, reasoning_effort: Optional[str], has_deepseek: bo
     if complex_task:
         return ("gpt-6-sol", deep)
     return ("gpt-6-luna", False)
+
+
+def route_for_turn(user_text: str, previous_user_text: str, has_deepseek: bool) -> Tuple[str, bool]:
+    """Auto route. «А почему?» после разбора архитектуры – та же тема: короткое
+    уточнение остаётся на сильной модели ветки, а не падает на самую дешёвую."""
+    route, deep = best_route(user_text, "none", has_deepseek)
+    if previous_user_text and len(user_text or "") < 200:
+        thread_route, _ = best_route(previous_user_text, "none", has_deepseek)
+        if thread_route in {"deepseek-v4-pro", "gpt-6-sol"}:
+            route = thread_route
+    return route, deep
