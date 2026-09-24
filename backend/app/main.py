@@ -1,4 +1,5 @@
 import json
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -81,11 +82,26 @@ def create_app() -> FastAPI:
     app.include_router(memory.router, prefix="/memory", tags=["memory"])
     app.include_router(skills.router, prefix="/skills", tags=["skills"])
 
+    # Chat and generated files are stored as sha256(email)[:16]/uuid.hex.ext.
+    # Anything else under those trees is not a file we wrote.
+    _PRIVATE_UPLOAD = re.compile(
+        r"^/uploads/(?:chat|generated)/[0-9a-f]{16}/[0-9a-f]{32}\.[A-Za-z0-9]{1,10}$"
+    )
+
     @app.middleware("http")
     async def cache_avatars(request, call_next):
+        path = request.url.path
+        if path.startswith("/uploads/chat/") or path.startswith("/uploads/generated/"):
+            if not _PRIVATE_UPLOAD.match(path):
+                from fastapi.responses import Response
+
+                return Response(status_code=404)
         response = await call_next(request)
-        if request.url.path.startswith("/uploads/avatars/") and response.status_code == 200:
+        if path.startswith("/uploads/avatars/") and response.status_code == 200:
             response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        elif path.startswith("/uploads/") and not path.startswith("/uploads/avatars/") and response.status_code == 200:
+            response.headers["Cache-Control"] = "private, no-store"
+            response.headers["X-Content-Type-Options"] = "nosniff"
         return response
 
     app.mount("/uploads", StaticFiles(directory=str(settings.UPLOAD_DIR)), name="uploads")

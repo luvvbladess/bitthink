@@ -411,7 +411,7 @@ def load_previous_html(user_id: int) -> str | None:
     try:
         from conversations import conversation_manager
 
-        conv = conversation_manager.get_active_conversation(user_id)
+        conv = conversation_manager.conversation_for_turn(user_id)
     except Exception:
         logger.debug("Studio canvas: no active conversation", exc_info=True)
         return None
