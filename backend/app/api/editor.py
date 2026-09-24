@@ -496,12 +496,14 @@ async def document_callback(doc_id: str, request: Request, t: str = ""):
     return {"error": 0}
 
 
-def _editing_names(doc_id: str, except_id: int) -> list[str]:
-    ids = [int(item) for item in _EDITING.get(doc_id, set()) if item.isdigit() and int(item) != except_id]
+def _editing_names(doc_id: str, me: int) -> list[str]:
+    """Who has the document open for editing on a computer. Includes the phone
+    user too: their own desktop session would still save over a phone edit."""
+    ids = [int(item) for item in _EDITING.get(doc_id, set()) if item.isdigit()]
     if not ids:
         return []
     cards = repo._manager.author_cards(ids)
-    return [(cards.get(item) or {}).get("name") or "участник" for item in ids]
+    return ["вы" if item == me else (cards.get(item) or {}).get("name") or "участник" for item in ids]
 
 
 @router.get("/{doc_id}/paragraphs")
