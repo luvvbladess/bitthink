@@ -429,10 +429,16 @@ async def get_smart_response(
                 )
         else:
             from config import DEEPSEEK_API_KEY
-            from routing import best_route
+            from routing import route_for_turn
             # Auto owns its effort decision. A stale manual toggle from another
             # mode must not make a short everyday prompt expensive.
-            route, deep_thinking = best_route(user_text, "none", bool(DEEPSEEK_API_KEY))
+            previous_user = [
+                str(m.get("content")) for m in messages
+                if m.get("role") == "user" and isinstance(m.get("content"), str)
+            ][-2:-1]
+            route, deep_thinking = route_for_turn(
+                user_text, previous_user[0] if previous_user else "", bool(DEEPSEEK_API_KEY)
+            )
             route = clamp_model(tier, route)
             label = "глубокий анализ" if deep_thinking else "быстрый точный ответ"
             await push_status("think", f"Выбрана оптимальная модель · {label}")
@@ -442,7 +448,8 @@ async def get_smart_response(
                     messages,
                     model=route,
                     user_id=user_id,
-                    use_tools=False,
+                    use_tools=True,
+                    chat_tools=True,
                     reasoning_enabled=deep_thinking,
                     on_reasoning_delta=on_reasoning_delta,
                 )
@@ -453,7 +460,8 @@ async def get_smart_response(
                         messages,
                         model=fallback,
                         user_id=user_id,
-                        use_tools=False,
+                        use_tools=True,
+                        chat_tools=True,
                         reasoning_effort="high" if deep_thinking else "none",
                         on_reasoning_delta=on_reasoning_delta,
                     )
@@ -462,7 +470,8 @@ async def get_smart_response(
                     messages,
                     model=clamp_model(tier, route),
                     user_id=user_id,
-                    use_tools=False,
+                    use_tools=True,
+                    chat_tools=True,
                     reasoning_effort="high" if deep_thinking else "none",
                     on_reasoning_delta=on_reasoning_delta,
                 )
@@ -506,7 +515,9 @@ async def get_smart_response(
             )
     elif "deepseek" in model:
         from deepseek_client import get_deepseek_response
-        result = await get_deepseek_response(messages, model=model, user_id=user_id, use_tools=False, on_reasoning_delta=on_reasoning_delta)
+        result = await get_deepseek_response(
+            messages, model=model, user_id=user_id, use_tools=True, chat_tools=True, on_reasoning_delta=on_reasoning_delta,
+        )
     elif model == "gpt-6-astra":
         from status_feed import push_status
         await push_status("think", "Работаю в песочнице")
@@ -522,7 +533,7 @@ async def get_smart_response(
         )
     else:
         result = await get_chat_response(
-            messages, model=model, user_id=user_id, use_tools=web_required,
+            messages, model=model, user_id=user_id, use_tools=True, chat_tools=True,
             reasoning_effort=reasoning_effort, on_reasoning_delta=None if web_required else on_reasoning_delta,
             force_web_search=web_required,
         )

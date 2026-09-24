@@ -324,9 +324,13 @@ async def get_chat_response(
     force_web_search: bool = False,
     use_skills: bool = True,
     max_tool_loops: Optional[int] = None,
+    chat_tools: bool = False,
 ) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
     """
     Получает ответ от OpenAI через Responses API, потоково (stream=True).
+
+    chat_tools=True вместе с use_tools даёт не весь набор Computer, а только
+    поиск, графики, страницы и файлы чата – для обычного режима Авто.
 
     max_tool_loops — сколько ходов с вызовами инструментов разрешено. По
     умолчанию 6 (Astra — 12). Сотруднику Пилота, собирающему комплект файлов,
@@ -368,7 +372,8 @@ async def get_chat_response(
         attach_tools = bool(use_tools or is_astra)
         # Astra is the sandbox agent: never drop computer tools for a web-only hop.
         force_web = bool(force_web_search and not is_astra)
-        sandbox = bool(is_astra or (attach_tools and not force_web))
+        chat_only = bool(chat_tools and not is_astra)
+        sandbox = bool(is_astra or (attach_tools and not force_web and not chat_only))
 
         messages = with_runtime_context(
             messages,
@@ -386,8 +391,9 @@ async def get_chat_response(
         # Инструменты: web_search, графики, Computer. Список стабилен – иначе OpenAI сбрасывает кэш префикса.
         tools: List[Dict] = [WEB_SEARCH_TOOL] if force_web else ([WEB_SEARCH_TOOL, VISUALIZE_TOOL_RESPONSES] if attach_tools else [])
         if attach_tools and not force_web:
-            from computer_tools import COMPUTER_TOOLS_RESPONSES
-            tools = tools + COMPUTER_TOOLS_RESPONSES
+            from computer_tools import CHAT_TOOLS_RESPONSES, COMPUTER_TOOLS_RESPONSES
+            tools = tools + (CHAT_TOOLS_RESPONSES if chat_only else COMPUTER_TOOLS_RESPONSES)
+        offered_tools = {tool.get("name") for tool in tools if tool.get("name")}
 
         generated_files: List[Dict[str, Any]] = []
         reasoning_parts: List[str] = []
@@ -647,7 +653,8 @@ async def get_chat_response(
                         tool_result = f"❌ Ошибка поиска: {str(e)}"
                 else:
                     from computer_tools import COMPUTER_TOOL_NAMES, run_computer_tool
-                    if fc_name in COMPUTER_TOOL_NAMES:
+                    # Only what this call offered: Auto must not reach mail or SSH by name.
+                    if fc_name in COMPUTER_TOOL_NAMES and fc_name in offered_tools:
                         try:
                             args = json.loads(fc_args_str or "{}")
                         except json.JSONDecodeError:
