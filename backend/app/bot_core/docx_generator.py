@@ -1459,3 +1459,55 @@ def blank_copy_of_template(template_bytes: bytes) -> Optional[bytes]:
     except Exception as e:
         logger.warning("Не удалось подготовить шаблон оформления: %s", e)
         return None
+
+
+_LEFTOVER_HEADING_RE = re.compile(r"^\s*#{1,6}\s*(?=\S)")
+
+
+def _all_paragraphs(doc):
+    yield from doc.paragraphs
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                yield from cell.paragraphs
+
+
+def scrub_markdown_marks(data: bytes) -> bytes:
+    """Убирает из готового .docx остатки markdown: «### 2.1.4 …» и «**».
+
+    Пилот иногда собирает Word своим скриптом, который понимает только # и ##,
+    и решётки уходят в текст. Такой абзац становится жирным подзаголовком.
+    Файл без остатков возвращается как был."""
+    try:
+        doc = Document(io.BytesIO(data))
+    except Exception:
+        return data
+    changed = False
+    for paragraph in _all_paragraphs(doc):
+        runs = paragraph.runs
+        if not runs:
+            continue
+        prefix = _LEFTOVER_HEADING_RE.match(paragraph.text)
+        if prefix:
+            left = prefix.end()
+            for run in runs:
+                cut = min(left, len(run.text))
+                run.text = run.text[cut:]
+                left -= cut
+                run.bold = True
+                if left <= 0:
+                    break
+            for run in runs:
+                run.bold = True
+            paragraph.paragraph_format.first_line_indent = Cm(0)
+            paragraph.paragraph_format.keep_with_next = True
+            changed = True
+        for run in runs:
+            if "**" in run.text:
+                run.text = run.text.replace("**", "")
+                changed = True
+    if not changed:
+        return data
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    return buffer.getvalue()

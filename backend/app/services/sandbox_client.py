@@ -117,5 +117,9 @@ def _parse_deliverables(raw: str) -> list[dict[str, Any]]:
             continue
         if not data:
             continue
+        if name.lower().endswith(".docx"):
+            from app.bot_core.docx_generator import scrub_markdown_marks
+
+            data = scrub_markdown_marks(data)
         files.append({"filename": Path(name).name, "bytes": data})
     return files
