@@ -28,7 +28,7 @@ import { MIN_DIALOGUE_QUESTIONS, type DialogueJumpFn } from '@/features/chat/dia
 import { BRAND_NAME, NEW_CHAT_TITLE } from '@/brand';
 import { ShareDialog } from '@/features/chat/ShareDialog';
 import { DocumentEditorDialog } from '@/features/editor/DocumentEditor';
-import { ConversationFilesDrawer, filesQueryKey } from '@/features/editor/ConversationFiles';
+import { ConversationFilesDrawer, filesQueryKey, type FilesScope } from '@/features/editor/ConversationFiles';
 import { RoomChat } from '@/features/chat/RoomChat';
 import { applyPageMeta } from '@/seo';
 
@@ -151,6 +151,7 @@ export default function ChatPage() {
   const [shareOpen, setShareOpen] = useState(false);
   const [roomOpenById, setRoomOpenById] = useState<Record<string, boolean>>({});
   const [filesOpen, setFilesOpen] = useState(false);
+  const [filesScope, setFilesScope] = useState<FilesScope>('chat');
   const [moreAnchor, setMoreAnchor] = useState<HTMLElement | null>(null);
   // The composer floats over the message list and grows (long drafts, the mode
   // hint under it, the clarify card). Publish its real height so the list's
@@ -967,6 +968,7 @@ export default function ChatPage() {
             }}
             onRename={(id, title) => renameMutation.mutate({ id, title })}
             onClose={() => setSidebarOpen(false)}
+            onLibrary={() => { setFilesScope('all'); setFilesOpen(true); if (isMobile) setSidebarOpen(false); }}
             generatingIds={generatingIds}
           />
         </SwipeableDrawer>
@@ -983,6 +985,7 @@ export default function ChatPage() {
               deleteMutation.mutate(id);
             }}
             onRename={(id, title) => renameMutation.mutate({ id, title })}
+            onLibrary={() => { setFilesScope('all'); setFilesOpen(true); if (isMobile) setSidebarOpen(false); }}
             generatingIds={generatingIds}
           />
         </Box>
@@ -1064,7 +1067,7 @@ export default function ChatPage() {
             )}
             {activeConvId && !isMobile && (
               <Tooltip title="Файлы беседы">
-                <IconButton onClick={() => setFilesOpen(true)} sx={headerIconBtnSx} aria-label="Файлы беседы">
+                <IconButton onClick={() => { setFilesScope('chat'); setFilesOpen(true); }} sx={headerIconBtnSx} aria-label="Файлы беседы">
                   <FolderSimple size={22} weight="bold" />
                 </IconButton>
               </Tooltip>
@@ -1127,7 +1130,7 @@ export default function ChatPage() {
               slotProps={{ paper: { sx: { minWidth: 240, mt: 0.75, borderRadius: '14px' } } }}
             >
               {activeConvId && (
-                <MenuItem onClick={() => { setMoreAnchor(null); setFilesOpen(true); }} sx={{ minHeight: 48 }}>
+                <MenuItem onClick={() => { setMoreAnchor(null); setFilesScope('chat'); setFilesOpen(true); }} sx={{ minHeight: 48 }}>
                   <ListItemIcon><FolderSimple size={20} /></ListItemIcon>
                   <ListItemText>Файлы беседы</ListItemText>
                 </MenuItem>
@@ -1356,7 +1359,13 @@ export default function ChatPage() {
         <ShareDialog conversationId={activeConvId} open={shareOpen} onClose={() => setShareOpen(false)} />
       )}
       <DocumentEditorDialog conversationId={activeConvId} />
-      <ConversationFilesDrawer conversationId={activeConvId} open={filesOpen} onClose={() => setFilesOpen(false)} />
+      <ConversationFilesDrawer
+        conversationId={activeConvId}
+        open={filesOpen}
+        scope={filesScope}
+        onClose={() => setFilesOpen(false)}
+        onOpenChat={handleSelect}
+      />
     </Box>
   );
 }

@@ -19,6 +19,26 @@ async def create_conversation(data: ConversationCreate, user_id: str = Depends(g
     return await repo.create_conversation(user_id, title=data.title)
 
 
+@router.get("/library")
+async def library_files(user_id: str = Depends(get_current_user)):
+    """Библиотека: файлы из всех бесед пользователя, свежие сверху."""
+    from app.api.editor import conversation_files
+
+    bot_id = await repo.ensure_user(user_id)
+
+    def collect() -> list[dict]:
+        # ponytail: читает все беседы разом; при сотнях бесед – отдельный запрос по вложениям.
+        items = [
+            {**item, "conversation_id": conv.id, "conversation_title": conv.title}
+            for conv in repo._manager.get_conversations(bot_id)
+            for item in conversation_files(conv)
+        ]
+        items.sort(key=lambda f: str(f["edited_at"] or f["uploaded_at"]), reverse=True)
+        return items
+
+    return await asyncio.to_thread(collect)
+
+
 @router.get("/{conv_id}/files")
 async def list_conversation_files(conv_id: str, user_id: str = Depends(get_current_user)):
     from app.api.editor import _conversation_for, conversation_files
