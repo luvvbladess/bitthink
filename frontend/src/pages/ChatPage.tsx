@@ -449,7 +449,8 @@ export default function ChatPage() {
         });
       }
       if (msg.type === 'meta' && convId) {
-        if (!activeConvId) setActiveConvId(convId);
+        // replaces: the open chat was deleted elsewhere and the reply moved to a new one.
+        if (!activeConvId || msg.payload?.replaces === activeConvId) setActiveConvId(convId);
         patchJob(convId, { thinking: true });
       }
       if (msg.type === 'file' && convId) {

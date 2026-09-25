@@ -375,7 +375,18 @@ async def get_smart_response(
     # Never await Kimi before reading attachments: that is what made Search /
     # Research / mixed image+PDF batches look frozen after a big upload.
     # Documents stay on Sol; tiers without Sol are clamped back to Luna.
-    if has_documents and model != "director":
+    # Studio and Pilot read the chat's photos and files themselves; the generic
+    # «photo in this turn» branch below used to swallow their requests.
+    own_files = model in {"director", "studio"}
+    if model in {"auto", "gpt-5-nano", "gpt-6-luna", "deepseek-v4-pro", "deepseek-v4-flash"}:
+        # «Добавь очки на фото», «нарисуй кота»: draw instead of answering that we cannot.
+        from studio_router import get_image_response
+
+        drawn = await get_image_response(messages, user_text, user_id, status_msg)
+        if drawn is not None:
+            return drawn
+
+    if has_documents and not own_files:
         from status_feed import push_status
 
         await push_status("think", "Разбираю загруженные документы")
@@ -398,7 +409,7 @@ async def get_smart_response(
             on_reasoning_delta=None if doc_force_web else on_reasoning_delta,
             force_web_search=doc_force_web,
         )
-    elif has_images:
+    elif has_images and not own_files:
         # Multimodal turns always use a vision-capable OpenAI route. The images
         # are already resized on upload, so this remains materially cheaper than
         # repeatedly OCRing originals while preserving visual understanding.

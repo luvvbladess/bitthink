@@ -72,3 +72,47 @@ def test_image_clarify_answer_draws_the_original_request(monkeypatch):
     ]
     asyncio.run(sr._run_studio(messages, messages[-1]["content"], 1, None))
     assert calls["text"] == "кот"
+
+
+def test_chat_draws_and_edits_pictures_instead_of_refusing(monkeypatch):
+    """Auto used to answer «у меня нет такого инструмента» to «добавь очки» on an attached photo."""
+    import openai_client
+    from app.billing import quota
+
+    calls = []
+
+    async def fake_edit(images, prompt, size="auto", quality="auto"):
+        calls.append(("edit", prompt, len(images)))
+        return "data:image/png;base64,iVBORw0KGgo=", None
+
+    async def fake_generate(prompt, size="auto", quality="auto"):
+        calls.append(("generate", prompt, 0))
+        return "data:image/png;base64,iVBORw0KGgo=", None
+
+    monkeypatch.setattr(openai_client, "edit_image", fake_edit)
+    monkeypatch.setattr(openai_client, "generate_image", fake_generate)
+    monkeypatch.setattr(quota, "assert_can_generate_image", lambda _uid: None)
+    monkeypatch.setattr(quota, "debit_images", lambda _uid, _count=1: None)
+    turn = {"images": [b"photo"]}
+    monkeypatch.setattr(sr, "_chat_image_bytes", lambda _uid, current_turn_only: turn["images"])
+    monkeypatch.setattr(sr, "_last_reply_image", lambda _uid: None)
+
+    def ask(text):
+        return asyncio.run(sr.get_image_response([], text, 1, None))
+
+    # Questions about a photo and work on its content stay with the text model.
+    assert ask("что на фото?") is None
+    assert ask("какой тут стиль одежды?") is None
+    assert ask("добавь это в таблицу") is None
+    # A command on the attached photo edits it and comes back as a picture.
+    answer, files, _, _ = ask("Добавь ребёнку круглые очки для чтения")
+    assert calls[-1][0] == "edit" and files[0]["mime_type"] == "image/png" and files[0]["bytes"]
+    # No photo: «нарисуй» draws; a plain question is not a picture job.
+    turn["images"] = []
+    ask("нарисуй кота в очках")
+    assert calls[-1][0] == "generate"
+    assert ask("добавь очки") is None
+    # Right after a picture, a follow-up command edits that picture.
+    monkeypatch.setattr(sr, "_last_reply_image", lambda _uid: b"previous")
+    ask("а теперь убери фон")
+    assert calls[-1][0] == "edit"
