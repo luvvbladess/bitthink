@@ -384,6 +384,77 @@ def test_director_picks_final_files_at_the_end(monkeypatch):
     assert [f["filename"] for f in delivered] == ["01_ПМИ.docx", "02_Протокол.docx"]
 
 
+def test_director_makes_a_package_one_document_at_a_time(monkeypatch):
+    """Комплект: документ за документом, каждый выкладывается в чат сразу,
+    в итоговом ответе те же файлы второй раз не уходят."""
+    import asyncio
+
+    import director_router as dr
+    from turn_scope import delivery, pick_deliverables
+
+    docs = [
+        {"title": "Отчёт 2.6", "filename": "01_Отчет_2_6.docx", "brief": "по заданию"},
+        {"title": "Отчёт 2.7", "filename": "02_Отчет_2_7.docx", "brief": "по заданию"},
+        {"title": "Протокол", "filename": "03_Протокол.docx", "brief": "по заданию"},
+    ]
+    workspace: list[str] = []
+    calls: list[str] = []
+    posted: list[tuple[str, list[str]]] = []
+
+    async def fake_docs(*_args, **_kwargs):
+        return docs
+
+    async def fake_exec(employee, round_num, journal, user_id, document_context="", history_text="", has_images=False):
+        calls.append(employee["role"])
+        # Everything posted so far is already in the chat before the next document starts.
+        assert len(posted) == round_num - 1
+        name = docs[round_num - 1]["filename"]
+        # The protocol fails on the first try and is built on the retry.
+        if name != "03_Протокол.docx" or calls.count(employee["role"]) == 2:
+            workspace.append(name)
+        return {**employee, "round": round_num, "status": "ok", "result": "ok", "reasoning": "", "search": []}
+
+    async def fake_files(_user_id, _since):
+        return [{"filename": name, "bytes": b"PK"} for name in workspace]
+
+    async def fake_status(*_args, **_kwargs):
+        return None
+
+    async def post(text, files):
+        posted.append((text, [f["filename"] for f in files]))
+
+    monkeypatch.setattr(dr, "_plan_package_documents", fake_docs)
+    monkeypatch.setattr(dr, "_execute_employee", fake_exec)
+    monkeypatch.setattr(dr, "_new_files", fake_files)
+    monkeypatch.setattr(dr, "_update_status", fake_status)
+    monkeypatch.setattr(dr, "_sanitize_answer", lambda text: text)
+    monkeypatch.setattr(dr, "_turn_has_images", lambda _uid: False)
+    monkeypatch.setattr(dr, "_clamp_employee_plan", lambda plan, *_a, **_k: plan)
+
+    async def run():
+        text = "Заверши все остальные документы, делай файлы по одному"
+        with delivery(post):
+            answer, *_ = await dr.get_director_response([{"role": "user", "content": text}], text, 1, None)
+            left = pick_deliverables([{"filename": name} for name in workspace] + [{"filename": "bundle.zip"}])
+        return answer, left
+
+    answer, left = asyncio.run(run())
+    assert [names for _, names in posted] == [["01_Отчет_2_6.docx"], ["02_Отчет_2_7.docx"], ["03_Протокол.docx"]]
+    assert posted[0][0].startswith("Готов документ 1 из 3: «Отчёт 2.6»")
+    assert len(calls) == 4
+    assert "3 из 3" in answer
+    assert [f["filename"] for f in left] == ["bundle.zip"]
+
+
+def test_director_detects_several_files_as_a_package():
+    import director_router as dr
+
+    assert dr._is_document_package_task("сделай три документа: акт, счёт и договор")
+    assert dr._is_document_package_task("Заверши все остальные документы")
+    assert dr._is_document_package_task("делай файлы по одному")
+    assert not dr._is_document_package_task("сделай отчёт в Word")
+
+
 def test_director_detects_file_requests():
     import director_router as dr
 

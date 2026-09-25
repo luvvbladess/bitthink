@@ -304,9 +304,12 @@ export default function ChatPage() {
               ]
           : withAssistant;
 
+        // A Pilot package posts each finished document mid-reply; those are not the answer yet.
+        const isFinalAnswer = (message: (typeof withFile)[number]) => message.role === 'assistant'
+          && !('attachment' in message && message.attachment?.interim);
         const lastUserIndex = [...withFile].map((message) => message.role).lastIndexOf('user');
         const hasAssistantAfterUser = lastUserIndex >= 0
-          && withFile.slice(lastUserIndex + 1).some((message) => message.role === 'assistant');
+          && withFile.slice(lastUserIndex + 1).some(isFinalAnswer);
         const jobError = activeConvId ? jobErrors[activeConvId] : undefined;
         const withError = jobError && !hasAssistantAfterUser && !pendingContent.thinking
           ? [...withFile, { id: `job-err-${activeConvId}`, role: 'assistant' as const, content: jobError }]
@@ -328,9 +331,9 @@ export default function ChatPage() {
           ? base.map((message) => message.role === 'user' ? message.content : '').lastIndexOf(pendingContent.userText)
           : -1;
         const recoveredAnswer = imageBaseline
-          ? base.some((message) => message.role === 'assistant' && !imageBaseline.has(message.id))
+          ? base.some((message) => isFinalAnswer(message) && !imageBaseline.has(message.id))
           : pendingUserIndex >= 0
-            && base.slice(pendingUserIndex + 1).some((message) => message.role === 'assistant');
+            && base.slice(pendingUserIndex + 1).some(isFinalAnswer);
         if (pendingContent.thinking && recoveredAnswer) {
           setRegeneratingId(null);
           finishJob(activeConvId);
