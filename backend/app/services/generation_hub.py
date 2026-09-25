@@ -223,14 +223,15 @@ class BoundSenders:
             payload["canvas"] = True
         await self._emit("file", payload)
 
-    async def send_meta(self, conv_id: str) -> None:
+    async def send_meta(self, conv_id: str, replaces: Optional[str] = None) -> None:
         previous = self.job_key
         if previous and previous != conv_id:
             self.hub.rekey(self.user_id, previous, conv_id)
         self.job_key = conv_id
         self.conversation_id = conv_id
         self.hub.upsert_job(self.user_id, conv_id, thinking=True)
-        await self._emit("meta", {"conversation_id": conv_id})
+        # replaces: the deleted chat this reply moved out of, so the tab follows it.
+        await self._emit("meta", {"conversation_id": conv_id, **({"replaces": replaces} if replaces else {})})
 
     async def send_extras(self, reasoning: str, search_results: list) -> None:
         if self.conversation_id:

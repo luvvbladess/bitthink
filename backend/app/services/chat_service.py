@@ -202,6 +202,9 @@ async def _generate_and_send(
             meta = {"name": filename, "size": len(file_bytes), "status": "done", "type": "generated"}
         if item.get("mime_type"):
             meta["mime_type"] = str(item["mime_type"])
+            if meta["mime_type"].startswith("image/"):
+                # Drawn in the chat as a picture with edit and download, not a file card.
+                meta["type"] = "image"
         if item.get("canvas"):
             meta["canvas"] = True
         outgoing.append((filename, file_bytes, meta))
@@ -274,6 +277,11 @@ async def run_chat(
     # conversation happens to be flagged active in the DB (that used to append
     # the message to an unrelated, previously-active conversation whenever the
     # user typed into a not-yet-created "Новая беседа" screen).
+    # A tab still showing a chat that was deleted elsewhere: start a new one
+    # instead of failing every message with «Нет доступа к беседе».
+    replaced = None
+    if conversation_id and await asyncio.to_thread(repo._manager.conversation_owner, conversation_id) is None:
+        replaced, conversation_id = conversation_id, None
     if conversation_id:
         await repo.set_active_conversation(web_user_id, conversation_id)
     else:
@@ -281,7 +289,10 @@ async def run_chat(
         conversation_id = created["id"]
 
     if send_meta:
-        await send_meta(conversation_id)
+        if replaced:
+            await send_meta(conversation_id, replaces=replaced)
+        else:
+            await send_meta(conversation_id)
 
     await asyncio.to_thread(chat_access.ingest_from_text, bot_user_id, content)
     stored = await asyncio.to_thread(chat_access.redact_for_user, bot_user_id, content)
