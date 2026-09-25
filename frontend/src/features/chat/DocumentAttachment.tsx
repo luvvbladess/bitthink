@@ -15,6 +15,8 @@ export interface AttachmentInfo {
   canvas?: boolean;
   files?: AttachmentInfo[];
   note?: string;
+  /** Posted mid-reply (a document of a Pilot package); the reply itself is still running. */
+  interim?: boolean;
 }
 
 interface Props extends AttachmentInfo {

@@ -152,24 +152,35 @@ async def _generate_and_send(
     bind_status(safe_status)
     await push_status("think", "Думаю")
     started = time.time()
-    from turn_scope import turn_conversation
+    from turn_scope import delivery, pick_deliverables, turn_conversation
 
-    with turn_conversation(conversation_id):
+    async def post_now(text: str, files: list[dict]) -> None:
+        # A finished document of a Pilot package: its own message right away,
+        # so the user has it even if a later document fails.
+        metas = [
+            await _persist_generated_file(web_user_id, _generated_filename(item), item["bytes"])
+            for item in files
+        ]
+        # interim: the reply is still running; the chat must keep its "thinking" state.
+        attachment = {**metas[0], "interim": True}
+        if len(metas) > 1:
+            attachment["files"] = metas
+        await repo.add_message(web_user_id, "assistant", text, conv_id=conversation_id, attachment=attachment)
+
+    with turn_conversation(conversation_id), delivery(post_now):
         response_text, generated_files, reasoning_text, search_results = await get_smart_response(
             bot_user_id, prompt_content, api_messages, status_msg, on_reasoning_delta=None
         )
-    try:
-        from app.services.sandbox_client import collect_workspace_files
+        try:
+            from app.services.sandbox_client import collect_workspace_files
 
-        extra_files = await collect_workspace_files(bot_user_id, started)
-        # Pilot picks the final files at the end; drafts and duplicates stay in the sandbox.
-        from turn_scope import pick_deliverables
-
-        extra_files = pick_deliverables(extra_files)
-        if extra_files:
-            generated_files = list(generated_files or []) + extra_files
-    except Exception:
-        logger.exception("Failed to collect workspace deliverables")
+            extra_files = await collect_workspace_files(bot_user_id, started)
+            # Pilot picks the final files at the end; drafts and duplicates stay in the sandbox.
+            extra_files = pick_deliverables(extra_files)
+            if extra_files:
+                generated_files = list(generated_files or []) + extra_files
+        except Exception:
+            logger.exception("Failed to collect workspace deliverables")
 
     try:
         from app.services.code_archive import maybe_package_reply_archive, scrub_missing_archive_excuse

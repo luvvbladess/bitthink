@@ -76,6 +76,9 @@ _DOC_PACKAGE_RE = re.compile(
     r"|\b\d{1,3}\s+(?:документ|файл)\w*"
     r"|недостающ\w*\s+документ"
     r"|переработ\w*\s+(?:\w+\s+){0,2}документ"
+    r"|(?:дв[ае]|три|четыре|пять|шесть|семь|восемь|девять|десять|об[ае]|пар[уы]|нескольк\w*|остальн\w*)"
+    r"\s+(?:\w+\s+){0,2}(?:документ|файл|отч[её]т|docx)"
+    r"|(?:файл|документ)\w*\s+по\s+одному"
     r"|komplekt/)"
 )
 # Хватает на: скил, чтение исходников, 3-5 файлов, сборку и проверку.
@@ -100,14 +103,20 @@ def _wants_file(text: str) -> bool:
     return bool(_FILE_REQUEST_RE.search(text or ""))
 
 
-async def _new_file_names(user_id: int, since: float) -> List[str] | None:
+async def _new_files(user_id: int, since: float) -> List[Dict[str, Any]] | None:
     """Файлы, которые песочница отдаст в чат за этот ход. None – проверить не вышло."""
     try:
         from app.services.sandbox_client import collect_workspace_files
 
-        files = await collect_workspace_files(int(user_id), since)
+        return await collect_workspace_files(int(user_id), since)
     except Exception:
         logger.debug("Director: deliverables check failed", exc_info=True)
+        return None
+
+
+async def _new_file_names(user_id: int, since: float) -> List[str] | None:
+    files = await _new_files(user_id, since)
+    if files is None:
         return None
     return [str(item.get("filename") or item.get("name") or "") for item in files]
 
@@ -1047,6 +1056,146 @@ def _sanitize_answer(text: str) -> str:
     return sanitize_response_text(text)
 
 
+# Комплект делается строго по одному документу: параллельные сотрудники по
+# 3-5 документов каждый сдавали один-два файла и теряли остальные.
+MAX_PACKAGE_DOCUMENTS = 20
+
+
+async def _plan_package_documents(
+    user_text: str,
+    user_id: int,
+    history_text: str = "",
+    document_context: str = "",
+) -> List[Dict[str, str]]:
+    """Какие файлы сделать в этом ответе и в каком порядке. [] – это не заказ на несколько файлов."""
+    from openai_client import get_chat_response
+
+    prompt = (
+        f"{_current_date_note()}\n\n"
+        f"Запрос пользователя:\n{user_text}\n"
+        + (f"\nИстория диалога:\n{history_text}\n" if history_text else "")
+        + (f"\nДокументы пользователя:\n{document_context}\n" if document_context else "")
+        + "\nПользователь просит сделать несколько файлов (комплект, пакет, «три документа», «остальные документы»)? "
+        "Составь список файлов, которые нужно сделать В ЭТОМ ответе, в порядке работы. "
+        "Документы, уже сделанные раньше в этом чате, не включай, если их не просят переделать. "
+        "Если просят только предложения, реестр, план, проверку или ответ текстом, а не сами файлы, "
+        "или нужен всего один файл – верни пустой список.\n"
+        "Для каждого файла: title – название документа; filename – короткое имя с номером и расширением, "
+        "например 01_Отчет_2_6.docx (.docx, если формат не назван); brief – что в нём должно быть: "
+        "исходный файл из чата, если документ переделывается, разделы, данные, требования к оформлению из задания. "
+        "brief пиши так, чтобы исполнитель сделал документ целиком без переписки.\n"
+        'Верни СТРОГО JSON: {"documents": [{"title": "...", "filename": "...", "brief": "..."}]}'
+    )
+    try:
+        text, _, _, _ = await get_chat_response(
+            [
+                {"role": "system", "content": "Ты Computer - оркестратор. Отвечаешь только валидным JSON."},
+                {"role": "user", "content": prompt},
+            ],
+            model=_clamped_planner_model(user_id),
+            user_id=user_id,
+            use_tools=False,
+            reasoning_effort="low",
+            use_skills=False,
+        )
+        items = json.loads(_clean_json_response(text)).get("documents") or []
+    except Exception:
+        logger.warning("Director: package planning failed", exc_info=True)
+        return []
+    docs: List[Dict[str, str]] = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict) or not str(item.get("title") or "").strip():
+            continue
+        filename = re.split(r"[\\/]", str(item.get("filename") or "").strip())[-1]
+        docs.append({
+            "title": str(item["title"]).strip(),
+            "filename": filename or f"{len(docs) + 1:02d}.docx",
+            "brief": str(item.get("brief") or "").strip(),
+        })
+    return docs[:MAX_PACKAGE_DOCUMENTS]
+
+
+def _package_document_employee(doc: Dict[str, str], index: int, total: int, user_text: str) -> Dict[str, str]:
+    return {
+        "role": f"Документ {index}/{total}: {doc['title']}"[:120],
+        "task": (
+            "load_skill documents. Сделай ОДИН документ полностью – только его, остальные сделают после тебя. "
+            f"Документ: «{doc['title']}». Файл: komplekt/{doc['filename']}. "
+            f"Что в нём: {doc['brief']} "
+            f"Исходный запрос пользователя: «{(user_text or '')[:1500]}». "
+            "Если документ переделывается из файла чата – сначала read_chat_document по точному имени. "
+            "Напиши полный текст без заглушек и «[заполнить]», собери файл (.docx через bt_docx или формат из имени). "
+            "Потом проверь собранный файл: разделы, полнота и оформление по требованиям из запроса и документов; "
+            "не соответствует – исправь и пересобери. В конце workspace_glob: файл должен лежать. "
+            "Ответ – 1-3 предложения: что в документе и что проверено."
+        ),
+        "model": FALLBACK_EMPLOYEE_MODEL,
+    }
+
+
+async def _run_package_one_by_one(
+    docs: List[Dict[str, str]],
+    user_text: str,
+    user_id: int,
+    status_msg: Any,
+    document_context: str = "",
+    history_text: str = "",
+    has_images: bool = False,
+) -> "Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]":
+    """Документ за документом: сделал, проверил, выложил в чат – и только потом следующий."""
+    import time
+    from turn_scope import deliver_now
+
+    total = len(docs)
+    journal: List[Dict[str, Any]] = []
+    sent: set[str] = set()
+    done: List[str] = []
+    failed: List[str] = []
+    for index, doc in enumerate(docs, 1):
+        await _update_status(status_msg, f"Документ {index}/{total}: {doc['title']}")
+        employee = _clamp_employee_plan(
+            {"new_employees": [_package_document_employee(doc, index, total, user_text)]}, user_id
+        )["new_employees"][0]
+        since = time.time()
+        result: Dict[str, Any] = {}
+        files: List[Dict[str, Any]] = []
+        for attempt in range(2):
+            result = await _execute_employee(
+                employee, index, journal, user_id, document_context, history_text, has_images
+            )
+            files = [
+                item for item in (await _new_files(user_id, since) or [])
+                if str(item.get("filename") or "").casefold() not in sent
+            ]
+            if files:
+                break
+            employee = {**employee, "task": employee["task"] + " Прошлая попытка не оставила файла – собери его обязательно."}
+        # Следующему сотруднику – короткая справка, а не весь текст документа.
+        journal.append({**result, "result": _clamp_result(str(result.get("result") or ""))[:800]})
+        if not files:
+            failed.append(doc["title"])
+            continue
+        done.append(doc["title"])
+        names = [str(item.get("filename") or "") for item in files]
+        sent.update(name.casefold() for name in names)
+        note = _sanitize_answer(str(result.get("result") or "").strip())[:700]
+        text = f"Готов документ {index} из {total}: «{doc['title']}»." + (f"\n\n{note}" if note else "")
+        try:
+            await deliver_now(text, files)
+        except Exception:
+            # Не выложился сейчас – уйдёт вместе с итоговым ответом.
+            logger.exception("Director: failed to post package document %s", names)
+
+    lines = [f"Готово документов: {len(done)} из {total}."]
+    if failed:
+        lines.append("Не получились: " + "; ".join(f"«{title}»" for title in failed) + ". Напишите «доделай» – продолжу с них.")
+    reasoning = "\n\n".join(
+        f"### {entry['role']}\n{entry['reasoning']}" for entry in journal if entry.get("reasoning")
+    )
+    search = [s for entry in journal for s in entry.get("search", [])]
+    return "\n\n".join(lines), [], reasoning, search
+
+
 async def get_director_response(
     messages: List[Dict[str, Any]],
     user_text: str,
@@ -1089,6 +1238,14 @@ async def _run_director(
     journal: List[Dict[str, Any]] = []
     round_num = 0
     has_images = wants_photo_research(user_text, packed_has_images(messages) or _turn_has_images(user_id))
+
+    if _is_document_package_task(user_text):
+        await _update_status(status_msg, "Составляю список документов")
+        docs = await _plan_package_documents(user_text, user_id, history_text, document_context)
+        if len(docs) >= 2:
+            return await _run_package_one_by_one(
+                docs, user_text, user_id, status_msg, document_context, history_text, has_images
+            )
 
     while round_num < MAX_ROUNDS and len(journal) < MAX_EMPLOYEES:
         round_num += 1
