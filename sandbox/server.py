@@ -5,7 +5,6 @@ from __future__ import annotations
 import hmac
 import json
 import os
-import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import workspace_fs
@@ -21,21 +20,15 @@ def sandbox_token_ok(header: str | None, expected: str | None = None) -> bool:
 
 
 def bind_host() -> str:
-    """Listen on the container address, not 0.0.0.0, so 127.0.0.1 does not reach /v1/op."""
-    explicit = (os.environ.get("SANDBOX_HOST") or "").strip()
-    if explicit:
-        return explicit
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        sock.connect(("192.0.2.1", 1))
-        ip = sock.getsockname()[0]
-    except OSError:
-        ip = ""
-    finally:
-        sock.close()
-    if ip and not ip.startswith("127."):
-        return ip
-    return ip or "127.0.0.1"
+    """All interfaces. The container sits in two networks (sandbox_net with the backend,
+    sandbox_out for egress); picking the default-route address left the backend unable
+    to connect. Loopback callers are refused per request instead, see is_loopback."""
+    return (os.environ.get("SANDBOX_HOST") or "").strip() or "0.0.0.0"
+
+
+def is_loopback(address: str) -> bool:
+    """A script inside the sandbox reaching its own API over 127.0.0.1 / ::1."""
+    return address.startswith("127.") or address in {"::1", "::ffff:127.0.0.1"}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -59,6 +52,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if self.path.rstrip("/") != "/v1/op":
             self._send(404, {"error": "not found"})
+            return
+        if is_loopback(self.client_address[0]):
+            self._send(403, {"error": "forbidden"})
             return
         if not sandbox_token_ok(self.headers.get("X-Sandbox-Token")):
             self._send(401, {"error": "unauthorized"})
