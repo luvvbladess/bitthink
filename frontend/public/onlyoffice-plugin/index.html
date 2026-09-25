@@ -50,6 +50,9 @@
     (function (window) {
       var plugin = window.Asc.plugin;
       var selection = '';
+      // Фрагмент, для которого написан вариант: {start, end, text}. Вставка
+      // заменяет именно его, даже если потом кликнули в другое место документа.
+      var target = null;
       var $ = function (id) { return document.getElementById(id); };
 
       function session() {
@@ -62,7 +65,28 @@
       }
 
       function showSelection() {
-        $('selection').textContent = selection || 'Ничего не выделено: текст вставится в место курсора.';
+        $('selection').textContent = selection
+          || (target ? target.text : 'Ничего не выделено: текст вставится в место курсора.');
+      }
+
+      // Запоминает выделение как место замены. Без выделения прежнее место остаётся:
+      // кликнули в документ, пока правили вариант, – замена всё равно пойдёт туда.
+      function captureTarget(done) {
+        plugin.callCommand(function () {
+          var range = Api.GetDocument().GetRangeBySelect();
+          if (!range) return null;
+          var start = range.GetStartPos(), end = range.GetEndPos(), text = range.GetText();
+          // Тройной клик берёт и конец абзаца. Замена удалила бы его, и после
+          // «принять» пункт слипся бы со следующим.
+          if (/[\r\n]$/.test(text) && end > start) {
+            end -= 1;
+            text = Api.GetDocument().GetRange(start, end).GetText();
+          }
+          return text ? { start: start, end: end, text: text } : null;
+        }, false, false, function (found) {
+          if (found) target = found;
+          if (done) done();
+        });
       }
 
       function readSelection(done) {
@@ -80,11 +104,12 @@
         if (!instruction) { setStatus('Напишите, что сделать с фрагментом.', true); return; }
         $('generate').disabled = true; $('again').disabled = true;
         setStatus('Пишу вариант...');
-        readSelection(function () {
+        readSelection(function () { captureTarget(function () {
+          showSelection();
           fetch('/api/editor/' + encodeURIComponent(s.docId) + '/ai', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + s.aiToken },
-            body: JSON.stringify({ selection: selection, instruction: instruction })
+            body: JSON.stringify({ selection: selection || (target ? target.text : ''), instruction: instruction })
           }).then(function (res) {
             return res.json().catch(function () { return {}; }).then(function (data) {
               if (!res.ok) throw new Error(data.detail || 'Не получилось, попробуйте ещё раз');
@@ -99,30 +124,46 @@
           }).then(function () {
             $('generate').disabled = false; $('again').disabled = false;
           });
-        });
+        }); });
       }
 
       function insert() {
         var text = $('result').value;
         if (!text.trim()) return;
+        window.Asc.scope.target = target;
         // Рецензирование на время вставки: правка ИИ видна как изменение, которое можно отклонить.
         plugin.callCommand(function () {
           var doc = Api.GetDocument();
           var was = doc.IsTrackRevisions();
-          // Тройной клик берёт и конец абзаца. Замена удалила бы его, и после
-          // «принять» пункт слипся бы со следующим.
-          var range = doc.GetRangeBySelect();
-          if (range && /[\r\n]$/.test(range.GetText()) && range.GetEndPos() > range.GetStartPos()) {
-            doc.GetRange(range.GetStartPos(), range.GetEndPos() - 1).Select();
+          var t = Asc.scope.target;
+          var found = !t;
+          if (t) {
+            // Выделяем исходный фрагмент заново: вставка заменит его, а не встанет у курсора.
+            var range = doc.GetRange(t.start, t.end);
+            if (!range || range.GetText() !== t.text) {
+              // Выше что-то дописали, и фрагмент сдвинулся: ищем его по тексту.
+              var hits = doc.Search(t.text, true);
+              range = hits && hits.length ? hits[0] : null;
+            }
+            if (range) {
+              range.Select();
+              found = true;
+            }
           }
-          doc.SetTrackRevisions(true);
-          return was;
-        }, false, false, function (wasTracking) {
+          if (found) doc.SetTrackRevisions(true);
+          return { was: was, found: found };
+        }, false, false, function (res) {
+          if (!res || !res.found) {
+            setStatus('Исходный фрагмент изменился. Выделите его заново и нажмите «Ещё вариант».', true);
+            return;
+          }
           plugin.executeMethod('PasteText', [text], function () {
-            if (!wasTracking) {
+            if (!res.was) {
               plugin.callCommand(function () { Api.GetDocument().SetTrackRevisions(false); }, false, false);
             }
-            setStatus('Вставлено как правка.');
+            setStatus(target ? 'Старый текст заменён – правку можно принять или отклонить.' : 'Вставлено как правка.');
+            target = null;
+            showSelection();
             $('insert').disabled = true;
           });
         });
