@@ -199,3 +199,30 @@ def test_ai_edit_needs_document_token_and_room_access(editor, monkeypatch):
     file_link = editor.sign_link(doc_id, "file", user=881_022)
     assert client.post(f"/editor/{doc_id}/ai", json=payload, headers={"Authorization": f"Bearer {file_link}"}).status_code == 403
     manager.delete_conversation(881_021, conv.id)
+
+
+def test_library_lists_files_from_every_chat_including_shared(editor):
+    from app.auth import create_access_token
+    from app.core.repository import repo
+
+    settings = get_settings()
+    email = "library-guest@example.ru"
+    guest = repo._bot_id(email)
+    manager, room = _room_with_contract(settings, 881_051, guest)
+    from app.main import app  # after the uploads dir exists: the app mounts it
+    own = manager.create_conversation(guest, title="Мой чат")
+    manager.add_message(guest, "assistant", "Готово", conv_id=own.id, attachment={
+        "name": "Смета.xlsx", "status": "done", "type": "generated",
+        "url": "/uploads/generated/abcdef0123456789/x.xlsx"})
+
+    try:
+        listed = TestClient(app).get(
+            "/conversations/library", headers={"Authorization": f"Bearer {create_access_token({'sub': email})}"}
+        ).json()
+        where = {(item["name"], item["conversation_id"]): item for item in listed}
+        assert ("Договор.docx", room.id) in where  # the shared room counts too
+        sheet = where[("Смета.xlsx", own.id)]
+        assert sheet["conversation_title"] == "Мой чат" and sheet["download_url"]
+    finally:
+        manager.delete_conversation(881_051, room.id)
+        manager.delete_conversation(guest, own.id)

@@ -13,7 +13,7 @@ import {
   DialogActions,
   Button,
 } from '@mui/material';
-import { Plus, Trash, PencilSimple, Check, X, MagnifyingGlass, ClockCounterClockwise } from '@phosphor-icons/react';
+import { Plus, Trash, PencilSimple, Check, X, MagnifyingGlass, ClockCounterClockwise, FolderSimple } from '@phosphor-icons/react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { BrandLink } from '@/components/BrandMark';
 import { headerIconBtnSx } from '@/theme/effects';
@@ -35,6 +35,7 @@ interface Props {
   onDelete: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onClose?: () => void;
+  onLibrary?: () => void;
   generatingIds?: string[];
 }
 
@@ -48,7 +49,7 @@ const actionBtnSx = {
   '&:hover': { color: 'text.primary', bgcolor: 'var(--bt-overlay)' },
 } as const;
 
-export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDelete, onRename, onClose, generatingIds = [] }: Props) {
+export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDelete, onRename, onClose, onLibrary, generatingIds = [] }: Props) {
   const reduce = useReducedMotion();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
@@ -127,6 +128,26 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
         >
           Новый вопрос
         </Button>
+        {onLibrary && (
+          <Button
+            fullWidth
+            startIcon={<FolderSimple size={16} weight="bold" />}
+            onClick={onLibrary}
+            sx={{
+              justifyContent: 'flex-start',
+              color: 'text.primary',
+              borderRadius: '12px',
+              textTransform: 'none',
+              fontWeight: 600,
+              fontSize: '0.875rem',
+              px: 1.4,
+              py: 1,
+              '&:hover': { bgcolor: 'var(--bt-overlay)' },
+            }}
+          >
+            Библиотека
+          </Button>
+        )}
       </Box>
 
       {conversations.length > 5 && (
