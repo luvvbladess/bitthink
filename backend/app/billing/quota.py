@@ -135,7 +135,19 @@ def effective_tier(sub: dict[str, Any]) -> str:
     return tier
 
 
-def apply_token_debit(sub: dict[str, Any], pool: str, amount: int) -> dict[str, Any]:
+def _capped_add(current: int, add: int, limit: int) -> int:
+    current = int(current or 0)
+    add = max(0, int(add))
+    limit = int(limit or 0)
+    if limit and current >= limit:
+        return current
+    if limit and current + add > limit:
+        return limit
+    return current + add
+
+
+def apply_token_debit(sub: dict[str, Any], pool: str, amount: int, already: int = 0) -> dict[str, Any]:
+    """Add token usage. `already` is a 1-unit hold taken under the row lock at assert time."""
     refresh_windows(sub)
     tier = effective_tier(sub)
     plan = plan_for(tier)
@@ -147,18 +159,29 @@ def apply_token_debit(sub: dict[str, Any], pool: str, amount: int) -> dict[str, 
         sub["session_started_at"] = now_ts
         sub["session_chat_used"] = 0
         sub["session_computer_used"] = 0
+    delta = max(0, int(amount) - int(already or 0))
     if pool == "computer":
-        sub["computer_tokens_used"] = int(sub.get("computer_tokens_used") or 0) + amount
-        sub["session_computer_used"] = int(sub.get("session_computer_used") or 0) + amount
-        sub["week_computer_used"] = int(sub.get("week_computer_used") or 0) + amount
+        month_key, session_key, week_key = (
+            "computer_tokens_used",
+            "session_computer_used",
+            "week_computer_used",
+        )
+        month_limit = int(plan.get("computer_tokens") or 0)
+        session_limit = int(plan.get("computer_session") or 0)
+        week_limit = int(plan.get("computer_week") or 0)
+    else:
+        month_key, session_key, week_key = "chat_tokens_used", "session_chat_used", "week_chat_used"
+        month_limit = int(plan.get("chat_tokens") or 0)
+        session_limit = int(plan.get("chat_session") or 0)
+        week_limit = int(plan.get("chat_week") or 0)
+    used = int(sub.get(month_key) or 0)
+    if month_limit and used >= month_limit:
         return sub
-    limit = int(plan.get("chat_tokens") or 0)
-    used = int(sub.get("chat_tokens_used") or 0)
-    if limit and used >= limit:
-        return sub
-    sub["chat_tokens_used"] = used + amount
-    sub["session_chat_used"] = int(sub.get("session_chat_used") or 0) + amount
-    sub["week_chat_used"] = int(sub.get("week_chat_used") or 0) + amount
+    new_used = _capped_add(used, delta, month_limit)
+    added = new_used - used
+    sub[month_key] = new_used
+    sub[session_key] = _capped_add(int(sub.get(session_key) or 0), added, session_limit)
+    sub[week_key] = _capped_add(int(sub.get(week_key) or 0), added, week_limit)
     return sub
 
 
@@ -303,11 +326,11 @@ def _block_window(window: dict[str, Any], empty_message: str) -> None:
     raise QuotaError(empty_message, "quota")
 
 
-def assert_can_use(user_id: int, pool: PoolName = "chat", model: str = "gpt-6-luna") -> None:
-    sub = _manager().get_subscription(user_id)
+def raise_if_blocked(sub: dict[str, Any], pool: PoolName, model: str) -> bool:
+    """Raise QuotaError when the pool is closed. True means take a 1-unit paid hold."""
     view = usage_view(sub)
     if view["unlimited"]:
-        return
+        return False
     if view["tier"] == "free":
         if pool == "computer":
             raise QuotaError("Пилот недоступен на базовом тарифе. Нужен Pro.", "plan")
@@ -316,12 +339,12 @@ def assert_can_use(user_id: int, pool: PoolName = "chat", model: str = "gpt-6-lu
             cap = view["free_daily"]["searches_limit"]
             if cap and used >= cap:
                 raise QuotaError("На сегодня поиски закончились. Завтра снова 5, либо оформите Pro.", "quota")
-            return
+            return False
         used = view["free_daily"]["replies"]
         cap = view["free_daily"]["replies_limit"]
         if cap and used >= cap:
             raise QuotaError("На сегодня 30 ответов закончились. Завтра снова, либо оформите Pro.", "quota")
-        return
+        return False
 
     family = view["windows"]["computer" if pool == "computer" else "chat"]
     if pool == "computer":
@@ -330,18 +353,39 @@ def assert_can_use(user_id: int, pool: PoolName = "chat", model: str = "gpt-6-lu
         remaining = view["computer"]["remaining"]
         if remaining is not None and remaining <= 0:
             raise QuotaError("Токены Пилота на этот месяц закончились. Чат при этом продолжает работать.", "quota")
-        return
+        return True
 
     _block_window(family["session"], "Пятичасовое окно чата закончилось.")
     _block_window(family["week"], "Недельный лимит чата закончился.")
     remaining = view["chat"]["remaining"]
     if remaining is not None and remaining <= 0:
         if model == "gpt-5-nano" and view["nano_cushion"]["used"] < view["nano_cushion"]["limit"]:
-            return
+            return False
         raise QuotaError(
             "Токены чата на этот месяц закончились. Ещё доступны быстрые ответы Nano, либо тариф выше.",
             "quota",
         )
+    return True
+
+
+_paid_hold: ContextVar[tuple[int, str] | None] = ContextVar("paid_quota_hold", default=None)
+
+
+def assert_can_use(user_id: int, pool: PoolName = "chat", model: str = "gpt-6-luna") -> None:
+    existing = _paid_hold.get()
+    if existing and existing[0] == int(user_id) and existing[1] == pool:
+        return
+    if _manager().check_and_hold_quota(int(user_id), pool, model):
+        _paid_hold.set((int(user_id), pool))
+
+
+def release_paid_hold() -> None:
+    pending = _paid_hold.get()
+    _paid_hold.set(None)
+    if not pending:
+        return
+    user_id, pool = pending
+    _manager().release_paid_window(user_id, pool)
 
 
 def debit_model_usage(
@@ -353,17 +397,38 @@ def debit_model_usage(
     cache_write_tokens: int = 0,
 ) -> int:
     charged = our_tokens(model, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens)
-    if charged <= 0:
-        return 0
     pool = billing_pool.get()
     if pool not in {"chat", "computer"}:
         pool = "chat"
-    _manager().debit_plan_tokens(user_id, pool, charged, model=model)
+    hold = _paid_hold.get()
+    already = 0
+    if hold and hold[0] == int(user_id) and hold[1] == pool:
+        _paid_hold.set(None)
+        already = 1
+    if charged <= 0:
+        if already:
+            _manager().release_paid_window(int(user_id), pool)
+        return 0
+    _manager().debit_plan_tokens(user_id, pool, charged, model=model, already=already)
     return charged
 
 
 def debit_images(user_id: int, count: int = 1) -> None:
-    _manager().debit_plan_images(user_id, count)
+    """Image quota is consumed in assert_can_generate_image. Success paths still call this."""
+    return None
+
+
+def refund_images(user_id: int, count: int = 1) -> None:
+    _manager().refund_plan_images(int(user_id), int(count or 1))
+
+
+def images_remaining(user_id: int) -> int | None:
+    """Peek. None means unlimited. Does not debit."""
+    view = usage_view(_manager().get_subscription(int(user_id)))
+    if view["unlimited"]:
+        return None
+    remaining = view["images"]["remaining"]
+    return int(remaining or 0)
 
 
 _pending_charge: ContextVar[tuple[int, str] | None] = ContextVar("pending_quota_charge", default=None)
@@ -379,6 +444,7 @@ def clear_quota_charge() -> None:
 
 
 def refund_quota_charge() -> None:
+    release_paid_hold()
     pending = _pending_charge.get()
     _pending_charge.set(None)
     if not pending:
@@ -388,10 +454,5 @@ def refund_quota_charge() -> None:
 
 
 def assert_can_generate_image(user_id: int) -> None:
-    sub = _manager().get_subscription(user_id)
-    view = usage_view(sub)
-    if view["unlimited"]:
-        return
-    remaining = view["images"]["remaining"]
-    if remaining is not None and remaining <= 0:
+    if not _manager().try_consume_images(int(user_id), 1):
         raise QuotaError("Картинки на этот месяц закончились.", "quota")

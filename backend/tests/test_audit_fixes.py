@@ -465,5 +465,10 @@ def test_obscure_upload_paths_are_rejected():
         guessed = client.get(f"/uploads/chat/{user_key}/secret.txt")
         assert guessed.status_code == 404
         assert client.get("/uploads/chat/not-a-user/file.png").status_code == 404
+        source = settings.UPLOAD_DIR / "docgen_sources" / "1" / "abcdef.docx"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b"docx")
+        assert client.get("/uploads/docgen_sources/1/abcdef.docx").status_code == 404
+        source.unlink(missing_ok=True)
     finally:
         target.unlink(missing_ok=True)

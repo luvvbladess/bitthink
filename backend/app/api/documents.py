@@ -241,14 +241,23 @@ async def upload_document(
 async def delete_document(
     filename: str,
     conversation_id: Optional[str] = None,
+    message_id: Optional[int] = None,
     user_id: str = Depends(get_current_user),
 ):
-    # Имена собираются ДО удаления: у архива удаляются и все его файлы, а
-    # какие именно это были, потом уже не узнать. Оригиналы .docx лежат на
-    # диске отдельно от базы, и без этой уборки остаются там навсегда.
+    # Карточка удаляется только у автора и только по id сообщения. Файл и
+    # строки документа снимаются, когда этим именем больше никто не пользуется.
+    if message_id is None:
+        raise HTTPException(status_code=400, detail="Нужен идентификатор сообщения")
     from document_parser import drop_source_docx
 
     bot_user_id = await repo.ensure_user(user_id)
+    attachment = await repo.remove_attachment(
+        user_id, filename, conv_id=conversation_id, message_id=message_id,
+    )
+    if not attachment:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if await repo.attachment_filename_used(user_id, filename, conv_id=conversation_id):
+        return {"ok": True}
     doomed = [
         str(doc.get("filename") or "")
         for doc in (await repo.get_documents(user_id, conv_id=conversation_id) or [])
@@ -258,8 +267,7 @@ async def delete_document(
     ok = await repo.remove_document(user_id, filename, conv_id=conversation_id)
     if ok and doomed:
         await asyncio.to_thread(drop_source_docx, bot_user_id, doomed)
-    attachment = await repo.remove_attachment(user_id, filename, conv_id=conversation_id)
-    if attachment and attachment.get("url"):
+    if attachment.get("url"):
         upload_root = get_settings().UPLOAD_DIR.resolve()
         candidate = (upload_root / str(attachment["url"]).removeprefix("/uploads/")).resolve()
         try:
@@ -268,8 +276,6 @@ async def delete_document(
                 await asyncio.to_thread(candidate.unlink)
         except ValueError:
             pass
-    if not ok and not attachment:
-        raise HTTPException(status_code=404, detail="Document not found")
     return {"ok": True}
 
 

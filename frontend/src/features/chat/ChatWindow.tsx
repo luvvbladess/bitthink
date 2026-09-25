@@ -19,6 +19,7 @@ import { followUpChips, followUpMode } from './followUps';
 
 export interface DisplayMessage {
   id: string;
+  message_id?: number;
   role: 'user' | 'assistant';
   content: string;
   file?: { filename: string; data: string; url?: string; canvas?: boolean };
@@ -522,14 +523,14 @@ export function ChatWindow({
               content={msg.content}
               file={msg.file}
               attachment={msg.attachment}
-              onRemoveAttachment={msg.role === 'user' && msg.attachment ? () => onRemoveAttachment?.(msg.id) : undefined}
+              onRemoveAttachment={msg.role === 'user' && msg.attachment && (msg.mine || !people) ? () => onRemoveAttachment?.(msg.id) : undefined}
               reasoning={msg.reasoning}
               search={msg.search}
               isLastAssistant={!thinking && msg.role === 'assistant' && msg.id === lastAssistantId}
               sourcesActive={msg.id === activeSourceId}
               onOpenSources={() => onOpenSources?.(msg.id)}
               onRegenerate={onRegenerate}
-              onEdit={msg.role === 'user' && !isClarifyReply(msg.content) ? (text) => onEditMessage?.(msg.id, text) : undefined}
+              onEdit={msg.role === 'user' && !thinking && !isClarifyReply(msg.content) ? (text) => onEditMessage?.(msg.id, text) : undefined}
               onEditImage={onEditImage}
               onAcceptMode={(model) => selectModel.mutateAsync(model)}
               people={people}

@@ -143,6 +143,10 @@ def user_root(user_id: int) -> Path:
         raise ValueError("Нужен пользователь")
     root = (workspaces_root() / f"u{user_id}").resolve()
     root.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(root, 0o700)
+    except OSError:
+        pass
     return root
 
 
@@ -315,6 +319,116 @@ def delete(user_id: int, path: str) -> str:
     return f"Удалил {path}."
 
 
+# Landlock filesystem access bits (linux/landlock.h). ABI 5+ also has
+# IOCTL_DEV at bit 15; handled bits we don't know stay unrestricted.
+_LANDLOCK_FS_BITS = (
+    (1, (1 << 13) - 1),
+    (2, 1 << 13),
+    (3, 1 << 14),
+    (5, 1 << 15),
+)
+_LANDLOCK_READ = (1 << 0) | (1 << 2) | (1 << 3)
+_LANDLOCK_RW = (
+    _LANDLOCK_READ
+    | (1 << 1)
+    | (1 << 4)
+    | (1 << 5)
+    | (1 << 6)
+    | (1 << 7)
+    | (1 << 8)
+    | (1 << 9)
+    | (1 << 10)
+    | (1 << 11)
+    | (1 << 12)
+    | (1 << 13)
+    | (1 << 14)
+    | (1 << 15)
+)
+
+
+def _landlock_mask(abi: int) -> int:
+    mask = 0
+    for version, bits in _LANDLOCK_FS_BITS:
+        if abi >= version:
+            mask |= bits
+    return mask
+
+
+def _landlock_allow(libc, ruleset_fd, mask: int, path: str, access: int) -> None:
+    import ctypes
+
+    if not path or not os.path.exists(path):
+        return
+
+    class Beneath(ctypes.Structure):
+        _fields_ = [("allowed_access", ctypes.c_uint64), ("parent_fd", ctypes.c_int32)]
+
+    flags = os.O_PATH | getattr(os, "O_CLOEXEC", 0)
+    try:
+        parent = os.open(path, flags)
+    except OSError:
+        return
+    try:
+        rule = Beneath(int(access) & mask, parent)
+        rc = libc.syscall(445, ruleset_fd, 1, ctypes.byref(rule), 0)
+        if rc != 0:
+            err = ctypes.get_errno()
+            raise OSError(err, f"landlock add_rule {path}")
+    finally:
+        os.close(parent)
+
+
+def confine_user_filesystem(user_id: int) -> None:
+    """Deny the child every filesystem path except its workspace and the runtime.
+
+    Same uid owns every workspace, so directory mode alone does not isolate
+    users. Landlock is applied in the forked child before exec. stat() is not
+    covered by current kernels; open/read/write/create/unlink are.
+    """
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    abi = int(libc.syscall(444, None, 0, 1))
+    if abi < 1:
+        raise OSError(ctypes.get_errno() or 1, "landlock недоступен")
+    mask = _landlock_mask(abi)
+
+    class Ruleset(ctypes.Structure):
+        _fields_ = [("handled_access_fs", ctypes.c_uint64)]
+
+    attr = Ruleset(mask)
+    ruleset = int(libc.syscall(444, ctypes.byref(attr), ctypes.sizeof(attr), 0))
+    if ruleset < 0:
+        raise OSError(ctypes.get_errno() or 1, "landlock ruleset")
+    try:
+        root = user_root(user_id)
+        _landlock_allow(libc, ruleset, mask, str(root), _LANDLOCK_RW)
+        for path in ("/usr", "/lib", "/lib64", "/bin", "/etc", sys.prefix, sys.base_prefix):
+            _landlock_allow(libc, ruleset, mask, path, _LANDLOCK_READ)
+        executable = os.path.realpath(sys.executable)
+        prefix = os.path.dirname(executable)
+        # venv/bin/python -> allow the venv root, not only bin/
+        if os.path.basename(prefix) == "bin":
+            prefix = os.path.dirname(prefix)
+        _landlock_allow(libc, ruleset, mask, prefix, _LANDLOCK_READ)
+        _landlock_allow(libc, ruleset, mask, "/dev/urandom", 1 << 2)
+        _landlock_allow(libc, ruleset, mask, "/dev/null", (1 << 1) | (1 << 2))
+        _landlock_allow(libc, ruleset, mask, "/proc/self", _LANDLOCK_READ)
+        # Required before landlock_restrict_self on unprivileged processes.
+        if libc.prctl(38, 1, 0, 0, 0) != 0:
+            raise OSError(ctypes.get_errno() or 1, "no_new_privs")
+        if libc.syscall(446, ruleset, 0) != 0:
+            raise OSError(ctypes.get_errno() or 1, "landlock restrict")
+    finally:
+        os.close(ruleset)
+
+
+def _prepare_child(user_id: int, cpu_seconds: int, memory: bool) -> None:
+    _apply_limits(cpu_seconds, memory)
+    if os.environ.get("SANDBOX_MODE") == "1" or os.environ.get("WORKSPACE_LANDLOCK") == "1":
+        confine_user_filesystem(user_id)
+
+
 def _apply_limits(cpu_seconds: int, memory: bool = True) -> None:
     try:
         import resource
@@ -418,7 +532,7 @@ def _run_cmd(user_id: int, argv: list[str], timeout: int, limit_memory: bool = T
             capture_output=True,
             text=True,
             timeout=timeout,
-            preexec_fn=(lambda: _apply_limits(timeout, limit_memory)) if os.name == "posix" else None,
+            preexec_fn=(lambda: _prepare_child(user_id, timeout, limit_memory)) if os.name == "posix" else None,
         )
     except subprocess.TimeoutExpired:
         return f"Процесс превысил {timeout} с и был остановлен."
@@ -524,10 +638,9 @@ def _is_helper_source(rel: str) -> bool:
 def _auto_zip_sources(root: Path, cutoff: float) -> Optional[dict[str, Any]]:
     """Pack a real code project into one archive.
 
-    Only zip when there is a clear project layout: multiple source files
-    **and** a project marker (requirements.txt, package.json, etc.).
-    A lone script or a handful of helper .py files are working copies,
-    not the user-facing product.
+    Zip when there is a project marker (requirements.txt, package.json, …)
+    and at least one code file. bot.py plus requirements.txt is a project.
+    A lone script without a marker stays internal.
     """
     import zipfile
     from io import BytesIO
@@ -536,11 +649,12 @@ def _auto_zip_sources(root: Path, cutoff: float) -> Optional[dict[str, Any]]:
     if not sources:
         return None
     names = {Path(rel).name.lower() for _, rel, _, _ in sources}
-    # Must have a project marker AND at least 2 code files
+    # A project marker plus at least one code file (bot.py + requirements.txt
+    # is the usual one-script bot). A lone script without a marker stays internal.
     if not (names & _PROJECT_MARKERS):
         return None
     code_files = [s for s in sources if Path(s[1]).suffix.lower() in _CODE_SUFFIXES]
-    if len(code_files) < 2:
+    if len(code_files) < 1:
         return None
     buffer = BytesIO()
     packed = 0

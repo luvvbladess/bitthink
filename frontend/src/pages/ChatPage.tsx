@@ -176,7 +176,7 @@ export default function ChatPage() {
   // Id of the assistant message currently being replaced by a regenerate — hidden
   // from `base` below so the old answer doesn't flash alongside the new one while
   // the server hasn't confirmed the deletion/replacement yet.
-  const [regeneratingId, setRegeneratingId] = useState<string | null>(null);
+  const [regeneratingId, setRegeneratingId] = useState<number | null>(null);
   const token = useAuthStore((s) => s.accessToken);
   const queryClient = useQueryClient();
 
@@ -190,6 +190,7 @@ export default function ChatPage() {
   const sharedRoom = Boolean(activeConversation?.shared);
   const messagesQuery = useQuery<{
     id: string;
+    message_id?: number;
     role: string;
     content: string;
     attachment?: AttachmentInfo;
@@ -226,6 +227,7 @@ export default function ChatPage() {
 
   useLayoutEffect(() => {
     setDisplayMessages([]);
+    setRegeneratingId(null);
     setSourceMessageId(undefined);
     setSourcesSheetOpen(false);
   }, [activeConvId]);
@@ -234,9 +236,10 @@ export default function ChatPage() {
     if (!activeConvId || !messagesReady) return;
       const base = messages
         .filter((m) => m.role === 'user' || m.role === 'assistant')
-        .filter((m) => m.id !== regeneratingId)
+        .filter((m) => regeneratingId == null || m.message_id !== regeneratingId)
         .map((m) => ({
           id: m.id,
+          message_id: m.message_id,
           role: m.role as 'user' | 'assistant',
           content: m.content,
           attachment: m.attachment,
@@ -715,7 +718,7 @@ export default function ChatPage() {
     imageBaselineRef.current[activeConvId] = new Set(displayMessages.map((m) => m.id));
     const lastUser = [...displayMessages].reverse().find((m) => m.role === 'user');
     const lastAssistant = [...displayMessages].reverse().find((m) => m.role === 'assistant');
-    if (lastAssistant) setRegeneratingId(lastAssistant.id);
+    if (typeof lastAssistant?.message_id === 'number') setRegeneratingId(lastAssistant.message_id);
     patchJob(activeConvId, {
       thinking: true,
       userText: lastUser?.content || '',
@@ -729,7 +732,7 @@ export default function ChatPage() {
   };
 
   const handleEditMessage = async (messageId: string, newContent: string) => {
-    if (!activeConvId) return;
+    if (!activeConvId || thinking) return;
     const idx = displayMessages.findIndex((m) => m.id === messageId);
     if (idx === -1) return;
     try {
@@ -747,10 +750,14 @@ export default function ChatPage() {
 
   const handleRemoveAttachment = async (messageId: string) => {
     const msg = displayMessages.find((m) => m.id === messageId && m.attachment);
-    if (!msg?.attachment) return;
+    if (!msg?.attachment || typeof msg.message_id !== 'number') return;
     try {
-      const scope = activeConvId ? `?conversation_id=${encodeURIComponent(activeConvId)}` : '';
-      await apiFetch(`/documents/${encodeURIComponent(msg.attachment.name)}${scope}`, { method: 'DELETE' });
+      const params = new URLSearchParams();
+      if (activeConvId) params.set('conversation_id', activeConvId);
+      params.set('message_id', String(msg.message_id));
+      await apiFetch(`/documents/${encodeURIComponent(msg.attachment.name)}?${params}`, { method: 'DELETE' });
+      setDisplayMessages((current) => current.filter((item) => item.id !== messageId));
+      if (activeConvId) queryClient.invalidateQueries({ queryKey: ['messages', activeConvId] });
       queryClient.invalidateQueries({ queryKey: ['conversations'] });
     } catch (e: any) {
       setDisplayMessages((m) => [
@@ -928,6 +935,18 @@ export default function ChatPage() {
     setSourceMessageId(messageId);
     setSourcesSheetOpen(true);
   };
+
+  let lastAssistantIndex = -1;
+  for (let index = displayMessages.length - 1; index >= 0; index -= 1) {
+    if (displayMessages[index].role === 'assistant') {
+      lastAssistantIndex = index;
+      break;
+    }
+  }
+  const previousUser = lastAssistantIndex >= 0
+    ? [...displayMessages.slice(0, lastAssistantIndex)].reverse().find((message) => message.role === 'user')
+    : undefined;
+  const canRegenerateReply = !sharedRoom || activeConversation?.role === 'owner' || Boolean(previousUser?.mine);
 
   return (
     <Box
@@ -1201,7 +1220,7 @@ export default function ChatPage() {
           statusText={statusText}
           liveReasoning={pendingContent.convId === activeConvId ? pendingContent.reasoning : undefined}
           onRemoveAttachment={handleRemoveAttachment}
-          onRegenerate={handleRegenerate}
+          onRegenerate={canRegenerateReply ? handleRegenerate : undefined}
           onEditMessage={handleEditMessage}
           onEditImage={
             isDocgen

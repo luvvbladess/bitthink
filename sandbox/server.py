@@ -2,11 +2,40 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
+import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import workspace_fs
+
+
+def sandbox_token_ok(header: str | None, expected: str | None = None) -> bool:
+    """Shared secret between the backend and this API. Empty token fails closed."""
+    secret = expected if expected is not None else (os.environ.get("SANDBOX_TOKEN") or "")
+    provided = header or ""
+    if not secret or not provided:
+        return False
+    return hmac.compare_digest(provided, secret)
+
+
+def bind_host() -> str:
+    """Listen on the container address, not 0.0.0.0, so 127.0.0.1 does not reach /v1/op."""
+    explicit = (os.environ.get("SANDBOX_HOST") or "").strip()
+    if explicit:
+        return explicit
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("192.0.2.1", 1))
+        ip = sock.getsockname()[0]
+    except OSError:
+        ip = ""
+    finally:
+        sock.close()
+    if ip and not ip.startswith("127."):
+        return ip
+    return ip or "127.0.0.1"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -30,6 +59,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if self.path.rstrip("/") != "/v1/op":
             self._send(404, {"error": "not found"})
+            return
+        if not sandbox_token_ok(self.headers.get("X-Sandbox-Token")):
+            self._send(401, {"error": "unauthorized"})
             return
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0 or length > 9_000_000:
@@ -57,7 +89,7 @@ def main() -> None:
     os.environ.setdefault("WORKSPACES_DIR", "/workspaces")
     os.environ["SANDBOX_MODE"] = "1"
     os.environ["WORKSPACE_ALLOW_LOCAL_RUN"] = "1"
-    host = os.environ.get("SANDBOX_HOST", "0.0.0.0")
+    host = bind_host()
     port = int(os.environ.get("SANDBOX_PORT") or 8090)
     server = ThreadingHTTPServer((host, port), Handler)
     server.serve_forever()

@@ -312,6 +312,41 @@ async def transcribe_audio(audio_bytes: bytes, file_format: str = "ogg") -> str:
 
 
 
+def model_reply_is_billable(text: str, files: list) -> bool:
+    """Empty text with no files is not a reply the user should pay for."""
+    if files:
+        return True
+    return bool((text or "").strip())
+
+
+async def _settle_model_usage(
+    user_id: Optional[int],
+    use_model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cached_tokens: int,
+    cache_write_tokens: int,
+    text: str,
+    files: list,
+) -> None:
+    if not user_id:
+        return
+    if model_reply_is_billable(text, files):
+        await asyncio.to_thread(
+            conversation_manager.track_tokens,
+            user_id,
+            use_model,
+            input_tokens,
+            output_tokens,
+            cached_tokens,
+            cache_write_tokens,
+        )
+        return
+    from app.billing.quota import refund_quota_charge
+
+    refund_quota_charge()
+
+
 async def get_chat_response(
     messages: List[dict],
     model: str = None,
@@ -579,16 +614,16 @@ async def get_chat_response(
             if not function_calls:
                 cleaned_text = _strip_thought_tags(full_text)
                 logger.info(f"Done. Total text: {len(full_text)} chars, files: {len(generated_files)}")
-                if user_id:
-                    await asyncio.to_thread(
-                        conversation_manager.track_tokens,
-                        user_id,
-                        use_model,
-                        total_input_tokens,
-                        total_output_tokens,
-                        total_cached_tokens,
-                        total_cache_write_tokens,
-                    )
+                await _settle_model_usage(
+                    user_id,
+                    use_model,
+                    total_input_tokens,
+                    total_output_tokens,
+                    total_cached_tokens,
+                    total_cache_write_tokens,
+                    cleaned_text,
+                    generated_files,
+                )
                 return cleaned_text or "Нет ответа от модели", generated_files, "\n\n".join(reasoning_parts), search_results
 
             # Есть function calls → добавляем output текущего ответа в input и выполняем
@@ -675,17 +710,18 @@ async def get_chat_response(
 
         # Вышли из цикла — возвращаем накопленный текст
         logger.warning("Responses API: exhausted max loops")
-        if user_id:
-            await asyncio.to_thread(
-                conversation_manager.track_tokens,
-                user_id,
-                use_model,
-                total_input_tokens,
-                total_output_tokens,
-                total_cached_tokens,
-                total_cache_write_tokens,
-            )
-        return _strip_thought_tags(full_text) or "Нет ответа от модели", generated_files, "\n\n".join(reasoning_parts), search_results
+        cleaned_text = _strip_thought_tags(full_text)
+        await _settle_model_usage(
+            user_id,
+            use_model,
+            total_input_tokens,
+            total_output_tokens,
+            total_cached_tokens,
+            total_cache_write_tokens,
+            cleaned_text,
+            generated_files,
+        )
+        return cleaned_text or "Нет ответа от модели", generated_files, "\n\n".join(reasoning_parts), search_results
 
     except Exception as e:
         err = str(e)
@@ -703,7 +739,13 @@ async def get_chat_response(
                 reasoning_effort="high" if reasoning_effort in {None, "none", "max"} else reasoning_effort,
                 on_reasoning_delta=on_reasoning_delta,
                 force_web_search=force_web_search,
+                use_skills=use_skills,
+                chat_tools=chat_tools,
+                max_tool_loops=max_tool_loops,
             )
+        from app.billing.quota import refund_quota_charge
+
+        refund_quota_charge()
         return f"❌ Ошибка OpenAI: {str(e)}", [], "", []
 
 

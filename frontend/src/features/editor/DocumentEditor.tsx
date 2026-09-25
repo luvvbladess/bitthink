@@ -8,11 +8,17 @@ import { apiFetch } from '@/api/client';
 
 // Which chat file is open in the editor. The attachment card opens it,
 // ChatPage owns the dialog because it knows the conversation.
-export const useEditorStore = create<{ filename: string | null; open: (name: string) => void; close: () => void }>(
+export const useEditorStore = create<{
+  filename: string | null;
+  conversationId: string | null;
+  open: (name: string, conversationId?: string) => void;
+  close: () => void;
+}>(
   (set) => ({
     filename: null,
-    open: (filename) => set({ filename }),
-    close: () => set({ filename: null }),
+    conversationId: null,
+    open: (filename, conversationId) => set({ filename, conversationId: conversationId ?? null }),
+    close: () => set({ filename: null, conversationId: null }),
   }),
 );
 
@@ -73,13 +79,14 @@ function openAiPanel() {
 }
 
 export function DocumentEditorDialog({ conversationId }: { conversationId?: string }) {
-  const { filename, close: closeStore } = useEditorStore();
+  const { filename, conversationId: pinnedConversationId, close: closeStore } = useEditorStore();
+  const editorConversationId = pinnedConversationId ?? conversationId;
   const queryClient = useQueryClient();
   const [error, setError] = useState('');
   const close = () => {
     closeStore();
     // The document server sends the final save a few seconds after the last editor leaves.
-    const refresh = () => queryClient.invalidateQueries({ queryKey: ['conversation-files', conversationId] });
+    const refresh = () => queryClient.invalidateQueries({ queryKey: ['conversation-files', editorConversationId] });
     refresh();
     window.setTimeout(refresh, 20_000);
   };
@@ -101,7 +108,7 @@ export function DocumentEditorDialog({ conversationId }: { conversationId?: stri
   }, [filename]);
 
   useEffect(() => {
-    if (!filename || !conversationId) return;
+    if (!filename || !editorConversationId) return;
     let cancelled = false;
     setError('');
     setLoading(true);
@@ -109,7 +116,7 @@ export function DocumentEditorDialog({ conversationId }: { conversationId?: stri
       try {
         const opened = await apiFetch('/editor/open', {
           method: 'POST',
-          body: JSON.stringify({ conversation_id: conversationId, filename, origin: window.location.origin, mobile: isPhone }),
+          body: JSON.stringify({ conversation_id: editorConversationId, filename, origin: window.location.origin, mobile: isPhone }),
         });
         setSession({ docId: opened.doc_id, aiToken: opened.ai_token });
         sessionStorage.setItem(EDITOR_SESSION_KEY, JSON.stringify({ docId: opened.doc_id, aiToken: opened.ai_token }));
@@ -133,7 +140,7 @@ export function DocumentEditorDialog({ conversationId }: { conversationId?: stri
       editorRef.current?.destroyEditor();
       editorRef.current = null;
     };
-  }, [filename, conversationId, isPhone, reload]);
+  }, [filename, editorConversationId, isPhone, reload]);
 
   return (
     <Dialog fullScreen open={Boolean(filename)} onClose={close} aria-label="Редактор документа">

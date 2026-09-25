@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { clearPendingSends } from '@/hooks/wsQueue';
 
 interface User {
   id: string;
@@ -31,7 +32,10 @@ export const useAuthStore = create<AuthState>()(
       setTokens: (access, refresh) => set({ accessToken: access, refreshToken: refresh }),
       setUser: (user) => set({ user }),
       updateUser: (patch) => set((state) => ({ user: state.user ? { ...state.user, ...patch } : state.user })),
-      logout: () => set({ accessToken: null, refreshToken: null, user: null }),
+      logout: () => {
+        clearPendingSends();
+        set({ accessToken: null, refreshToken: null, user: null });
+      },
       isAdmin: () => get().user?.role === 'admin',
     }),
     { name: 'gpt-ultra-auth' }

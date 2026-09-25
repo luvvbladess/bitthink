@@ -93,6 +93,11 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def cache_avatars(request, call_next):
         path = request.url.path
+        # Originals for document styling live on disk for the parser only.
+        if path.startswith("/uploads/docgen_sources/"):
+            from fastapi.responses import Response
+
+            return Response(status_code=404)
         if path.startswith("/uploads/chat/") or path.startswith("/uploads/generated/"):
             if not _PRIVATE_UPLOAD.match(path):
                 from fastapi.responses import Response

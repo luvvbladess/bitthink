@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     # PUBLIC_URL – where the browser loads the editor (same site, see nginx.conf).
     # INTERNAL_URL – how the backend reaches the document server for saved files.
     # BACKEND_INTERNAL_URL – how the document server reaches the backend.
+    # Shared with the Computer sandbox HTTP API. Empty rejects every /v1/op call.
+    SANDBOX_TOKEN: str = ""
     ONLYOFFICE_JWT_SECRET: str = ""
     ONLYOFFICE_PUBLIC_URL: str = "/onlyoffice"
     ONLYOFFICE_INTERNAL_URL: str = "http://onlyoffice"

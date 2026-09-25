@@ -178,7 +178,7 @@ export function ConversationFilesDrawer({
                         // The editor works on the active chat's files: switch to the file's chat first.
                         await goToChat(file);
                         onClose();
-                        openEditor(file.name);
+                        openEditor(file.name, file.conversation_id);
                       }}
                       aria-label={`Открыть ${file.name} в редакторе`}
                     >

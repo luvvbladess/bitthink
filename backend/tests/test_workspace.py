@@ -538,3 +538,26 @@ def test_markdown_leftovers_are_scrubbed_from_delivered_docx():
     buffer = io.BytesIO()
     plain.save(buffer)
     assert scrub_markdown_marks(buffer.getvalue()) == buffer.getvalue()
+
+
+def test_landlock_hides_another_users_workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORKSPACES_DIR", str(tmp_path))
+    monkeypatch.setenv("WORKSPACE_ALLOW_LOCAL_RUN", "1")
+    monkeypatch.setenv("WORKSPACE_LANDLOCK", "1")
+    victim = 94071
+    attacker = 94072
+    dispatch(victim, "write", {"path": "secret.txt", "content": "LEAK"})
+    from app.services.workspace_fs import user_root
+
+    secret = user_root(victim) / "secret.txt"
+    script = (
+        "import pathlib, sys\n"
+        "try:\n"
+        "    print(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))\n"
+        "except OSError:\n"
+        "    print('BLOCKED')\n"
+    )
+    dispatch(attacker, "write", {"path": "peek.py", "content": script})
+    output = dispatch(attacker, "run", {"path": "peek.py", "argv": [str(secret)]})
+    assert "BLOCKED" in output
+    assert "LEAK" not in output
