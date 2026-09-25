@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { Box, Dialog, IconButton, Typography, CircularProgress, ToggleButton, ToggleButtonGroup, useMediaQuery, useTheme } from '@mui/material';
+import { Box, Button, Dialog, IconButton, Typography, CircularProgress, ToggleButton, ToggleButtonGroup, useMediaQuery, useTheme } from '@mui/material';
 import { PhoneEdit } from '@/features/editor/PhoneEdit';
-import { X } from '@phosphor-icons/react';
+import { Sparkle, X } from '@phosphor-icons/react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { create } from 'zustand';
 import { apiFetch } from '@/api/client';
@@ -60,6 +60,17 @@ function loadEditorScript(server: string): Promise<void> {
 }
 
 const HOST_ID = 'bt-onlyoffice-editor';
+
+// The OnlyOffice frame is same-origin (/onlyoffice/). A closed AI panel hides under the
+// «Плагины» tab, where nobody finds it: press that button for the user.
+function openAiPanel() {
+  const editorDoc = document.querySelector<HTMLIFrameElement>('iframe[name="frameEditor"]')?.contentDocument;
+  if (!editorDoc) return;
+  const isOpen = [...editorDoc.querySelectorAll('iframe')].some((frame) => frame.src.includes('onlyoffice-plugin'));
+  if (isOpen) return;
+  const caption = [...editorDoc.querySelectorAll('span.caption')].find((node) => node.textContent?.trim() === 'ИИ-правка');
+  caption?.closest('button')?.click();
+}
 
 export function DocumentEditorDialog({ conversationId }: { conversationId?: string }) {
   const { filename, close: closeStore } = useEditorStore();
@@ -158,6 +169,15 @@ export function DocumentEditorDialog({ conversationId }: { conversationId?: stri
             <ToggleButton value="view">Документ</ToggleButton>
             <ToggleButton value="edit">Править</ToggleButton>
           </ToggleButtonGroup>
+        )}
+        {!isPhone && session && (
+          <Button
+            onClick={openAiPanel}
+            startIcon={<Sparkle size={16} weight="bold" />}
+            sx={{ flexShrink: 0, textTransform: 'none', fontWeight: 600, minHeight: 36 }}
+          >
+            ИИ-правка
+          </Button>
         )}
         <IconButton onClick={close} aria-label="Закрыть редактор" sx={{ width: 44, height: 44, flexShrink: 0 }}>
           <X size={20} />
