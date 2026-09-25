@@ -43,7 +43,8 @@
     <button id="again" class="secondary" disabled>Ещё вариант</button>
   </div>
   <div id="status" class="status" role="status"></div>
-  <div class="hint">Вставка идёт в режиме рецензирования: видно, что было и что стало, правку можно принять или отклонить.</div>
+  <div class="row"><button id="scrub" class="secondary">Убрать ### и ** из документа</button></div>
+  <div class="hint">Вставка идёт в режиме рецензирования: видно, что было и что стало, правку можно принять или отклонить. Закрыли панель – верните её кнопкой «ИИ-правка» над документом.</div>
   </div>
 
   <script>
@@ -169,7 +170,21 @@
         });
       }
 
+      // Остатки markdown в тексте («### 2.1.4 …», «**»): модель тут не нужна, хватит замены.
+      // Одиночную «# » не трогаем – она бывает в обычном тексте («C# »).
+      function scrub() {
+        plugin.callCommand(function () {
+          var doc = Api.GetDocument();
+          ['###### ', '##### ', '#### ', '### ', '## ', '**'].forEach(function (mark) {
+            doc.SearchAndReplace({ searchString: mark, replaceString: '', matchCase: true });
+          });
+        }, false, true, function () {
+          setStatus('Разметка убрана. Если что-то не так – Ctrl+Z.');
+        });
+      }
+
       plugin.init = function (text) {
+        $('scrub').onclick = scrub;
         selection = text || '';
         showSelection();
         $('generate').onclick = generate;

@@ -629,15 +629,28 @@ async def ai_edit(doc_id: str, data: dict, request: Request):
         + (f"Комментарий к фрагменту:\n{comment}\n\n" if comment else "")
         + f"Просьба:\n{instruction or 'Исправь фрагмент по комментарию.'}"
     )
+    request = [{"role": "system", "content": EDIT_SYSTEM_PROMPT}, {"role": "user", "content": request_text}]
     answer, _, _, _ = await get_chat_response(
-        [{"role": "system", "content": EDIT_SYSTEM_PROMPT}, {"role": "user", "content": request_text}],
+        request,
         model=model,
         user_id=bot_id,
         use_tools=False,
         reasoning_effort="low",
         use_skills=False,
     )
-    if not answer or answer.startswith("❌"):
+    failed = lambda text: not text or text.startswith(("❌", "Нет ответа от модели"))  # noqa: E731
+    if failed(answer):
+        # OpenAI отказал (кончился баланс, сбой): та же правка через DeepSeek.
+        try:
+            from deepseek_client import get_deepseek_response
+
+            answer, _, _, _ = await get_deepseek_response(
+                request, model="deepseek-v4-pro", user_id=bot_id, use_tools=False, reasoning_enabled=False,
+            )
+        except Exception:
+            logger.warning("Editor: DeepSeek fallback failed", exc_info=True)
+            answer = ""
+    if failed(answer):
         if charged:
             await asyncio.to_thread(conversation_manager.refund_daily_counter, bot_id, "daily_gpt54")
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Модель не ответила, попробуйте ещё раз")
