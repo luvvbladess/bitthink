@@ -52,11 +52,20 @@ async def run_workspace_tool(name: str, args: dict[str, Any], user_id: int) -> s
     return dispatch(int(user_id), op, payload)
 
 
+def _sandbox_headers() -> dict[str, str]:
+    token = (os.environ.get("SANDBOX_TOKEN") or "").strip()
+    if not token:
+        return {}
+    return {"X-Sandbox-Token": token}
+
+
 async def _remote(base: str, payload: dict[str, Any]) -> str:
     timeout = aiohttp.ClientTimeout(total=200)
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(f"{base.rstrip('/')}/v1/op", json=payload) as resp:
+            async with session.post(
+                f"{base.rstrip('/')}/v1/op", json=payload, headers=_sandbox_headers(),
+            ) as resp:
                 raw = await resp.text()
                 if resp.status >= 400:
                     return f"Песочница ответила HTTP {resp.status}: {raw[:300]}"

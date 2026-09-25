@@ -193,6 +193,7 @@ class ConversationRepository:
                 "created_at": getattr(msg, "created_at", conv.created_at),
                 "author": author,
                 "mine": msg.role == "user" and author_id == bot_id,
+                "message_id": getattr(msg, "db_id", None),
             })
         return result
 
@@ -276,9 +277,27 @@ class ConversationRepository:
         bot_id = self._bot_id(web_user_id)
         return await asyncio.to_thread(self._remove_document_sync, bot_id, filename, conv_id)
 
-    async def remove_attachment(self, web_user_id: str, filename: str, conv_id: Optional[str] = None) -> Optional[dict]:
+    async def remove_attachment(
+        self,
+        web_user_id: str,
+        filename: str,
+        conv_id: Optional[str] = None,
+        message_id: Optional[int] = None,
+    ) -> Optional[dict]:
         bot_id = self._bot_id(web_user_id)
-        return await asyncio.to_thread(self._manager.remove_attachment, bot_id, filename, conv_id)
+        return await asyncio.to_thread(self._manager.remove_attachment, bot_id, filename, conv_id, message_id)
+
+    async def latest_message_id(self, web_user_id: str, conv_id: Optional[str] = None) -> Optional[int]:
+        bot_id = self._bot_id(web_user_id)
+        return await asyncio.to_thread(self._manager.latest_message_id, bot_id, conv_id)
+
+    async def delete_interim_after(self, web_user_id: str, conv_id: Optional[str], after_id: int) -> int:
+        bot_id = self._bot_id(web_user_id)
+        return await asyncio.to_thread(self._manager.delete_interim_after, bot_id, conv_id, after_id)
+
+    async def attachment_filename_used(self, web_user_id: str, filename: str, conv_id: Optional[str] = None) -> bool:
+        bot_id = self._bot_id(web_user_id)
+        return await asyncio.to_thread(self._manager.attachment_filename_used, bot_id, filename, conv_id)
 
     def _clear_documents_sync(self, bot_id: int, conv_id: Optional[str]) -> bool:
         if conv_id:

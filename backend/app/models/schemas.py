@@ -61,6 +61,7 @@ class MessageAuthor(BaseModel):
 
 class MessageOut(BaseModel):
     id: str
+    message_id: Optional[int] = None
     role: str
     content: str
     created_at: str

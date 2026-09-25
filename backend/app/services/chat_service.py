@@ -308,6 +308,7 @@ async def run_chat(
     await asyncio.to_thread(chat_access.ingest_from_text, bot_user_id, content)
     stored = await asyncio.to_thread(chat_access.redact_for_user, bot_user_id, content)
     await repo.add_message(web_user_id, "user", stored, conv_id=conversation_id)
+    turn_floor = await repo.latest_message_id(web_user_id, conversation_id)
     try:
         await repo.maybe_autotitle(web_user_id, conversation_id, stored)
     except Exception:
@@ -325,11 +326,15 @@ async def run_chat(
         from app.billing.quota import refund_quota_charge
 
         refund_quota_charge()
+        if turn_floor:
+            await repo.delete_interim_after(web_user_id, conversation_id, turn_floor)
         raise
     except Exception as exc:
         from app.billing.quota import QuotaError, refund_quota_charge
 
         refund_quota_charge()
+        if turn_floor:
+            await repo.delete_interim_after(web_user_id, conversation_id, turn_floor)
         if isinstance(exc, QuotaError):
             logger.info("Chat quota: %s", exc)
         else:
@@ -344,12 +349,15 @@ async def run_chat(
             if last_msg["role"] != "user" or not last_msg.get("mine"):
                 break
             att = last_msg.get("attachment")
-            if att:
-                name = att.get("name")
-                if name:
-                    if att.get("type") == "document":
+            name = (att or {}).get("name")
+            message_id = last_msg.get("message_id")
+            if att and name and message_id:
+                removed = await repo.remove_attachment(
+                    web_user_id, name, conv_id=conversation_id, message_id=message_id,
+                )
+                if removed and att.get("type") == "document":
+                    if not await repo.attachment_filename_used(web_user_id, name, conv_id=conversation_id):
                         await repo.remove_document(web_user_id, name, conv_id=conversation_id)
-                    await repo.remove_attachment(web_user_id, name, conv_id=conversation_id)
             else:
                 break
 
@@ -402,11 +410,15 @@ async def regenerate_chat(
         from app.billing.quota import refund_quota_charge
 
         refund_quota_charge()
+        if previous_id:
+            await repo.delete_interim_after(web_user_id, conversation_id, previous_id)
         raise
     except Exception as exc:
         from app.billing.quota import QuotaError, refund_quota_charge
 
         refund_quota_charge()
+        if previous_id:
+            await repo.delete_interim_after(web_user_id, conversation_id, previous_id)
         if isinstance(exc, QuotaError):
             logger.info("Chat regenerate quota: %s", exc)
         else:

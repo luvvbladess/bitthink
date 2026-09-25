@@ -25,6 +25,42 @@ _BLOCK_HOSTS = {
 }
 
 
+def _own_ips() -> set[str]:
+    """Addresses of this container. User code must not call the sandbox API on them."""
+    found: set[str] = set()
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.connect(("192.0.2.1", 1))
+            found.add(probe.getsockname()[0])
+        finally:
+            probe.close()
+    except OSError:
+        pass
+    try:
+        for item in socket.getaddrinfo(socket.gethostname(), None):
+            sockaddr = item[4] if len(item) > 4 else None
+            if isinstance(sockaddr, tuple) and sockaddr and isinstance(sockaddr[0], str):
+                found.add(sockaddr[0])
+    except OSError:
+        pass
+    return {ip for ip in found if ip and not ip.startswith("127.")}
+
+
+_OWN_IPS = _own_ips()
+
+
+def _blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        return _blocked_ip(mapped)
+    if str(ip) in _OWN_IPS:
+        return True
+    if ip.is_loopback or ip.is_unspecified or ip.is_link_local or ip.is_multicast:
+        return True
+    return any(ip in network for network in _BLOCK_NETWORKS)
+
+
 def _blocked_host(host: str) -> bool:
     name = (host or "").strip().lower().rstrip(".")
     if not name or name in _BLOCK_HOSTS:
@@ -35,9 +71,7 @@ def _blocked_host(host: str) -> bool:
         ip = ipaddress.ip_address(name)
     except ValueError:
         return False
-    if ip.is_loopback:
-        return False
-    return any(ip in network for network in _BLOCK_NETWORKS)
+    return _blocked_ip(ip)
 
 
 def _guard(sock, address, *args, **kwargs):

@@ -585,9 +585,11 @@ async def fill_ai_images(html: str, user_id: int | None) -> tuple[str, int, str]
         return html, 0, ""
     if user_id:
         try:
-            from app.billing.quota import assert_can_generate_image
+            from app.billing.quota import images_remaining
 
-            assert_can_generate_image(int(user_id))
+            left = images_remaining(int(user_id))
+            if left is not None and left <= 0:
+                raise RuntimeError("лимит генерации")
         except Exception as exc:
             logger.info("Studio canvas images skipped: %s", exc)
             return html, 0, "картинки пропущены: лимит генерации"
@@ -601,34 +603,47 @@ async def fill_ai_images(html: str, user_id: int | None) -> tuple[str, int, str]
 
     async def _one(prompt: str) -> tuple[str, str] | None:
         nonlocal quota_ok
-        if user_id:
-            async with quota_lock:
-                if not quota_ok:
-                    return None
+        claimed = False
+        try:
+            if user_id:
+                async with quota_lock:
+                    if not quota_ok:
+                        return None
+                    try:
+                        from app.billing.quota import assert_can_generate_image
+
+                        assert_can_generate_image(int(user_id))
+                        claimed = True
+                    except Exception:
+                        quota_ok = False
+                        return None
+            async with sem:
+                data_url, err = await generate_image(
+                    f"{prompt}. Photoreal or refined editorial still, no text letters logos watermarks, no purple neon.",
+                    size="1024x1024",
+                    quality="medium",
+                )
+            if not data_url or not data_url.startswith("data:image"):
+                logger.warning("Canvas image failed: %s", err)
+                if claimed:
+                    from app.billing.quota import refund_images
+
+                    refund_images(int(user_id), 1)
+                return None
+            if user_id:
                 try:
-                    from app.billing.quota import assert_can_generate_image
+                    from app.billing.quota import debit_images
 
-                    assert_can_generate_image(int(user_id))
+                    debit_images(int(user_id), 1)
                 except Exception:
-                    quota_ok = False
-                    return None
-        async with sem:
-            data_url, err = await generate_image(
-                f"{prompt}. Photoreal or refined editorial still, no text letters logos watermarks, no purple neon.",
-                size="1024x1024",
-                quality="medium",
-            )
-        if not data_url or not data_url.startswith("data:image"):
-            logger.warning("Canvas image failed: %s", err)
-            return None
-        if user_id:
-            try:
-                from app.billing.quota import debit_images
+                    logger.exception("Failed to debit canvas image")
+            return prompt, data_url
+        except Exception:
+            if claimed:
+                from app.billing.quota import refund_images
 
-                debit_images(int(user_id), 1)
-            except Exception:
-                logger.exception("Failed to debit canvas image")
-        return prompt, data_url
+                refund_images(int(user_id), 1)
+            raise
 
     results = await asyncio.gather(*[_one(prompt) for prompt in prompts], return_exceptions=True)
     for item in results:

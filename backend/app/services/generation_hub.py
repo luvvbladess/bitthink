@@ -51,13 +51,20 @@ class GenerationHub:
         self._sockets: dict[str, set[WebSocket]] = {}
         self._jobs: dict[tuple[str, str], LiveJob] = {}
         self._tasks: dict[tuple[str, str], asyncio.Task] = {}
+        self._busy: set[tuple[str, str]] = set()
         self._lock = asyncio.Lock()
 
     def snapshots(self, user_id: str) -> list[dict[str, Any]]:
         return [job.snapshot() for (uid, _), job in self._jobs.items() if uid == user_id]
 
     def running_count(self, user_id: str) -> int:
-        return sum(1 for (uid, _), task in self._tasks.items() if uid == user_id and not task.done())
+        ids = {
+            cid
+            for (uid, cid), task in self._tasks.items()
+            if uid == user_id and task and not task.done()
+        }
+        ids.update(cid for uid, cid in self._busy if uid == user_id)
+        return len(ids)
 
     def has_pending(self, user_id: str) -> bool:
         return any(
@@ -68,8 +75,18 @@ class GenerationHub:
     def is_running(self, user_id: str, conversation_id: Optional[str]) -> bool:
         if not conversation_id:
             return self.has_pending(user_id)
+        if (user_id, conversation_id) in self._busy:
+            return True
         task = self._tasks.get((user_id, conversation_id))
         return bool(task and not task.done())
+
+    def mark_busy(self, user_id: str, conversation_id: str) -> None:
+        if self.is_running(user_id, conversation_id):
+            raise RuntimeError("already running")
+        self._busy.add((user_id, conversation_id))
+
+    def clear_busy(self, user_id: str, conversation_id: str) -> None:
+        self._busy.discard((user_id, conversation_id))
 
     def get_job(self, user_id: str, conversation_id: str) -> Optional[LiveJob]:
         return self._jobs.get((user_id, conversation_id))

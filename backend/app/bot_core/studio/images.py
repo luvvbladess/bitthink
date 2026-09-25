@@ -94,14 +94,15 @@ async def resolve_studio_images(spec: dict[str, Any], user_id: int | None) -> di
     theme = get_theme(out.get("theme_id"), out.get("theme"))
     theme_hint = f"{theme.label}, accent {theme.accent}, background {theme.bg}"
 
-    # Quota gate: need at least one image remaining
+    # Peek only: the per-image call below is what consumes quota.
     if user_id:
         try:
-            from app.billing.quota import QuotaError, assert_can_generate_image
+            from app.billing.quota import images_remaining
 
-            assert_can_generate_image(int(user_id))
+            left = images_remaining(int(user_id))
+            if left is not None and left <= 0:
+                raise RuntimeError("Картинки на этот месяц закончились.")
         except Exception as exc:
-            # QuotaError or import – continue without images
             logger.info("Studio images skipped (quota/access): %s", exc)
             out["_images"] = {}
             out["_images_skipped"] = str(exc)[:200]
@@ -117,43 +118,56 @@ async def resolve_studio_images(spec: dict[str, Any], user_id: int | None) -> di
 
     async def _one(job_id: str, prompt: str) -> tuple[str, bytes] | None:
         nonlocal quota_ok
-        if user_id:
-            async with quota_lock:
-                if not quota_ok:
-                    return None
+        claimed = False
+        try:
+            if user_id:
+                async with quota_lock:
+                    if not quota_ok:
+                        return None
+                    try:
+                        from app.billing.quota import assert_can_generate_image
+
+                        assert_can_generate_image(int(user_id))
+                        claimed = True
+                    except Exception as exc:
+                        quota_ok = False
+                        logger.info("Studio stopped image batch: %s", exc)
+                        return None
+            async with sem:
+                full = _clean_prompt(prompt, theme_hint)
+                data_url, err = await generate_image(full, size="1536x1024", quality="high")
+            payload = _decode_data_url(data_url or "")
+            if not payload and data_url and data_url.startswith("http"):
                 try:
-                    from app.billing.quota import assert_can_generate_image
+                    import aiohttp
 
-                    assert_can_generate_image(int(user_id))
-                except Exception as exc:
-                    quota_ok = False
-                    logger.info("Studio stopped image batch: %s", exc)
-                    return None
-        async with sem:
-            full = _clean_prompt(prompt, theme_hint)
-            data_url, err = await generate_image(full, size="1536x1024", quality="high")
-        payload = _decode_data_url(data_url or "")
-        if not payload and data_url and data_url.startswith("http"):
-            try:
-                import aiohttp
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(data_url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                            if resp.status == 200:
+                                payload = await resp.read()
+                except Exception:
+                    payload = None
+            if not payload:
+                logger.warning("Studio image failed for %s: %s", job_id, err)
+                if claimed:
+                    from app.billing.quota import refund_images
 
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(data_url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
-                        if resp.status == 200:
-                            payload = await resp.read()
-            except Exception:
-                payload = None
-        if not payload:
-            logger.warning("Studio image failed for %s: %s", job_id, err)
-            return None
-        if user_id:
-            try:
-                from app.billing.quota import debit_images
+                    refund_images(int(user_id), 1)
+                return None
+            if user_id:
+                try:
+                    from app.billing.quota import debit_images
 
-                debit_images(int(user_id), 1)
-            except Exception:
-                logger.exception("Failed to debit studio image")
-        return job_id, payload
+                    debit_images(int(user_id), 1)
+                except Exception:
+                    logger.exception("Failed to debit studio image")
+            return job_id, payload
+        except Exception:
+            if claimed:
+                from app.billing.quota import refund_images
+
+                refund_images(int(user_id), 1)
+            raise
 
     results = await asyncio.gather(*[_one(job_id, prompt) for job_id, prompt in jobs], return_exceptions=True)
     for item in results:
