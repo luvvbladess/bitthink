@@ -43,6 +43,11 @@ def test_sandbox_token_fails_closed_and_matches():
         "assert not server.sandbox_token_ok('')\n"
         "os.environ['SANDBOX_TOKEN'] = ''\n"
         "assert not server.sandbox_token_ok('s3cret')\n"
+        # Two networks (backend + egress): listen on all, refuse loopback callers.
+        "os.environ.pop('SANDBOX_HOST', None)\n"
+        "assert server.bind_host() == '0.0.0.0'\n"
+        "assert server.is_loopback('127.0.0.1') and server.is_loopback('::1')\n"
+        "assert not server.is_loopback('172.19.0.3')\n"
         "print('ok')\n"
     )
     proc = subprocess.run(
