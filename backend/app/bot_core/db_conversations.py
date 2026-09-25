@@ -624,6 +624,7 @@ class MessageData:
     attachment: Optional[dict] = None
     search: Optional[List[Dict[str, str]]] = None
     author_user_id: Optional[int] = None
+    db_id: Optional[int] = None
 
     def to_dict(self) -> dict:
         data = {"role": self.role, "content": self.content, "timestamp": self.timestamp}
@@ -686,6 +687,7 @@ class ConversationData:
                     attachment=_attachment(m),
                     search=_search(m),
                     author_user_id=getattr(m, "author_user_id", None),
+                    db_id=int(m.id),
                 )
                 for m in sorted(conv.messages, key=lambda item: item.id)
             ],
@@ -698,6 +700,18 @@ class ConversationData:
             is_active=bool(conv.is_active),
             owner_id=int(conv.user_id),
         )
+
+
+def _attachment_is_interim(raw: Optional[str]) -> bool:
+    if not raw:
+        return False
+    import json
+
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return False
+    return bool(isinstance(data, dict) and data.get("interim"))
 
 
 class DatabaseConversationManager:
@@ -805,10 +819,7 @@ class DatabaseConversationManager:
             record = self._get_usage_record(session, user_id, date, model)
             record.images += count
             session.commit()
-        try:
-            self.debit_plan_images(user_id, count)
-        except Exception:
-            logger.exception("Failed to debit plan images for user %s", user_id)
+        # Plan images are reserved in assert_can_generate_image. This row is usage history only.
 
     def track_calls(self, user_id: int, model: str, count: int = 1) -> None:
         date = _msk_today()
@@ -1054,7 +1065,7 @@ class DatabaseConversationManager:
             query = query.with_for_update()
         return query.one()
 
-    def debit_plan_tokens(self, user_id: int, pool: str, amount: int, model: str = "") -> None:
+    def debit_plan_tokens(self, user_id: int, pool: str, amount: int, model: str = "", already: int = 0) -> None:
         if amount <= 0:
             return
         from app.billing.quota import apply_token_debit
@@ -1063,8 +1074,88 @@ class DatabaseConversationManager:
             with SyncSessionLocal() as session:
                 sub = self._lock_subscription(session, user_id)
                 data = _subscription_payload(sub)
-                apply_token_debit(data, pool, amount)
+                apply_token_debit(data, pool, amount, already=already)
                 _apply_subscription_payload(sub, data)
+                session.commit()
+
+    def check_and_hold_quota(self, user_id: int, pool: str, model: str) -> bool:
+        """Under the row lock: block if the window is closed, otherwise reserve 1 token."""
+        from app.billing.quota import raise_if_blocked
+
+        with self._quota_lock:
+            with SyncSessionLocal() as session:
+                sub = self._lock_subscription(session, user_id)
+                data = _subscription_payload(sub)
+                hold = raise_if_blocked(data, pool, model)
+                if hold:
+                    now_ts = int(datetime.now(timezone.utc).timestamp())
+                    if not int(data.get("session_started_at") or 0):
+                        data["session_started_at"] = now_ts
+                    if pool == "computer":
+                        data["computer_tokens_used"] = int(data.get("computer_tokens_used") or 0) + 1
+                        data["session_computer_used"] = int(data.get("session_computer_used") or 0) + 1
+                        data["week_computer_used"] = int(data.get("week_computer_used") or 0) + 1
+                    else:
+                        data["chat_tokens_used"] = int(data.get("chat_tokens_used") or 0) + 1
+                        data["session_chat_used"] = int(data.get("session_chat_used") or 0) + 1
+                        data["week_chat_used"] = int(data.get("week_chat_used") or 0) + 1
+                _apply_subscription_payload(sub, data)
+                session.commit()
+                return bool(hold)
+
+    def release_paid_window(self, user_id: int, pool: str) -> None:
+        """Give back the 1-unit hold. Does not reset the session window."""
+        with self._quota_lock:
+            with SyncSessionLocal() as session:
+                sub = self._lock_subscription(session, user_id)
+                if pool == "computer":
+                    fields = ("computer_tokens_used", "session_computer_used", "week_computer_used")
+                else:
+                    fields = ("chat_tokens_used", "session_chat_used", "week_chat_used")
+                for name in fields:
+                    current = int(getattr(sub, name) or 0)
+                    setattr(sub, name, max(0, current - 1))
+                session.commit()
+
+    def try_consume_images(self, user_id: int, count: int = 1) -> bool:
+        """Atomically reserve image quota. Unlimited plans succeed without incrementing."""
+        if count <= 0:
+            return True
+        from app.billing.plans import plan_for
+        from app.billing.quota import effective_tier
+
+        with self._quota_lock:
+            with SyncSessionLocal() as session:
+                sub = self._lock_subscription(session, user_id)
+                self._reset_daily_if_needed(sub)
+                tier = effective_tier(_subscription_payload(sub))
+                plan = plan_for(tier)
+                if plan.get("unlimited"):
+                    session.commit()
+                    return True
+                limit = int(plan.get("images") or 0)
+                used = int(sub.images_used or 0)
+                if limit and used + count > limit:
+                    session.commit()
+                    return False
+                sub.images_used = used + count
+                session.commit()
+                return True
+
+    def refund_plan_images(self, user_id: int, count: int = 1) -> None:
+        if count <= 0:
+            return
+        from app.billing.plans import plan_for
+        from app.billing.quota import effective_tier
+
+        with self._quota_lock:
+            with SyncSessionLocal() as session:
+                sub = self._lock_subscription(session, user_id)
+                tier = effective_tier(_subscription_payload(sub))
+                if plan_for(tier).get("unlimited"):
+                    session.commit()
+                    return
+                sub.images_used = max(0, int(sub.images_used or 0) - int(count))
                 session.commit()
 
     def debit_plan_images(self, user_id: int, count: int = 1) -> None:
@@ -1081,7 +1172,12 @@ class DatabaseConversationManager:
                 if plan_for(tier).get("unlimited"):
                     session.commit()
                     return
-                sub.images_used = (sub.images_used or 0) + count
+                limit = int(plan_for(tier).get("images") or 0)
+                used = int(sub.images_used or 0)
+                if limit and used + count > limit:
+                    sub.images_used = limit
+                else:
+                    sub.images_used = used + count
                 session.commit()
 
     _DAILY_COUNTERS = frozenset({
@@ -1959,6 +2055,30 @@ class DatabaseConversationManager:
             if supersede_message_id:
                 previous = session.get(Message, int(supersede_message_id))
                 if previous is not None and previous.conversation_id == conv.id and previous.id != msg.id:
+                    prior_user = (
+                        session.query(Message)
+                        .filter(
+                            Message.conversation_id == conv.id,
+                            Message.role == "user",
+                            Message.id < previous.id,
+                        )
+                        .order_by(Message.id.desc())
+                        .first()
+                    )
+                    floor = prior_user.id if prior_user else 0
+                    stale = (
+                        session.query(Message)
+                        .filter(
+                            Message.conversation_id == conv.id,
+                            Message.role == "assistant",
+                            Message.id > floor,
+                            Message.id < previous.id,
+                        )
+                        .all()
+                    )
+                    for row in stale:
+                        if _attachment_is_interim(row.attachment):
+                            session.delete(row)
                     session.delete(previous)
             conv.updated_at = datetime.now(timezone.utc)
             session.commit()
@@ -1974,6 +2094,7 @@ class DatabaseConversationManager:
                 timestamp=msg.created_at.isoformat(),
                 attachment=attachment,
                 search=search,
+                db_id=int(msg.id),
             )
 
     def redact_recent_messages(self, user_id: int, secret_values: list[str], limit: int = 8, conv_id: Optional[str] = None) -> None:
@@ -2233,26 +2354,107 @@ class DatabaseConversationManager:
             session.commit()
             return True
 
-    def remove_attachment(self, user_id: int, filename: str, conv_id: Optional[str] = None) -> Optional[dict]:
-        """Remove an attachment card and return its metadata for file cleanup."""
-        import json
+    def latest_message_id(self, user_id: int, conv_id: Optional[str] = None) -> Optional[int]:
         conv_id = self._scoped_conv_id(conv_id)
         with SyncSessionLocal() as session:
             conv = self._open_conv(session, user_id, conv_id)
             if not conv:
                 return None
-            for message in session.query(Message).filter_by(conversation_id=conv.id).order_by(Message.id.desc()).all():
+            last = (
+                session.query(Message)
+                .filter_by(conversation_id=conv.id)
+                .order_by(Message.id.desc())
+                .first()
+            )
+            return int(last.id) if last is not None else None
+
+    def delete_interim_after(self, user_id: int, conv_id: Optional[str], after_id: int) -> int:
+        """Drop Pilot interim cards created after this turn's watermark."""
+        conv_id = self._scoped_conv_id(conv_id)
+        with SyncSessionLocal() as session:
+            conv = self._open_conv(session, user_id, conv_id)
+            if not conv:
+                return 0
+            rows = (
+                session.query(Message)
+                .filter(
+                    Message.conversation_id == conv.id,
+                    Message.role == "assistant",
+                    Message.id > int(after_id),
+                )
+                .all()
+            )
+            removed = 0
+            for row in rows:
+                if _attachment_is_interim(row.attachment):
+                    session.delete(row)
+                    removed += 1
+            if removed:
+                session.commit()
+            return removed
+
+    def attachment_filename_used(self, user_id: int, filename: str, conv_id: Optional[str] = None) -> bool:
+        import json
+
+        conv_id = self._scoped_conv_id(conv_id)
+        with SyncSessionLocal() as session:
+            conv = self._open_conv(session, user_id, conv_id)
+            if not conv:
+                return False
+            for message in session.query(Message).filter_by(conversation_id=conv.id).all():
                 if not message.attachment:
                     continue
                 try:
                     attachment = json.loads(message.attachment)
                 except Exception:
                     continue
-                if attachment.get("name") == filename:
-                    session.delete(message)
-                    session.commit()
-                    return attachment
+                if not isinstance(attachment, dict):
+                    continue
+                names = [attachment.get("name")]
+                for extra in attachment.get("files") or []:
+                    if isinstance(extra, dict):
+                        names.append(extra.get("name"))
+                if filename in names:
+                    return True
+            return False
+
+    def remove_attachment(
+        self,
+        user_id: int,
+        filename: str,
+        conv_id: Optional[str] = None,
+        message_id: Optional[int] = None,
+    ) -> Optional[dict]:
+        """Remove this user's own attachment card. Filename alone is not enough."""
+        import json
+
+        if not message_id:
             return None
+        conv_id = self._scoped_conv_id(conv_id)
+        with SyncSessionLocal() as session:
+            conv = self._open_conv(session, user_id, conv_id)
+            if not conv:
+                return None
+            message = session.get(Message, int(message_id))
+            if message is None or message.conversation_id != conv.id or message.role != "user":
+                return None
+            author = message.author_user_id
+            if author is None:
+                if conv.user_id != user_id:
+                    return None
+            elif author != user_id:
+                return None
+            if not message.attachment:
+                return None
+            try:
+                attachment = json.loads(message.attachment)
+            except Exception:
+                return None
+            if not isinstance(attachment, dict) or attachment.get("name") != filename:
+                return None
+            session.delete(message)
+            session.commit()
+            return attachment
 
     def clear_documents(self, user_id: int, conv_id: Optional[str] = None) -> bool:
         with SyncSessionLocal() as session:

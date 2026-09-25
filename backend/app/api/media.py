@@ -83,9 +83,20 @@ def _normalize_image_bytes(contents: bytes, filename: str = "image.png") -> byte
         raise ValueError("Файл не похож на поддерживаемое изображение") from exc
 
 
+def _owns_upload(user_id: str, source_url: str) -> bool:
+    user_key = hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:16]
+    path = source_url.split("?", 1)[0].strip("/")
+    parts = path.split("/")
+    if len(parts) < 4 or parts[0] != "uploads" or parts[1] not in {"chat", "generated"}:
+        return False
+    return parts[2] == user_key
+
+
 async def _load_source_bytes(user_id: str, source_url: str) -> bytes:
     if not source_url.startswith("/uploads/"):
         raise HTTPException(status_code=400, detail="Можно править только изображения из этого чата")
+    if not _owns_upload(user_id, source_url):
+        raise HTTPException(status_code=403, detail="Можно править только свои изображения")
     try:
         path = _resolve_upload_path(source_url)
     except (FileNotFoundError, ValueError):
@@ -135,8 +146,24 @@ async def _begin_image_job(user_id: str, conversation_id: Optional[str], prompt:
         return False
     from app.services.generation_hub import hub
 
-    await repo.add_message(user_id, "user", prompt, conv_id=conversation_id)
-    await repo.maybe_autotitle(user_id, conversation_id, prompt)
+    if hub.is_running(user_id, conversation_id):
+        raise HTTPException(
+            status_code=409,
+            detail="В этом чате уже идёт ответ. Дождитесь его или остановите.",
+        )
+    try:
+        hub.mark_busy(user_id, conversation_id)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="В этом чате уже идёт ответ. Дождитесь его или остановите.",
+        ) from exc
+    try:
+        await repo.add_message(user_id, "user", prompt, conv_id=conversation_id)
+        await repo.maybe_autotitle(user_id, conversation_id, prompt)
+    except Exception:
+        hub.clear_busy(user_id, conversation_id)
+        raise
     hub.upsert_job(
         user_id,
         conversation_id,
@@ -159,6 +186,7 @@ async def _end_image_job(user_id: str, conversation_id: Optional[str]) -> None:
         return
     from app.services.generation_hub import hub
 
+    hub.clear_busy(user_id, conversation_id)
     hub.finish_job(user_id, conversation_id)
 
 
@@ -195,11 +223,12 @@ async def generate_image(data: dict, user_id: str = Depends(get_current_user)):
     if not prompt:
         raise HTTPException(status_code=400, detail="Опишите изображение")
 
-    await _gate_image(user_id)
+    bot_id = await _gate_image(user_id)
 
     from openai_client import edit_image, generate_image as openai_generate
 
     saved_user = False
+    tracked = False
     try:
         sources: list[bytes] = []
         if source_urls:
@@ -223,12 +252,17 @@ async def generate_image(data: dict, user_id: str = Depends(get_current_user)):
             user_id, url_or_data, prompt, conversation_id, kind, persist_user=not saved_user,
         )
         await repo.track_image(user_id, IMAGE_MODEL, 1)
+        tracked = True
         return {"url": stored_url, "revised_prompt": revised, "message": assistant, "kind": kind}
     except HTTPException as exc:
         if saved_user and conversation_id:
             await repo.add_message(user_id, "assistant", _friendly_image_error(exc.detail), conv_id=conversation_id)
         raise
     finally:
+        if not tracked:
+            from app.billing.quota import refund_images
+
+            await asyncio.to_thread(refund_images, bot_id, 1)
         await _end_image_job(user_id, conversation_id)
 
 
@@ -248,9 +282,10 @@ async def edit_image_endpoint(
     if not text:
         raise HTTPException(status_code=400, detail="Опишите, что изменить")
 
-    await _gate_image(user_id)
+    bot_id = await _gate_image(user_id)
 
     saved_user = False
+    tracked = False
     try:
         uploads = [item for item in ([file] if file else []) + list(files or []) if item is not None]
         sources: list[bytes] = []
@@ -274,12 +309,17 @@ async def edit_image_endpoint(
             user_id, url_or_data, text, conversation_id, "edit", persist_user=not saved_user,
         )
         await repo.track_image(user_id, IMAGE_MODEL, 1)
+        tracked = True
         return {"url": stored_url, "revised_prompt": revised, "message": assistant, "kind": "edit"}
     except HTTPException as exc:
         if saved_user and conversation_id:
             await repo.add_message(user_id, "assistant", _friendly_image_error(exc.detail), conv_id=conversation_id)
         raise
     finally:
+        if not tracked:
+            from app.billing.quota import refund_images
+
+            await asyncio.to_thread(refund_images, bot_id, 1)
         await _end_image_job(user_id, conversation_id)
 
 

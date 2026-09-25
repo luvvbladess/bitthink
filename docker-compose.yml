@@ -26,6 +26,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://gpt_user:gpt_pass@db:5432/gpt_ultra
       - SANDBOX_URL=http://sandbox:8090
+      - SANDBOX_TOKEN=${SANDBOX_TOKEN:-}
       - WORKSPACES_DIR=/workspaces
     # DEBUG and SECRET_KEY come from the mounted .env file only.
     # Set both explicitly in .env before deploying.
@@ -84,6 +85,8 @@ services:
     build:
       context: .
       dockerfile: sandbox/Dockerfile
+    environment:
+      - SANDBOX_TOKEN=${SANDBOX_TOKEN:-}
     volumes:
       - ./workspaces:/workspaces
       - ./backend/app/services/workspace_fs.py:/opt/sandbox/workspace_fs.py:ro
@@ -105,7 +108,7 @@ services:
       - ALL
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health')"]
+      test: ["CMD", "python", "-S", "/opt/sandbox/healthcheck.py"]
       interval: 10s
       timeout: 3s
       retries: 8

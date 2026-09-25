@@ -1,13 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { clearPendingSends, drainSends, enqueueSend } from '@/hooks/wsQueue';
 
 export type WSStatus = 'idle' | 'connecting' | 'open' | 'closed' | 'error';
 
 interface WSMessage {
-  type: string;
-  payload: Record<string, any>;
-}
-
-interface QueuedMessage {
   type: string;
   payload: Record<string, any>;
 }
@@ -22,9 +18,10 @@ export function useWebSocket(url: string, token: string | null) {
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
   const disconnectNoticeRef = useRef<ReturnType<typeof setTimeout>>();
   const heartbeatRef = useRef<ReturnType<typeof setInterval>>();
-  // Survives React remounts / reconnects so a message queued during a long
-  // file upload is not wiped when the effect cleans up.
-  const pendingSendsRef = useRef<QueuedMessage[]>([]);
+  // The queue lives in wsQueue so logout can drop it. A remount while the
+  // token is still set must not wipe a message queued during a file upload.
+  const tokenRef = useRef(token);
+  tokenRef.current = token;
   const readyRef = useRef(false);
   const manualCloseRef = useRef(false);
   const [status, setStatus] = useState<WSStatus>('idle');
@@ -32,7 +29,7 @@ export function useWebSocket(url: string, token: string | null) {
 
   const flushPending = useCallback((ws: WebSocket) => {
     if (ws.readyState !== WebSocket.OPEN || !readyRef.current) return;
-    for (const queued of pendingSendsRef.current.splice(0)) {
+    for (const queued of drainSends()) {
       ws.send(JSON.stringify(queued));
     }
   }, []);
@@ -109,8 +106,7 @@ export function useWebSocket(url: string, token: string | null) {
       readyRef.current = false;
       wsRef.current?.close();
       wsRef.current = null;
-      // Keep pendingSendsRef so a remount / Strict Mode cycle does not drop
-      // a message that was queued while files were still uploading.
+      if (!tokenRef.current) clearPendingSends();
     };
   // `status` deliberately stays out of dependencies: reconnect callbacks manage
   // it, while recreating the effect on every status change would itself flap WS.
@@ -122,7 +118,7 @@ export function useWebSocket(url: string, token: string | null) {
       wsRef.current.send(JSON.stringify({ type, payload }));
       return true;
     }
-    pendingSendsRef.current.push({ type, payload });
+    enqueueSend({ type, payload });
     return false;
   }, []);
 

@@ -573,10 +573,12 @@ async def get_image_response(
     from handlers.core import sanitize_response_text
 
     await _update_status(status_msg, "Меняю изображение" if sources else "Рисую изображение")
+    image_claimed = False
     try:
         from app.billing.quota import assert_can_generate_image
 
         assert_can_generate_image(int(user_id))
+        image_claimed = True
     except Exception as exc:
         from app.billing.quota import QuotaError
 
@@ -591,6 +593,10 @@ async def get_image_response(
     else:
         data_url, err = await generate_image(user_text, size="1024x1024", quality="high")
     if not data_url:
+        if image_claimed:
+            from app.billing.quota import refund_images
+
+            refund_images(int(user_id), 1)
         return sanitize_response_text(err or "Не удалось нарисовать картинку. Попробуйте описать иначе."), [], "", []
     try:
         from app.api.media import _decode_image_payload, _download_image
@@ -601,6 +607,10 @@ async def get_image_response(
             image_bytes, suffix = await _download_image(data_url)
     except Exception:
         logger.exception("Chat image: cannot read the result")
+        if image_claimed:
+            from app.billing.quota import refund_images
+
+            refund_images(int(user_id), 1)
         return sanitize_response_text("Картинка не сохранилась. Попробуйте ещё раз."), [], "", []
     try:
         from app.billing.quota import debit_images
@@ -741,6 +751,10 @@ async def _run_image_studio(
     if not data_url or not (
         data_url.startswith("data:image/") or data_url.startswith("https://") or data_url.startswith("/")
     ):
+        if debit_images:
+            from app.billing.quota import refund_images
+
+            refund_images(int(user_id), 1)
         return sanitize_response_text(err or "Не удалось нарисовать картинку. Попробуйте другое описание."), [], "", []
 
     if debit_images:
