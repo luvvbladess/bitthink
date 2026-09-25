@@ -1125,6 +1125,8 @@ def _package_document_employee(doc: Dict[str, str], index: int, total: int, user
             f"Исходный запрос пользователя: «{(user_text or '')[:1500]}». "
             "Если документ переделывается из файла чата – сначала read_chat_document по точному имени. "
             "Напиши полный текст без заглушек и «[заполнить]», собери файл (.docx через bt_docx или формат из имени). "
+            "Свой разбор markdown не пиши: bt_docx понимает #–######, списки и таблицы. Шрифт, поля и отступы "
+            "по требованиям настраивай поверх готового файла python-docx, а не собирая абзацы вручную. "
             "Потом проверь собранный файл: разделы, полнота и оформление по требованиям из запроса и документов; "
             "не соответствует – исправь и пересобери. В конце workspace_glob: файл должен лежать. "
             "Ответ – 1-3 предложения: что в документе и что проверено."
@@ -1178,7 +1180,11 @@ async def _run_package_one_by_one(
         done.append(doc["title"])
         names = [str(item.get("filename") or "") for item in files]
         sent.update(name.casefold() for name in names)
-        note = _sanitize_answer(str(result.get("result") or "").strip())[:700]
+        note = str(result.get("result") or "").strip()
+        # Пустой финальный ответ клиент модели подменяет заглушкой – это не описание документа.
+        if result.get("status") != "ok" or note.startswith(("Нет ответа от модели", "❌", "[Ошибка")):
+            note = ""
+        note = _sanitize_answer(note)[:700] if note else ""
         text = f"Готов документ {index} из {total}: «{doc['title']}»." + (f"\n\n{note}" if note else "")
         try:
             await deliver_now(text, files)

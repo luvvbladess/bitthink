@@ -508,3 +508,33 @@ def test_director_hires_builder_when_requested_file_is_missing(monkeypatch):
     asyncio.run(dr.get_director_response([{"role": "user", "content": text}], text, 1, None))
     assert hired == ["Текст", "Сборка файла"]
     assert composed["files"] == ["Аннотационный отчет.docx"]
+
+
+def test_markdown_leftovers_are_scrubbed_from_delivered_docx():
+    """Самодельная сборка Пилота оставляла «### 2.1.4 …» и «**» в тексте Word."""
+    import io
+
+    from docx import Document
+
+    from app.bot_core.docx_generator import scrub_markdown_marks
+
+    doc = Document()
+    doc.add_paragraph("### 2.1.4 Аварийные сообщения")
+    mixed = doc.add_paragraph()
+    mixed.add_run("##")
+    mixed.add_run(" 2.2 Итоги")
+    doc.add_paragraph("Срок **10 рабочих дней**.")
+    doc.add_paragraph("Номер #5 в тексте остаётся.")
+    buffer = io.BytesIO()
+    doc.save(buffer)
+
+    cleaned = Document(io.BytesIO(scrub_markdown_marks(buffer.getvalue())))
+    texts = [p.text for p in cleaned.paragraphs]
+    assert texts == ["2.1.4 Аварийные сообщения", "2.2 Итоги", "Срок 10 рабочих дней.", "Номер #5 в тексте остаётся."]
+    assert all(run.bold for run in cleaned.paragraphs[0].runs)
+    # A clean file comes back byte for byte.
+    plain = Document()
+    plain.add_paragraph("Обычный текст.")
+    buffer = io.BytesIO()
+    plain.save(buffer)
+    assert scrub_markdown_marks(buffer.getvalue()) == buffer.getvalue()
