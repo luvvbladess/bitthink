@@ -251,6 +251,17 @@ async def get_smart_response(
     suggestion = suggest_mode_switch(model, user_text, allowed=allowed_models(tier))
     if suggestion:
         return suggestion["text"], [], "", pack_mode_switch(suggestion)
+    # Before quota and before Studio / Documents / Pilot / Search branch:
+    # an explicit «запомни как скил» is saved here, so the model cannot claim it.
+    from skill_commands import apply_skill_turn, begin_skill_turn
+
+    begin_skill_turn()
+    skill_turn = apply_skill_turn(user_id, user_text or "", messages)
+    if skill_turn is not None:
+        if skill_turn.reply is not None:
+            return skill_turn.reply, [], "", []
+        if skill_turn.messages is not None:
+            messages = skill_turn.messages
     pool = "computer" if model in {"director", "studio", "docgen"} else "chat"
     if (
         pool == "chat"
@@ -565,7 +576,9 @@ async def get_smart_response(
             answer = strip_source_links(answer)
     # Never expose raw provider chain-of-thought. The compact status feed is the
     # user-facing explanation of progress.
-    return answer, files, "", sources
+    from skill_commands import guard_unsaved_claim
+
+    return guard_unsaved_claim(answer), files, "", sources
 
 
 def sanitize_response_text(text: str) -> str:
