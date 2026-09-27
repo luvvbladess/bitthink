@@ -86,6 +86,20 @@ async def announce_tool(name: str, args: Optional[dict] = None) -> None:
     elif name == "gmail_send":
         to = str(args.get("to") or "").strip()
         await push_status("mail", f"Отправляю письмо{(' на ' + to) if to else ''}")
+    elif name == "google_mail_search":
+        await push_status("mail", "Смотрю почту Gmail")
+    elif name == "google_mail_read":
+        await push_status("mail", "Читаю письмо")
+    elif name == "google_drive_search":
+        q = str(args.get("query") or "").strip()
+        await push_status("think", f"Ищу на Диске: {q}" if q else "Смотрю Google Диск")
+    elif name == "google_drive_read":
+        await push_status("think", "Читаю файл с Диска")
+    elif name == "google_calendar_events":
+        await push_status("think", "Смотрю календарь")
+    elif name == "google_calendar_create":
+        summary = str(args.get("summary") or "").strip()
+        await push_status("think", f"Добавляю в календарь: {summary}" if summary else "Добавляю событие")
     elif name == "ssh_exec":
         cmd = str(args.get("command") or "").strip()[:70]
         await push_status("ssh", cmd or "Команда на сервере")

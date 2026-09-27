@@ -8,6 +8,7 @@ import { UserAvatar } from '@/components/UserAvatar';
 import { useAuthStore } from '@/stores/authStore';
 import { MemorySection } from '@/features/settings/MemorySection';
 import { SkillsSection } from '@/features/settings/SkillsSection';
+import { GoogleSection } from '@/features/settings/GoogleSection';
 import { AccountPageShell, AccountSection } from '@/features/account/AccountChrome';
 import { TIER_LABELS } from '@/constants/tiers';
 import { ColorModeSwitch } from '@/components/ColorModeToggle';
@@ -267,6 +268,13 @@ export default function SettingsPage() {
         hint="Свои действуют в любом чате. Из общих: часть везде, остальные только в Пилоте и Astra."
       >
         <SkillsSection />
+      </AccountSection>
+
+      <AccountSection
+        title="Google"
+        hint="Пилот читает вашу почту Gmail и файлы Диска, смотрит календарь и по вашей просьбе добавляет в него встречи. Письма не отправляет, файлы не меняет."
+      >
+        <GoogleSection />
       </AccountSection>
 
       <AccountSection
