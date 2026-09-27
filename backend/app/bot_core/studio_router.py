@@ -254,6 +254,11 @@ async def _compose_spec(
         },
         {"role": "user", "content": prompt},
     ]
+    from computer_skills.loader import user_skill_preamble
+
+    preamble = user_skill_preamble(user_id, user_text)
+    if preamble:
+        messages.insert(1, {"role": "system", "content": preamble})
 
     async def _call(model: str, effort: str) -> str:
         text, _, _, _ = await get_chat_response(
@@ -261,6 +266,7 @@ async def _compose_spec(
             model=model,
             user_id=user_id,
             use_tools=False,
+            use_skills=False,
             reasoning_effort=effort,
         )
         return text
@@ -364,6 +370,11 @@ async def _compose_html(
         {"role": "system", "content": _HTML_SYSTEM},
         {"role": "user", "content": prompt},
     ]
+    from computer_skills.loader import user_skill_preamble
+
+    preamble = user_skill_preamble(user_id, user_text)
+    if preamble:
+        messages.insert(1, {"role": "system", "content": preamble})
 
     async def _call(model: str, effort: str) -> str:
         text, _, _, _ = await get_chat_response(
@@ -371,6 +382,7 @@ async def _compose_html(
             model=model,
             user_id=user_id,
             use_tools=False,
+            use_skills=False,
             reasoning_effort=effort,
         )
         return text

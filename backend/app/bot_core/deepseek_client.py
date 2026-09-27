@@ -87,6 +87,7 @@ async def get_deepseek_response(
     on_reasoning_delta: Optional[Any] = None,
     reasoning_enabled: bool = True,
     chat_tools: bool = False,
+    use_skills: bool = True,
 ) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
     """
     Получает ответ от DeepSeek через Chat Completions API, потоково (stream=True).
@@ -111,15 +112,21 @@ async def get_deepseek_response(
 
     messages = with_runtime_context(
         messages,
-        use_skills=True,
+        use_skills=use_skills,
         user_id=user_id,
         sandbox=bool(use_tools and not chat_tools),
     )
-    from computer_tools import CHAT_TOOL_NAMES, CHAT_TOOLS_CHAT, COMPUTER_TOOL_NAMES, COMPUTER_TOOLS_CHAT
+    from computer_tools import COMPUTER_TOOLS_CHAT, SKILL_TOOL_NAMES, response_tool_names
 
-    # Авто получает только чтение: страницы, файлы и прошлые чаты, не почту и SSH.
-    extra_tools = CHAT_TOOLS_CHAT if chat_tools else COMPUTER_TOOLS_CHAT
-    offered_tools = CHAT_TOOL_NAMES if chat_tools else COMPUTER_TOOL_NAMES
+    # Авто получает чтение и свои скилы, не почту и SSH.
+    wanted = response_tool_names(
+        attach_tools=bool(use_tools),
+        chat_only=bool(chat_tools),
+        force_web=False,
+        skill_tools=bool(use_skills),
+    )
+    offered_tools = wanted
+    extra_tools = [tool for tool in COMPUTER_TOOLS_CHAT if tool["function"]["name"] in wanted]
     current_messages = []
     for msg in messages:
         # Убеждаемся, что передаем только стандартные поля (role, content, name, tool_calls и т.д.)
@@ -161,7 +168,7 @@ async def get_deepseek_response(
         active_tools = [VISUALIZE_TOOL_DEEPSEEK] if use_tools else []
         if use_tools and search_count < MAX_SEARCHES:
             active_tools.append(WEB_SEARCH_TOOL_DEEPSEEK)
-        if use_tools:
+        if extra_tools and (use_tools or use_skills):
             active_tools = active_tools + extra_tools
 
         content_parts: List[str] = []
@@ -327,7 +334,7 @@ async def get_deepseek_response(
                     tool_result = f"❌ Ошибка поиска: {str(e)}"
             else:
                 from computer_tools import run_computer_tool
-                if use_tools and func_name in offered_tools:
+                if func_name in offered_tools and (use_tools or func_name in SKILL_TOOL_NAMES):
                     try:
                         args = json.loads(func_args_str or "{}")
                     except json.JSONDecodeError:

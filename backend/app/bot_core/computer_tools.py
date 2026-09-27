@@ -372,11 +372,38 @@ COMPUTER_TOOLS_RESPONSES = [_responses_tool(*spec) for spec in _TOOL_SPECS]
 COMPUTER_TOOLS_CHAT = [_chat_tool(*spec) for spec in _TOOL_SPECS]
 COMPUTER_TOOL_NAMES = {spec[0] for spec in _TOOL_SPECS}
 
-# Авто: только чтение – страницы, файлы и прошлые разговоры этого человека.
-# Почта, SSH, коннекторы и песочница остаются за Пилотом и его тарифом.
-CHAT_TOOL_NAMES = {"browse_page", "read_chat_document", "list_chat_files", "search_chats", "recent_chats"}
+# Свои скилы доступны в обычном чате. Почта, SSH, коннекторы и песочница — нет.
+SKILL_TOOL_NAMES = frozenset({"list_skills", "load_skill", "save_skill", "delete_skill"})
+CHAT_TOOL_NAMES = frozenset({
+    "browse_page",
+    "read_chat_document",
+    "list_chat_files",
+    "search_chats",
+    "recent_chats",
+}) | SKILL_TOOL_NAMES
 CHAT_TOOLS_RESPONSES = [tool for tool in COMPUTER_TOOLS_RESPONSES if tool["name"] in CHAT_TOOL_NAMES]
 CHAT_TOOLS_CHAT = [tool for tool in COMPUTER_TOOLS_CHAT if tool["function"]["name"] in CHAT_TOOL_NAMES]
+
+
+def response_tool_names(
+    *,
+    attach_tools: bool,
+    chat_only: bool,
+    force_web: bool,
+    skill_tools: bool,
+) -> set[str]:
+    """Names offered on a user-facing model call. Personal skills survive web-only hops."""
+    names: set[str] = set()
+    if force_web or attach_tools:
+        names.add("web_search")
+    if attach_tools and not force_web:
+        names.add("visualize_data")
+        names |= set(CHAT_TOOL_NAMES if chat_only else COMPUTER_TOOL_NAMES)
+    elif skill_tools:
+        names |= set(SKILL_TOOL_NAMES)
+    if force_web and skill_tools:
+        names |= set(SKILL_TOOL_NAMES)
+    return names
 
 
 def _clamp(text: str, limit: int = MAX_TOOL_OUTPUT) -> str:
@@ -853,6 +880,9 @@ async def run_computer_tool(name: str, args: dict[str, Any], user_id: int | None
             except Exception:
                 logger.exception("save_skill failed")
                 return "Не удалось сохранить скил. Попробуйте ещё раз или добавьте его в Настройках."
+            from skill_commands import mark_skill_saved
+
+            mark_skill_saved()
             return (
                 f"Скил «{row['name']}» сохранён только для вас. "
                 "Он появится в Настройках и подхватится, когда задача совпадёт с описанием."

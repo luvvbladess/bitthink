@@ -577,7 +577,7 @@ def test_ordinary_chat_words_do_not_send_auto_to_the_search_hop():
 
 
 def test_auto_chat_tools_are_read_only(monkeypatch):
-    """Авто видит поиск, страницы и файлы чата, но не почту и SSH – даже если модель назовёт их сама."""
+    """Авто видит поиск, страницы, файлы чата и свои скилы, но не почту и SSH."""
     import openai_client
 
     offered: list[set] = []
@@ -609,7 +609,7 @@ def test_auto_chat_tools_are_read_only(monkeypatch):
         [{"role": "user", "content": "привет"}], model="gpt-6-luna", use_tools=True, chat_tools=True,
     ))
     assert text == "готово"
-    assert {"web_search", "visualize_data", "browse_page", "read_chat_document"} <= offered[0]
+    assert {"web_search", "visualize_data", "browse_page", "read_chat_document", "save_skill"} <= offered[0]
     assert "ssh_exec" not in offered[0] and "gmail_send" not in offered[0]
     assert ran == []
 
