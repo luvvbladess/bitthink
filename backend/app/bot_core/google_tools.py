@@ -114,6 +114,7 @@ def _drive_query(text: str) -> str:
 
 async def _drive_search(payload: dict, args: dict) -> str:
     text = str(args.get("query") or "").strip()
+    in_trash = args.get("in_trash") in (True, "true", "True", 1)
     params = {
         "pageSize": _limit(args.get("limit")),
         "fields": "files(id,name,mimeType,modifiedTime)",
@@ -125,10 +126,13 @@ async def _drive_search(payload: dict, args: dict) -> str:
     else:
         params["q"] = "trashed = false"
         params["orderBy"] = "modifiedTime desc"
+    if in_trash:
+        # Checking a removal: the normal search never shows the trash.
+        params["q"] = params["q"].replace("trashed = false", "trashed = true")
     listed = await api(payload, "GET", DRIVE, params=params)
     files = listed.get("files", [])
     if not files:
-        return "Файлов не найдено."
+        return "В корзине Диска таких файлов нет." if in_trash else "Файлов не найдено."
     return _clamp("\n\n".join(
         f"id {f['id']}\n{f['name']}\n{f['mimeType']}, изменён {f.get('modifiedTime', '')}" for f in files
     ))
@@ -397,9 +401,13 @@ async def _drive_trash(payload: dict, args: dict) -> str:
                 return _missing_scope(payload, DRIVE_FULL_SCOPE, "удалять любые файлы на Диске")
             return "Google не дал удалить файл: нет прав на него (например, это чужой общий файл) или его уже нет."
         raise
+    # Final on purpose: re-checking with google_drive_search made Pilot report a success as a failure.
+    done = " Это окончательный результат, перепроверять не нужно: обычный поиск по Диску файлы из корзины не показывает."
     if permanent:
-        return f"Файл «{name}» удалён с Google Диска навсегда."
-    return f"Файл «{name}» перемещён в корзину Google Диска. Восстановить можно из корзины в течение 30 дней."
+        return f"Готово: файл «{name}» удалён с Google Диска навсегда.{done}"
+    return (
+        f"Готово: файл «{name}» перемещён в корзину Google Диска, вернуть можно в течение 30 дней.{done}"
+    )
 
 
 async def run_google_tool(name: str, args: dict[str, Any], payload: dict[str, Any], user_id: int) -> str:

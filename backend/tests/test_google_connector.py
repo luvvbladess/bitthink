@@ -166,3 +166,16 @@ def test_drive_trash_by_default_and_permanent_only_when_asked(monkeypatch):
     assert "Подключить заново" in run({"file_id": "gone"})
     for item in store.list_public(uid):
         store.delete_connector(uid, item["id"])
+
+
+def test_drive_search_can_look_into_the_trash(monkeypatch):
+    seen = []
+
+    async def fake_api(payload, method, url, **kwargs):
+        seen.append(kwargs["params"]["q"])
+        return {"files": []}
+
+    monkeypatch.setattr(google_tools, "api", fake_api)
+    assert asyncio.run(google_tools._drive_search({}, {"query": "впадина", "in_trash": True})) == "В корзине Диска таких файлов нет."
+    assert asyncio.run(google_tools._drive_search({}, {"query": "впадина"})) == "Файлов не найдено."
+    assert seen[0].endswith("trashed = true") and seen[1].endswith("trashed = false")
