@@ -138,3 +138,31 @@ def test_send_and_upload_need_the_new_permissions_and_work_with_them(monkeypatch
     assert len(calls) == before
     for item in store.list_public(uid):
         store.delete_connector(uid, item["id"])
+
+
+def test_drive_trash_by_default_and_permanent_only_when_asked(monkeypatch):
+    uid = 93104
+    for item in store.list_public(uid):
+        store.delete_connector(uid, item["id"])
+    full = {"email": "me@gmail.com", "refresh_token": "1//r", "scopes": list(google_oauth.SCOPES)}
+    store.upsert_connector(uid, "google", "me@gmail.com", full)
+    calls = []
+
+    async def fake_api(payload, method, url, **kwargs):
+        calls.append(method)
+        if "gone" in url and method != "GET":
+            raise google_oauth.GoogleAuthError("Google API 404: notFound")
+        return {"id": "f1", "name": "Рассказ.docx"}
+
+    monkeypatch.setattr(google_tools, "api", fake_api)
+    run = lambda args: asyncio.run(computer_tools.run_computer_tool("google_drive_trash", args, user_id=uid))  # noqa: E731
+
+    assert "в корзину" in run({"file_id": "f1"}) and calls[-1] == "PATCH"
+    assert "навсегда" in run({"file_id": "f1", "permanent": True}) and calls[-1] == "DELETE"
+    assert "нет прав" in run({"file_id": "gone"})
+    # Connected with the older drive.file permission: someone else's file needs a reconnect.
+    old = {**full, "scopes": ["https://www.googleapis.com/auth/drive.file"]}
+    store.upsert_connector(uid, "google", "me@gmail.com", old)
+    assert "Подключить заново" in run({"file_id": "gone"})
+    for item in store.list_public(uid):
+        store.delete_connector(uid, item["id"])
