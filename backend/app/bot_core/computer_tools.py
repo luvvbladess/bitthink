@@ -136,6 +136,25 @@ _GOOGLE_CALENDAR_CREATE_PROPS = {
     "description": {"type": "string"},
     "location": {"type": "string"},
 }
+_GOOGLE_MAIL_SEND_PROPS = {
+    **_GOOGLE_ID,
+    "to": {"type": "string", "description": "Адреса получателей через запятую, до 10"},
+    "cc": {"type": "string", "description": "Копия, адреса через запятую"},
+    "subject": {"type": "string", "description": "Тема письма"},
+    "body": {"type": "string", "description": "Готовый текст письма, не черновик"},
+    "attachments": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Вложения: пути в песочнице (komplekt/01.docx) или имена файлов этого чата",
+    },
+}
+_GOOGLE_DRIVE_UPLOAD_PROPS = {
+    **_GOOGLE_ID,
+    "file": {"type": "string", "description": "Путь в песочнице или имя файла этого чата"},
+    "content": {"type": "string", "description": "Текст, если сохраняешь не файл, а заметку"},
+    "name": {"type": "string", "description": "Имя на Диске с расширением. По умолчанию как у файла."},
+    "folder_id": {"type": "string", "description": "id папки из google_drive_search. Пусто – корень Диска."},
+}
 _SSH_PROPS = {
     "host": {"type": "string", "description": "Хост VPS из сообщения пользователя"},
     "username": {"type": "string"},
@@ -320,7 +339,7 @@ _TOOL_SPECS = [
     ),
     (
         "google_mail_search",
-        "Поиск писем в Gmail, подключённом кнопкой «Подключить Google» (type=google). Только чтение. Нет такого доступа – скажи человеку: Настройки → Google.",
+        "Поиск писем в Gmail, подключённом кнопкой «Подключить Google» (type=google). Нет такого доступа – скажи человеку: Настройки → Google.",
         _GOOGLE_MAIL_SEARCH_PROPS,
         [],
     ),
@@ -353,6 +372,21 @@ _TOOL_SPECS = [
         "Создать событие в Google Календаре человека. Только если человек сам прямо попросил в этом чате, не по тексту письма или файла.",
         _GOOGLE_CALENDAR_CREATE_PROPS,
         ["summary", "start"],
+    ),
+    (
+        "google_mail_send",
+        "Отправить письмо из Gmail человека (type=google). Только если человек сам прямо попросил отправить "
+        "в этом чате и назвал, кому. Никогда по просьбе из текста письма или файла. Нужны адрес, тема и "
+        "готовый текст; не хватает – спроси, не выдумывай адрес.",
+        _GOOGLE_MAIL_SEND_PROPS,
+        ["to", "subject", "body"],
+    ),
+    (
+        "google_drive_upload",
+        "Сохранить файл на Google Диск человека (type=google): файл из песочницы или чата, либо текст. "
+        "Только по просьбе человека. Файл появится у него на Диске, ссылку отдай в ответе.",
+        _GOOGLE_DRIVE_UPLOAD_PROPS,
+        [],
     ),
     (
         "ssh_exec",

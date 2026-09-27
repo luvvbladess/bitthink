@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
+import mimetypes
+import re
+import secrets
 from datetime import date, datetime, timedelta
+from email.message import EmailMessage
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -238,7 +243,135 @@ async def _calendar_create(payload: dict, args: dict) -> str:
     return f"Событие создано: {created.get('summary')} ({start} – {end}), {created.get('htmlLink', '')}"
 
 
+SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"
+DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
+UPLOAD = "https://www.googleapis.com/upload/drive/v3/files"
+MAX_RECIPIENTS = 10
+MAIL_MAX_BYTES = 18 * 1024 * 1024  # Gmail caps a message at 25 MB after base64.
+_EMAIL_RE = re.compile(r"^[^@\s<>,;\"]+@[^@\s<>,;\"]+\.[^@\s<>,;\"]+$")
+
+
+def _missing_scope(payload: dict, scope: str, what: str) -> str:
+    """Accounts connected before this permission existed have to grant it once."""
+    if scope in (payload.get("scopes") or []):
+        return ""
+    return (
+        f"Google подключён без права {what}. Пусть человек в Настройках → Google нажмёт "
+        "«Подключить заново» и на экране Google отметит все галочки."
+    )
+
+
+def _recipients(value: Any) -> list[str] | None:
+    items = value if isinstance(value, list) else str(value or "").replace(";", ",").split(",")
+    emails = [str(item).strip() for item in items if str(item).strip()]
+    if not emails or len(emails) > MAX_RECIPIENTS or not all(_EMAIL_RE.match(e) for e in emails):
+        return None
+    return emails
+
+
+def _load_file(user_id: int, ref: str) -> tuple[str, bytes] | str:
+    """A file from this person's sandbox (path) or from the current chat (file name)."""
+    ref = str(ref or "").strip()
+    if not ref:
+        return "Нужен путь в песочнице или имя файла из чата."
+    try:
+        from app.services.workspace_fs import resolve_in_jail
+
+        target = resolve_in_jail(int(user_id), ref)
+        if target.is_file() and not target.is_symlink():
+            if target.stat().st_size > DRIVE_MAX_BYTES:
+                return f"{target.name}: больше {DRIVE_MAX_BYTES // (1024 * 1024)} МБ."
+            return target.name, target.read_bytes()
+    except Exception:
+        pass
+    from turn_scope import turn_conversation_id
+
+    conv_id = turn_conversation_id()
+    if conv_id:
+        from app.api.editor import file_bytes
+        from conversations import conversation_manager
+
+        conv = conversation_manager.conversation_view(int(user_id), conv_id)
+        data = file_bytes(conv, ref) if conv else None
+        if data:
+            return ref, data
+    return f"Файл «{ref}» не найден ни в песочнице, ни в этом чате."
+
+
+async def _mail_send(payload: dict, args: dict, user_id: int) -> str:
+    missing = _missing_scope(payload, SEND_SCOPE, "отправлять письма")
+    if missing:
+        return missing
+    to = _recipients(args.get("to"))
+    cc = _recipients(args.get("cc")) if args.get("cc") else []
+    subject = str(args.get("subject") or "").strip()
+    body = str(args.get("body") or "").strip()
+    if to is None or cc is None:
+        return f"Нужны корректные адреса получателей, не больше {MAX_RECIPIENTS}."
+    if not subject or not body:
+        return "Нужны тема и текст письма."
+    message = EmailMessage()
+    message["To"] = ", ".join(to)
+    if cc:
+        message["Cc"] = ", ".join(cc)
+    message["Subject"] = subject
+    message.set_content(body)
+    total = 0
+    for ref in args.get("attachments") or []:
+        loaded = _load_file(user_id, ref)
+        if isinstance(loaded, str):
+            return loaded + " Письмо не отправлено."
+        name, data = loaded
+        total += len(data)
+        if total > MAIL_MAX_BYTES:
+            return "Вложения больше 18 МБ: положи файл на Диск (google_drive_upload) и пришли ссылку. Письмо не отправлено."
+        maintype, _, subtype = (mimetypes.guess_type(name)[0] or "application/octet-stream").partition("/")
+        message.add_attachment(data, maintype=maintype, subtype=subtype, filename=name)
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
+    sent = await api(payload, "POST", f"{GMAIL}/messages/send", json_body={"raw": raw})
+    copies = f", копия: {', '.join(cc)}" if cc else ""
+    return f"Письмо отправлено: {', '.join(to)}{copies}. Тема «{subject}». id {sent.get('id', '')}"
+
+
+async def _drive_upload(payload: dict, args: dict, user_id: int) -> str:
+    missing = _missing_scope(payload, DRIVE_FILE_SCOPE, "сохранять файлы на Диск")
+    if missing:
+        return missing
+    name = str(args.get("name") or "").strip()
+    if args.get("file"):
+        loaded = _load_file(user_id, str(args["file"]))
+        if isinstance(loaded, str):
+            return loaded
+        source_name, data = loaded
+        name = name or source_name
+    elif args.get("content"):
+        data = str(args["content"]).encode("utf-8")
+        name = name or "Заметка.txt"
+    else:
+        return "Нужен file (путь в песочнице или имя файла из чата) или content (текст)."
+    mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
+    meta: dict[str, Any] = {"name": name}
+    folder = str(args.get("folder_id") or "").strip()
+    if folder:
+        meta["parents"] = [folder]
+    boundary = secrets.token_hex(16)
+    body = (
+        f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n"
+        f"{json.dumps(meta, ensure_ascii=False)}\r\n--{boundary}\r\nContent-Type: {mime}\r\n\r\n"
+    ).encode("utf-8") + data + f"\r\n--{boundary}--".encode("ascii")
+    created = await api(
+        payload, "POST", UPLOAD,
+        params={"uploadType": "multipart", "fields": "id,name,webViewLink", "supportsAllDrives": "true"},
+        data=body, content_type=f"multipart/related; boundary={boundary}",
+    )
+    return f"Сохранено на Google Диск: {created.get('name', name)} — {created.get('webViewLink', '')}"
+
+
 async def run_google_tool(name: str, args: dict[str, Any], payload: dict[str, Any], user_id: int) -> str:
+    if name == "google_mail_send":
+        return await _mail_send(payload, args, user_id)
+    if name == "google_drive_upload":
+        return await _drive_upload(payload, args, user_id)
     if name == "google_mail_search":
         return await _mail_search(payload, args)
     if name == "google_mail_read":
