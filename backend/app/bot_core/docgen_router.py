@@ -1839,6 +1839,11 @@ async def _write_section(
         )},
         {"role": "user", "content": prompt},
     ]
+    from computer_skills.loader import user_skill_preamble
+
+    preamble = user_skill_preamble(user_id, user_request)
+    if preamble:
+        messages.insert(1, {"role": "system", "content": preamble})
 
     # asyncio.CancelledError is a BaseException, not an Exception, so it is
     # never caught below — it passes straight through the retry loop and out
@@ -1855,7 +1860,11 @@ async def _write_section(
                     from deepseek_client import get_deepseek_response
                     text, _, _, _ = await asyncio.wait_for(
                         get_deepseek_response(
-                            messages, model="deepseek-v4-pro", user_id=user_id, use_tools=False,
+                            messages,
+                            model="deepseek-v4-pro",
+                            user_id=user_id,
+                            use_tools=False,
+                            use_skills=False,
                         ),
                         timeout=timeout_s,
                     )

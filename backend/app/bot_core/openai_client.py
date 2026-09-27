@@ -408,6 +408,7 @@ async def get_chat_response(
         # Astra is the sandbox agent: never drop computer tools for a web-only hop.
         force_web = bool(force_web_search and not is_astra)
         chat_only = bool(chat_tools and not is_astra)
+        skill_tools = bool(use_skills)
         sandbox = bool(is_astra or (attach_tools and not force_web and not chat_only))
 
         messages = with_runtime_context(
@@ -423,11 +424,22 @@ async def get_chat_response(
             messages, image_base64, image_mime_type
         )
 
-        # Инструменты: web_search, графики, Computer. Список стабилен – иначе OpenAI сбрасывает кэш префикса.
-        tools: List[Dict] = [WEB_SEARCH_TOOL] if force_web else ([WEB_SEARCH_TOOL, VISUALIZE_TOOL_RESPONSES] if attach_tools else [])
-        if attach_tools and not force_web:
-            from computer_tools import CHAT_TOOLS_RESPONSES, COMPUTER_TOOLS_RESPONSES
-            tools = tools + (CHAT_TOOLS_RESPONSES if chat_only else COMPUTER_TOOLS_RESPONSES)
+        # Инструменты: web_search, графики, Computer. Свои скилы остаются и там,
+        # где остальной Computer выключен (поиск, документ без песочницы).
+        from computer_tools import COMPUTER_TOOLS_RESPONSES, response_tool_names
+
+        wanted = response_tool_names(
+            attach_tools=attach_tools,
+            chat_only=chat_only,
+            force_web=force_web,
+            skill_tools=skill_tools,
+        )
+        tools: List[Dict] = []
+        if "web_search" in wanted:
+            tools.append(WEB_SEARCH_TOOL)
+        if "visualize_data" in wanted:
+            tools.append(VISUALIZE_TOOL_RESPONSES)
+        tools.extend(tool for tool in COMPUTER_TOOLS_RESPONSES if tool.get("name") in wanted)
         offered_tools = {tool.get("name") for tool in tools if tool.get("name")}
 
         generated_files: List[Dict[str, Any]] = []
