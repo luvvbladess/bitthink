@@ -271,6 +271,8 @@ export default function LandingPage() {
             <BrandLink variant="footer" />
             <Typography variant="body2" sx={{ color: 'text.secondary', textAlign: 'center' }}>
               © 2026 {BRAND_NAME} · {BRAND_SEARCH_NAME}
+              {' · '}
+              <Box component="a" href="/privacy" sx={{ color: 'inherit' }}>Конфиденциальность</Box>
             </Typography>
           </Stack>
         </Container>

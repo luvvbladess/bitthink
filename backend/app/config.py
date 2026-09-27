@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     ONLYOFFICE_INTERNAL_URL: str = "http://onlyoffice"
     BACKEND_INTERNAL_URL: str = "http://backend:8000"
     PUBLIC_APP_URL: str = ""
+    # "Подключить Google" for Pilot (Gmail, Drive, Calendar). Empty = button off.
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod

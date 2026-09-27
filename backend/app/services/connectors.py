@@ -11,7 +11,7 @@ from app.core.crypto import decrypt_json, encrypt_json
 from app.db.engine import SyncSessionLocal
 from app.db.models import Connector
 
-CONNECTOR_TYPES = ("gmail", "ssh", "http", "web")
+CONNECTOR_TYPES = ("gmail", "ssh", "http", "web", "google")
 MAX_CONNECTORS_PER_USER = 20
 
 _REQUIRED_FIELDS = {
@@ -19,6 +19,7 @@ _REQUIRED_FIELDS = {
     "ssh": ("host", "username"),
     "http": ("base_url",),
     "web": ("login_url", "username", "password"),
+    "google": ("email", "refresh_token"),
 }
 
 
@@ -58,7 +59,7 @@ def _validate_payload(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _hint_for(kind: str, payload: dict[str, Any]) -> str:
-    if kind == "gmail":
+    if kind in ("gmail", "google"):
         return str(payload.get("email", ""))[:120]
     if kind == "ssh":
         host = str(payload.get("host", ""))
@@ -81,7 +82,7 @@ def list_public(account_uid: int) -> list[dict[str, Any]]:
 
 
 def _match_key(kind: str, payload: dict[str, Any]) -> str:
-    if kind == "gmail":
+    if kind in ("gmail", "google"):
         return str(payload.get("email") or "").strip().lower()
     if kind == "ssh":
         host = str(payload.get("host") or "").strip().lower()
@@ -144,7 +145,7 @@ def upsert_connector(account_uid: int, kind: str, name: str, payload: dict[str, 
 
 
 def secret_values(account_uid: int) -> list[str]:
-    keys = ("password", "app_password", "token", "private_key", "basic_password", "passphrase")
+    keys = ("password", "app_password", "token", "private_key", "basic_password", "passphrase", "refresh_token")
     found: list[str] = []
     with SyncSessionLocal() as session:
         rows = session.scalars(select(Connector).where(Connector.user_id == account_uid)).all()

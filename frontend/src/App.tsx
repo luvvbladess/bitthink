@@ -8,6 +8,7 @@ import ChatPage from '@/pages/ChatPage';
 import JoinPage from '@/pages/JoinPage';
 import SettingsPage from '@/pages/SettingsPage';
 import BillingPage from '@/pages/BillingPage';
+import PrivacyPage from '@/pages/PrivacyPage';
 import AdminLayout from '@/pages/admin/AdminLayout';
 import AdminUsersPage from '@/pages/admin/AdminUsersPage';
 import AdminUserDetailPage from '@/pages/admin/AdminUserDetailPage';
@@ -135,6 +136,7 @@ export default function App() {
               </PrivateRoute>
             }
           />
+          <Route path="/privacy" element={<PrivacyPage />} />
           <Route path="/admin" element={<AdminLayout />}>
             <Route index element={<Navigate to="/admin/users" replace />} />
             <Route path="users" element={<AdminUsersPage />} />

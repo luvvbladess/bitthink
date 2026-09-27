@@ -93,13 +93,19 @@ def scrub_recent(user_id: int, conv_id: str | None = None) -> None:
     conversation_manager.redact_recent_messages(user_id, store.secret_values(user_id), conv_id=conv_id)
 
 
+_GOOGLE_NOTE = (
+    "\nGoogle (Gmail, Диск, Календарь) подключается только кнопкой: Настройки → Google. "
+    "Если type=google нет, а задача про Диск или календарь – скажи об этой кнопке."
+)
+
+
 def public_summary(user_id: int) -> str:
     items = store.list_public(user_id)
     if not items:
         return (
             "Сохранённых доступов пока нет. Пользователь кидает логин и пароль прямо в чат. "
             "Сотрудники сами вызывают site_login / gmail_* / ssh_exec / http_request с этими данными. "
-            "Не проси открыть настройки."
+            "Не проси открыть настройки." + _GOOGLE_NOTE
         )
     lines = []
     for item in items:
@@ -109,6 +115,7 @@ def public_summary(user_id: int) -> str:
         "Уже сохранённые доступы (секреты скрыты). Можно вызывать инструменты без пароля:\n"
         + "\n".join(lines)
         + "\nНовые логины пользователь даёт в чате, не через настройки."
+        + ("\ntype=google – инструменты google_*." if any(i["type"] == "google" for i in items) else _GOOGLE_NOTE)
     )
 
 
