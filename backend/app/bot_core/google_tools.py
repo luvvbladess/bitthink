@@ -13,7 +13,7 @@ from email.message import EmailMessage
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from app.services.google_oauth import api
+from app.services.google_oauth import GoogleAuthError, api
 
 GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me"
 DRIVE = "https://www.googleapis.com/drive/v3/files"
@@ -244,16 +244,19 @@ async def _calendar_create(payload: dict, args: dict) -> str:
 
 
 SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"
-DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
+DRIVE_FULL_SCOPE = "https://www.googleapis.com/auth/drive"
+# drive.file came first (only files the app made); an account connected then can still save.
+DRIVE_WRITE_SCOPES = (DRIVE_FULL_SCOPE, "https://www.googleapis.com/auth/drive.file")
 UPLOAD = "https://www.googleapis.com/upload/drive/v3/files"
 MAX_RECIPIENTS = 10
 MAIL_MAX_BYTES = 18 * 1024 * 1024  # Gmail caps a message at 25 MB after base64.
 _EMAIL_RE = re.compile(r"^[^@\s<>,;\"]+@[^@\s<>,;\"]+\.[^@\s<>,;\"]+$")
 
 
-def _missing_scope(payload: dict, scope: str, what: str) -> str:
+def _missing_scope(payload: dict, scopes: str | tuple[str, ...], what: str) -> str:
     """Accounts connected before this permission existed have to grant it once."""
-    if scope in (payload.get("scopes") or []):
+    wanted = (scopes,) if isinstance(scopes, str) else scopes
+    if set(wanted) & set(payload.get("scopes") or []):
         return ""
     return (
         f"Google подключён без права {what}. Пусть человек в Настройках → Google нажмёт "
@@ -334,7 +337,7 @@ async def _mail_send(payload: dict, args: dict, user_id: int) -> str:
 
 
 async def _drive_upload(payload: dict, args: dict, user_id: int) -> str:
-    missing = _missing_scope(payload, DRIVE_FILE_SCOPE, "сохранять файлы на Диск")
+    missing = _missing_scope(payload, DRIVE_WRITE_SCOPES, "сохранять файлы на Диск")
     if missing:
         return missing
     name = str(args.get("name") or "").strip()
@@ -364,10 +367,44 @@ async def _drive_upload(payload: dict, args: dict, user_id: int) -> str:
         params={"uploadType": "multipart", "fields": "id,name,webViewLink", "supportsAllDrives": "true"},
         data=body, content_type=f"multipart/related; boundary={boundary}",
     )
-    return f"Сохранено на Google Диск: {created.get('name', name)} — {created.get('webViewLink', '')}"
+    return (
+        f"Сохранено на Google Диск: {created.get('name', name)} — {created.get('webViewLink', '')} "
+        f"(id {created.get('id', '')})"
+    )
+
+
+async def _drive_trash(payload: dict, args: dict) -> str:
+    """By default into the Drive trash, restorable for 30 days. permanent=true deletes
+    outright, only when the person said so. drive.file accounts reach only app-made files."""
+    missing = _missing_scope(payload, DRIVE_WRITE_SCOPES, "удалять файлы на Диске")
+    if missing:
+        return missing
+    file_id = str(args.get("file_id") or "").strip()
+    if not file_id or not file_id.replace("-", "").replace("_", "").isalnum():
+        return "Нужен file_id из google_drive_search или из ответа google_drive_upload."
+    permanent = args.get("permanent") in (True, "true", "True", 1)
+    params = {"fields": "id,name", "supportsAllDrives": "true"}
+    try:
+        meta = await api(payload, "GET", f"{DRIVE}/{file_id}", params=params)
+        name = meta.get("name", file_id)
+        if permanent:
+            await api(payload, "DELETE", f"{DRIVE}/{file_id}", params={"supportsAllDrives": "true"}, raw=True)
+        else:
+            await api(payload, "PATCH", f"{DRIVE}/{file_id}", params=params, json_body={"trashed": True})
+    except GoogleAuthError as exc:
+        if " 403" in str(exc) or " 404" in str(exc):
+            if DRIVE_FULL_SCOPE not in (payload.get("scopes") or []):
+                return _missing_scope(payload, DRIVE_FULL_SCOPE, "удалять любые файлы на Диске")
+            return "Google не дал удалить файл: нет прав на него (например, это чужой общий файл) или его уже нет."
+        raise
+    if permanent:
+        return f"Файл «{name}» удалён с Google Диска навсегда."
+    return f"Файл «{name}» перемещён в корзину Google Диска. Восстановить можно из корзины в течение 30 дней."
 
 
 async def run_google_tool(name: str, args: dict[str, Any], payload: dict[str, Any], user_id: int) -> str:
+    if name == "google_drive_trash":
+        return await _drive_trash(payload, args)
     if name == "google_mail_send":
         return await _mail_send(payload, args, user_id)
     if name == "google_drive_upload":

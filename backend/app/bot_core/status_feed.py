@@ -102,6 +102,8 @@ async def announce_tool(name: str, args: Optional[dict] = None) -> None:
         await push_status("mail", f"Отправляю письмо{(' на ' + to) if to else ''}")
     elif name == "google_drive_upload":
         await push_status("think", "Сохраняю на Google Диск")
+    elif name == "google_drive_trash":
+        await push_status("think", "Удаляю файл с Диска" if args.get("permanent") else "Убираю файл в корзину Диска")
     elif name == "google_calendar_create":
         summary = str(args.get("summary") or "").strip()
         await push_status("think", f"Добавляю в календарь: {summary}" if summary else "Добавляю событие")

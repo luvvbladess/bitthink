@@ -21,11 +21,11 @@ SCOPES = (
     "openid",
     "email",
     "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/drive.readonly",
+    # Whole Drive: read, save, and trash or delete any file the person asks about.
+    "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/calendar.events",
-    # Send only (no drafts, no delete) and Drive files this app creates.
+    # Send only: no drafts, no deleting mail.
     "https://www.googleapis.com/auth/gmail.send",
-    "https://www.googleapis.com/auth/drive.file",
 )
 CALLBACK_PATH = "/api/connectors/google/callback"
 NONCE_COOKIE = "bt_google_oauth"

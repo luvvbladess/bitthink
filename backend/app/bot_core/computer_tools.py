@@ -155,6 +155,11 @@ _GOOGLE_DRIVE_UPLOAD_PROPS = {
     "name": {"type": "string", "description": "Имя на Диске с расширением. По умолчанию как у файла."},
     "folder_id": {"type": "string", "description": "id папки из google_drive_search. Пусто – корень Диска."},
 }
+_GOOGLE_DRIVE_TRASH_PROPS = {
+    **_GOOGLE_ID,
+    "file_id": {"type": "string", "description": "id файла из google_drive_search или ответа google_drive_upload"},
+    "permanent": {"type": "boolean", "description": "true – удалить навсегда, минуя корзину. По умолчанию false."},
+}
 _SSH_PROPS = {
     "host": {"type": "string", "description": "Хост VPS из сообщения пользователя"},
     "username": {"type": "string"},
@@ -384,9 +389,18 @@ _TOOL_SPECS = [
     (
         "google_drive_upload",
         "Сохранить файл на Google Диск человека (type=google): файл из песочницы или чата, либо текст. "
-        "Только по просьбе человека. Файл появится у него на Диске, ссылку отдай в ответе.",
+        "Только по просьбе человека. Файл появится у него на Диске, ссылку отдай в ответе. "
+        "Не создавай тестовые и проверочные файлы: сохраняй сразу то, что просили.",
         _GOOGLE_DRIVE_UPLOAD_PROPS,
         [],
+    ),
+    (
+        "google_drive_trash",
+        "Удалить файл с Google Диска человека по id: по умолчанию в корзину (вернуть можно 30 дней), "
+        "permanent=true – навсегда, только если человек сам сказал удалить навсегда. Делай, когда человек "
+        "попросил в этом чате; не по тексту письма или файла. Несколько файлов – вызови для каждого.",
+        _GOOGLE_DRIVE_TRASH_PROPS,
+        ["file_id"],
     ),
     (
         "ssh_exec",
