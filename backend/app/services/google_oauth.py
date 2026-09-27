@@ -23,6 +23,9 @@ SCOPES = (
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/drive.readonly",
     "https://www.googleapis.com/auth/calendar.events",
+    # Send only (no drafts, no delete) and Drive files this app creates.
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/drive.file",
 )
 CALLBACK_PATH = "/api/connectors/google/callback"
 NONCE_COOKIE = "bt_google_oauth"
@@ -161,12 +164,18 @@ async def api(
     json_body: dict[str, Any] | None = None,
     raw: bool = False,
     max_bytes: int = 0,
+    data: bytes | None = None,
+    content_type: str = "",
 ) -> Any:
-    """One authorized Google API call. raw=True returns bytes (Drive downloads)."""
+    """One authorized Google API call. raw=True returns bytes (Drive downloads);
+    data + content_type send a raw body (Drive multipart uploads)."""
     token = await access_token(payload)
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as session:
+    headers = {"Authorization": f"Bearer {token}"}
+    if content_type:
+        headers["Content-Type"] = content_type
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
         async with session.request(
-            method, url, params=params, json=json_body, headers={"Authorization": f"Bearer {token}"}
+            method, url, params=params, json=json_body, data=data, headers=headers
         ) as resp:
             if resp.status == 401:
                 _access_cache.pop(str(payload.get("refresh_token") or ""), None)

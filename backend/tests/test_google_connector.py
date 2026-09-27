@@ -85,3 +85,56 @@ def test_mail_body_and_drive_query():
     plain, html, files = google_tools._mail_body(part)
     assert plain == "привет" and html == "<b>hi</b>" and files == ["act.pdf"]
     assert google_tools._drive_query("it's") == "(name contains 'it\\'s' or fullText contains 'it\\'s') and trashed = false"
+
+
+def test_send_and_upload_need_the_new_permissions_and_work_with_them(monkeypatch, tmp_path):
+    import base64
+    import email
+    import email.policy
+
+    uid = 93103
+    monkeypatch.setenv("WORKSPACES_DIR", str(tmp_path))
+    from app.services.workspace_fs import user_root
+
+    (user_root(uid) / "komplekt").mkdir(parents=True)
+    (user_root(uid) / "komplekt" / "01_Отчёт.docx").write_bytes(b"PK\x03\x04docx")
+    for item in store.list_public(uid):
+        store.delete_connector(uid, item["id"])
+    old = {"email": "me@gmail.com", "refresh_token": "1//r", "scopes": ["https://www.googleapis.com/auth/gmail.readonly"]}
+    store.upsert_connector(uid, "google", "me@gmail.com", old)
+    calls = []
+
+    async def fake_api(payload, method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        if "upload" in url:
+            return {"id": "f1", "name": "01_Отчёт.docx", "webViewLink": "https://drive.google.com/file/d/f1"}
+        return {"id": "m1"}
+
+    monkeypatch.setattr(google_tools, "api", fake_api)
+    send = {"to": "ivan@example.com", "subject": "Отчёт", "body": "Добрый день, отчёт во вложении.",
+            "attachments": ["komplekt/01_Отчёт.docx"]}
+    run = lambda name, args: asyncio.run(computer_tools.run_computer_tool(name, args, user_id=uid))  # noqa: E731
+
+    # Connected before these permissions existed: ask to reconnect, send nothing.
+    assert "Подключить заново" in run("google_mail_send", send)
+    assert "Подключить заново" in run("google_drive_upload", {"file": "komplekt/01_Отчёт.docx"})
+    assert calls == []
+
+    store.upsert_connector(uid, "google", "me@gmail.com", {**old, "scopes": list(google_oauth.SCOPES)})
+    assert "Письмо отправлено: ivan@example.com" in run("google_mail_send", send)
+    method, url, kwargs = calls[-1]
+    assert method == "POST" and url.endswith("/messages/send")
+    sent = email.message_from_bytes(base64.urlsafe_b64decode(kwargs["json_body"]["raw"]), policy=email.policy.default)
+    assert sent["To"] == "ivan@example.com" and [p.get_filename() for p in sent.iter_attachments()] == ["01_Отчёт.docx"]
+
+    assert "https://drive.google.com/file/d/f1" in run("google_drive_upload", {"file": "komplekt/01_Отчёт.docx"})
+    method, url, kwargs = calls[-1]
+    assert kwargs["params"]["uploadType"] == "multipart" and b"PK\x03\x04docx" in kwargs["data"]
+
+    # Bad addresses and escaping the sandbox are refused before any call.
+    before = len(calls)
+    assert "адреса" in run("google_mail_send", {**send, "to": "not-an-email"})
+    assert "не найден" in run("google_drive_upload", {"file": "../../etc/passwd"})
+    assert len(calls) == before
+    for item in store.list_public(uid):
+        store.delete_connector(uid, item["id"])

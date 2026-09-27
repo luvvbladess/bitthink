@@ -7,7 +7,7 @@ import { apiFetch } from '@/api/client';
 type Connector = { id: number; type: string; name: string; hint?: string | null };
 
 const RESULT_TEXT: Record<string, { severity: 'success' | 'warning' | 'error'; text: string }> = {
-  connected: { severity: 'success', text: 'Google подключён. Пилот теперь видит почту, Диск и календарь.' },
+  connected: { severity: 'success', text: 'Google подключён. Пилот видит почту, Диск и календарь, отправляет письма и сохраняет файлы на Диск по вашей просьбе.' },
   partial: { severity: 'warning', text: 'Подключено не всё: на экране Google сняли часть галочек. Отключите и подключите снова, отметив все.' },
   denied: { severity: 'warning', text: 'Доступ не выдан. Можно попробовать ещё раз.' },
   expired: { severity: 'error', text: 'Ссылка устарела или открыта в другом браузере. Нажмите «Подключить Google» ещё раз.' },
@@ -82,7 +82,7 @@ export function GoogleSection() {
         disabled={busy || isLoading}
         sx={{ mt: google.length ? 0.5 : 0, minHeight: 44, borderRadius: '999px', px: google.length ? 0 : 2.5 }}
       >
-        {google.length ? 'Подключить другой аккаунт' : 'Подключить Google'}
+        {google.length ? 'Подключить заново или другой аккаунт' : 'Подключить Google'}
       </Button>
 
       {!google.length && (
