@@ -42,7 +42,7 @@ AVAILABLE_MODELS = {
     "kimi-k2.6": "🌐 Поиск в интернете",
     "gpt-5-nano": "⚡ Быстрый ответ (GPT-5 Nano)",
     "gpt-6-luna": "📝 Простые задачи (GPT-6 Luna)",
-    "gpt-6-sol": "🧠 Сложные задачи (GPT-6 Sol)",
+    "gpt-6-sol": "🧠 Сложные задачи (GPT-6.1 Sol)",
     "gpt-6-astra": "✦ Astra — песочница GPT-6: код, договоры, файлы",
     "deepseek-v4-pro": "💻 Код и логика"
 }
