@@ -114,7 +114,7 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "name": "Pro+",
         "price_rub": 3_990,
         "price_year_rub": 39_900,
-        "description": "GPT-6 Sol для сложных задач",
+        "description": "GPT-6.1 Sol для сложных задач",
         "chat_tokens": 54_000_000,
         "computer_tokens": 26_400_000,
         "chat_week": 13_500_000,
@@ -123,7 +123,7 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "computer_session": 1_884_000,
         "images": 40,
         "models": list(PROPLUS_MODELS),
-        "features": ["окно 5 часов и неделя", "54 млн токенов в месяц", "GPT-6 Sol для сложных задач"],
+        "features": ["окно 5 часов и неделя", "54 млн токенов в месяц", "GPT-6.1 Sol для сложных задач"],
     },
     "ultra": {
         "id": "ultra",

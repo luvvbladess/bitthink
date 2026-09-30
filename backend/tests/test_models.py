@@ -448,6 +448,25 @@ def test_astra_falls_back_when_api_model_is_missing():
     assert "model_not_found" in source
 
 
+def test_sol_goes_to_api_as_gpt_6_1_sol_but_stays_gpt_6_sol_internally(monkeypatch):
+    import openai_client
+
+    monkeypatch.setattr(openai_client, "_sol61_unavailable", False)
+    assert openai_client._api_model_id("gpt-6-sol") == "gpt-6.1-sol"
+    # Old GPT-5.6 ids resolve to the internal id first, so billing stays on gpt-6-sol.
+    assert openai_client._api_model_id(openai_client._resolve_api_model("gpt-5.6-sol")) == "gpt-6.1-sol"
+    assert openai_client._api_model_id("gpt-6-luna") == "gpt-6-luna"
+    assert openai_client._api_model_id("gpt-6-astra") == "gpt-6-astra"
+
+    not_found = "The model `gpt-6.1-sol` does not exist or you do not have access to it. (model_not_found)"
+    assert openai_client._sol61_missing(not_found)
+    assert not openai_client._sol61_missing("The model `gpt-6-astra` does not exist")
+    assert not openai_client._sol61_missing("Rate limit reached for gpt-6.1-sol")
+
+    monkeypatch.setattr(openai_client, "_sol61_unavailable", True)
+    assert openai_client._api_model_id("gpt-6-sol") == "gpt-6-sol"
+
+
 def test_astra_is_sandbox_agent_not_web_only_chat():
     from config import ASTRA_AGENT_PROMPT
     from pathlib import Path
