@@ -507,18 +507,14 @@ export function ChatWindow({
           </Box>
         )}
 
-        {visibleMessages.map((msg, msgIndex) => {
-          // A new question starts a new turn: a hairline and air, no bubble.
-          const startsTurn = !people && msg.role === 'user' && msgIndex > 0;
-          return (
+        {visibleMessages.map((msg) => (
           <Box
             key={msg.id}
             data-dialogue-id={msg.id}
             sx={{
               minWidth: 0,
               width: '100%',
-              borderRadius: startsTurn ? 0 : '18px',
-              ...(startsTurn ? { mt: 3, pt: 3.5, borderTop: '1px solid var(--bt-hairline)' } : {}),
+              borderRadius: '18px',
               animation: arriveId === msg.id ? 'dialogue-arrive 0.85s cubic-bezier(0.22, 1, 0.36, 1)' : 'none',
             }}
           >
@@ -564,8 +560,7 @@ export function ChatWindow({
             )}
           </motion.div>
           </Box>
-          );
-        })}
+        ))}
 
         {thinking && (
           <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
