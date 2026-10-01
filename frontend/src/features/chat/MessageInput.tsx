@@ -122,6 +122,9 @@ export function MessageInput({
       if (result !== false) {
         setText('');
         setPendingFiles([]);
+        // «Править эту картинку» – одноразовый режим: иначе следующее фото
+        // с текстом в любом режиме уйдёт в редактор картинок, а не в чат.
+        setImageMode(false);
         inputRef.current?.focus();
       }
     } finally {
@@ -194,9 +197,10 @@ export function MessageInput({
     if (imageModeRequest > 0 && !isDocgen) setImageMode(true);
   }, [imageModeRequest, isDocgen]);
 
+  // Сменили режим – правка картинки не должна тянуться за человеком в другой режим.
   useEffect(() => {
-    if (isDocgen) setImageMode(false);
-  }, [isDocgen]);
+    setImageMode(false);
+  }, [selectedModel]);
 
   const pendingImages = pendingFiles.filter((file) => file.type.startsWith('image/'));
   const editingImage = imageMode && (pendingImages.length > 0 || Boolean(editSourceUrl));
