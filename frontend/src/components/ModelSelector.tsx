@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Box, Drawer, Popover, Button, Typography, Tooltip, useMediaQuery } from '@mui/material';
-import { CaretDown, Check, Sparkle, MagnifyingGlass, Books, Desktop, Presentation, Atom, FileText, Lock } from '@phosphor-icons/react';
+import { CaretDown, Check, Sparkle, MagnifyingGlass, Books, Desktop, Presentation, Atom, FileText, Lock, Brain } from '@phosphor-icons/react';
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/api/client';
 import { composerChipSelectedSx, composerChipSx } from '@/theme/effects';
@@ -246,14 +246,16 @@ export function SearchModeSelector() {
           ...composerChipSx,
           ...(lit ? composerChipSelectedSx : {}),
           minWidth: 44,
-          maxWidth: { xs: 100, sm: 'none' },
+          maxWidth: { xs: 88, sm: 'none' },
+          // On very narrow phones the chip may shrink to its icon so Send is never pushed off screen.
+          flexShrink: { xs: 1, sm: 0 },
           px: 1.1,
           overflow: 'hidden',
         }}
       >
         <ActiveIcon size={18} weight={selectedMode.id === 'computer' || selectedMode.id === 'studio' || selectedMode.id === 'astra' || selectedMode.id === 'docgen' ? 'fill' : 'bold'} />
         <Box component="span" sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selectedMode.label}</Box>
-        <Box component="span" sx={{ display: 'inline-flex', flexShrink: 0, lineHeight: 0 }}>
+        <Box component="span" sx={{ display: { xs: 'none', sm: 'inline-flex' }, flexShrink: 0, lineHeight: 0 }}>
           <CaretDown size={14} weight="bold" />
         </Box>
       </Button>
@@ -422,8 +424,11 @@ export function ReasoningEffortSelector() {
           '&:active': { transform: 'scale(0.98)' },
         }}
       >
-        {/* Label stays on phones too: a bare switch next to a mic does not say what it does. */}
-        <Box component="span">Размышления</Box>
+        {/* A bare switch next to a mic says nothing: wide phones get the word, narrow ones an icon. */}
+        <Box component="span" sx={{ '@media (max-width:439.95px)': { display: 'none' } }}>Размышления</Box>
+        <Box component="span" aria-hidden sx={{ display: 'none', lineHeight: 0, '@media (max-width:439.95px)': { display: 'inline-flex' } }}>
+          <Brain size={18} weight={enabled ? 'fill' : 'bold'} />
+        </Box>
         <GlowSwitch checked={enabled} />
       </Box>
     </Tooltip>
