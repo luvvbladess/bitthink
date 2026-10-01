@@ -95,6 +95,10 @@ body {
   color: var(--bt-ink);
 }
 
+::selection {
+  background: rgba(33, 160, 206, 0.32);
+}
+
 ::view-transition-old(root),
 ::view-transition-new(root) {
   animation-duration: 0.55s;

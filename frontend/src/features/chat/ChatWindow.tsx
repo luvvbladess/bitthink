@@ -1,6 +1,8 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 import { Box, IconButton } from '@mui/material';
 import { motion, useReducedMotion } from 'framer-motion';
+import { ArrowsLeftRight, Bug, Newspaper, Paperclip, type Icon } from '@phosphor-icons/react';
+import { useAuthStore } from '@/stores/authStore';
 import { ChatMessage } from './ChatMessage';
 import { ActivityFeed } from '@/components/ActivityFeed';
 import { AttachmentInfo } from './DocumentAttachment';
@@ -51,12 +53,24 @@ interface Props {
   composerSlotRef?: (element: HTMLElement | null) => void;
 }
 
-const SUGGESTIONS = [
-  { label: 'Что сегодня', text: 'Что главное произошло сегодня в мире? Коротко и по источникам.' },
-  { label: 'Разобрать файл', text: 'Я прикреплю файл. Вытащи главное и скажи, что с этим делать.' },
-  { label: 'Сравни варианты', text: 'Сравни два подхода и скажи, что выбрать в обычном случае.' },
-  { label: 'Ошибка в коде', text: 'Помоги найти ошибку в куске кода и как её чинить.' },
+interface Suggestion {
+  label: string;
+  text: string;
+  icon?: Icon;
+}
+
+const SUGGESTIONS: Suggestion[] = [
+  { label: 'Что нового в мире', text: 'Что главное произошло сегодня в мире? Коротко и по источникам.', icon: Newspaper },
+  { label: 'Разобрать файл', text: 'Я прикреплю файл. Вытащи главное и скажи, что с этим делать.', icon: Paperclip },
+  { label: 'Сравнить варианты', text: 'Сравни два подхода и скажи, что выбрать в обычном случае.', icon: ArrowsLeftRight },
+  { label: 'Найти ошибку в коде', text: 'Помоги найти ошибку в куске кода и как её чинить.', icon: Bug },
 ];
+
+function greeting(name?: string): string {
+  const hour = new Date().getHours();
+  const hello = hour >= 5 && hour < 12 ? 'Доброе утро' : hour >= 12 && hour < 18 ? 'Добрый день' : hour >= 18 && hour < 23 ? 'Добрый вечер' : 'Доброй ночи';
+  return name ? `${hello}, ${name}` : hello;
+}
 
 const COMPUTER_SUGGESTIONS = [
   { label: 'Место по фото', text: 'По фото найди, где это снято, и открой источники, а не угадывай по виду.' },
@@ -78,7 +92,9 @@ const DOCGEN_SUGGESTIONS = [
 ];
 
 const suggestionChipSx = {
-  display: 'block',
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 0.8,
   textAlign: 'left' as const,
   py: 1,
   px: 1.35,
@@ -96,7 +112,6 @@ const suggestionChipSx = {
     color: 'text.primary',
     borderColor: 'primary.main',
     bgcolor: 'var(--bt-glow)',
-    boxShadow: '0 0 18px var(--bt-glow-strong)',
   },
 };
 
@@ -124,6 +139,8 @@ export function ChatWindow({
   const pinToBottomRef = useRef(true);
   const skipPinUpdateRef = useRef(false);
   const reduce = useReducedMotion();
+  const user = useAuthStore((s) => s.user);
+  const firstName = user?.first_name || undefined;
   const [scrollerNode, setScrollerNode] = useState<HTMLDivElement | null>(null);
   const [arriveId, setArriveId] = useState<string | null>(null);
   const visibleMessages = messages.filter((msg) => !isClarifyMessage(msg.search));
@@ -273,6 +290,12 @@ export function ChatWindow({
         overscrollBehavior: 'contain',
         display: 'flex',
         flexDirection: 'column',
+        scrollbarWidth: 'thin',
+        scrollbarColor: 'var(--bt-overlay-strong) transparent',
+        '&::-webkit-scrollbar': { width: 8 },
+        '&::-webkit-scrollbar-track': { background: 'transparent' },
+        '&::-webkit-scrollbar-thumb': { bgcolor: 'var(--bt-overlay-strong)', borderRadius: 8, border: '2px solid transparent', backgroundClip: 'padding-box' },
+        '&::-webkit-scrollbar-button': { display: 'none', width: 0, height: 0 },
         '@keyframes dialogue-arrive': {
           '0%': { boxShadow: '0 0 0 0 var(--bt-glow-strong)' },
           '35%': { boxShadow: '0 0 0 8px var(--bt-glow)' },
@@ -342,6 +365,9 @@ export function ChatWindow({
                 >
                   {DOCGEN_LABEL} включены
                 </Box>
+              )}
+              {!isComputer && !isStudio && !isDocgen && (
+                <Box sx={{ color: 'text.secondary', fontSize: '0.875rem', mb: 0.75 }}>{greeting(firstName)}</Box>
               )}
               <Box sx={{ fontSize: { xs: '1.5rem', md: '1.85rem' }, fontWeight: 600, letterSpacing: '-0.035em', mb: 0.75, lineHeight: 1.15, textWrap: 'balance', color: 'text.primary' }}>
                 {isDocgen ? 'Что собрать?' : isStudio ? 'Что визуализируем?' : isComputer ? 'Над чем поработаем?' : 'С чего начнём?'}
@@ -491,7 +517,7 @@ export function ChatWindow({
                 </Box>
               )}
               <Box sx={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 0.75 }}>
-                {suggestions.map((s) => (
+                {suggestions.map((s: Suggestion) => (
                   <Box
                     key={s.label}
                     component="button"
@@ -499,6 +525,7 @@ export function ChatWindow({
                     onClick={() => onSuggestion?.(s.text)}
                     sx={suggestionChipSx}
                   >
+                    {s.icon && <s.icon size={15} aria-hidden style={{ flexShrink: 0, opacity: 0.8 }} />}
                     {s.label}
                   </Box>
                 ))}

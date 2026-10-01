@@ -4,6 +4,9 @@ import {
   IconButton,
   List,
   ListItemButton,
+  ListItemIcon,
+  Menu,
+  MenuItem,
   Typography,
   TextField,
   Dialog,
@@ -13,9 +16,10 @@ import {
   DialogActions,
   Button,
 } from '@mui/material';
-import { Plus, Trash, PencilSimple, Check, X, MagnifyingGlass, FolderSimple } from '@phosphor-icons/react';
+import { Plus, Trash, PencilSimple, Check, X, MagnifyingGlass, FolderSimple, DotsThree } from '@phosphor-icons/react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { BrandLink } from '@/components/BrandMark';
+import { AccountMenu } from '@/components/AccountMenu';
 import { headerIconBtnSx } from '@/theme/effects';
 
 export interface ConversationItem {
@@ -70,6 +74,8 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
   const [editTitle, setEditTitle] = useState('');
   const [confirmDelete, setConfirmDelete] = useState<ConversationItem | null>(null);
   const [search, setSearch] = useState('');
+  // Touch screens: one "..." per row instead of two always-visible icons that crowd the title.
+  const [rowMenu, setRowMenu] = useState<{ el: HTMLElement; conv: ConversationItem } | null>(null);
   const filteredConversations = search.trim()
     ? conversations.filter((c) => c.title.toLowerCase().includes(search.trim().toLowerCase()))
     : conversations;
@@ -364,9 +370,18 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
                     )}
                   </Box>
                   {editingId !== conv.id && conv.role !== 'member' && (
+                    <>
+                    <IconButton
+                      size="small"
+                      onClick={(e) => { e.stopPropagation(); setRowMenu({ el: e.currentTarget, conv }); }}
+                      aria-label="Действия с беседой"
+                      sx={{ ...actionBtnSx, width: 36, height: 36, display: { xs: 'inline-flex', md: 'none' } }}
+                    >
+                      <DotsThree size={20} weight="bold" />
+                    </IconButton>
                     <Box
                       sx={{
-                        display: 'flex',
+                        display: { xs: 'none', md: 'flex' },
                         gap: 0.15,
                         opacity: { xs: 1, md: 0 },
                         '.MuiListItemButton-root:hover &, .MuiListItemButton-root:focus-within &': { opacity: 1 },
@@ -385,6 +400,7 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
                         <Trash size={15} />
                       </IconButton>
                     </Box>
+                    </>
                   )}
                 </ListItemButton>
               </motion.div>
@@ -393,6 +409,40 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
           })}
         </AnimatePresence>
       </List>
+
+      <Box sx={{ flexShrink: 0, borderTop: '1px solid var(--bt-hairline)', p: 1, pb: 'max(8px, env(safe-area-inset-bottom))' }}>
+        <AccountMenu variant="row" />
+      </Box>
+
+      <Menu
+        anchorEl={rowMenu?.el}
+        open={Boolean(rowMenu)}
+        onClose={() => setRowMenu(null)}
+        slotProps={{ paper: { sx: { minWidth: 200, borderRadius: '14px' } } }}
+      >
+        <MenuItem
+          sx={{ minHeight: 48 }}
+          onClick={() => {
+            const conv = rowMenu?.conv;
+            setRowMenu(null);
+            if (conv) startEdit(conv);
+          }}
+        >
+          <ListItemIcon><PencilSimple size={18} /></ListItemIcon>
+          Переименовать
+        </MenuItem>
+        <MenuItem
+          sx={{ minHeight: 48, color: 'var(--bt-danger)' }}
+          onClick={() => {
+            const conv = rowMenu?.conv;
+            setRowMenu(null);
+            if (conv) setConfirmDelete(conv);
+          }}
+        >
+          <ListItemIcon sx={{ color: 'inherit' }}><Trash size={18} /></ListItemIcon>
+          Удалить
+        </MenuItem>
+      </Menu>
 
       <Dialog
         open={!!confirmDelete}

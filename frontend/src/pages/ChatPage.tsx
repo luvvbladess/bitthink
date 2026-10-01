@@ -558,6 +558,13 @@ export default function ChatPage() {
   }, [isStudio, isMobile, canvasSource?.url, canvasSource?.html, canvasSource?.name]);
 
   const handleSelect = async (id: string) => {
+    // Tapping the chat that is already open must not blank it: activeConvId stays the
+    // same, so nothing would refill displayMessages afterwards.
+    if (id === activeConvId) {
+      void activateMutation.mutateAsync(id);
+      if (isMobile) setSidebarOpen(false);
+      return;
+    }
     await activateMutation.mutateAsync(id);
     setActiveConvId(id);
     setDisplayMessages([]);
@@ -993,15 +1000,39 @@ export default function ChatPage() {
             gap: 0.75,
             px: { xs: 1.5, sm: 2 },
             pt: { xs: 'max(10px, env(safe-area-inset-top))', sm: 1.5 },
-            pb: 3,
-            background: 'linear-gradient(180deg, var(--bt-fade) 0%, var(--bt-fade-mid) 62%, transparent 100%)',
+            pb: { xs: 1.25, md: 3 },
+            // Phones: a solid bar, so scrolled text never runs under the title and buttons.
+            background: {
+              xs: 'var(--bt-fade-solid)',
+              md: 'linear-gradient(180deg, var(--bt-fade) 0%, var(--bt-fade-mid) 62%, transparent 100%)',
+            },
+            borderBottom: { xs: '1px solid var(--bt-hairline)', md: 'none' },
           }}
         >
-          <Box sx={{ display: 'flex', alignItems: 'center', pointerEvents: 'auto' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, pointerEvents: 'auto', minWidth: 0, flex: { xs: 1, md: 'none' } }}>
             {isMobile && (
               <IconButton onClick={() => setSidebarOpen(true)} sx={headerIconBtnSx} aria-label="Открыть список бесед">
                 <ListIcon size={22} weight="bold" />
               </IconButton>
+            )}
+            {isMobile && activeConversation && displayMessages.length > 0 && (
+              // Phones have no sidebar on screen: say which chat this is.
+              <Box
+                component="h1"
+                sx={{
+                  m: 0,
+                  minWidth: 0,
+                  fontSize: '0.9375rem',
+                  fontWeight: 600,
+                  letterSpacing: '-0.01em',
+                  color: 'text.primary',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                }}
+              >
+                {activeConversation.title}
+              </Box>
             )}
           </Box>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, pointerEvents: 'auto' }}>
@@ -1129,7 +1160,8 @@ export default function ChatPage() {
                 <ListItemText>{colorMode.mode === 'dark' ? 'Светлая тема' : 'Тёмная тема'}</ListItemText>
               </MenuItem>
             </Menu>
-            <AccountMenu />
+            {/* Desktop keeps the account in the sidebar footer; phones have no sidebar on screen. */}
+            {isMobile && <AccountMenu />}
           </Box>
         </Box>
   );
@@ -1150,8 +1182,7 @@ export default function ChatPage() {
           onOpen={() => setSidebarOpen(true)}
           PaperProps={{
             sx: {
-              width: 280,
-              maxWidth: '85%',
+              width: 'min(88vw, 320px)',
               bgcolor: 'background.default',
               backgroundImage: 'none',
               boxShadow: 'none',
