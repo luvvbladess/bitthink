@@ -2,12 +2,11 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Box, Drawer, SwipeableDrawer, IconButton, Tooltip, Menu, MenuItem, ListItemIcon, ListItemText, useMediaQuery, useTheme } from '@mui/material';
 import { List as ListIcon, FileArrowDown, MagnifyingGlass, WarningCircle, SquareHalf, Users, ChatsCircle, FolderSimple, DotsThree, Sun, Moon } from '@phosphor-icons/react';
 import { useColorMode } from '@/theme/ColorMode';
-import { headerIconBtnSx } from '@/theme/effects';
+import { headerGroupBtnSx, headerGroupSx, headerIconBtnSx } from '@/theme/effects';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { ChatSidebar, ConversationItem } from '@/features/chat/ChatSidebar';
 import { AccountMenu } from '@/components/AccountMenu';
-import { ColorModeToggle } from '@/components/ColorModeToggle';
 import { ChatWindow, DisplayMessage } from '@/features/chat/ChatWindow';
 import { DesignCanvas, findStudioCanvas } from '@/features/chat/DesignCanvas';
 import { MessageInput } from '@/features/chat/MessageInput';
@@ -977,6 +976,7 @@ export default function ChatPage() {
   // With the sources column on screen the action buttons move up to the whole
   // work area, so they sit right above that column instead of ending beside it.
   const railVisible = isWide && messagesReady && allSources.length > 0 && !isStudio;
+  const groupBtn = isMobile ? headerIconBtnSx : headerGroupBtnSx;
 
   const chatHeader = (
         <Box
@@ -1039,16 +1039,17 @@ export default function ChatPage() {
                 </IconButton>
               </Tooltip>
             )}
+            <Box sx={isMobile ? { display: 'contents' } : headerGroupSx}>
             {activeConvId && !isMobile && (
               <Tooltip title="Файлы беседы">
-                <IconButton onClick={() => { setFilesScope('chat'); setFilesOpen(true); }} sx={headerIconBtnSx} aria-label="Файлы беседы">
+                <IconButton onClick={() => { setFilesScope('chat'); setFilesOpen(true); }} sx={groupBtn} aria-label="Файлы беседы">
                   <FolderSimple size={22} weight="bold" />
                 </IconButton>
               </Tooltip>
             )}
             {activeConvId && !isMobile && (
               <Tooltip title="Поделиться диалогом">
-                <IconButton onClick={() => setShareOpen(true)} sx={headerIconBtnSx} aria-label="Поделиться диалогом">
+                <IconButton onClick={() => setShareOpen(true)} sx={groupBtn} aria-label="Поделиться диалогом">
                   <Users size={22} weight="bold" />
                 </IconButton>
               </Tooltip>
@@ -1058,8 +1059,8 @@ export default function ChatPage() {
                 <IconButton
                   onClick={() => setRoomOpenById((prev) => ({ ...prev, [activeConvId]: !prev[activeConvId] }))}
                   sx={{
-                    ...headerIconBtnSx,
-                    ...(roomOpenById[activeConvId] ? { color: 'primary.light', borderColor: 'var(--bt-line)', bgcolor: 'color-mix(in srgb, var(--bt-elevated) 78%, #21a0ce)' } : {}),
+                    ...groupBtn,
+                    ...(roomOpenById[activeConvId] ? { color: 'primary.light', bgcolor: 'var(--bt-glow)' } : {}),
                   }}
                   aria-label="Переписка между людьми"
                   aria-pressed={Boolean(roomOpenById[activeConvId])}
@@ -1074,7 +1075,7 @@ export default function ChatPage() {
                   <IconButton
                     onClick={exportDocx}
                     disabled={exporting || !displayMessages.some((m) => m.role === 'assistant')}
-                    sx={headerIconBtnSx}
+                    sx={groupBtn}
                     aria-label="Экспортировать ответ в DOCX"
                   >
                     <FileArrowDown size={22} weight="bold" />
@@ -1082,7 +1083,7 @@ export default function ChatPage() {
                 </span>
               </Tooltip>
             )}
-            {!isMobile && <ColorModeToggle />}
+            </Box>
             {isMobile && (
               // Seven round buttons do not fit a phone; the rarely used ones live here.
               <IconButton

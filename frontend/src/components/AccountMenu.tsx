@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { Box, Divider, IconButton, ListItemIcon, Menu, MenuItem, Typography } from '@mui/material';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Gear, CreditCard, ShieldCheck, SignOut } from '@phosphor-icons/react';
+import { Gear, CreditCard, Moon, ShieldCheck, SignOut, Sun } from '@phosphor-icons/react';
+import { useColorMode } from '@/theme/ColorMode';
 import { useAuthStore } from '@/stores/authStore';
 import { apiFetch } from '@/api/client';
 import { TIER_LABELS, formatTokens, formatUsd } from '@/constants/tiers';
@@ -23,6 +24,7 @@ export function AccountMenu() {
   const [anchor, setAnchor] = useState<null | HTMLElement>(null);
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
+  const colorMode = useColorMode();
   const isAdmin = useAuthStore((s) => s.isAdmin)();
   const open = Boolean(anchor);
   const { data: sub } = useQuery<SubView>({
@@ -37,7 +39,7 @@ export function AccountMenu() {
   const remaining = sub?.unlimited
     ? `сегодня ${formatUsd(sub.spend?.day?.usd)} · месяц ${formatUsd(sub.spend?.month?.usd)}`
     : sub?.tier === 'free'
-      ? `${Math.max(0, (sub.free_daily?.replies_limit || 30) - (sub.free_daily?.replies || 0))} ответов сегодня`
+      ? `${Math.max(0, (sub.free_daily?.replies_limit || 30) - (sub.free_daily?.replies || 0))} из ${sub.free_daily?.replies_limit || 30} ответов осталось сегодня`
       : sessionLeft != null
         ? `ещё ${formatTokens(sessionLeft)} на 5 часов`
         : sub?.chat?.remaining != null
@@ -131,6 +133,10 @@ export function AccountMenu() {
             Админ-панель
           </MenuItem>
         )}
+        <MenuItem onClick={() => { setAnchor(null); colorMode.toggle(); }} sx={{ minHeight: 44 }}>
+          <ListItemIcon>{colorMode.mode === 'dark' ? <Sun size={20} weight="bold" /> : <Moon size={20} weight="bold" />}</ListItemIcon>
+          {colorMode.mode === 'dark' ? 'Светлая тема' : 'Тёмная тема'}
+        </MenuItem>
         <Divider sx={{ borderColor: 'var(--bt-hairline)' }} />
         <MenuItem onClick={() => useAuthStore.getState().logout()} sx={{ color: 'var(--bt-danger)', minHeight: 44 }}>
           <ListItemIcon sx={{ color: 'inherit' }}>

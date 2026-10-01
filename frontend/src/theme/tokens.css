@@ -22,8 +22,8 @@ html[data-theme='dark'] {
   --bt-fade-mid: rgba(12, 16, 18, 0.18);
   --bt-fade-solid: #0c1012;
   --bt-nav: rgba(12, 16, 18, 0.82);
-  --bt-panel: rgba(18, 24, 26, 0.94);
-  --bt-sidebar: rgba(10, 14, 16, 0.88);
+  --bt-panel: #12181a;
+  --bt-sidebar: #10161a;
   --bt-danger: #f87171;
   --bt-danger-soft: rgba(248, 113, 113, 0.12);
   --bt-success: #4ade80;

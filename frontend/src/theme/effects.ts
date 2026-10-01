@@ -157,6 +157,34 @@ export const headerIconBtnSx = {
   },
 } as const;
 
+/** Work actions of a chat (files, share, export) sit in one grouped control, not three look-alike boxes. */
+export const headerGroupSx = {
+  display: 'flex',
+  alignItems: 'center',
+  flexShrink: 0,
+  overflow: 'hidden',
+  borderRadius: '12px',
+  border: '1px solid var(--bt-hairline)',
+  bgcolor: 'var(--bt-panel)',
+  '& > * + *': { borderLeft: '1px solid var(--bt-hairline)' },
+} as const;
+
+export const headerGroupBtnSx = {
+  ...headerIconBtnSx,
+  width: 40,
+  height: 38,
+  borderRadius: 0,
+  border: 'none',
+  bgcolor: 'transparent',
+  [HOVER_FINE]: {
+    '&:hover': { color: 'text.primary', bgcolor: 'var(--bt-overlay)' },
+  },
+  '@media (hover: none), (pointer: coarse)': {
+    '&:hover': { color: 'text.secondary', bgcolor: 'transparent' },
+  },
+  '&.Mui-disabled': { color: 'text.disabled', bgcolor: 'transparent', opacity: 1 },
+} as const;
+
 /** Static floating island: composer and clarify list share this shell. */
 export const floatingPanelSx = {
   borderRadius: '22px',
