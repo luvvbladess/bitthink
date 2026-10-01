@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import {
   Box,
   IconButton,
@@ -13,7 +13,7 @@ import {
   DialogActions,
   Button,
 } from '@mui/material';
-import { Plus, Trash, PencilSimple, Check, X, MagnifyingGlass, ClockCounterClockwise, FolderSimple } from '@phosphor-icons/react';
+import { Plus, Trash, PencilSimple, Check, X, MagnifyingGlass, FolderSimple } from '@phosphor-icons/react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { BrandLink } from '@/components/BrandMark';
 import { headerIconBtnSx } from '@/theme/effects';
@@ -25,6 +25,21 @@ export interface ConversationItem {
   is_active: boolean;
   shared?: boolean;
   role?: 'owner' | 'member';
+  updated_at?: string;
+  created_at?: string;
+}
+
+/** Day buckets for the list: a flat "recent" list stops helping after a dozen chats. */
+function dateGroup(iso?: string): string {
+  const then = iso ? new Date(iso) : null;
+  if (!then || Number.isNaN(then.getTime())) return 'Недавние';
+  const dayStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((dayStart(new Date()) - dayStart(then)) / 86_400_000);
+  if (days <= 0) return 'Сегодня';
+  if (days === 1) return 'Вчера';
+  if (days < 7) return 'На этой неделе';
+  if (days < 30) return 'В этом месяце';
+  return 'Раньше';
 }
 
 interface Props {
@@ -58,6 +73,10 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
   const filteredConversations = search.trim()
     ? conversations.filter((c) => c.title.toLowerCase().includes(search.trim().toLowerCase()))
     : conversations;
+  // Newest first. Keep the server order when it sent no dates.
+  const ordered = filteredConversations.every((c) => c.updated_at)
+    ? [...filteredConversations].sort((a, b) => Date.parse(b.updated_at!) - Date.parse(a.updated_at!))
+    : filteredConversations;
 
   const startEdit = (conv: ConversationItem) => {
     setEditingId(conv.id);
@@ -82,10 +101,8 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
         maxWidth: { md: 280 },
         overflow: 'hidden',
         bgcolor: 'var(--bt-sidebar)',
-        backgroundImage: 'radial-gradient(ellipse 90% 40% at 0% 0%, var(--bt-glow), transparent 58%)',
         borderRight: onClose ? 'none' : '1px solid',
-        borderColor: 'var(--bt-line)',
-        boxShadow: onClose ? 'none' : 'inset -1px 0 0 var(--bt-overlay-faint)',
+        borderColor: 'var(--bt-hairline)',
       }}
     >
       <Box
@@ -183,24 +200,6 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
         </Box>
       )}
 
-      <Box
-        sx={{
-          px: 2,
-          pt: 0.5,
-          pb: 0.85,
-          flexShrink: 0,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 0.75,
-          color: 'text.secondary',
-          fontSize: '0.75rem',
-          fontWeight: 600,
-          letterSpacing: '0.02em',
-        }}
-      >
-        <ClockCounterClockwise size={14} />
-        Недавние
-      </Box>
       <List
         sx={{
           flexGrow: 1,
@@ -235,11 +234,21 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
           </Box>
         )}
         <AnimatePresence initial={false}>
-          {filteredConversations.map((conv, i) => {
+          {ordered.map((conv, i) => {
             const active = conv.id === activeId;
+            const label = dateGroup(conv.updated_at);
+            const showLabel = !search.trim() && (i === 0 || label !== dateGroup(ordered[i - 1].updated_at));
             return (
+              <Fragment key={conv.id}>
+                {showLabel && (
+                  <Typography
+                    component="div"
+                    sx={{ px: 1.35, pt: i === 0 ? 0.5 : 1.75, pb: 0.6, color: 'text.muted', fontSize: '0.75rem', fontWeight: 600 }}
+                  >
+                    {label}
+                  </Typography>
+                )}
               <motion.div
-                key={conv.id}
                 initial={reduce ? false : { opacity: 0, y: 6 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={reduce ? undefined : { opacity: 0 }}
@@ -257,10 +266,10 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
                     overflow: 'hidden',
                     color: active ? 'text.primary' : 'text.secondary',
                     border: '1px solid',
-                    borderColor: active ? 'var(--bt-line)' : 'transparent',
-                    bgcolor: active ? 'var(--bt-glow)' : 'transparent',
-                    boxShadow: active ? '0 0 22px var(--bt-glow)' : 'none',
-                    transition: 'background-color 0.18s cubic-bezier(0.23, 1, 0.32, 1), border-color 0.18s cubic-bezier(0.23, 1, 0.32, 1), box-shadow 0.18s cubic-bezier(0.23, 1, 0.32, 1), color 0.18s cubic-bezier(0.23, 1, 0.32, 1)',
+                    borderColor: 'transparent',
+                    bgcolor: active ? 'var(--bt-overlay)' : 'transparent',
+                    boxShadow: 'none',
+                    transition: 'background-color 0.18s cubic-bezier(0.23, 1, 0.32, 1), color 0.18s cubic-bezier(0.23, 1, 0.32, 1)',
                     '&::before': {
                       content: '""',
                       position: 'absolute',
@@ -270,17 +279,16 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
                       width: 2,
                       borderRadius: 2,
                       bgcolor: 'primary.main',
-                      boxShadow: '0 0 10px var(--bt-glow-strong)',
                       opacity: active ? 1 : 0,
                       transform: active ? 'scaleY(1)' : 'scaleY(0.4)',
                       transition: 'opacity 0.18s cubic-bezier(0.23, 1, 0.32, 1), transform 0.18s cubic-bezier(0.23, 1, 0.32, 1)',
                     },
                     '&.Mui-selected': {
-                      bgcolor: 'var(--bt-glow)',
-                      '&:hover': { bgcolor: 'var(--bt-glow-strong)' },
+                      bgcolor: 'var(--bt-overlay)',
+                      '&:hover': { bgcolor: 'var(--bt-overlay-strong)' },
                     },
                     '&:hover': {
-                      bgcolor: active ? 'var(--bt-glow-strong)' : 'var(--bt-overlay-faint)',
+                      bgcolor: active ? 'var(--bt-overlay-strong)' : 'var(--bt-overlay-faint)',
                       color: 'text.primary',
                     },
                   }}
@@ -322,7 +330,6 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
                               borderRadius: '50%',
                               flexShrink: 0,
                               bgcolor: 'primary.main',
-                              boxShadow: '0 0 10px var(--bt-glow-strong)',
                               '@media (prefers-reduced-motion: no-preference)': {
                                 animation: 'sidebarJobPulse 1.6s ease-in-out infinite',
                               },
@@ -381,6 +388,7 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
                   )}
                 </ListItemButton>
               </motion.div>
+              </Fragment>
             );
           })}
         </AnimatePresence>

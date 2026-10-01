@@ -219,7 +219,10 @@ export function ChatMessage({
   mine = false,
 }: Props) {
   const isUser = role === 'user';
-  const alignEnd = people ? isUser && mine : isUser;
+  // Solo chat: the question is the heading of its turn (left, larger, no bubble) and the
+  // answer reads below it as an article. A shared room keeps bubbles: they carry who wrote.
+  const asTitle = isUser && !people;
+  const alignEnd = people ? isUser && mine : false;
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(content);
@@ -314,17 +317,17 @@ export function ChatMessage({
         <Box
           sx={{
             minWidth: 0,
-            width: isUser ? 'auto' : '100%',
-            maxWidth: isUser ? { xs: '88%', md: '70%' } : '100%',
-            px: isUser ? 1.75 : 0,
-            py: isUser ? 1.1 : 0.25,
-            borderRadius: isUser ? '18px' : 0,
-            backgroundColor: isUser ? 'background.paper' : 'transparent',
+            width: isUser && !asTitle ? 'auto' : '100%',
+            maxWidth: isUser && !asTitle ? { xs: '88%', md: '70%' } : '100%',
+            px: isUser && !asTitle ? 1.75 : 0,
+            py: isUser && !asTitle ? 1.1 : 0.25,
+            borderRadius: isUser && !asTitle ? '18px' : 0,
+            backgroundColor: isUser && !asTitle ? 'background.paper' : 'transparent',
             color: 'text.primary',
-            fontSize: isUser ? '0.9375rem' : '1rem',
-            fontWeight: 400,
-            letterSpacing: 'normal',
-            lineHeight: isUser ? 1.5 : 1.7,
+            fontSize: asTitle ? { xs: '1.125rem', md: '1.375rem' } : isUser ? '0.9375rem' : '1rem',
+            fontWeight: asTitle ? 600 : 400,
+            letterSpacing: asTitle ? '-0.02em' : 'normal',
+            lineHeight: asTitle ? 1.3 : isUser ? 1.5 : 1.7,
             overflowWrap: 'anywhere',
             border: 'none',
             boxShadow: 'none',
