@@ -611,7 +611,7 @@ export function ChatWindow({
         sx={{
           position: 'absolute',
           zIndex: 3,
-          right: splitPane ? 12 : { xs: 12, md: 'max(12px, calc((100% - 768px) / 2 - 4px))' },
+          right: splitPane ? 12 : { xs: 12, md: 'max(12px, calc((100% - 768px) / 2 - 4px))', xl: 'max(12px, calc((100% - 880px) / 2 - 4px))' },
           // Above the composer; on phones also above the «Вопросы» chip that sits on it.
           bottom: {
             xs: questionTicks.length >= MIN_DIALOGUE_QUESTIONS

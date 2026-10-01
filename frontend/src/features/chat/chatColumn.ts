@@ -1,7 +1,8 @@
 /** Shared reading column: messages and composer must use the same box. */
 export const CHAT_COL = {
   width: '100%',
-  maxWidth: 768,
+  // Wider on big screens: tables and code need the room (messages, composer and the rails share it).
+  maxWidth: { xs: 768, xl: 880 },
   mx: 'auto',
   px: { xs: 1.5, sm: 3 },
   boxSizing: 'border-box',
