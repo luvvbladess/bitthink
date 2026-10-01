@@ -49,7 +49,7 @@ def test_public_model_catalog_hides_internal_routes():
         assert payload["docgenAvailable"] is False
         assert payload["astraAvailable"] is False
         assert payload["multipliers"]["gpt-6-sol"] == 20
-        assert payload["multipliers"]["gpt-6-astra"] == 90
+        assert payload["multipliers"]["gpt-6-astra"] == 100
     finally:
         app.dependency_overrides.clear()
 

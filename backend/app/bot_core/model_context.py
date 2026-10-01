@@ -82,9 +82,15 @@ def max_output_tokens(leaf_model: str) -> int:
     return window_for(leaf_model).max_output
 
 
+# Выше 272k входных токенов цена удваивается (plans.LONG_CONTEXT_INPUT), а кэш
+# префикса на таких объёмах работает хуже. Окно режима – это предел модели, а не
+# рабочий размер диалога: не упаковываем историю больше, чем стоит перечитывать.
+MAX_PROMPT_TOKENS = 300_000
+
+
 def input_budget_tokens(mode: str) -> int:
     spec = window_for(mode)
-    return max(8_000, spec.context - spec.max_output - TOOL_RESERVE_TOKENS)
+    return max(8_000, min(spec.context - spec.max_output - TOOL_RESERVE_TOKENS, MAX_PROMPT_TOKENS))
 
 
 def tokens_to_chars(tokens: int) -> int:
@@ -97,6 +103,28 @@ def packing_char_budgets(mode: str) -> Tuple[int, int, int]:
     history_chars = max(8_000, pack_chars - document_chars)
     recent_chars = max(4_000, int(history_chars * 0.70))
     return document_chars, history_chars, recent_chars
+
+
+def cached_prompt_tokens(usage: Any) -> int:
+    """Prompt-cache hits from a chat-completions usage object.
+
+    DeepSeek reports prompt_cache_hit_tokens, Moonshot cached_tokens, OpenAI-style
+    APIs prompt_tokens_details.cached_tokens. Without this the cache never reached
+    the usage rows, so cached input was billed (and counted) as fresh.
+    """
+    if not usage:
+        return 0
+
+    def _field(obj: Any, key: str) -> Any:
+        return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
+
+    for key in ("prompt_cache_hit_tokens", "cached_tokens"):
+        value = _field(usage, key)
+        if isinstance(value, (int, float)) and value > 0:
+            return int(value)
+    details = _field(usage, "prompt_tokens_details")
+    value = _field(details, "cached_tokens") if details else None
+    return int(value) if isinstance(value, (int, float)) and value > 0 else 0
 
 
 def attached_file_note(messages: Sequence[Dict[str, Any]]) -> Optional[Dict[str, str]]:

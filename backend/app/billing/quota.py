@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from app.billing.plans import (
+    MODEL_MULTIPLIER,
     NANO_CUSHION_PER_DAY,
     SESSION_SECONDS,
     canonical_tier,
@@ -307,11 +308,11 @@ def usage_view(sub: dict[str, Any]) -> dict[str, Any]:
             "resets_at": midnight if tier == "free" else 0,
         },
         "multipliers": {
-            "Luna / Nano": 1,
-            "Kimi": 4,
-            "DeepSeek": 5,
-            "Sol": 20,
-            "Astra": 90,
+            "Luna / Nano": MODEL_MULTIPLIER["gpt-6-luna"],
+            "Kimi": MODEL_MULTIPLIER["kimi-k2.6"],
+            "DeepSeek": MODEL_MULTIPLIER["deepseek-v4-pro"],
+            "Sol": MODEL_MULTIPLIER["gpt-6-sol"],
+            "Astra": MODEL_MULTIPLIER["gpt-6-astra"],
         },
     }
 

@@ -9,15 +9,17 @@ from typing import Any
 MODEL_USD: dict[str, dict[str, float]] = {
     "gpt-5-nano": {"input": 0.05, "output": 0.40},
     "gpt-5.6-luna": {"input": 0.25, "output": 2.00},
-    "gpt-6-luna": {"input": 0.10, "output": 0.50},
+    "gpt-6-luna": {"input": 0.10, "output": 0.50, "cached": 0.01},
     "gpt-5.6-terra": {"input": 1.25, "output": 10.00},
     "gpt-5.6-sol": {"input": 1.75, "output": 14.00},
     "gpt-5.6-sol-pro": {"input": 1.75, "output": 14.00},
-    "gpt-6-sol": {"input": 2.00, "output": 10.00},
-    "gpt-6-astra": {"input": 10.00, "output": 50.00},
-    "kimi-k2.6": {"input": 0.60, "output": 2.50},
-    "deepseek-v4-pro": {"input": 0.55, "output": 2.19},
-    "deepseek-v4-flash": {"input": 0.14, "output": 0.28},
+    "gpt-6-sol": {"input": 2.00, "output": 10.00, "cached": 0.10},
+    "gpt-6-astra": {"input": 10.00, "output": 50.00, "cached": 1.00},
+    "kimi-k2.6": {"input": 0.95, "output": 4.00, "cached": 0.16},
+    # DeepSeek bills peak (UTC 01-04, 06-10 on weekdays) at twice the off-peak
+    # rate. Mid-point of the two, weighted toward Russian working hours.
+    "deepseek-v4-pro": {"input": 0.92, "output": 2.77, "cached": 0.03},
+    "deepseek-v4-flash": {"input": 0.21, "output": 0.84, "cached": 0.005},
     "gpt-image-2.5-sunburst": {"input": 0.0, "output": 0.0, "image": 0.08},
     "gpt-image-2.5-flare": {"input": 0.0, "output": 0.0, "image": 0.08},
     "gpt-image-2": {"input": 0.0, "output": 0.0, "image": 0.08},
@@ -35,7 +37,7 @@ def model_cost_usd(
     images: int = 0,
     cached_input_tokens: int = 0,
 ) -> float:
-    """List-price estimate. Cached prompt hits are billed at 10% of the input rate."""
+    """List-price estimate. Cached prompt hits use the model's own cached rate, else 10% of input."""
     rates = MODEL_USD.get(model) or _DEFAULT
     fresh_input = max(0, int(input_tokens or 0))
     cached = min(max(0, int(cached_input_tokens or 0)), fresh_input)
@@ -43,7 +45,7 @@ def model_cost_usd(
     usd = 0.0
     input_rate = float(rates.get("input", _DEFAULT["input"]))
     usd += fresh_input / 1_000_000 * input_rate
-    usd += cached / 1_000_000 * input_rate * 0.1
+    usd += cached / 1_000_000 * float(rates.get("cached", input_rate * 0.1))
     usd += max(0, int(output_tokens or 0)) / 1_000_000 * float(rates.get("output", _DEFAULT["output"]))
     usd += max(0, int(images or 0)) * float(rates.get("image", 0.0))
     return usd

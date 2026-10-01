@@ -23,19 +23,21 @@ def test_canonical_aliases():
 def test_pro_price_and_pools():
     plan = plan_for("pro")
     assert plan["price_rub"] == 1_990
-    assert plan["chat_tokens"] == 30_000_000
-    assert plan["computer_tokens"] == 7_200_000
-    assert plan["chat_week"] == 7_500_000
-    assert plan["chat_session"] == 2_160_000
-    assert plan["computer_week"] == 1_800_000
-    assert plan["computer_session"] == 516_000
+    assert plan["chat_tokens"] == 45_000_000
+    assert plan["computer_tokens"] == 15_000_000
+    assert plan["chat_week"] == 11_250_000
+    assert plan["chat_session"] == 3_240_000
+    assert plan["computer_week"] == 3_750_000
+    assert plan["computer_session"] == 1_075_000
 
 
 def test_multipliers_and_long_context():
     assert our_tokens("gpt-6-luna", 100, 50) == 150
-    assert our_tokens("kimi-k2.6", 100, 0) == 400
+    assert our_tokens("kimi-k2.6", 100, 0) == 900
     assert our_tokens("gpt-6-sol", 10, 0) == 200
-    assert our_tokens("gpt-6-astra", 10, 0) == 900
+    assert our_tokens("gpt-6-astra", 10, 0) == 1000
+    assert our_tokens("deepseek-v4-pro", 10, 0) == 90
+    assert our_tokens("deepseek-v4-flash", 10, 0) == 20
     assert our_tokens("gpt-6-luna", 272_001, 0) == 272_001 * 2
     assert our_tokens("gpt-6-luna", 100, 0, 100) == 25
     assert our_tokens("gpt-6-luna", 100, 50, 0) == 150
@@ -81,15 +83,15 @@ def test_usage_view_and_debit():
     view = usage_view(mgr.get_subscription(uid))
     assert view["tier"] == "pro"
     assert view["chat"]["used"] == 1_000_000
-    assert view["chat"]["remaining"] == 29_000_000
+    assert view["chat"]["remaining"] == 44_000_000
     assert view["computer"]["used"] == 500_000
-    assert view["computer"]["remaining"] == 6_700_000
+    assert view["computer"]["remaining"] == 14_500_000
     assert view["images"]["used"] == 2
     assert view["images"]["remaining"] == 23
     assert view["windows"]["chat"]["session"]["used"] == 1_000_000
-    assert view["windows"]["chat"]["session"]["remaining"] == 1_160_000
+    assert view["windows"]["chat"]["session"]["remaining"] == 2_240_000
     assert view["windows"]["chat"]["week"]["used"] == 1_000_000
-    assert view["windows"]["chat"]["week"]["remaining"] == 6_500_000
+    assert view["windows"]["chat"]["week"]["remaining"] == 10_250_000
     assert view["windows"]["computer"]["session"]["used"] == 500_000
 
 
@@ -108,10 +110,10 @@ def test_session_and_week_block_before_month():
     mgr = DatabaseConversationManager()
     uid = 91003
     mgr.set_subscription_tier(uid, "pro", 30)
-    mgr.debit_plan_tokens(uid, "chat", 2_160_000)
+    mgr.debit_plan_tokens(uid, "chat", 3_240_000)
     view = usage_view(mgr.get_subscription(uid))
     assert view["windows"]["chat"]["session"]["remaining"] == 0
-    assert view["chat"]["remaining"] == 27_840_000
+    assert view["chat"]["remaining"] == 41_760_000
     try:
         assert_can_use(uid, "chat", "gpt-6-luna")
         raise AssertionError("session should block")
@@ -123,7 +125,7 @@ def test_session_and_week_block_before_month():
     mgr.get_subscription(uid)
     with SyncSessionLocal() as session:
         sub = session.query(Subscription).filter_by(user_id=uid).first()
-        sub.week_chat_used = 7_500_000
+        sub.week_chat_used = 11_250_000
         session.commit()
     view = usage_view(mgr.get_subscription(uid))
     assert view["windows"]["chat"]["week"]["remaining"] == 0
@@ -151,7 +153,7 @@ def test_expired_session_resets():
         session.commit()
     view = usage_view(mgr.get_subscription(uid))
     assert view["windows"]["chat"]["session"]["used"] == 0
-    assert view["windows"]["chat"]["session"]["remaining"] == 2_160_000
+    assert view["windows"]["chat"]["session"]["remaining"] == 3_240_000
     assert view["chat"]["used"] == 1_000_000
 
 

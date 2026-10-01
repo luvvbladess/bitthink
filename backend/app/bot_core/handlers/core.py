@@ -526,13 +526,14 @@ async def get_smart_response(
                 model=synthesizer,
                 user_id=user_id,
                 use_tools=False,
-                reasoning_effort=reasoning_effort if reasoning_effort not in {None, "none"} else "high",
+                reasoning_effort=reasoning_effort if reasoning_effort not in {None, "none"} else "medium",
                 on_reasoning_delta=None,
             )
         else:
             result = await get_chat_response(
                 messages, model=synthesizer, user_id=user_id, use_tools=True,
-                reasoning_effort="high", on_reasoning_delta=None,
+                reasoning_effort=reasoning_effort if reasoning_effort not in {None, "none"} else "medium",
+                on_reasoning_delta=None,
                 force_web_search=True,
             )
     elif "deepseek" in model:

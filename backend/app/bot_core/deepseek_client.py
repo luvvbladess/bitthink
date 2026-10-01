@@ -10,7 +10,7 @@ from typing import List, Dict, Any, Tuple, Optional
 from openai import AsyncOpenAI
 from config import DEEPSEEK_API_KEY
 from conversations import conversation_manager
-from model_context import max_output_tokens
+from model_context import cached_prompt_tokens, max_output_tokens
 from search_engine import get_web_search_sources
 
 logger = logging.getLogger(__name__)
@@ -159,6 +159,7 @@ async def get_deepseek_response(
     last_text = ""
     total_input_tokens = 0
     total_output_tokens = 0
+    total_cached_tokens = 0
 
     for loop_i in range(max_loops):
         logger.info(f"DeepSeek API call #{loop_i + 1}, model={model}, user={user_id}")
@@ -225,6 +226,7 @@ async def get_deepseek_response(
         if stream_usage:
             total_input_tokens += getattr(stream_usage, "prompt_tokens", 0) or 0
             total_output_tokens += getattr(stream_usage, "completion_tokens", 0) or 0
+            total_cached_tokens += cached_prompt_tokens(stream_usage)
 
         message_content = "".join(content_parts)
         loop_reasoning = "".join(loop_reasoning_parts)
@@ -273,7 +275,7 @@ async def get_deepseek_response(
         if not tool_calls:
             logger.info(f"DeepSeek completed successfully on loop {loop_i+1}")
             if user_id:
-                conversation_manager.track_tokens(user_id, model, total_input_tokens, total_output_tokens)
+                conversation_manager.track_tokens(user_id, model, total_input_tokens, total_output_tokens, total_cached_tokens)
             return message_content or "Нет ответа от модели", generated_files, "\n\n".join(reasoning_parts), search_results[:20]
 
         # Выполняем каждый tool call
@@ -353,5 +355,5 @@ async def get_deepseek_response(
 
     logger.warning("DeepSeek API: exhausted max loops")
     if user_id:
-        conversation_manager.track_tokens(user_id, model, total_input_tokens, total_output_tokens)
+        conversation_manager.track_tokens(user_id, model, total_input_tokens, total_output_tokens, total_cached_tokens)
     return last_text or "Нет ответа от модели", generated_files, "\n\n".join(reasoning_parts), search_results[:20]
