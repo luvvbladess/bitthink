@@ -222,7 +222,7 @@ export default function BillingPage() {
       {!sub?.unlimited && (
         <AccountSection title="Как считаются токены" hint="1 наш токен равен 1 токену Luna. Если контекст больше 272 тыс. входных токенов, ход считается вдвойне.">
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
-            {Object.entries(sub?.multipliers || { 'Luna / Nano': 1, Kimi: 4, DeepSeek: 5, Sol: 20, Astra: 90 }).map(
+            {Object.entries(sub?.multipliers || { 'Luna / Nano': 1, Kimi: 9, DeepSeek: 9, Sol: 20, Astra: 100 }).map(
               ([name, factor]) => (
                 <Box
                   key={name}

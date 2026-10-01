@@ -73,8 +73,14 @@ def with_runtime_context(
     user_id: int | None = None,
     sandbox: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Date and matched skills as extra system items. First system stays cacheable."""
+    """Date and matched skills as extra system items. First system stays cacheable.
+
+    The date changes once a day, so it sits right after the first system item.
+    Matched skills differ from turn to turn: they go before the last user message,
+    otherwise every change shifts the whole history and the prompt cache restarts.
+    """
     extras: List[str] = [current_date_note()]
+    skills_block = ""
     if use_skills and not _already_has_preloaded_skills(messages):
         try:
             from computer_skills.loader import preload_skills_block
@@ -87,11 +93,17 @@ def with_runtime_context(
                 sandbox=sandbox,
             )
             if block:
-                extras.append(block)
+                skills_block = block
         except Exception:
             pass
     out = [dict(item) for item in messages]
     insert_at = 1 if out and out[0].get("role") == "system" else 0
     for offset, text in enumerate(extras):
         out.insert(insert_at + offset, {"role": "system", "content": text})
+    if skills_block:
+        last_user = next(
+            (i for i in range(len(out) - 1, -1, -1) if out[i].get("role") == "user"),
+            len(out),
+        )
+        out.insert(last_user, {"role": "system", "content": skills_block})
     return out

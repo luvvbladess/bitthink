@@ -14,7 +14,7 @@ import re
 
 from config import KIMI_API_KEY, KIMI_MODEL
 from conversations import conversation_manager
-from model_context import max_output_tokens, search_hop_messages
+from model_context import cached_prompt_tokens, max_output_tokens, search_hop_messages
 
 logger = logging.getLogger(__name__)
 
@@ -260,10 +260,11 @@ async def get_kimi_search_brief(messages: List[Dict[str, Any]], user_text: str, 
     last_text = ""
     total_input_tokens = 0
     total_output_tokens = 0
+    total_cached_tokens = 0
 
     def _track():
         if user_id:
-            conversation_manager.track_tokens(user_id, KIMI_MODEL, total_input_tokens, total_output_tokens)
+            conversation_manager.track_tokens(user_id, KIMI_MODEL, total_input_tokens, total_output_tokens, total_cached_tokens)
 
     for _ in range(4):
         try:
@@ -289,6 +290,7 @@ async def get_kimi_search_brief(messages: List[Dict[str, Any]], user_text: str, 
         if usage:
             total_input_tokens += getattr(usage, "prompt_tokens", 0) or 0
             total_output_tokens += getattr(usage, "completion_tokens", 0) or 0
+            total_cached_tokens += cached_prompt_tokens(usage)
 
         choice = response.choices[0]
         message = choice.message
@@ -545,10 +547,11 @@ async def get_kimi_chat_response(
     last_text = ""
     total_input_tokens = 0
     total_output_tokens = 0
+    total_cached_tokens = 0
 
     def _track():
         if user_id:
-            conversation_manager.track_tokens(user_id, KIMI_MODEL, total_input_tokens, total_output_tokens)
+            conversation_manager.track_tokens(user_id, KIMI_MODEL, total_input_tokens, total_output_tokens, total_cached_tokens)
 
     def _final_sources(text: str) -> List[Dict[str, str]]:
         return _merge_ui_sources(collected_sources, _build_search_results_from_text(text or ""))
@@ -578,6 +581,7 @@ async def get_kimi_chat_response(
         if usage:
             total_input_tokens += getattr(usage, "prompt_tokens", 0) or 0
             total_output_tokens += getattr(usage, "completion_tokens", 0) or 0
+            total_cached_tokens += cached_prompt_tokens(usage)
 
         choice = response.choices[0]
         message = choice.message

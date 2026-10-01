@@ -97,7 +97,10 @@ def _get_reasoning_config(model: str, user_effort: Optional[str] = None) -> dict
     if model == "gpt-6-astra":
         return {"effort": "high"}
     if model == "gpt-6-sol":
-        return {"effort": "high"}
+        # «Без размышлений» в интерфейсе раньше давало high: переключатель на Sol
+        # ничего не менял, а выходные токены стоят $10 за миллион. medium на
+        # GPT-6.1 Sol держит почти тот же результат, глубина – по тумблеру.
+        return {"effort": "medium"}
     if model in ("gpt-5-nano", "gpt-6-luna"):
         return {"effort": "low"}
     return {"effort": "medium"}
@@ -250,6 +253,13 @@ def _sanitize_text(text: Any) -> str:
     return text
 
 
+# Начала system-блоков, которые собираются заново на каждом ходу.
+_TURN_SYSTEM_MARKERS = (
+    "Скилы уже подобраны под этот ход",
+    "Ниже результаты актуального веб-поиска",
+)
+
+
 def _build_responses_input(
     messages: List[Dict[str, Any]],
     image_base64: Optional[str] = None,
@@ -264,6 +274,7 @@ def _build_responses_input(
     """
     static_parts: List[str] = []
     extra_system: List[str] = []
+    turn_system: List[str] = []
     input_items = []
 
     for msg in messages:
@@ -276,6 +287,8 @@ def _build_responses_input(
                 if text:
                     if not static_parts:
                         static_parts.append(text)
+                    elif text.startswith(_TURN_SYSTEM_MARKERS):
+                        turn_system.append(text)
                     else:
                         extra_system.append(text)
             continue
@@ -311,6 +324,17 @@ def _build_responses_input(
                     {"type": "input_image", "image_url": img_url}
                 ]
                 break
+
+    # Блоки, которые меняются каждый ход (подобранные скилы, веб-контекст), идут
+    # перед последним вопросом, а не в начало: иначе любое их изменение сдвигает
+    # всю историю и кэш префикса пересчитывается по полной цене.
+    if turn_system:
+        tail = [{"role": "system", "content": text} for text in turn_system]
+        last_user = next(
+            (i for i in range(len(input_items) - 1, -1, -1) if input_items[i].get("role") == "user"),
+            len(input_items),
+        )
+        input_items[last_user:last_user] = tail
 
     instructions = "\n\n".join(static_parts) if static_parts else None
     prefix = [{"role": "system", "content": text} for text in extra_system]
