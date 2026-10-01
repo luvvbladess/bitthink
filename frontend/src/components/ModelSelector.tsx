@@ -37,7 +37,7 @@ const ANSWER_MODES = [
   { id: 'astra', label: ASTRA_LABEL, description: 'Песочница GPT-6: код, договоры, файлы', model: 'gpt-6-astra', icon: Atom },
   { id: 'studio', label: STUDIO_LABEL, description: 'Живой холст: картинки, слайды, лендинг', model: 'studio', icon: Presentation },
   { id: 'docgen', label: DOCGEN_LABEL, description: 'Большой .docx или комплект документов по Word, PDF, Excel и архивам', model: 'docgen', icon: FileText },
-  { id: 'computer', label: PILOT_LABEL, description: 'Сам зайдёт на сайт, почту или сервер', model: 'director', icon: Desktop },
+  { id: 'computer', label: PILOT_LABEL, description: 'Оркестратор в песочнице: раздаёт должности подходящим ИИ-агентам', model: 'director', icon: Desktop },
 ] as const;
 
 const REASONING_CAPABLE = new Set([

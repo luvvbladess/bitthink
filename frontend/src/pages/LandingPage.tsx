@@ -14,7 +14,7 @@ const features = [
   { title: 'Поиск с источниками', desc: 'Свежие факты и ссылки в ответе — ИИ ищет как Perplexity.', icon: MagnifyingGlass },
   { title: 'Документы', desc: 'PDF, Office, таблицы и картинки прямо в чате.', icon: FileText },
   { title: 'Картинки', desc: 'Опишите, что нужно. Изображение появится в той же беседе.', icon: Images },
-  { title: 'Пилот', desc: 'Сам заходит на сайты, почту, VPS и ваши сервисы.', icon: Desktop },
+  { title: 'Пилот', desc: 'Оркестратор в песочнице: раздаёт должности подходящим ИИ-агентам (поиск, сверка, сборка файлов) и собирает один ответ.', icon: Desktop },
 ];
 
 // Numbers mirror backend/app/billing/plans.py. Each plan lists what it ADDS, not the same lines three times.
