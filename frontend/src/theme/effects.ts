@@ -118,30 +118,29 @@ export const composerChipSelectedSx = {
 
 /** Chrome actions: sidebar, export, account. Same family as composer icons. */
 export const headerIconBtnSx = {
-  width: 44,
-  height: 44,
+  width: { xs: 44, md: 40 },
+  height: { xs: 44, md: 40 },
   borderRadius: '12px',
-  color: 'text.primary',
-  bgcolor: 'var(--bt-elevated)',
+  color: 'text.secondary',
+  bgcolor: 'var(--bt-panel)',
   border: '1px solid var(--bt-hairline)',
-  boxShadow: 'var(--bt-shadow)',
+  boxShadow: 'none',
   flexShrink: 0,
   ...tapPressSx,
   transition:
     'background-color 0.16s cubic-bezier(0.23, 1, 0.32, 1), border-color 0.16s cubic-bezier(0.23, 1, 0.32, 1), color 0.16s cubic-bezier(0.23, 1, 0.32, 1)',
   [HOVER_FINE]: {
     '&:hover': {
-      color: 'primary.light',
-      // --bt-glow is a 12% wash. Using it as the whole fill makes the button
-      // disappear into the page. Keep the solid plate and only tint it.
-      bgcolor: 'color-mix(in srgb, var(--bt-elevated) 78%, #21a0ce)',
+      color: 'text.primary',
+      // Keep a solid plate and lift it one tone: --bt-glow alone would let the button vanish into the page.
+      bgcolor: 'var(--bt-elevated)',
       borderColor: 'var(--bt-line)',
     },
   },
   '@media (hover: none), (pointer: coarse)': {
     '&:hover': {
-      color: 'text.primary',
-      bgcolor: 'var(--bt-elevated)',
+      color: 'text.secondary',
+      bgcolor: 'var(--bt-panel)',
       borderColor: 'var(--bt-hairline)',
     },
   },
@@ -162,7 +161,6 @@ export const headerIconBtnSx = {
 export const floatingPanelSx = {
   borderRadius: '22px',
   bgcolor: 'var(--bt-panel)',
-  backgroundImage: 'linear-gradient(180deg, var(--bt-glow) 0%, transparent 46%)',
   border: '1px solid',
   borderColor: 'var(--bt-line)',
   boxShadow: 'var(--bt-composer-shadow)',
@@ -171,15 +169,7 @@ export const floatingPanelSx = {
 export const composerShellSx = {
   ...floatingPanelSx,
   transition: 'border-color 0.22s cubic-bezier(0.23, 1, 0.32, 1), box-shadow 0.22s cubic-bezier(0.23, 1, 0.32, 1)',
-  '@media (prefers-reduced-motion: no-preference)': {
-    animation: 'composer-breathe 4.8s ease-in-out infinite',
-  },
-  '@keyframes composer-breathe': {
-    '0%, 100%': { boxShadow: 'var(--bt-composer-shadow)' },
-    '50%': { boxShadow: 'var(--bt-composer-shadow-mid)' },
-  },
   '&:focus-within': {
-    animation: 'none',
     borderColor: 'primary.light',
     boxShadow: 'var(--bt-composer-shadow-focus)',
   },

@@ -345,14 +345,25 @@ export function ChatMessage({
             '& ol': { pl: 3.75, my: 1, listStylePosition: 'outside' },
             '& li': { mb: 0.5 },
             '& li:empty, & li:has(> p:only-child:empty)': { display: 'none' },
+            // overflow-wrap:anywhere (set above) shrinks cell min-width to one letter and
+            // splits words mid-way. Cells wrap only when a word really cannot fit.
             '& table': {
               width: '100%',
               borderCollapse: 'collapse',
               fontSize: '0.875rem',
-              my: 1.5,
+              lineHeight: 1.5,
             },
-            '& th, & td': { border: '1px solid var(--bt-hairline)', p: 1 },
-            '& th': { bgcolor: 'var(--bt-overlay-faint)' },
+            '& th, & td': {
+              borderBottom: '1px solid var(--bt-hairline)',
+              px: 1.5,
+              py: 1,
+              textAlign: 'left',
+              verticalAlign: 'top',
+              overflowWrap: 'break-word',
+              wordBreak: 'normal',
+            },
+            '& th': { bgcolor: 'var(--bt-overlay-faint)', fontWeight: 600, whiteSpace: 'nowrap' },
+            '& tr:last-child td': { borderBottom: 'none' },
           }}
         >
           <ReactMarkdown
@@ -361,6 +372,18 @@ export function ChatMessage({
             urlTransform={sanitizeUrl}
             components={{
               pre: CodeBlock,
+              table: ({ children }) => (
+                <Box
+                  sx={{
+                    my: 1.5,
+                    overflowX: 'auto',
+                    border: '1px solid var(--bt-hairline)',
+                    borderRadius: '12px',
+                  }}
+                >
+                  <table>{children}</table>
+                </Box>
+              ),
               img: ({ src, alt }) =>
                 src ? (
                   <ChatImage

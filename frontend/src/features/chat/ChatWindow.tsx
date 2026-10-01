@@ -47,6 +47,8 @@ interface Props {
   clarifyDocked?: boolean;
   jumpRef?: MutableRefObject<DialogueJumpFn | null>;
   splitPane?: boolean;
+  /** Empty chat only: a spacer under the heading. The page parks the (single) composer on top of it. */
+  composerSlotRef?: (element: HTMLElement | null) => void;
 }
 
 const SUGGESTIONS = [
@@ -115,6 +117,7 @@ export function ChatWindow({
   clarifyDocked = false,
   jumpRef,
   splitPane = false,
+  composerSlotRef,
 }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -352,6 +355,9 @@ export function ChatWindow({
                       ? 'Напишите задачу своими словами. Сам откроет сайт, почту или сервер.'
                       : 'Обычный чат отвечает текстом. Студия рисует картинки и макеты на холсте.'}
               </Box>
+              {composerSlotRef && (
+                <Box ref={composerSlotRef} aria-hidden sx={{ height: 'var(--bt-composer-h, 112px)', mb: 2.5 }} />
+              )}
               {!isComputer && !isStudio && !isDocgen && studioAvailable && (
                 <Box
                   component="button"

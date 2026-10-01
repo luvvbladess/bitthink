@@ -2,7 +2,7 @@ import { Box, Container, Typography, Stack, useTheme } from '@mui/material';
 import { useEffect } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowRight, FileText, Images, MagnifyingGlass, Desktop } from '@phosphor-icons/react';
+import { ArrowRight, Check, FileText, Images, MagnifyingGlass, Desktop } from '@phosphor-icons/react';
 import { IslandButton } from '@/components/IslandButton';
 import { BrandMark, BrandLink } from '@/components/BrandMark';
 import { BRAND_FONT, BRAND_NAME, BRAND_SEARCH_NAME } from '@/brand';
@@ -11,10 +11,35 @@ import { composerShellSx } from '@/theme/effects';
 import { SITE_DESCRIPTION, SITE_FAQ, SITE_OG_TITLE, SITE_TITLE, applyPageMeta } from '@/seo';
 
 const features = [
-  { title: 'Поиск с источниками', desc: 'Свежие факты и ссылки в ответе — ИИ ищет как Perplexity.', icon: MagnifyingGlass, glow: true },
-  { title: 'Документы', desc: 'PDF, Office, таблицы и картинки прямо в чате.', icon: FileText, glow: false },
-  { title: 'Картинки', desc: 'Опишите, что нужно. Изображение появится в той же беседе.', icon: Images, glow: false },
-  { title: 'Пилот', desc: 'Сам заходит на сайты, почту, VPS и ваши сервисы.', icon: Desktop, glow: true },
+  { title: 'Поиск с источниками', desc: 'Свежие факты и ссылки в ответе — ИИ ищет как Perplexity.', icon: MagnifyingGlass },
+  { title: 'Документы', desc: 'PDF, Office, таблицы и картинки прямо в чате.', icon: FileText },
+  { title: 'Картинки', desc: 'Опишите, что нужно. Изображение появится в той же беседе.', icon: Images },
+  { title: 'Пилот', desc: 'Сам заходит на сайты, почту, VPS и ваши сервисы.', icon: Desktop },
+];
+
+// Numbers mirror backend/app/billing/plans.py. Each plan lists what it ADDS, not the same lines three times.
+const plans = [
+  {
+    name: 'Pro',
+    price: '1 990 ₽',
+    note: 'Повседневный чат и Пилот',
+    featured: false,
+    items: ['45 млн токенов в чат', '15 млн токенов на Пилота', 'Поиск, документы и Студия', '25 картинок в месяц'],
+  },
+  {
+    name: 'Pro+',
+    price: '3 990 ₽',
+    note: 'Для сложных задач',
+    featured: true,
+    items: ['Всё из Pro', '81 млн в чат и 50 млн на Пилота', 'GPT-6.1 Sol: эксперт и исследование', '40 картинок в месяц'],
+  },
+  {
+    name: 'Ultra',
+    price: '12 990 ₽',
+    note: 'Самая глубокая проработка',
+    featured: false,
+    items: ['Всё из Pro+', '270 млн в чат и 135 млн на Пилота', 'Astra: песочница для кода, договоров и файлов', '80 картинок в месяц'],
+  },
 ];
 
 export default function LandingPage() {
@@ -50,7 +75,7 @@ export default function LandingPage() {
 
   return (
     <Box sx={{ overflowX: 'hidden', position: 'relative' }}>
-      <Box sx={{ minHeight: '100dvh', pt: { xs: 10, md: 12 }, pb: 8, display: 'flex', alignItems: 'center' }}>
+      <Box sx={{ minHeight: { xs: '100dvh', md: 'min(88dvh, 800px)' }, pt: { xs: 10, md: 12 }, pb: 8, display: 'flex', alignItems: 'center' }}>
         <Container maxWidth="sm" sx={{ px: { xs: 2, sm: 3 } }}>
           <Stack alignItems="center" textAlign="center" spacing={2.25}>
             <motion.div {...fade}>
@@ -154,9 +179,8 @@ export default function LandingPage() {
                     p: 2.25,
                     borderRadius: '16px',
                     border: '1px solid',
-                    borderColor: f.glow ? 'var(--bt-line)' : 'divider',
-                    bgcolor: f.glow ? 'var(--bt-glow)' : 'var(--bt-overlay-faint)',
-                    boxShadow: f.glow ? '0 0 28px var(--bt-glow)' : 'none',
+                    borderColor: 'divider',
+                    bgcolor: 'var(--bt-overlay-faint)',
                   }}
                 >
                   <Box sx={{ color: 'primary.light', mb: 1.25, display: 'flex' }}>
@@ -189,35 +213,50 @@ export default function LandingPage() {
               mb: 3,
             }}
           >
-            {[
-              { name: 'Pro', price: '1 990 ₽', items: ['окно 5 часов и неделя', '45 млн в чат', 'Пилот и рабочие ответы'] },
-              { name: 'Pro+', price: '3 990 ₽', items: ['окно 5 часов и неделя', '81 млн в чат', 'глубокий разбор сложных задач'] },
-              { name: 'Ultra', price: '12 990 ₽', items: ['окно 5 часов и неделя', '270 млн в чат', 'самая глубокая проработка'] },
-            ].map((plan) => (
+            {plans.map((plan) => (
               <Box
                 key={plan.name}
                 sx={{
-                  p: 2,
+                  p: 2.25,
                   minWidth: 0,
-                  borderRadius: 2,
+                  borderRadius: '16px',
                   border: '1px solid',
-                  borderColor: 'divider',
+                  borderColor: plan.featured ? 'var(--bt-line)' : 'divider',
                   bgcolor: 'background.paper',
                   textAlign: 'left',
                 }}
               >
-                <Typography sx={{ fontWeight: 650 }}>{plan.name}</Typography>
-                <Typography sx={{ fontWeight: 650, fontSize: '1.25rem', letterSpacing: '-0.03em', my: 0.75 }}>
+                <Box sx={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 1 }}>
+                  <Typography sx={{ fontWeight: 650 }}>{plan.name}</Typography>
+                  {plan.featured && (
+                    <Box component="span" sx={{ color: 'primary.light', fontSize: '0.75rem', fontWeight: 600 }}>
+                      с GPT-6.1 Sol
+                    </Box>
+                  )}
+                </Box>
+                <Typography sx={{ fontWeight: 650, fontSize: '1.5rem', letterSpacing: '-0.03em', mt: 0.5 }}>
                   {plan.price}
+                  <Box component="span" sx={{ ml: 0.5, color: 'text.secondary', fontSize: '0.8125rem', fontWeight: 500, letterSpacing: 0 }}>
+                    / мес
+                  </Box>
                 </Typography>
-                {plan.items.map((item) => (
-                  <Typography key={item} variant="body2" sx={{ color: 'text.secondary' }}>
-                    {item}
-                  </Typography>
-                ))}
+                <Typography variant="body2" sx={{ color: 'text.secondary', mb: 1.5 }}>
+                  {plan.note}
+                </Typography>
+                <Stack component="ul" spacing={0.85} sx={{ listStyle: 'none', p: 0, m: 0 }}>
+                  {plan.items.map((item) => (
+                    <Box key={item} component="li" sx={{ display: 'flex', gap: 1, fontSize: '0.875rem', lineHeight: 1.45 }}>
+                      <Check size={16} weight="bold" style={{ flexShrink: 0, marginTop: 2, color: theme.palette.primary.light }} />
+                      {item}
+                    </Box>
+                  ))}
+                </Stack>
               </Box>
             ))}
           </Box>
+          <Typography variant="body2" sx={{ color: 'text.secondary', textAlign: 'center', mb: 3 }}>
+            У каждого тарифа окно 5 часов и недельный лимит, они обновляются сами.
+          </Typography>
           <Box sx={{ textAlign: 'center' }}>
             <Link to={token ? '/billing' : '/register'} style={{ textDecoration: 'none' }}>
               <IslandButton>Смотреть кабинет</IslandButton>
