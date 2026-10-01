@@ -19,6 +19,18 @@ EXPECTED_SKILLS = {
     "deck",
     "documents",
     "email",
+    "eng_bom",
+    "eng_cad",
+    "eng_calc_check",
+    "eng_diff",
+    "eng_drawing",
+    "eng_normcontrol",
+    "eng_report",
+    "eng_schematic",
+    "eng_standard",
+    "eng_tolerance",
+    "eng_trace",
+    "eng_tz",
     "extract",
     "humanize",
     "images",
@@ -40,6 +52,43 @@ EXPECTED_SKILLS = {
     "visual_system",
     "workspace",
 }
+
+
+def test_engineering_skills_match_engineering_requests_only():
+    from computer_skills.loader import CHAT_SKILLS, match_skills, skill_scope
+
+    cases = {
+        "проверь чертёж по ЕСКД": "eng_drawing",
+        "собери спецификацию по чертежу": "eng_bom",
+        "проверь принципиальную схему щита": "eng_schematic",
+        "подбери посадку с натягом для втулки": "eng_tolerance",
+        "посчитай размерную цепь": "eng_tolerance",
+        "проверь расчёт на прочность вала": "eng_calc_check",
+        "составь матрицу требований к ТЗ": "eng_trace",
+        "нужен нормоконтроль пояснительной записки": "eng_normcontrol",
+        "сравни редакции чертежа и подготовь извещение об изменении": "eng_diff",
+        "напиши техническое задание на стенд": "eng_tz",
+        "составь протокол испытаний насоса": "eng_report",
+        "актуален ли гост на допуски": "eng_standard",
+    }
+    for text, expected in cases.items():
+        assert expected in match_skills(text, sandbox=False), text
+    assert "eng_cad" in match_skills("разбери этот .dxf файл")
+    # DXF needs the sandbox: not a chat skill, never matched without it.
+    assert "eng_cad" not in CHAT_SKILLS
+    assert skill_scope("eng_cad") == "sandbox"
+    assert "eng_cad" not in match_skills("разбери этот .dxf файл", sandbox=False)
+    for name in EXPECTED_SKILLS:
+        if name.startswith("eng_") and name != "eng_cad":
+            assert name in CHAT_SKILLS, name
+    # Everyday speech must not pull engineering playbooks.
+    for text in (
+        "Я принципиально не согласен с этим",
+        "Где посадка на самолёт, в гостинице рядом?",
+        "Привет, как дела?",
+        "посоветуй гостиницу в Казани",
+    ):
+        assert not [n for n in match_skills(text) if n.startswith("eng_")], text
 
 
 def test_skills_catalog_covers_core_playbooks():
