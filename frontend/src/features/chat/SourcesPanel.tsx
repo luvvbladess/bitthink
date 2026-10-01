@@ -1,9 +1,8 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Box, IconButton, SwipeableDrawer } from '@mui/material';
 import { ArrowSquareOut, CaretDown, MagnifyingGlass, X } from '@phosphor-icons/react';
-import { floatingPanelSx } from '@/theme/effects';
 import type { ParsedSource } from './sources';
-import { sourcesLabel } from './sources';
+import { groupSourcesByDomain, sitesLabel, sourcesLabel, sourceTitle, type SourceGroup } from './sources';
 
 function Favicon({ domain, src }: { domain: string; src: string }) {
   const [failed, setFailed] = useState(false);
@@ -137,6 +136,85 @@ export function SourcesCountButton({ count, onClick, active }: { count: number; 
   );
 }
 
+const GROUP_PREVIEW = 3;
+
+function SourceGroupBlock({ group }: { group: SourceGroup }) {
+  const [expanded, setExpanded] = useState(false);
+  const visible = expanded ? group.items : group.items.slice(0, GROUP_PREVIEW);
+  const hidden = group.items.length - visible.length;
+  return (
+    <Box component="section" aria-label={group.domain} sx={{ py: 0.75 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.9, px: 1.5, minHeight: 28 }}>
+        <Favicon domain={group.domain} src={group.favicon} />
+        <Box sx={{ minWidth: 0, flex: 1, color: 'text.secondary', fontSize: '0.75rem', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {group.domain}
+        </Box>
+        {group.items.length > 1 && (
+          <Box component="span" sx={{ color: 'text.muted', fontSize: '0.75rem', fontVariantNumeric: 'tabular-nums' }}>
+            {group.items.length}
+          </Box>
+        )}
+      </Box>
+      {visible.map((source) => (
+        <Box
+          key={`${source.url}-${source.title}`}
+          component={source.url ? 'a' : 'div'}
+          href={source.url || undefined}
+          target={source.url ? '_blank' : undefined}
+          rel={source.url ? 'noreferrer' : undefined}
+          title={source.title}
+          sx={{
+            display: 'block',
+            mx: 0.75,
+            py: 0.6,
+            pl: 4.1,
+            pr: 0.75,
+            borderRadius: '8px',
+            color: 'text.primary',
+            textDecoration: 'none',
+            fontSize: '0.8125rem',
+            lineHeight: 1.4,
+            transition: 'background-color 0.16s cubic-bezier(0.23, 1, 0.32, 1)',
+            '&:hover': { bgcolor: 'var(--bt-overlay-faint)' },
+            '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 },
+          }}
+        >
+          {/* The clamp lives on the inner span: on a padded box the hidden third line peeks through the padding. */}
+          <Box component="span" sx={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+            {sourceTitle(source)}
+          </Box>
+        </Box>
+      ))}
+      {group.items.length > GROUP_PREVIEW && (
+        <Box
+          component="button"
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          aria-expanded={expanded}
+          sx={{
+            display: 'block',
+            mx: 0.75,
+            py: 0.5,
+            pl: 4.1,
+            border: 0,
+            bgcolor: 'transparent',
+            color: 'text.muted',
+            font: 'inherit',
+            fontSize: '0.75rem',
+            fontWeight: 600,
+            cursor: 'pointer',
+            textAlign: 'left',
+            '&:hover': { color: 'primary.light' },
+            '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 2, borderRadius: '6px' },
+          }}
+        >
+          {expanded ? 'Свернуть' : `Ещё ${hidden}`}
+        </Box>
+      )}
+    </Box>
+  );
+}
+
 export function SourcesRail({
   sources,
   scoped,
@@ -149,15 +227,20 @@ export function SourcesRail({
   onShowAll?: () => void;
 }) {
   const [open, setOpen] = useState(true);
+  const groups = useMemo(() => groupSourcesByDomain(sources), [sources]);
   return (
     <Box
       sx={{
-        ...floatingPanelSx,
         display: 'flex',
         width: '100%',
         height: 'fit-content',
-        maxHeight: 'min(24rem, calc(100vh - 14rem))',
+        // The column starts under the action buttons and may use the rest of the screen.
+        maxHeight: 'calc(100dvh - 96px)',
         flexDirection: 'column',
+        overflow: 'hidden',
+        borderRadius: '16px',
+        bgcolor: 'var(--bt-panel)',
+        border: '1px solid var(--bt-hairline)',
       }}
     >
       <Box sx={{ display: 'flex', alignItems: 'center', minHeight: 48, flexShrink: 0, pr: 0.5 }}>
@@ -170,7 +253,7 @@ export function SourcesRail({
           sx={{
             display: 'flex',
             alignItems: 'center',
-            gap: 0.75,
+            gap: 0.9,
             minHeight: 48,
             minWidth: 0,
             flex: 1,
@@ -181,17 +264,22 @@ export function SourcesRail({
             color: 'inherit',
             font: 'inherit',
             cursor: 'pointer',
+            textAlign: 'left',
+            '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2, borderRadius: '14px' },
           }}
         >
-          <Box sx={{ fontSize: '0.875rem', fontWeight: 600, letterSpacing: '-0.02em', whiteSpace: 'nowrap' }}>
-            {scoped ? 'Ответ' : 'Источники'}
+          <Box component="span" sx={{ fontSize: '0.875rem', fontWeight: 600, letterSpacing: '-0.02em', whiteSpace: 'nowrap' }}>
+            {scoped ? 'Этот ответ' : 'Источники'}
           </Box>
-          <Box sx={{ color: 'primary.light', fontWeight: 600, fontSize: '0.8125rem' }}>{sources.length}</Box>
+          <Box component="span" sx={{ color: 'text.muted', fontSize: '0.8125rem', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
+            {groups.length > 1 && groups.length < sources.length ? `${sources.length} · ${sitesLabel(groups.length)}` : sources.length}
+          </Box>
           <Box
             component="span"
             sx={{
               ml: 'auto',
               display: 'inline-flex',
+              color: 'text.secondary',
               transform: open ? 'rotate(0deg)' : 'rotate(-90deg)',
               transition: 'transform 0.16s ease',
               '@media (prefers-reduced-motion: reduce)': { transition: 'none' },
@@ -208,17 +296,18 @@ export function SourcesRail({
             aria-label={`Показать все источники диалога, ${allCount}`}
             sx={{
               flexShrink: 0,
-              minHeight: 44,
+              minHeight: 32,
               px: 1.1,
-              border: 0,
+              border: '1px solid var(--bt-hairline)',
               borderRadius: '999px',
-              bgcolor: 'var(--bt-glow)',
-              color: 'primary.light',
+              bgcolor: 'transparent',
+              color: 'text.secondary',
               font: 'inherit',
               fontSize: '0.75rem',
               fontWeight: 600,
               cursor: 'pointer',
-              '&:hover': { bgcolor: 'var(--bt-glow-strong)' },
+              '&:hover': { color: 'text.primary', bgcolor: 'var(--bt-overlay-faint)' },
+              '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 2 },
             }}
           >
             Все {allCount}
@@ -228,14 +317,12 @@ export function SourcesRail({
       {open && (
         <Box
           sx={{
-            maxHeight: 'min(18.5rem, calc(100vh - 17.5rem))',
+            flex: 1,
+            minHeight: 0,
             overflowY: 'auto',
             overscrollBehavior: 'contain',
-            px: 1.25,
-            pb: 1.25,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 0.75,
+            borderTop: '1px solid var(--bt-hairline)',
+            pb: 0.75,
             scrollbarWidth: 'thin',
             scrollbarColor: 'var(--bt-line) transparent',
             '&::-webkit-scrollbar': { width: 6 },
@@ -244,8 +331,8 @@ export function SourcesRail({
             '&::-webkit-scrollbar-button': { display: 'none', width: 0, height: 0 },
           }}
         >
-          {sources.map((source) => (
-            <SourceCard key={`${source.url}-${source.title}`} source={source} compact />
+          {groups.map((group) => (
+            <SourceGroupBlock key={group.domain} group={group} />
           ))}
         </Box>
       )}

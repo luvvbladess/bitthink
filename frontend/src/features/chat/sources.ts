@@ -62,3 +62,42 @@ export function collectDialogueSources(messages: Array<{ search?: SearchItem[] |
   }
   return parseSources(items);
 }
+
+/** The search tool sometimes returns the placeholder "Веб-поиск" instead of a title: show the page path then. */
+export function sourceTitle(source: ParsedSource): string {
+  const title = (source.title || '').trim();
+  if (title && title.toLowerCase() !== 'веб-поиск') return title;
+  try {
+    const { pathname } = new URL(source.url);
+    const last = decodeURIComponent(pathname.split('/').filter(Boolean).pop() || '');
+    return last.replace(/\.[a-z0-9]+$/i, '').replace(/[-_]+/g, ' ').trim() || source.domain;
+  } catch {
+    return source.domain || 'Источник';
+  }
+}
+
+export function sitesLabel(count: number): string {
+  const n10 = count % 10;
+  const n100 = count % 100;
+  if (n10 === 1 && n100 !== 11) return `${count} сайт`;
+  if (n10 >= 2 && n10 <= 4 && (n100 < 12 || n100 > 14)) return `${count} сайта`;
+  return `${count} сайтов`;
+}
+
+export interface SourceGroup {
+  domain: string;
+  favicon: string;
+  items: ParsedSource[];
+}
+
+/** Same site together, in order of first appearance: 50 links from one docs site read as one group. */
+export function groupSourcesByDomain(sources: ParsedSource[]): SourceGroup[] {
+  const groups = new Map<string, SourceGroup>();
+  for (const source of sources) {
+    const key = source.domain || 'источник';
+    const group = groups.get(key);
+    if (group) group.items.push(source);
+    else groups.set(key, { domain: key, favicon: source.favicon, items: [source] });
+  }
+  return [...groups.values()];
+}

@@ -172,6 +172,32 @@ export default function ChatPage() {
     observer.observe(dock);
     return () => observer.disconnect();
   }, []);
+  // Empty chat on desktop: the composer sits right under the heading (the question is the
+  // centre of the screen) instead of being pinned 370px below it. Same component, no remount.
+  const [slotEl, setSlotEl] = useState<HTMLElement | null>(null);
+  const [slotTop, setSlotTop] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const dock = composerDockRef.current;
+    const column = dock?.parentElement;
+    if (!slotEl || !dock || !column) {
+      setSlotTop(null);
+      return;
+    }
+    const measure = () => {
+      const top = slotEl.getBoundingClientRect().top - column.getBoundingClientRect().top;
+      const fits = top + dock.getBoundingClientRect().height <= column.getBoundingClientRect().height - 8;
+      const next = fits ? top : null;
+      setSlotTop((prev) => (prev === next || (prev !== null && next !== null && Math.abs(prev - next) < 0.5) ? prev : next));
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(slotEl);
+    if (slotEl.parentElement) observer.observe(slotEl.parentElement);
+    observer.observe(column);
+    return () => observer.disconnect();
+  }, [slotEl]);
+  const composerInSlot = slotEl !== null && slotTop !== null;
   const colorMode = useColorMode();
   // Id of the assistant message currently being replaced by a regenerate — hidden
   // from `base` below so the old answer doesn't flash alongside the new one while
@@ -948,82 +974,11 @@ export default function ChatPage() {
     : undefined;
   const canRegenerateReply = !sharedRoom || activeConversation?.role === 'owner' || Boolean(previousUser?.mine);
 
-  return (
-    <Box
-      sx={{
-        height: '100%',
-        display: 'flex',
-        overflow: 'hidden',
-      }}
-    >
-      {isMobile ? (
-        <SwipeableDrawer
-          anchor="left"
-          open={sidebarOpen}
-          onClose={() => setSidebarOpen(false)}
-          onOpen={() => setSidebarOpen(true)}
-          PaperProps={{
-            sx: {
-              width: 280,
-              maxWidth: '85%',
-              bgcolor: 'background.default',
-              backgroundImage: 'none',
-              boxShadow: 'none',
-            },
-          }}
-          BackdropProps={{
-            sx: { bgcolor: 'var(--bt-scrim)' },
-          }}
-        >
-          <ChatSidebar
-            conversations={conversations}
-            activeId={activeConvId}
-            onSelect={handleSelect}
-            onCreate={handleCreate}
-            onDelete={(id) => {
-              send('stop', { conversation_id: id });
-              finishJob(id);
-              deleteMutation.mutate(id);
-            }}
-            onRename={(id, title) => renameMutation.mutate({ id, title })}
-            onClose={() => setSidebarOpen(false)}
-            onLibrary={() => { setFilesScope('all'); setFilesOpen(true); if (isMobile) setSidebarOpen(false); }}
-            generatingIds={generatingIds}
-          />
-        </SwipeableDrawer>
-      ) : (
-        <Box sx={{ flexShrink: 0, height: '100%', overflow: 'hidden' }}>
-          <ChatSidebar
-            conversations={conversations}
-            activeId={activeConvId}
-            onSelect={handleSelect}
-            onCreate={handleCreate}
-            onDelete={(id) => {
-              send('stop', { conversation_id: id });
-              finishJob(id);
-              deleteMutation.mutate(id);
-            }}
-            onRename={(id, title) => renameMutation.mutate({ id, title })}
-            onLibrary={() => { setFilesScope('all'); setFilesOpen(true); if (isMobile) setSidebarOpen(false); }}
-            generatingIds={generatingIds}
-          />
-        </Box>
-      )}
+  // With the sources column on screen the action buttons move up to the whole
+  // work area, so they sit right above that column instead of ending beside it.
+  const railVisible = isWide && messagesReady && allSources.length > 0 && !isStudio;
 
-      <Box sx={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', overflow: 'hidden', position: 'relative' }}>
-      <Box
-        sx={{
-          ...(isStudio && !isMobile
-            ? { width: { md: 400, lg: 440, xl: 480 }, flexShrink: 0 }
-            : { flex: 1 }),
-          minWidth: 0,
-          minHeight: 0,
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-          position: 'relative',
-        }}
-      >
+  const chatHeader = (
         <Box
           sx={{
             position: 'absolute',
@@ -1176,6 +1131,86 @@ export default function ChatPage() {
             <AccountMenu />
           </Box>
         </Box>
+  );
+
+  return (
+    <Box
+      sx={{
+        height: '100%',
+        display: 'flex',
+        overflow: 'hidden',
+      }}
+    >
+      {isMobile ? (
+        <SwipeableDrawer
+          anchor="left"
+          open={sidebarOpen}
+          onClose={() => setSidebarOpen(false)}
+          onOpen={() => setSidebarOpen(true)}
+          PaperProps={{
+            sx: {
+              width: 280,
+              maxWidth: '85%',
+              bgcolor: 'background.default',
+              backgroundImage: 'none',
+              boxShadow: 'none',
+            },
+          }}
+          BackdropProps={{
+            sx: { bgcolor: 'var(--bt-scrim)' },
+          }}
+        >
+          <ChatSidebar
+            conversations={conversations}
+            activeId={activeConvId}
+            onSelect={handleSelect}
+            onCreate={handleCreate}
+            onDelete={(id) => {
+              send('stop', { conversation_id: id });
+              finishJob(id);
+              deleteMutation.mutate(id);
+            }}
+            onRename={(id, title) => renameMutation.mutate({ id, title })}
+            onClose={() => setSidebarOpen(false)}
+            onLibrary={() => { setFilesScope('all'); setFilesOpen(true); if (isMobile) setSidebarOpen(false); }}
+            generatingIds={generatingIds}
+          />
+        </SwipeableDrawer>
+      ) : (
+        <Box sx={{ flexShrink: 0, height: '100%', overflow: 'hidden' }}>
+          <ChatSidebar
+            conversations={conversations}
+            activeId={activeConvId}
+            onSelect={handleSelect}
+            onCreate={handleCreate}
+            onDelete={(id) => {
+              send('stop', { conversation_id: id });
+              finishJob(id);
+              deleteMutation.mutate(id);
+            }}
+            onRename={(id, title) => renameMutation.mutate({ id, title })}
+            onLibrary={() => { setFilesScope('all'); setFilesOpen(true); if (isMobile) setSidebarOpen(false); }}
+            generatingIds={generatingIds}
+          />
+        </Box>
+      )}
+
+      <Box sx={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', overflow: 'hidden', position: 'relative' }}>
+      {railVisible && chatHeader}
+      <Box
+        sx={{
+          ...(isStudio && !isMobile
+            ? { width: { md: 400, lg: 440, xl: 480 }, flexShrink: 0 }
+            : { flex: 1 }),
+          minWidth: 0,
+          minHeight: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+          position: 'relative',
+        }}
+      >
+        {!railVisible && chatHeader}
         {(wsStatus === 'closed' || wsStatus === 'error') && (
           <Box
             sx={{
@@ -1239,6 +1274,7 @@ export default function ChatPage() {
           clarifyDocked={clarifyQuestions.length > 0}
           jumpRef={dialogueJumpRef}
           splitPane={Boolean(isStudio && !isMobile)}
+          composerSlotRef={!isMobile && !isStudio ? setSlotEl : undefined}
         />
         <Box
           ref={composerDockRef}
@@ -1246,11 +1282,13 @@ export default function ChatPage() {
             position: 'absolute',
             left: 0,
             right: 0,
-            bottom: 0,
+            ...(composerInSlot ? { top: slotTop, bottom: 'auto' } : { bottom: 0 }),
             zIndex: 3,
             pointerEvents: 'none',
-            pt: clarifyQuestions.length ? 2 : 2.5,
-            background: 'linear-gradient(180deg, transparent 0%, var(--bt-fade) 42%, var(--bt-fade-solid) 78%)',
+            pt: composerInSlot ? 0 : clarifyQuestions.length ? 2 : 2.5,
+            background: composerInSlot
+              ? 'none'
+              : 'linear-gradient(180deg, transparent 0%, var(--bt-fade) 42%, var(--bt-fade-solid) 78%)',
           }}
         >
           <Box sx={{ ...CHAT_COL, ...(isStudio && !isMobile ? { maxWidth: '100%', px: 1.75 } : {}), position: 'relative', pb: { xs: 'max(12px, env(safe-area-inset-bottom))', md: 2 }, pointerEvents: 'auto' }}>
@@ -1294,7 +1332,7 @@ export default function ChatPage() {
           </Box>
         </Box>
       </Box>
-      {isWide && messagesReady && allSources.length > 0 && !isStudio && (
+      {railVisible && (
         <Box
           sx={{
             display: 'flex',

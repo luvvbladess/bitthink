@@ -113,16 +113,18 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
           onClick={onCreate}
           sx={{
             justifyContent: 'flex-start',
-            color: 'primary.contrastText',
-            bgcolor: 'primary.main',
+            // A quiet tinted button: the one saturated CTA on this screen is Send, not a sidebar row.
+            color: 'text.primary',
+            bgcolor: 'var(--bt-glow)',
+            border: '1px solid var(--bt-line)',
             borderRadius: '12px',
             textTransform: 'none',
             fontWeight: 600,
             fontSize: '0.875rem',
             px: 1.4,
             py: 1,
-            boxShadow: 'var(--bt-halo)',
-            '&:hover': { bgcolor: 'primary.dark', boxShadow: 'var(--bt-halo-strong)' },
+            '& .MuiButton-startIcon': { color: 'primary.light' },
+            '&:hover': { bgcolor: 'var(--bt-glow-strong)' },
             '&:active': { transform: 'scale(0.98)' },
           }}
         >

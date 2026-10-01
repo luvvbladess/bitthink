@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Box, Popover, Button, Typography, Tooltip } from '@mui/material';
-import { CaretDown, Check, Sparkle, MagnifyingGlass, Books, Desktop, Presentation, Atom, FileText } from '@phosphor-icons/react';
+import { CaretDown, Check, Sparkle, MagnifyingGlass, Books, Desktop, Presentation, Atom, FileText, Lock } from '@phosphor-icons/react';
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/api/client';
 import { composerChipSelectedSx, composerChipSx } from '@/theme/effects';
@@ -168,9 +168,9 @@ export function SearchModeSelector() {
               maxWidth: 'calc(100vw - 24px)',
               bgcolor: 'surface.elevated',
               backgroundImage: 'none',
-              border: '1px solid var(--bt-glow-strong)',
+              border: '1px solid var(--bt-hairline)',
               borderRadius: '18px',
-              boxShadow: '0 24px 60px var(--bt-scrim), 0 0 40px var(--bt-glow)',
+              boxShadow: 'var(--bt-shadow-menu)',
             },
           },
         }}
@@ -231,13 +231,13 @@ export function SearchModeSelector() {
                   textAlign: 'left',
                   borderRadius: '14px',
                   border: '1px solid',
-                  borderColor: isActive ? 'primary.main' : 'var(--bt-overlay)',
-                  bgcolor: isActive ? 'var(--bt-glow)' : 'var(--bt-overlay-faint)',
+                  borderColor: isActive ? 'primary.main' : available ? 'var(--bt-overlay)' : 'var(--bt-overlay-faint)',
+                  bgcolor: isActive ? 'var(--bt-glow)' : available ? 'var(--bt-overlay-faint)' : 'transparent',
                   boxShadow: 'none',
-                  color: 'text.primary',
+                  // A locked row stays readable (opacity would push the hint below AA contrast).
+                  color: available ? 'text.primary' : 'text.secondary',
                   font: 'inherit',
                   cursor: available ? 'pointer' : 'not-allowed',
-                  opacity: available ? 1 : 0.45,
                   transition: 'border-color 0.16s cubic-bezier(0.23, 1, 0.32, 1), background-color 0.16s cubic-bezier(0.23, 1, 0.32, 1)',
                   '&:hover': available ? { borderColor: 'primary.light', bgcolor: 'var(--bt-glow)' } : undefined,
                   '&:active': available ? { transform: 'scale(0.98)' } : undefined,
@@ -252,7 +252,7 @@ export function SearchModeSelector() {
                     display: 'grid',
                     placeItems: 'center',
                     bgcolor: isActive ? 'primary.main' : 'var(--bt-overlay)',
-                    color: isActive ? 'primary.contrastText' : 'primary.light',
+                    color: isActive ? 'primary.contrastText' : available ? 'primary.light' : 'text.secondary',
                   }}
                 >
                   <Icon size={16} />
@@ -260,16 +260,13 @@ export function SearchModeSelector() {
                 <Box sx={{ minWidth: 0, flex: 1 }}>
                   <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, lineHeight: 1.2 }}>
                     {mode.label}
-                    {typeof factor === 'number' && (
-                      <Box component="span" sx={{ ml: 0.6, color: 'text.secondary', fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>
-                        ×{factor}
-                      </Box>
-                    )}
                   </Typography>
                   <Typography sx={{ color: 'text.secondary', fontSize: '0.75rem', lineHeight: 1.35, mt: 0.2 }}>
                     {available ? mode.description : lockedHint}
                   </Typography>
                 </Box>
+                {available && typeof factor === 'number' && <CostDots factor={factor} active={isActive} />}
+                {!available && <Lock size={14} weight="bold" aria-hidden />}
                 {isActive && <Check size={16} weight="bold" color="currentColor" />}
               </Box>
             );
@@ -277,6 +274,31 @@ export function SearchModeSelector() {
         </Box>
       </Popover>
     </>
+  );
+}
+
+/** How fast a mode spends the plan, as four dots. The exact multiplier stays in the tooltip. */
+function CostDots({ factor, active }: { factor: number; active?: boolean }) {
+  const level = factor <= 1 ? 1 : factor <= 10 ? 2 : factor <= 30 ? 3 : 4;
+  const words = ['', 'Расходует лимит экономно', 'Расходует лимит заметно', 'Расходует лимит быстро', 'Расходует лимит очень быстро'];
+  const label = `${words[level]}: ×${factor} к быстрому режиму`;
+  return (
+    <Tooltip title={label} placement="left" enterDelay={300}>
+      <Box role="img" aria-label={label} sx={{ display: 'flex', gap: '3px', alignItems: 'center', flexShrink: 0, px: 0.25 }}>
+        {[1, 2, 3, 4].map((dot) => (
+          <Box
+            key={dot}
+            component="span"
+            sx={{
+              width: 5,
+              height: 5,
+              borderRadius: '50%',
+              bgcolor: dot <= level ? (active ? 'primary.light' : 'text.secondary') : 'var(--bt-overlay-strong)',
+            }}
+          />
+        ))}
+      </Box>
+    </Tooltip>
   );
 }
 
@@ -342,9 +364,9 @@ export function ReasoningEffortSelector() {
           gap: 0.7,
           flexShrink: 0,
           height: { xs: 44, sm: 36 },
-          minWidth: { xs: 44, sm: 0 },
-          pl: { xs: 0, sm: 0.75 },
-          pr: { xs: 0, sm: 0.35 },
+          minWidth: 44,
+          pl: 0.75,
+          pr: 0.35,
           border: 'none',
           bgcolor: 'transparent',
           color: enabled ? 'text.primary' : 'text.secondary',
@@ -367,7 +389,8 @@ export function ReasoningEffortSelector() {
           '&:active': { transform: 'scale(0.98)' },
         }}
       >
-        <Box component="span" sx={{ display: { xs: 'none', sm: 'inline' } }}>Размышления</Box>
+        {/* Label stays on phones too: a bare switch next to a mic does not say what it does. */}
+        <Box component="span">Размышления</Box>
         <GlowSwitch checked={enabled} />
       </Box>
     </Tooltip>
