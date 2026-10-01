@@ -1,7 +1,7 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { Box, IconButton, TextField, Tooltip } from '@mui/material';
 import { Copy, Check, FileArrowDown, ArrowClockwise, PencilSimple, X } from '@phosphor-icons/react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { downloadBlob } from '@/api/client';
@@ -17,6 +17,23 @@ import { parseSources } from './sources';
 import { SourcesCountButton } from './SourcesPanel';
 import { ReasoningTrace, SearchItem } from './ReasoningTrace';
 import '@/theme/highlight.css';
+
+/** Module-level on purpose: a component created inside render is a new type on every
+ *  render, React remounts it, and a table loses its horizontal scroll position. */
+function MarkdownTable({ children }: { children?: ReactNode }) {
+  return (
+    <Box
+      sx={{
+        my: 1.5,
+        overflowX: 'auto',
+        border: '1px solid var(--bt-hairline)',
+        borderRadius: '12px',
+      }}
+    >
+      <table>{children}</table>
+    </Box>
+  );
+}
 
 interface Props {
   role: 'user' | 'assistant';
@@ -226,6 +243,23 @@ export function ChatMessage({
   const { sources } = splitSearch(search);
   const parsedSources = parseSources(sources);
   const modeSwitch = !isUser ? modeSwitchFromSearch(search) : null;
+  // Stable between renders (scrolling re-renders the list): see MarkdownTable.
+  const mdComponents = useMemo(
+    () =>
+      ({
+        pre: CodeBlock,
+        table: MarkdownTable,
+        img: ({ src, alt }: { src?: string | Blob; alt?: string }) =>
+          typeof src === 'string' && src ? (
+            <ChatImage
+              src={src}
+              alt={alt}
+              onEdit={src.startsWith('/uploads/') && onEditImage ? () => onEditImage(src) : undefined}
+            />
+          ) : null,
+      }) as Components,
+    [onEditImage],
+  );
   const visibleContent = isUser && isClarifyReply(content) ? CLARIFY_ACK : content;
   // A reply can carry several files (Pilot writes a set of documents); every one
   // gets its own card. Only the first one used to be drawn.
@@ -393,29 +427,7 @@ export function ChatMessage({
             remarkPlugins={[remarkGfm]}
             rehypePlugins={[rehypeHighlight]}
             urlTransform={sanitizeUrl}
-            components={{
-              pre: CodeBlock,
-              table: ({ children }) => (
-                <Box
-                  sx={{
-                    my: 1.5,
-                    overflowX: 'auto',
-                    border: '1px solid var(--bt-hairline)',
-                    borderRadius: '12px',
-                  }}
-                >
-                  <table>{children}</table>
-                </Box>
-              ),
-              img: ({ src, alt }) =>
-                src ? (
-                  <ChatImage
-                    src={src}
-                    alt={alt}
-                    onEdit={src.startsWith('/uploads/') && onEditImage ? () => onEditImage(src) : undefined}
-                  />
-                ) : null,
-            }}
+            components={mdComponents}
           >
             {normalizeMarkdown(visibleContent)}
           </ReactMarkdown>
