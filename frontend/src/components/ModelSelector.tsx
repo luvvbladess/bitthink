@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Box, Popover, Button, Typography, Tooltip } from '@mui/material';
+import { Box, Drawer, Popover, Button, Typography, Tooltip, useMediaQuery } from '@mui/material';
 import { CaretDown, Check, Sparkle, MagnifyingGlass, Books, Desktop, Presentation, Atom, FileText, Lock } from '@phosphor-icons/react';
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/api/client';
@@ -128,53 +128,11 @@ export function SearchModeSelector() {
   }, [data?.selected, matchedMode]);
 
   const lit = selectedMode.id !== 'auto';
+  // Phones get a bottom sheet (thumb reach, no half-covered chat); larger screens keep the popover.
+  const isPhone = useMediaQuery('(max-width:599.95px)');
 
-  return (
+  const menuContent = (
     <>
-      <Button
-        type="button"
-        variant="text"
-        onClick={(e) => setAnchor(e.currentTarget)}
-        aria-label={`Режим ответа: ${selectedMode.label}`}
-        aria-haspopup="dialog"
-        aria-expanded={Boolean(anchor)}
-        sx={{
-          ...composerChipSx,
-          ...(lit ? composerChipSelectedSx : {}),
-          minWidth: { xs: 44, sm: 0 },
-          maxWidth: { xs: 44, sm: 'none' },
-          px: { xs: 0, sm: 1.1 },
-          overflow: 'hidden',
-        }}
-      >
-        <ActiveIcon size={18} weight={selectedMode.id === 'computer' || selectedMode.id === 'studio' || selectedMode.id === 'astra' || selectedMode.id === 'docgen' ? 'fill' : 'bold'} />
-        <Box component="span" sx={{ display: { xs: 'none', sm: 'inline' } }}>{selectedMode.label}</Box>
-        <Box component="span" sx={{ display: { xs: 'none', sm: 'inline-flex' }, flexShrink: 0, lineHeight: 0 }}>
-          <CaretDown size={14} weight="bold" />
-        </Box>
-      </Button>
-      <Popover
-        open={Boolean(anchor)}
-        anchorEl={anchor}
-        onClose={() => setAnchor(null)}
-        anchorOrigin={{ vertical: 'top', horizontal: 'left' }}
-        transformOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-        slotProps={{
-          paper: {
-            sx: {
-              mb: 1,
-              p: 1,
-              width: 336,
-              maxWidth: 'calc(100vw - 24px)',
-              bgcolor: 'surface.elevated',
-              backgroundImage: 'none',
-              border: '1px solid var(--bt-hairline)',
-              borderRadius: '18px',
-              boxShadow: 'var(--bt-shadow-menu)',
-            },
-          },
-        }}
-      >
         <Typography sx={{ px: 1, pt: 0.5, pb: 1, color: 'text.secondary', fontSize: '0.75rem', fontWeight: 600 }}>
           Как отвечать
         </Typography>
@@ -272,7 +230,82 @@ export function SearchModeSelector() {
             );
           })}
         </Box>
-      </Popover>
+    </>
+  );
+
+  return (
+    <>
+      <Button
+        type="button"
+        variant="text"
+        onClick={(e) => setAnchor(e.currentTarget)}
+        aria-label={`Режим ответа: ${selectedMode.label}`}
+        aria-haspopup="dialog"
+        aria-expanded={Boolean(anchor)}
+        sx={{
+          ...composerChipSx,
+          ...(lit ? composerChipSelectedSx : {}),
+          minWidth: 44,
+          maxWidth: { xs: 100, sm: 'none' },
+          px: 1.1,
+          overflow: 'hidden',
+        }}
+      >
+        <ActiveIcon size={18} weight={selectedMode.id === 'computer' || selectedMode.id === 'studio' || selectedMode.id === 'astra' || selectedMode.id === 'docgen' ? 'fill' : 'bold'} />
+        <Box component="span" sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selectedMode.label}</Box>
+        <Box component="span" sx={{ display: 'inline-flex', flexShrink: 0, lineHeight: 0 }}>
+          <CaretDown size={14} weight="bold" />
+        </Box>
+      </Button>
+      {isPhone ? (
+        <Drawer
+          anchor="bottom"
+          open={Boolean(anchor)}
+          onClose={() => setAnchor(null)}
+          PaperProps={{
+            sx: {
+              p: 1.5,
+              pb: 'max(16px, env(safe-area-inset-bottom))',
+              maxHeight: '86dvh',
+              bgcolor: 'surface.elevated',
+              backgroundImage: 'none',
+              border: '1px solid var(--bt-hairline)',
+              borderBottom: 'none',
+              borderTopLeftRadius: '20px',
+              borderTopRightRadius: '20px',
+            },
+          }}
+          BackdropProps={{ sx: { bgcolor: 'var(--bt-scrim)' } }}
+        >
+          <Box sx={{ width: 40, height: 4, borderRadius: 99, bgcolor: 'var(--bt-overlay-strong)', mx: 'auto', mb: 1 }} />
+          {menuContent}
+        </Drawer>
+      ) : (
+        <Popover
+          open={Boolean(anchor)}
+          anchorEl={anchor}
+          onClose={() => setAnchor(null)}
+          anchorOrigin={{ vertical: 'top', horizontal: 'left' }}
+          transformOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          slotProps={{
+            paper: {
+              sx: {
+                mb: 1,
+                p: 1,
+                width: 336,
+                maxWidth: 'calc(100vw - 24px)',
+                bgcolor: 'surface.elevated',
+                backgroundImage: 'none',
+                border: '1px solid var(--bt-hairline)',
+                borderRadius: '18px',
+                boxShadow: 'var(--bt-shadow-menu)',
+              },
+            },
+          }}
+        >
+  {menuContent}
+        </Popover>
+      )}
     </>
   );
 }
