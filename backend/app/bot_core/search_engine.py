@@ -23,6 +23,10 @@ def query_requires_web(query: str) -> bool:
     text = (query or "").lower().strip()
     if not text:
         return False
+    # «Без поиска в интернете» beats every pattern below. Forcing the search tool on
+    # a request that forbids it made the model end the stream with no answer.
+    if re.search(r"\bбез\s+(?:поиска|интернета|веба)\b|\bне\s+(?:ищи|используй\s+(?:интернет|поиск))\b", text):
+        return False
     # Only unmistakable cases. «Сейчас», «последний пункт», «курсовая», «ценность»
     # used to send ordinary chat to the search hop, which sees neither the files
     # nor the memory of this chat. Everything else: the answer model has

@@ -109,6 +109,16 @@ def test_deepseek_and_kimi_report_cache_to_usage():
         assert "total_output_tokens)" not in source.replace("total_output_tokens, total_cached_tokens)", ""), name
 
 
+def test_explicit_no_search_beats_search_triggers():
+    from search_engine import query_requires_web
+
+    assert query_requires_web("Какой сейчас курс доллара к рублю?")
+    assert query_requires_web("Разбери https://example.com")
+    assert not query_requires_web("Без поиска в интернете. Разбери https://example.com")
+    assert not query_requires_web("Не ищи, просто скажи: что нового в мире?")
+    assert not query_requires_web("ответь без интернета про цены на нефть")
+
+
 def test_cost_table_uses_each_models_cached_rate():
     from app.billing.costs import model_cost_usd
 
