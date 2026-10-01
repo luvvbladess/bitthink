@@ -198,7 +198,7 @@ export default function BillingPage() {
             <PoolBlock icon={<ChatText size={18} weight="bold" />} title="Чат">
               <WindowMeters family={sub?.windows?.chat} />
             </PoolBlock>
-            <PoolBlock icon={<Desktop size={18} weight="bold" />} title="Пилот" hint="Сайты, почта и сервер.">
+            <PoolBlock icon={<Desktop size={18} weight="bold" />} title="Пилот" hint="ИИ-агенты в песочнице.">
               <WindowMeters family={sub?.windows?.computer} />
             </PoolBlock>
             <PoolBlock icon={<Image size={18} weight="bold" />} title="Картинки">

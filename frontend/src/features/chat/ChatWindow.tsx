@@ -378,7 +378,7 @@ export function ChatWindow({
                   : isStudio
                     ? 'Прикрепите образец PPTX и ТЗ — повторит стиль и соберёт слайды. Или опишите картинку и макет.'
                     : isComputer
-                      ? 'Напишите задачу своими словами. Сам откроет сайт, почту или сервер.'
+                      ? 'Опишите задачу своими словами. Пилот в песочнице разделит её на должности, подберёт подходящих ИИ-агентов и соберёт итог.'
                       : 'Обычный чат отвечает текстом. Студия рисует картинки и макеты на холсте.'}
               </Box>
               {composerSlotRef && (
@@ -447,7 +447,7 @@ export function ChatWindow({
                 <Box
                   component="button"
                   type="button"
-                  aria-label={`Включить ${PILOT_LABEL}: сам откроет сайт, почту или сервер`}
+                  aria-label={`Включить ${PILOT_LABEL}: оркестратор в песочнице, раздаёт должности подходящим ИИ-агентам`}
                   onClick={() => selectModel.mutate('director')}
                   sx={{
                     display: 'flex',
@@ -497,7 +497,7 @@ export function ChatWindow({
                   <Box sx={{ minWidth: 0, flex: 1 }}>
                     <Box sx={{ fontWeight: 600, fontSize: '0.9375rem', letterSpacing: '-0.02em' }}>{PILOT_LABEL}</Box>
                     <Box sx={{ color: 'text.secondary', fontSize: '0.8125rem', lineHeight: 1.4, mt: 0.2 }}>
-                      Сам откроет сайт, почту или сервер
+                      Оркестратор в песочнице: раздаёт должности подходящим ИИ-агентам
                     </Box>
                   </Box>
                   <Box

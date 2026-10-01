@@ -1,4 +1,4 @@
-/** User-facing name for director mode: visits sites, mail and servers. */
+/** User-facing name for director mode: an orchestrator in the sandbox that gives roles to AI agents. */
 export const PILOT_LABEL = 'Пилот';
 /** Live HTML canvas: slides, landing, dashboard, infographic. */
 export const STUDIO_LABEL = 'Студия';
