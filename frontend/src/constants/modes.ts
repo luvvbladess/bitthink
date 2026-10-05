@@ -1,3 +1,5 @@
+/** User-facing name for the default fast mode (model id stays `auto`). */
+export const EXPRESS_LABEL = 'Экспресс';
 /** User-facing name for director mode: an orchestrator in the sandbox that gives roles to AI agents. */
 export const PILOT_LABEL = 'Оркестратор';
 /** Live HTML canvas: slides, landing, dashboard, infographic. */

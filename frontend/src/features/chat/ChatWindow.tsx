@@ -507,7 +507,7 @@ export function ChatWindow({
                 <Box
                   component="button"
                   type="button"
-                  aria-label={`Включить ${PILOT_LABEL}: оркестратор в песочнице, раздаёт должности подходящим ИИ-агентам`}
+                  aria-label={`Включить ${PILOT_LABEL}: раздаёт должности подходящим ИИ-агентам в песочнице`}
                   onClick={() => selectModel.mutate('director')}
                   sx={{
                     display: 'flex',

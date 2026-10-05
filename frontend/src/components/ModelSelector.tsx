@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { Box, Drawer, Popover, Button, Typography, Tooltip, useMediaQuery } from '@mui/material';
-import { CaretDown, Check, Sparkle, MagnifyingGlass, Books, Desktop, Presentation, Atom, FileText, Lock, Brain, Image as ImageIcon } from '@phosphor-icons/react';
+import { Box, Collapse, Drawer, Popover, Button, Typography, Tooltip, useMediaQuery, type PopoverActions } from '@mui/material';
+import { CaretDown, Check, Lightning, MagnifyingGlass, Books, Desktop, Presentation, Atom, FileText, Lock, Brain, Image as ImageIcon } from '@phosphor-icons/react';
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/api/client';
 import { composerChipSelectedSx, composerChipSx } from '@/theme/effects';
 import { GlowSwitch } from '@/components/GlowSwitch';
-import { ASTRA_LABEL, PILOT_LABEL, STUDIO_LABEL, DOCGEN_LABEL } from '@/constants/modes';
+import { ASTRA_LABEL, DOCGEN_LABEL, EXPRESS_LABEL, PILOT_LABEL, STUDIO_LABEL } from '@/constants/modes';
 
 interface Model {
   id: string;
@@ -33,7 +33,7 @@ interface ModelsCache {
 }
 
 const ANSWER_MODES = [
-  { id: 'auto', label: 'Авто', description: 'Подберёт модель по задаче', model: 'auto', icon: Sparkle },
+  { id: 'auto', label: EXPRESS_LABEL, description: 'Быстро и экономно: сам подберёт модель', model: 'auto', icon: Lightning },
   { id: 'search', label: 'Поиск', description: 'Свежие ответы с источниками', model: 'kimi-k2.6', icon: MagnifyingGlass },
   { id: 'research', label: 'Исследование', description: 'Глубокий разбор источников на Sol', model: 'gpt-6-sol', icon: Books },
   { id: 'astra', label: ASTRA_LABEL, description: 'Песочница GPT-6: код, договоры, файлы', model: 'gpt-6-astra', icon: Atom },
@@ -41,6 +41,17 @@ const ANSWER_MODES = [
   { id: 'docgen', label: DOCGEN_LABEL, description: 'Большой .docx или комплект документов по Word, PDF, Excel и архивам', model: 'docgen', icon: FileText },
   { id: 'computer', label: PILOT_LABEL, description: 'Раздаёт должности подходящим ИИ-агентам в песочнице', model: 'director', icon: Desktop },
 ] as const;
+
+interface ModeItem {
+  id: string;
+  label: string;
+  description: string;
+  model: string;
+  icon: typeof Lightning;
+}
+
+/** What the menu shows at first: the everyday modes. The rest sit behind «Ещё». */
+const PRIMARY_MODE_IDS = ['auto', 'computer', 'studio'] as const;
 
 const REASONING_CAPABLE = new Set([
   'auto',
@@ -130,16 +141,16 @@ export function SearchModeSelector() {
   }, [data?.selected, matchedMode]);
 
   const lit = selectedMode.id !== 'auto';
+  const primaryModes = PRIMARY_MODE_IDS.map((id) => modes.find((mode) => mode.id === id)!);
+  const moreModes = modes.filter((mode) => !(PRIMARY_MODE_IDS as readonly string[]).includes(mode.id));
+  const hiddenSelected = moreModes.some((mode) => mode.id === selectedMode.id);
+  // The list is folded away, unless the mode in use lives in it: then it must be visible.
+  const [moreOpen, setMoreOpen] = useState(false);
+  const popoverActions = useRef<PopoverActions | null>(null);
   // Phones get a bottom sheet (thumb reach, no half-covered chat); larger screens keep the popover.
   const isPhone = useMediaQuery('(max-width:599.95px)');
 
-  const menuContent = (
-    <>
-        <Typography sx={{ px: 1, pt: 0.5, pb: 1, color: 'text.secondary', fontSize: '0.75rem', fontWeight: 600 }}>
-          Как отвечать
-        </Typography>
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-          {modes.map((mode) => {
+  const renderMode = (mode: ModeItem) => {
             const Icon = mode.icon;
             const available =
               mode.id === 'auto' ||
@@ -230,9 +241,24 @@ export function SearchModeSelector() {
                 {isActive && <Check size={16} weight="bold" color="currentColor" />}
               </Box>
             );
-          })}
+  };
+
+  const menuContent = (
+    <>
+        <Typography sx={{ px: 1, pt: 0.5, pb: 1, color: 'text.secondary', fontSize: '0.75rem', fontWeight: 600 }}>
+          Как отвечать
+        </Typography>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+          {primaryModes.map(renderMode)}
         </Box>
         <ImageQualityControl />
+        <MoreModes
+          modes={moreModes}
+          open={moreOpen}
+          onToggle={() => setMoreOpen((value) => !value)}
+          renderMode={renderMode}
+          onResized={() => popoverActions.current?.updatePosition()}
+        />
     </>
   );
 
@@ -241,7 +267,10 @@ export function SearchModeSelector() {
       <Button
         type="button"
         variant="text"
-        onClick={(e) => setAnchor(e.currentTarget)}
+        onClick={(e) => {
+          setMoreOpen(hiddenSelected);
+          setAnchor(e.currentTarget);
+        }}
         aria-label={`Режим ответа: ${selectedMode.label}`}
         aria-haspopup="dialog"
         aria-expanded={Boolean(anchor)}
@@ -257,7 +286,7 @@ export function SearchModeSelector() {
         }}
       >
         <ActiveIcon size={18} weight={selectedMode.id === 'computer' || selectedMode.id === 'studio' || selectedMode.id === 'astra' || selectedMode.id === 'docgen' ? 'fill' : 'bold'} />
-        <Box component="span" sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selectedMode.label}</Box>
+        <Box component="span" sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', '@media (max-width:339.95px)': { display: 'none' } }}>{selectedMode.label}</Box>
         <Box component="span" sx={{ display: { xs: 'none', sm: 'inline-flex' }, flexShrink: 0, lineHeight: 0 }}>
           <CaretDown size={14} weight="bold" />
         </Box>
@@ -289,6 +318,7 @@ export function SearchModeSelector() {
         <Popover
           open={Boolean(anchor)}
           anchorEl={anchor}
+          action={popoverActions}
           onClose={() => setAnchor(null)}
           anchorOrigin={{ vertical: 'top', horizontal: 'left' }}
           transformOrigin={{ vertical: 'bottom', horizontal: 'left' }}
@@ -312,6 +342,72 @@ export function SearchModeSelector() {
         </Popover>
       )}
     </>
+  );
+}
+
+/** The less common modes, folded under one quiet row so the menu opens short. */
+function MoreModes({
+  modes,
+  open,
+  onToggle,
+  renderMode,
+  onResized,
+}: {
+  modes: readonly ModeItem[];
+  open: boolean;
+  onToggle: () => void;
+  renderMode: (mode: ModeItem) => JSX.Element;
+  onResized: () => void;
+}) {
+  return (
+    <Box sx={{ mt: 1.25, borderTop: '1px solid var(--bt-hairline)' }}>
+      <Box
+        component="button"
+        type="button"
+        aria-expanded={open}
+        aria-controls="more-modes"
+        onClick={onToggle}
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 1,
+          width: '100%',
+          minHeight: 48,
+          px: 0.75,
+          border: 0,
+          bgcolor: 'transparent',
+          color: 'text.primary',
+          font: 'inherit',
+          textAlign: 'left',
+          cursor: 'pointer',
+          WebkitTapHighlightColor: 'transparent',
+          '&:hover': { color: 'primary.light' },
+          '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2, borderRadius: '10px' },
+        }}
+      >
+        <Box sx={{ minWidth: 0, flex: 1 }}>
+          <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, lineHeight: 1.2 }}>Ещё</Typography>
+          {!open && (
+            <Typography
+              sx={{ color: 'text.secondary', fontSize: '0.75rem', lineHeight: 1.35, mt: 0.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            >
+              {modes.map((mode) => mode.label).join(', ')}
+            </Typography>
+          )}
+        </Box>
+        <CaretDown
+          size={16}
+          weight="bold"
+          aria-hidden
+          style={{ flexShrink: 0, transform: open ? 'rotate(180deg)' : undefined, transition: 'transform 0.16s cubic-bezier(0.23, 1, 0.32, 1)' }}
+        />
+      </Box>
+      <Collapse in={open} onEntered={onResized} onExited={onResized}>
+        <Box id="more-modes" sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, pt: 0.5 }}>
+          {modes.map(renderMode)}
+        </Box>
+      </Collapse>
+    </Box>
   );
 }
 
@@ -505,14 +601,22 @@ export function ReasoningEffortSelector() {
             bgcolor: enabled ? 'primary.light' : 'var(--bt-overlay-strong)',
           },
           '&:active': { transform: 'scale(0.98)' },
+          '@media (max-width:439.95px)': {
+            px: 1,
+            borderRadius: '999px',
+            bgcolor: enabled ? 'var(--bt-glow)' : 'transparent',
+          },
         }}
       >
         {/* A bare switch next to a mic says nothing: wide phones get the word, narrow ones an icon. */}
         <Box component="span" sx={{ '@media (max-width:439.95px)': { display: 'none' } }}>Размышления</Box>
-        <Box component="span" aria-hidden sx={{ display: 'none', lineHeight: 0, '@media (max-width:439.95px)': { display: 'inline-flex' } }}>
+        <Box component="span" aria-hidden sx={{ display: 'none', lineHeight: 0, color: enabled ? 'primary.light' : 'inherit', '@media (max-width:439.95px)': { display: 'inline-flex' } }}>
           <Brain size={18} weight={enabled ? 'fill' : 'bold'} />
         </Box>
-        <GlowSwitch checked={enabled} />
+        {/* On phones the brain icon alone carries the state: the track took the width the mode name needs. */}
+        <Box component="span" sx={{ display: 'inline-flex', '@media (max-width:439.95px)': { display: 'none' } }}>
+          <GlowSwitch checked={enabled} />
+        </Box>
       </Box>
     </Tooltip>
   );
