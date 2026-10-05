@@ -43,7 +43,13 @@ export function parseSources(items?: SearchItem[] | null): ParsedSource[] {
     if (!key || seen.has(key)) continue;
     seen.add(key);
     const domain = sourceDomain(url || item.query || '');
-    const snippet = (item.summary || '').split(/\r?\n/).slice(1).join(' ').trim();
+    // Page text arrives as markdown: "# Title ## Section" is noise in a one-line preview.
+    const snippet = (item.summary || '')
+      .split(/\r?\n/)
+      .slice(1)
+      .join(' ')
+      .replace(/(^|\s)#{1,6}\s+/g, '$1')
+      .trim();
     result.push({
       url,
       domain: domain || 'источник',
