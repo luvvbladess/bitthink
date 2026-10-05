@@ -26,7 +26,7 @@ MAX_TOOL_OUTPUT = 12000
 SSH_TIMEOUT_SECONDS = 30
 SSH_MAX_OUTPUT = 50000
 HTTP_TIMEOUT_SECONDS = 20
-IMAP_MAX_MESSAGES = 20
+IMAP_MAX_MESSAGES = 50
 
 _SAFE_IMAP_SEARCH = re.compile(
     r'^(ALL|UNSEEN|SEEN|FROM\s+"[^"]{1,80}"|SUBJECT\s+"[^"]{1,80}")$',
@@ -78,19 +78,30 @@ _CHAT_DOC_PROPS = {
     "query": {"type": "string", "description": "Что искать в файле. Без этого вернётся начало документа."},
 }
 _LIST_PROPS: dict = {}
+_IMAP_HOST_PROPS = {
+    "imap_host": {"type": "string", "description": "IMAP-сервер, если ящик не Gmail: mail.nic.ru для RU-CENTER. Пусто – Gmail."},
+    "imap_port": {"type": "integer", "description": "Порт IMAP SSL, по умолчанию 993"},
+}
 _GMAIL_LIST_PROPS = {
-    "email": {"type": "string", "description": "Gmail из сообщения пользователя"},
-    "app_password": {"type": "string", "description": "Пароль приложения из чата. Не пиши его в ответ."},
+    "email": {"type": "string", "description": "Адрес ящика из сообщения пользователя"},
+    "app_password": {"type": "string", "description": "Пароль (приложения для Gmail) из чата. Не пиши его в ответ."},
+    **_IMAP_HOST_PROPS,
     "connector_id": {"type": "integer", "description": "ID уже сохранённого доступа, если пароль уже передавали"},
     "folder": {"type": "string", "description": "Папка IMAP, по умолчанию INBOX"},
-    "limit": {"type": "integer", "description": "Сколько писем показать, максимум 20"},
+    "limit": {"type": "integer", "description": "Писем на страницу, максимум 50"},
+    "before_uid": {"type": "integer", "description": "Курсор: следующая страница, берётся из конца прошлого ответа. Без него – самые новые."},
     "query": {"type": "string", "description": "IMAP SEARCH: ALL, UNSEEN, SEEN, FROM \"addr\", SUBJECT \"text\""},
 }
 _GMAIL_READ_PROPS = {
     "email": {"type": "string"},
     "app_password": {"type": "string"},
+    **_IMAP_HOST_PROPS,
     "connector_id": {"type": "integer"},
     "uid": {"type": "string", "description": "UID письма из gmail_list"},
+}
+_GMAIL_ATTACH_PROPS = {
+    **_GMAIL_READ_PROPS,
+    "folder": {"type": "string", "description": "Папка IMAP, по умолчанию INBOX"},
 }
 _GMAIL_SEND_PROPS = {
     "email": {"type": "string"},
@@ -155,6 +166,11 @@ _GOOGLE_DRIVE_UPLOAD_PROPS = {
     "content": {"type": "string", "description": "Текст, если сохраняешь не файл, а заметку"},
     "name": {"type": "string", "description": "Имя на Диске с расширением. По умолчанию как у файла."},
     "folder_id": {"type": "string", "description": "id папки из google_drive_search. Пусто – корень Диска."},
+}
+_GOOGLE_DRIVE_FOLDER_PROPS = {
+    **_GOOGLE_ID,
+    "path": {"type": "string", "description": "Путь папки через слэш: Суда/Название судна. Недостающие папки создаются."},
+    "parent_id": {"type": "string", "description": "id папки, внутри которой искать path. Пусто – корень Диска."},
 }
 _GOOGLE_DRIVE_TRASH_PROPS = {
     **_GOOGLE_ID,
@@ -338,6 +354,14 @@ _TOOL_SPECS = [
         ["uid"],
     ),
     (
+        "gmail_attachments",
+        "Скачать вложения письма по UID из gmail_list в песочницу (Почта/<UID>/). Вернёт отправителя, тему, "
+        "пути файлов и начало текста каждого, чтобы понять, к чему документ относится. Дальше файл на Диск – "
+        "google_drive_upload. Письмо при этом не меняется.",
+        _GMAIL_ATTACH_PROPS,
+        ["uid"],
+    ),
+    (
         "gmail_send",
         "Отправить письмо через Gmail человека. Пароль приложения из чата. Тело – готовый текст, не черновик «проверьте».",
         _GMAIL_SEND_PROPS,
@@ -394,6 +418,13 @@ _TOOL_SPECS = [
         "Не создавай тестовые и проверочные файлы: сохраняй сразу то, что просили.",
         _GOOGLE_DRIVE_UPLOAD_PROPS,
         [],
+    ),
+    (
+        "google_drive_folder",
+        "Найти или создать папку на Google Диске по пути (Суда/Название судна), вернуть id для folder_id в "
+        "google_drive_upload. Повторный вызов с тем же путём дубль не создаёт. Только по просьбе человека.",
+        _GOOGLE_DRIVE_FOLDER_PROPS,
+        ["path"],
     ),
     (
         "google_drive_trash",
@@ -554,7 +585,7 @@ def _assert_public_http_url(url: str) -> str:
         raise ValueError("Нужен обычный http(s) URL")
     host = parsed.hostname or ""
     if _is_blocked_host(host):
-        raise ValueError("Этот адрес недоступен для Пилота")
+        raise ValueError("Этот адрес недоступен для Оркестратора")
     try:
         infos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
@@ -563,7 +594,7 @@ def _assert_public_http_url(url: str) -> str:
         sockaddr = info[4]
         ip = sockaddr[0]
         if _is_blocked_host(ip):
-            raise ValueError("Этот адрес недоступен для Пилота")
+            raise ValueError("Этот адрес недоступен для Оркестратора")
     return url
 
 
@@ -614,14 +645,17 @@ def _message_body(msg: email.message.Message) -> str:
 
 
 def _imap_connect(payload: dict[str, Any]) -> imaplib.IMAP4_SSL:
-    host = payload.get("imap_host") or "imap.gmail.com"
+    host = str(payload.get("imap_host") or "imap.gmail.com").strip()
     port = int(payload.get("imap_port") or 993)
+    if _is_blocked_host(host) or not 0 < port < 65536:
+        raise ValueError("Этот IMAP-сервер недоступен для Оркестратора")
     mailbox = imaplib.IMAP4_SSL(host, port, timeout=20)
     mailbox.login(payload["email"], payload["app_password"])
     return mailbox
 
 
-def _gmail_list_sync(payload: dict[str, Any], folder: str, limit: int, query: str) -> str:
+def _gmail_list_sync(payload: dict[str, Any], folder: str, limit: int, query: str, before_uid: int = 0) -> str:
+    """One page of letters, newest first. before_uid is the cursor printed under the previous page."""
     folder = folder or "INBOX"
     limit = max(1, min(int(limit or 10), IMAP_MAX_MESSAGES))
     search = (query or "UNSEEN").strip() or "UNSEEN"
@@ -633,29 +667,50 @@ def _gmail_list_sync(payload: dict[str, Any], folder: str, limit: int, query: st
         status, data = mailbox.uid("SEARCH", None, search)
         if status != "OK":
             return f"IMAP SEARCH не удался: {status}"
-        uids = (data[0] or b"").decode().split()
-        uids = uids[-limit:]
-        if not uids:
-            return "Писем не найдено."
-        lines = []
-        for uid in reversed(uids):
-            status, fetched = mailbox.uid("FETCH", uid, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])")
-            if status != "OK" or not fetched or fetched[0] is None:
+        uids = [int(u) for u in (data[0] or b"").decode().split()]
+        total = len(uids)
+        if before_uid:
+            uids = [u for u in uids if u < before_uid]
+        page = uids[-limit:]
+        if not page:
+            return "Писем не найдено." if not before_uid else "Это конец: старше писем нет."
+        status, fetched = mailbox.uid(
+            "FETCH", ",".join(map(str, page)), "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE CONTENT-TYPE)])"
+        )
+        headers: dict[int, email.message.Message] = {}
+        for item in fetched if status == "OK" else []:
+            if isinstance(item, tuple) and (found := re.search(rb"UID (\d+)", item[0])):
+                headers[int(found.group(1))] = email.message_from_bytes(item[1])
+        lines, shown, size = [], [], 0
+        for uid in reversed(page):
+            msg = headers.get(uid)
+            if msg is None:
                 continue
-            raw = fetched[0][1] if isinstance(fetched[0], tuple) else fetched[0]
-            msg = email.message_from_bytes(raw)
             date_raw = msg.get("Date", "")
             try:
                 date_s = parsedate_to_datetime(date_raw).isoformat()
             except Exception:
                 date_s = date_raw
-            lines.append(
-                f"UID {uid.decode() if isinstance(uid, bytes) else uid}\n"
-                f"From: {_decode_header_value(msg.get('From'))}\n"
-                f"Subject: {_decode_header_value(msg.get('Subject'))}\n"
-                f"Date: {date_s}"
+            kind = str(msg.get("Content-Type", "text/plain")).lower()
+            clip = "" if kind.startswith("text/") or "multipart/alternative" in kind else " (возможны вложения)"
+            entry = (
+                f"UID {uid}{clip}\nFrom: {_decode_header_value(msg.get('From'))}\n"
+                f"Subject: {_decode_header_value(msg.get('Subject'))}\nDate: {date_s}"
             )
-        return _clamp("\n\n".join(lines) or "Писем не найдено.")
+            if size + len(entry) > MAX_TOOL_OUTPUT - 400:
+                break  # the cursor below must start where the output really stopped
+            lines.append(entry)
+            shown.append(uid)
+            size += len(entry) + 2
+        if not shown:
+            return "Писем не найдено."
+        older = sum(1 for u in uids if u < shown[-1])
+        footer = (
+            f"Всего по запросу: {total}. Ещё старше: {older}. Следующая страница: before_uid={shown[-1]}"
+            if older
+            else f"Всего по запросу: {total}. Это последняя страница."
+        )
+        return "\n\n".join(lines) + "\n\n" + footer
     finally:
         try:
             mailbox.logout()
@@ -687,6 +742,93 @@ def _gmail_read_sync(payload: dict[str, Any], uid: str, folder: str = "INBOX") -
             mailbox.logout()
         except Exception:
             pass
+
+
+ATTACH_MAX_BYTES = 20 * 1024 * 1024  # Drive upload from the sandbox is capped at 30 MB.
+ATTACH_EXCERPT_CHARS = 600
+_BAD_FILENAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def _gmail_attachments_sync(payload: dict[str, Any], uid: str, folder: str) -> tuple[str, list[tuple[str, bytes]], list[str]]:
+    """(header, [(name, bytes)], skipped notes). Readonly: the letter stays unread."""
+    uid = str(uid).strip()
+    if not uid.isdigit():
+        raise ValueError("UID должен быть числом.")
+    mailbox = _imap_connect(payload)
+    try:
+        mailbox.select(folder or "INBOX", readonly=True)
+        status, fetched = mailbox.uid("FETCH", uid, "(BODY.PEEK[])")
+        if status != "OK" or not fetched or fetched[0] is None:
+            raise ValueError("Письмо не найдено.")
+        raw = fetched[0][1] if isinstance(fetched[0], tuple) else fetched[0]
+    finally:
+        try:
+            mailbox.logout()
+        except Exception:
+            pass
+    msg = email.message_from_bytes(raw)
+    header = (
+        f"From: {_decode_header_value(msg.get('From'))}\nSubject: {_decode_header_value(msg.get('Subject'))}\n"
+        f"Date: {msg.get('Date', '')}"
+    )
+    files: list[tuple[str, bytes]] = []
+    skipped: list[str] = []
+    for part in msg.walk():
+        if part.is_multipart():
+            continue
+        name = _decode_header_value(part.get_filename())
+        if not name:
+            continue
+        data = part.get_payload(decode=True) or b""
+        if part.get_content_maintype() == "image" and "inline" in str(part.get("Content-Disposition", "")).lower():
+            skipped.append(f"{name} (картинка в тексте письма)")
+        elif len(data) > ATTACH_MAX_BYTES:
+            skipped.append(f"{name} (больше {ATTACH_MAX_BYTES // (1024 * 1024)} МБ)")
+        elif data:
+            files.append((name, data))
+    return header, files, skipped
+
+
+def _attachment_path(uid: str, name: str, taken: set[str]) -> str:
+    stem, dot, ext = _BAD_FILENAME.sub("_", name).strip(" .").rpartition(".")
+    if not dot:
+        stem, ext = ext, ""
+    stem, ext = (stem or "file")[:80], ext[:10]
+    candidate, n = f"{stem}.{ext}" if ext else stem, 1
+    while candidate in taken:
+        n += 1
+        candidate = f"{stem}_{n}.{ext}" if ext else f"{stem}_{n}"
+    taken.add(candidate)
+    return f"Почта/{uid}/{candidate}"
+
+
+async def _gmail_attachments(payload: dict[str, Any], uid: str, folder: str, user_id: int) -> str:
+    from document_parser import extract_text_from_file
+
+    from app.services.workspace_fs import resolve_in_jail
+
+    try:
+        header, files, skipped = await asyncio.to_thread(_gmail_attachments_sync, payload, uid, folder)
+    except ValueError as exc:
+        return str(exc)
+    if not files:
+        extra = f" Пропущено: {'; '.join(skipped)}." if skipped else ""
+        return f"{header}\n\nВложений нет.{extra}"
+    taken: set[str] = set()
+    lines = []
+    for name, data in files:
+        rel = _attachment_path(str(uid).strip(), name, taken)
+        target = resolve_in_jail(int(user_id), rel)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        try:
+            text = await extract_text_from_file(data, name, user_id=int(user_id))
+        except Exception:
+            text = None
+        excerpt = " ".join((text or "").split())[:ATTACH_EXCERPT_CHARS] or "(текст не извлечён, возможно скан)"
+        lines.append(f"{rel} ({len(data) // 1024} КБ)\n  Начало: {excerpt}")
+    tail = f"\nПропущено: {'; '.join(skipped)}" if skipped else ""
+    return _clamp(f"{header}\n\nСохранено в песочницу:\n" + "\n".join(lines) + tail)
 
 
 def _gmail_send_sync(payload: dict[str, Any], to: str, subject: str, body: str) -> str:
@@ -730,7 +872,7 @@ def _ssh_exec_sync(payload: dict[str, Any], command: str) -> str:
         return "Команда слишком длинная."
     host = payload["host"]
     if _is_blocked_host(host):
-        return "Этот хост недоступен для Пилота."
+        return "Этот хост недоступен для Оркестратора."
     port = int(payload.get("port") or 22)
     username = payload["username"]
     client = paramiko.SSHClient()
@@ -829,10 +971,10 @@ def connector_summary_for_prompt(account_uid: int) -> str:
     return public_summary(account_uid)
 
 
-def skills_prompt(user_id: int | None = None) -> str:
+def skills_prompt(user_id: int | None = None, compact: bool = False) -> str:
     from computer_skills.loader import catalog_for_prompt
 
-    return catalog_for_prompt(user_id)
+    return catalog_for_prompt(user_id, compact=compact)
 
 
 async def _studio_build(user_id: int, args: dict[str, Any]) -> str:
@@ -1086,9 +1228,14 @@ async def run_computer_tool(name: str, args: dict[str, Any], user_id: int | None
                     str(args.get("folder") or "INBOX"),
                     args.get("limit") or 10,
                     str(args.get("query") or "UNSEEN"),
+                    int(args.get("before_uid") or 0) if str(args.get("before_uid") or "0").isdigit() else 0,
                 )
             if name == "gmail_read":
                 return await asyncio.to_thread(_gmail_read_sync, payload, str(args.get("uid") or ""))
+            if name == "gmail_attachments":
+                return await _gmail_attachments(
+                    payload, str(args.get("uid") or ""), str(args.get("folder") or "INBOX"), int(user_id)
+                )
             if name == "gmail_send":
                 return await asyncio.to_thread(
                     _gmail_send_sync,

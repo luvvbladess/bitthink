@@ -18,7 +18,7 @@ router = APIRouter()
 WEB_MODEL_INFO = {
     "auto": {"name": "Лучший", "description": "Быстрый ответ или глубокий разбор — по переключателю"},
     "correspondent": {"name": "Официальный стиль", "description": "Деловая переписка и документы"},
-    "director": {"name": "Пилот", "description": "Оркестратор в песочнице: раздаёт должности подходящим ИИ-агентам и собирает результат"},
+    "director": {"name": "Оркестратор", "description": "Раздаёт должности подходящим ИИ-агентам в песочнице и собирает результат"},
     "studio": {"name": "Студия", "description": "Картинки, слайды и инфографика на холсте"},
     "docgen": {"name": "Документы", "description": "Большой .docx или комплект документов по промпту и вашим файлам"},
     "kimi-k2.6": {"name": "Поиск в интернете", "description": "Актуальные данные и источники"},
@@ -90,6 +90,8 @@ async def list_models(user_id: str = Depends(get_current_user)):
         ],
         "selected": selected_model,
         "reasoningEffort": reasoning_effort,
+        "imageQuality": await repo.get_user_image_quality(user_id),
+        "imageQualities": list(bot_config.IMAGE_QUALITIES),
         "reasoningEfforts": REASONING_EFFORTS,
         "xhighCapable": selected_model in XHIGH_CAPABLE_MODELS or selected_model in MAX_CAPABLE_MODELS,
         "supportsReasoningEffort": selected_model in REASONING_EFFORT_CAPABLE_MODELS,
@@ -125,6 +127,14 @@ async def select_reasoning_effort(data: dict, user_id: str = Depends(get_current
     clamped = _clamp_reasoning_effort(effort, model)
     await repo.set_user_reasoning_effort(user_id, clamped)
     return {"ok": True, "effort": clamped}
+
+
+@router.post("/image-quality")
+async def select_image_quality(data: dict, user_id: str = Depends(get_current_user)):
+    quality = data.get("quality")
+    if quality not in bot_config.IMAGE_QUALITIES:
+        raise HTTPException(status_code=400, detail="Unknown image quality")
+    return {"ok": True, "quality": await repo.set_user_image_quality(user_id, quality)}
 
 
 @router.get("/prompts")

@@ -153,7 +153,7 @@ def test_pilot_hires_astra_only_for_dense_contract_work(monkeypatch):
 def test_pilot_injects_memory_and_custom_prompt_into_planner_employee_and_composer(monkeypatch):
     """Регрессия: раньше _plan_round/_execute_employee/_compose_answer собирали свои
     промпты с нуля и никогда не видели ни память пользователя, ни активный кастомный
-    промпт ("как отвечать") — из-за этого Пилот "не помнил" и "не слушался" инструкций,
+    промпт ("как отвечать") — из-за этого Оркестратор "не помнил" и "не слушался" инструкций,
     даже когда обычный чат с той же памятью работал нормально."""
     import director_router as dr
     import conversations
@@ -214,7 +214,7 @@ def test_pilot_injects_memory_and_custom_prompt_into_planner_employee_and_compos
 
 
 def test_pilot_planner_employee_and_composer_see_chat_history(monkeypatch):
-    """История передаётся строкой history_text во все три этапа Пилота, не
+    """История передаётся строкой history_text во все три этапа Оркестратора, не
     только текущий вопрос без контекста прошлых сообщений."""
     import director_router as dr
 
@@ -277,7 +277,7 @@ def test_pilot_planner_employee_and_composer_see_chat_history(monkeypatch):
 def test_director_builds_history_once_and_reuses_it_across_rounds(monkeypatch):
     """_run_director считает историю один раз (_format_chat_history) и прокидывает
     ту же строку планировщику, каждому сотруднику и сборщику ответа — без этого
-    Пилот теряет контекст прошлых сообщений уже со второго раунда."""
+    Оркестратор теряет контекст прошлых сообщений уже со второго раунда."""
     import director_router as dr
 
     seen: list[tuple[str, str]] = []
@@ -383,7 +383,7 @@ def test_reduce_heavy_context_summarizes_document_but_keeps_question_and_memory(
 
 def test_runtime_context_use_skills_false_skips_autoload(monkeypatch):
     """Регрессия: без use_skills=False внутренние служебные вызовы (JSON-план
-    Пилота, сборка финального ответа, Map-Reduce по документам) подмешивали
+    Оркестратора, сборка финального ответа, Map-Reduce по документам) подмешивали
     случайный скил, подобранный по ключевым словам их СОБСТВЕННОГО шаблонного
     текста (а не реального вопроса человека), да ещё с инструкциями звать
     инструменты, которых у этих вызовов вообще нет (use_tools=False)."""

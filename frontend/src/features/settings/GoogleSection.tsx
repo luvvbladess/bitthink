@@ -7,7 +7,7 @@ import { apiFetch } from '@/api/client';
 type Connector = { id: number; type: string; name: string; hint?: string | null };
 
 const RESULT_TEXT: Record<string, { severity: 'success' | 'warning' | 'error'; text: string }> = {
-  connected: { severity: 'success', text: 'Google подключён. Пилот видит почту, Диск и календарь, по вашей просьбе отправляет письма, сохраняет и удаляет файлы на Диске.' },
+  connected: { severity: 'success', text: 'Google подключён. Оркестратор видит почту, Диск и календарь, по вашей просьбе отправляет письма, сохраняет и удаляет файлы на Диске.' },
   partial: { severity: 'warning', text: 'Подключено не всё: на экране Google сняли часть галочек. Отключите и подключите снова, отметив все.' },
   denied: { severity: 'warning', text: 'Доступ не выдан. Можно попробовать ещё раз.' },
   expired: { severity: 'error', text: 'Ссылка устарела или открыта в другом браузере. Нажмите «Подключить Google» ещё раз.' },

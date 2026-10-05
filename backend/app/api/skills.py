@@ -17,14 +17,14 @@ def _custom_out(row: dict) -> SkillOut:
     return SkillOut(**data)
 
 
-def _builtin_out(item: dict) -> SkillOut:
+def _builtin_out(item: dict, enabled: bool = True) -> SkillOut:
     return SkillOut(
         name=item["name"],
         title=item.get("title") or item["name"],
         description=item.get("description") or "",
         body="",
         triggers="",
-        enabled=True,
+        enabled=enabled,
         origin="builtin",
         scope=item.get("scope") or "sandbox",
         updated_at=0,
@@ -34,7 +34,8 @@ def _builtin_out(item: dict) -> SkillOut:
 @router.get("", response_model=SkillsListOut)
 async def list_skills(user_id: str = Depends(get_current_user)):
     custom = await repo.list_user_skills(user_id)
-    items = [_builtin_out(item) for item in builtin_catalog()]
+    off = await repo.disabled_builtin_skills(user_id)
+    items = [_builtin_out(item, item["name"] not in off) for item in builtin_catalog()]
     items.extend(_custom_out(row) for row in custom)
     return SkillsListOut(items=items, custom_count=len(custom), custom_limit=MAX_SKILLS)
 
@@ -57,6 +58,13 @@ async def create_skill(payload: SkillCreate, user_id: str = Depends(get_current_
 
 @router.patch("/{name}", response_model=SkillOut)
 async def update_skill(name: str, payload: SkillUpdate, user_id: str = Depends(get_current_user)):
+    builtin = next((item for item in builtin_catalog() if item["name"] == name.strip().lower()), None)
+    if builtin is not None:
+        # Common skills can't be edited, only switched on and off.
+        if payload.enabled is None:
+            raise HTTPException(status_code=400, detail="Общий скил можно только включить или выключить.")
+        await repo.set_builtin_skill_enabled(user_id, builtin["name"], payload.enabled)
+        return _builtin_out(builtin, payload.enabled)
     try:
         row = await repo.save_user_skill(
             user_id,

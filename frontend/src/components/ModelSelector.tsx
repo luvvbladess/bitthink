@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Box, Drawer, Popover, Button, Typography, Tooltip, useMediaQuery } from '@mui/material';
-import { CaretDown, Check, Sparkle, MagnifyingGlass, Books, Desktop, Presentation, Atom, FileText, Lock, Brain } from '@phosphor-icons/react';
+import { CaretDown, Check, Sparkle, MagnifyingGlass, Books, Desktop, Presentation, Atom, FileText, Lock, Brain, Image as ImageIcon } from '@phosphor-icons/react';
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/api/client';
 import { composerChipSelectedSx, composerChipSx } from '@/theme/effects';
@@ -28,6 +28,8 @@ interface ModelsCache {
   docgenAvailable?: boolean;
   astraAvailable?: boolean;
   multipliers?: Record<string, number>;
+  imageQuality?: string;
+  imageQualities?: string[];
 }
 
 const ANSWER_MODES = [
@@ -37,7 +39,7 @@ const ANSWER_MODES = [
   { id: 'astra', label: ASTRA_LABEL, description: 'Песочница GPT-6: код, договоры, файлы', model: 'gpt-6-astra', icon: Atom },
   { id: 'studio', label: STUDIO_LABEL, description: 'Живой холст: картинки, слайды, лендинг', model: 'studio', icon: Presentation },
   { id: 'docgen', label: DOCGEN_LABEL, description: 'Большой .docx или комплект документов по Word, PDF, Excel и архивам', model: 'docgen', icon: FileText },
-  { id: 'computer', label: PILOT_LABEL, description: 'Оркестратор в песочнице: раздаёт должности подходящим ИИ-агентам', model: 'director', icon: Desktop },
+  { id: 'computer', label: PILOT_LABEL, description: 'Раздаёт должности подходящим ИИ-агентам в песочнице', model: 'director', icon: Desktop },
 ] as const;
 
 const REASONING_CAPABLE = new Set([
@@ -230,6 +232,7 @@ export function SearchModeSelector() {
             );
           })}
         </Box>
+        <ImageQualityControl />
     </>
   );
 
@@ -246,7 +249,7 @@ export function SearchModeSelector() {
           ...composerChipSx,
           ...(lit ? composerChipSelectedSx : {}),
           minWidth: 44,
-          maxWidth: { xs: 88, sm: 'none' },
+          maxWidth: { xs: 132, sm: 'none' },
           // On very narrow phones the chip may shrink to its icon so Send is never pushed off screen.
           flexShrink: { xs: 1, sm: 0 },
           px: 1.1,
@@ -309,6 +312,86 @@ export function SearchModeSelector() {
         </Popover>
       )}
     </>
+  );
+}
+
+const IMAGE_QUALITY_OPTIONS = [
+  { id: 'low', label: 'Быстро', hint: 'Черновик за считанные секунды' },
+  { id: 'medium', label: 'Стандарт', hint: 'Баланс скорости и деталей' },
+  { id: 'high', label: 'Высокое', hint: 'Максимум деталей, генерация дольше' },
+] as const;
+
+/** One dial for every picture the assistant draws: in chat, in Studio, and when editing a picture. */
+function ImageQualityControl() {
+  const queryClient = useQueryClient();
+  const { data } = useModelsQuery();
+  const current = data?.imageQuality || 'high';
+  const select = useMutation({
+    mutationFn: (quality: string) => apiFetch('/models/image-quality', { method: 'POST', body: JSON.stringify({ quality }) }),
+    onMutate: async (quality) => {
+      const previous = queryClient.getQueryData(['models']);
+      patchModelsCache(queryClient, { imageQuality: quality });
+      await queryClient.cancelQueries({ queryKey: ['models'] });
+      return { previous };
+    },
+    onError: (_err, _quality, ctx) => {
+      if (ctx?.previous) queryClient.setQueryData(['models'], ctx.previous);
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['models'] }),
+  });
+  const active = IMAGE_QUALITY_OPTIONS.find((option) => option.id === current) || IMAGE_QUALITY_OPTIONS[2];
+
+  return (
+    <Box sx={{ mt: 1.25, pt: 1.25, px: 0.25, borderTop: '1px solid var(--bt-hairline)' }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 0.75, pb: 1, color: 'text.secondary' }}>
+        <ImageIcon size={14} weight="bold" aria-hidden />
+        <Typography id="image-quality-label" sx={{ fontSize: '0.75rem', fontWeight: 600 }}>
+          Качество картинок
+        </Typography>
+      </Box>
+      <Box
+        role="radiogroup"
+        aria-labelledby="image-quality-label"
+        sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 0.5, p: 0.4, borderRadius: '12px', bgcolor: 'var(--bt-overlay-faint)', border: '1px solid var(--bt-hairline)' }}
+      >
+        {IMAGE_QUALITY_OPTIONS.map((option) => {
+          const checked = option.id === current;
+          return (
+            <Box
+              key={option.id}
+              component="button"
+              type="button"
+              role="radio"
+              aria-checked={checked}
+              onClick={() => {
+                if (!checked) select.mutate(option.id);
+              }}
+              sx={{
+                minHeight: { xs: 44, sm: 36 },
+                border: '1px solid',
+                borderColor: checked ? 'var(--bt-line)' : 'transparent',
+                borderRadius: '9px',
+                bgcolor: checked ? 'var(--bt-elevated)' : 'transparent',
+                color: checked ? 'text.primary' : 'text.secondary',
+                font: 'inherit',
+                fontSize: '0.8125rem',
+                fontWeight: checked ? 600 : 500,
+                cursor: 'pointer',
+                transition: 'background-color 0.16s cubic-bezier(0.23, 1, 0.32, 1), color 0.16s cubic-bezier(0.23, 1, 0.32, 1), border-color 0.16s cubic-bezier(0.23, 1, 0.32, 1)',
+                '&:hover': { color: 'text.primary' },
+                '&:active': { transform: 'scale(0.97)' },
+                '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 1 },
+              }}
+            >
+              {option.label}
+            </Box>
+          );
+        })}
+      </Box>
+      <Typography sx={{ px: 0.75, pt: 0.9, color: 'text.secondary', fontSize: '0.75rem', lineHeight: 1.4 }} aria-live="polite">
+        {active.hint}
+      </Typography>
+    </Box>
   );
 }
 

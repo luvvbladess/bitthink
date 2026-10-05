@@ -555,6 +555,18 @@ def _last_reply_image(user_id: int) -> bytes | None:
     return None
 
 
+def _image_quality(user_id: int) -> str:
+    """The quality the person picked for pictures (low / medium / high)."""
+    try:
+        from conversations import conversation_manager
+
+        return conversation_manager.get_user_image_quality(int(user_id))
+    except Exception:
+        from config import DEFAULT_IMAGE_QUALITY
+
+        return DEFAULT_IMAGE_QUALITY
+
+
 async def get_image_response(
     messages: List[Dict[str, Any]],
     user_text: str,
@@ -601,9 +613,9 @@ async def get_image_response(
     from openai_client import edit_image, generate_image
 
     if sources:
-        data_url, err = await edit_image(sources, user_text, size="1024x1024", quality="high")
+        data_url, err = await edit_image(sources, user_text, size="1024x1024", quality=_image_quality(user_id))
     else:
-        data_url, err = await generate_image(user_text, size="1024x1024", quality="high")
+        data_url, err = await generate_image(user_text, size="1024x1024", quality=_image_quality(user_id))
     if not data_url:
         if image_claimed:
             from app.billing.quota import refund_images
@@ -753,13 +765,13 @@ async def _run_image_studio(
     data_url: str | None = None
     err: str | None = None
     if source_images:
-        data_url, err = await edit_image(source_images, user_text, size="1024x1024", quality="high")
+        data_url, err = await edit_image(source_images, user_text, size="1024x1024", quality=_image_quality(user_id))
     elif iterating:
         raw = extract_embedded_image_bytes(previous_html)
         if raw:
-            data_url, err = await edit_image(raw, user_text, size="1024x1024", quality="high")
+            data_url, err = await edit_image(raw, user_text, size="1024x1024", quality=_image_quality(user_id))
     if not data_url and not source_images:
-        data_url, err = await generate_image(user_text, size="1024x1024", quality="high")
+        data_url, err = await generate_image(user_text, size="1024x1024", quality=_image_quality(user_id))
     if not data_url or not (
         data_url.startswith("data:image/") or data_url.startswith("https://") or data_url.startswith("/")
     ):

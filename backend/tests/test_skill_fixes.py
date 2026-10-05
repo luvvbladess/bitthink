@@ -281,3 +281,49 @@ def test_save_stays_on_the_sender_not_the_other_person():
         assert "guest_only" not in {item["name"] for item in catalog(owner)}
     finally:
         conversation_manager.delete_user_skill(guest, "guest_only")
+
+
+def test_pilot_junk_search_items_do_not_hide_domain_sources(monkeypatch):
+    from handlers import core as core_mod
+    import director_router
+
+    junk = [{"query": "load_skill prices", "summary": "Найди в интернете курс"}]
+    text = "Курс евро 94,3 ₽ (cbr.ru), доллар 83,5 ₽ (banki.ru)."
+
+    async def fake_director(*_args, **_kwargs):
+        return text, [], "", junk
+
+    monkeypatch.setattr(director_router, "get_director_response", fake_director)
+    uid = 96301
+    conversation_manager.get_subscription(uid)
+    conversation_manager.set_user_model(uid, "director")
+    from app.db.engine import SyncSessionLocal
+    from app.db.models import Subscription
+
+    with SyncSessionLocal() as session:
+        session.query(Subscription).filter_by(user_id=uid).one().tier = "creator"
+        session.commit()
+    _answer, _files, _r, sources = asyncio.run(core_mod.get_smart_response(uid, "курс евро", [], None))
+    assert any(s["summary"].startswith("http") for s in sources), sources
+
+
+def test_pilot_kimi_employee_falls_back_to_cited_search_when_kimi_gives_no_links(monkeypatch):
+    import director_router
+    import kimi_client
+    import openai_client
+
+    async def kimi_gave_up(*_a, **_k):
+        return "Kimi web search не завершился за лимит шагов."
+
+    cited = [{"query": "ЦБ", "summary": "https://cbr.ru/x\nкурс"}]
+
+    async def hosted(*_a, **kw):
+        assert kw["force_web_search"] is True
+        return "Евро 94,3 ₽", [], "", cited
+
+    monkeypatch.setattr(kimi_client, "get_kimi_search_brief", kimi_gave_up)
+    monkeypatch.setattr(openai_client, "get_chat_response", hosted)
+    entry = asyncio.run(
+        director_router._execute_employee({"role": "r", "task": "курс евро", "model": "kimi-k2.6"}, 1, [], 96302)
+    )
+    assert entry["search"] == cited and entry["result"] == "Евро 94,3 ₽"

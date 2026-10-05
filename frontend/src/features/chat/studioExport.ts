@@ -274,10 +274,78 @@ export function downloadHtml(html: string, name?: string) {
   downloadBlob(new Blob([html], { type: 'text/html;charset=utf-8' }), `${exportStem(name)}.html`);
 }
 
+// A saved canvas keeps its pictures as files on this site and points to them by path
+// (`/uploads/generated/….png`). Opened from a download, that path leads nowhere: the page shows
+// a black screen. So a downloaded page carries its pictures inside.
+const SITE_PICTURE = /(\bsrc=["']|url\(\s*["']?)(\/uploads\/[^"')\s]+)/gi;
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+export async function inlineSitePictures(html: string): Promise<string> {
+  const paths = [...new Set([...html.matchAll(SITE_PICTURE)].map((match) => match[2]))];
+  if (!paths.length) return html;
+  const inlined = new Map<string, string>();
+  await Promise.all(
+    paths.map(async (path) => {
+      try {
+        const response = await fetch(path, { credentials: 'same-origin' });
+        if (response.ok) inlined.set(path, await blobToDataUrl(await response.blob()));
+      } catch {
+        // a picture that cannot be fetched stays a link
+      }
+    }),
+  );
+  return html.replace(SITE_PICTURE, (whole, head: string, path: string) => (inlined.has(path) ? head + inlined.get(path) : whole));
+}
+
+/** A Studio picture canvas is a page around one image; its source, or null for any other canvas. */
+export function studioPictureSrc(html: string): string | null {
+  if (!/data-studio-image/i.test(html || '')) return null;
+  return /<img[^>]+\bsrc=["']([^"']+)["']/i.exec(html)?.[1] || null;
+}
+
+async function downloadStudioPicture(src: string, name?: string): Promise<void> {
+  const response = await fetch(src, { credentials: 'same-origin' });
+  if (!response.ok) throw new Error('Не удалось скачать картинку');
+  const blob = await response.blob();
+  const ext = /jpe?g/i.test(blob.type) ? 'jpg' : /webp/i.test(blob.type) ? 'webp' : 'png';
+  downloadBlob(blob, `${exportStem(name)}.${ext}`);
+}
+
+/** What "download" should give for a saved canvas: the picture itself, or a page that works offline. */
+export async function saveCanvasFile(html: string, name?: string): Promise<void> {
+  const picture = studioPictureSrc(html);
+  if (picture) {
+    await downloadStudioPicture(picture, name);
+    return;
+  }
+  downloadHtml(await inlineSitePictures(html), name);
+}
+
+/** The chat card's download: fetch the stored canvas and save it in a form that opens anywhere. */
+export async function downloadCanvasFromUrl(url: string, name?: string): Promise<void> {
+  const response = await fetch(url, { credentials: 'same-origin' });
+  if (!response.ok) throw new Error('Не удалось скачать файл');
+  await saveCanvasFile(await response.text(), name);
+}
+
 export async function exportCanvas(html: string, format: ExportFormat, name?: string) {
   const stem = exportStem(name);
   if (format === 'html') {
-    downloadHtml(html, stem);
+    downloadHtml(await inlineSitePictures(html), stem);
+    return;
+  }
+  // The PNG of a picture canvas is the picture, not a screenshot of the canvas around it.
+  const picture = format === 'png' ? studioPictureSrc(html) : null;
+  if (picture) {
+    await downloadStudioPicture(picture, stem);
     return;
   }
   try {

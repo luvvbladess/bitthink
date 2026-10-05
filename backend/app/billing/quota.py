@@ -334,7 +334,7 @@ def raise_if_blocked(sub: dict[str, Any], pool: PoolName, model: str) -> bool:
         return False
     if view["tier"] == "free":
         if pool == "computer":
-            raise QuotaError("Пилот недоступен на базовом тарифе. Нужен Pro.", "plan")
+            raise QuotaError("Оркестратор недоступен на базовом тарифе. Нужен Pro.", "plan")
         if model == "kimi-k2.6":
             used = view["free_daily"]["searches"]
             cap = view["free_daily"]["searches_limit"]
@@ -349,11 +349,11 @@ def raise_if_blocked(sub: dict[str, Any], pool: PoolName, model: str) -> bool:
 
     family = view["windows"]["computer" if pool == "computer" else "chat"]
     if pool == "computer":
-        _block_window(family["session"], "Пятичасовое окно Пилота закончилось.")
-        _block_window(family["week"], "Недельный лимит Пилота закончился.")
+        _block_window(family["session"], "Пятичасовое окно Оркестратора закончилось.")
+        _block_window(family["week"], "Недельный лимит Оркестратора закончился.")
         remaining = view["computer"]["remaining"]
         if remaining is not None and remaining <= 0:
-            raise QuotaError("Токены Пилота на этот месяц закончились. Чат при этом продолжает работать.", "quota")
+            raise QuotaError("Токены Оркестратора на этот месяц закончились. Чат при этом продолжает работать.", "quota")
         return True
 
     _block_window(family["session"], "Пятичасовое окно чата закончилось.")

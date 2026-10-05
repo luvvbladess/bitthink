@@ -190,7 +190,7 @@ export const floatingPanelSx = {
   borderRadius: '22px',
   bgcolor: 'var(--bt-panel)',
   border: '1px solid',
-  borderColor: 'var(--bt-line)',
+  borderColor: 'var(--bt-hairline)',
   boxShadow: 'var(--bt-composer-shadow)',
 } as const;
 

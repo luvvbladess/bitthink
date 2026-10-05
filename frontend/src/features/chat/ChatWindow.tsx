@@ -1,6 +1,7 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
+import { createPortal } from 'react-dom';
 import { Box, IconButton } from '@mui/material';
-import { motion, useReducedMotion } from 'framer-motion';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { ArrowsLeftRight, Bug, Newspaper, Paperclip, type Icon } from '@phosphor-icons/react';
 import { useAuthStore } from '@/stores/authStore';
 import { ChatMessage } from './ChatMessage';
@@ -18,6 +19,8 @@ import { useSelectModel } from '@/components/ModelSelector';
 import { DOCGEN_LABEL, PILOT_LABEL, STUDIO_LABEL } from '@/constants/modes';
 import { BrandMark } from '@/components/BrandMark';
 import { followUpChips, followUpMode } from './followUps';
+import { normalizeMarkdown } from './markdownText';
+import { isReplyText, useReplySnapshot } from './replyReveal';
 
 export interface DisplayMessage {
   id: string;
@@ -51,6 +54,10 @@ interface Props {
   splitPane?: boolean;
   /** Empty chat only: a spacer under the heading. The page parks the (single) composer on top of it. */
   composerSlotRef?: (element: HTMLElement | null) => void;
+  /** The open conversation: tells a reply that is being typed out which chat it belongs to. */
+  convId?: string;
+  /** Where the follow-up chips go: a slot in the composer dock, so they never end up under it. */
+  chipsHost?: HTMLElement | null;
 }
 
 interface Suggestion {
@@ -133,17 +140,37 @@ export function ChatWindow({
   jumpRef,
   splitPane = false,
   composerSlotRef,
+  convId,
+  chipsHost,
 }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const pinToBottomRef = useRef(true);
   const skipPinUpdateRef = useRef(false);
+  // Editing is locked while a reply is generated. Read through a ref and a CSS class, not a prop:
+  // a prop that flips with `thinking` re-renders (and re-parses) every user message twice per turn.
+  const thinkingRef = useRef(thinking);
+  thinkingRef.current = thinking;
   const reduce = useReducedMotion();
   const user = useAuthStore((s) => s.user);
   const firstName = user?.first_name || undefined;
   const [scrollerNode, setScrollerNode] = useState<HTMLDivElement | null>(null);
   const [arriveId, setArriveId] = useState<string | null>(null);
+  const columnRef = useRef<HTMLDivElement>(null);
   const visibleMessages = messages.filter((msg) => !isClarifyMessage(msg.search));
+  // The reply that is being typed out. Its state lives outside this component (see
+  // replyReveal.ts), so the live copy being swapped for the saved message cannot cut it off.
+  const reply = useReplySnapshot();
+  const newestAssistant = [...visibleMessages].reverse().find((msg) => msg.role === 'assistant');
+  // Between `done` and the refetch the saved message is not in the list yet; keep the reply on screen.
+  const showGhost =
+    Boolean(convId) &&
+    reply.convId === convId &&
+    reply.typing &&
+    !(newestAssistant && isReplyText(normalizeMarkdown(newestAssistant.content), reply));
+  const listMessages: DisplayMessage[] = showGhost
+    ? [...visibleMessages, { id: 'reply-ghost', role: 'assistant', content: reply.raw }]
+    : visibleMessages;
   const questionTicks = useMemo(
     () =>
       visibleMessages
@@ -151,11 +178,11 @@ export function ChatWindow({
         .map((msg) => ({ id: msg.id, label: msg.content })),
     [visibleMessages]
   );
-  const lastAssistantId = [...visibleMessages].reverse().find((m) => m.role === 'assistant')?.id;
+  const lastAssistantId = [...listMessages].reverse().find((m) => m.role === 'assistant')?.id;
   const lastUser = [...visibleMessages].reverse().find((m) => m.role === 'user');
   const lastUserId = lastUser?.id;
   const lastUserText = lastUser?.content || '';
-  const lastAssistantText = [...visibleMessages].reverse().find((m) => m.role === 'assistant')?.content || '';
+  const lastAssistantText = [...listMessages].reverse().find((m) => m.role === 'assistant')?.content || '';
   const { data: models } = useQuery({ queryKey: ['models'], queryFn: () => apiFetch('/models') });
   const isComputer = models?.selected === 'director';
   const isStudio = models?.selected === 'studio';
@@ -170,11 +197,14 @@ export function ChatWindow({
       : isComputer
         ? COMPUTER_SUGGESTIONS
         : SUGGESTIONS;
-  const nextChips = !thinking
+  const nextChips = !thinking && !reply.typing && !clarifyDocked
     ? followUpChips(lastUserText, lastAssistantText, followUpMode(models?.selected), hasCanvas)
     : [];
   const snappedTurnRef = useRef(false);
   const [jump, setJump] = useState({ up: false, down: false });
+  // Same value, same state: a growing reply must not re-render the whole chat on every frame.
+  const applyJump = (next: { up: boolean; down: boolean }) =>
+    setJump((prev) => (prev.up === next.up && prev.down === next.down ? prev : next));
 
   const scrollToBottom = () => {
     const node = scrollerRef.current;
@@ -187,7 +217,7 @@ export function ChatWindow({
       skipPinUpdateRef.current = false;
       const gap = node.scrollHeight - node.scrollTop - node.clientHeight;
       const questionTop = lastUserId ? messageOffset(node, lastUserId) : 0;
-      setJump({
+      applyJump({
         down: gap > 64,
         up: node.scrollTop > questionTop + 56,
       });
@@ -197,12 +227,12 @@ export function ChatWindow({
   const measureJump = () => {
     const node = scrollerRef.current;
     if (!node) {
-      setJump({ up: false, down: false });
+      applyJump({ up: false, down: false });
       return;
     }
     const gap = node.scrollHeight - node.scrollTop - node.clientHeight;
     const questionTop = lastUserId ? messageOffset(node, lastUserId) : 0;
-    setJump({
+    applyJump({
       down: gap > 64,
       up: node.scrollTop > questionTop + 56,
     });
@@ -247,6 +277,31 @@ export function ChatWindow({
     setScrollerNode(scrollerRef.current);
   });
 
+  // A reply that types itself out grows without `messages` changing, so the scroll
+  // arrows and the pinned-to-bottom state follow the column's real height instead.
+  const followRef = useRef<() => void>(() => undefined);
+  followRef.current = () => {
+    if (pinToBottomRef.current) scrollToBottom();
+    else measureJump();
+  };
+  useEffect(() => {
+    const column = columnRef.current;
+    if (!column || typeof ResizeObserver === 'undefined') return;
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        followRef.current();
+      });
+    });
+    observer.observe(column);
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, []);
+
   const jumpToQuestion = useCallback((id: string) => {
     const node = scrollerRef.current;
     if (!node) return;
@@ -259,7 +314,7 @@ export function ChatWindow({
       setArriveId((current) => (current === id ? null : current));
       const gap = node.scrollHeight - node.scrollTop - node.clientHeight;
       const questionTop = messageOffset(node, id);
-      setJump({
+      applyJump({
         down: gap > 64,
         up: node.scrollTop > questionTop + 56,
       });
@@ -278,6 +333,7 @@ export function ChatWindow({
     <Box sx={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex', position: 'relative' }}>
     <Box
       ref={scrollerRef}
+      className={thinking ? 'bt-generating' : undefined}
       onScroll={updatePin}
       onWheel={(event) => {
         if (event.deltaY < 0) pinToBottomRef.current = false;
@@ -296,6 +352,7 @@ export function ChatWindow({
         '&::-webkit-scrollbar-track': { background: 'transparent' },
         '&::-webkit-scrollbar-thumb': { bgcolor: 'var(--bt-overlay-strong)', borderRadius: 8, border: '2px solid transparent', backgroundClip: 'padding-box' },
         '&::-webkit-scrollbar-button': { display: 'none', width: 0, height: 0 },
+        '&.bt-generating .bt-edit': { display: 'none' },
         '@keyframes dialogue-arrive': {
           '0%': { boxShadow: '0 0 0 0 var(--bt-glow-strong)' },
           '35%': { boxShadow: '0 0 0 8px var(--bt-glow)' },
@@ -303,7 +360,7 @@ export function ChatWindow({
         },
       }}
     >
-      <Box sx={{
+      <Box ref={columnRef} sx={{
         ...CHAT_COL,
         ...(splitPane ? { maxWidth: '100%', px: { xs: 1.25, sm: 1.75 } } : {}),
         pt: HEADER_SCROLL_PAD,
@@ -324,7 +381,8 @@ export function ChatWindow({
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: reduce ? 0 : 0.35, ease: [0.23, 1, 0.32, 1] }}
             >
-              <Box sx={{ mb: 2.25, display: 'flex', justifyContent: 'center' }}>
+              {/* The sidebar already carries the logo on desktop; phones have no sidebar on screen. */}
+              <Box sx={{ mb: 2.25, display: { xs: 'flex', md: 'none' }, justifyContent: 'center' }}>
                 <BrandMark variant="empty" />
               </Box>
               {isComputer && (
@@ -369,18 +427,20 @@ export function ChatWindow({
               {!isComputer && !isStudio && !isDocgen && (
                 <Box sx={{ color: 'text.secondary', fontSize: '0.875rem', mb: 0.75 }}>{greeting(firstName)}</Box>
               )}
-              <Box sx={{ fontSize: { xs: '1.5rem', md: '1.85rem' }, fontWeight: 600, letterSpacing: '-0.035em', mb: 0.75, lineHeight: 1.15, textWrap: 'balance', color: 'text.primary' }}>
+              <Box sx={{ fontSize: { xs: '1.5rem', md: '1.85rem' }, fontWeight: 600, letterSpacing: '-0.035em', mb: isComputer || isStudio || isDocgen ? 0.75 : { xs: 2.5, md: 3 }, lineHeight: 1.15, textWrap: 'balance', color: 'text.primary' }}>
                 {isDocgen ? 'Что собрать?' : isStudio ? 'Что визуализируем?' : isComputer ? 'Над чем поработаем?' : 'С чего начнём?'}
               </Box>
+              {(isComputer || isStudio || isDocgen) && (
               <Box sx={{ color: 'text.secondary', mb: 2.25, fontSize: '0.9375rem', mx: 'auto', maxWidth: '40ch', lineHeight: 1.5 }}>
                 {isDocgen
                   ? 'Прикрепите шаблоны и базу — Word, PDF, Excel или zip. Соберёт .docx. Перед генерацией покажет план и спросит подтверждение.'
                   : isStudio
                     ? 'Прикрепите образец PPTX и ТЗ — повторит стиль и соберёт слайды. Или опишите картинку и макет.'
                     : isComputer
-                      ? 'Опишите задачу своими словами. Пилот в песочнице разделит её на должности, подберёт подходящих ИИ-агентов и соберёт итог.'
-                      : 'Обычный чат отвечает текстом. Студия рисует картинки и макеты на холсте.'}
+                      ? 'Опишите задачу своими словами. Оркестратор в песочнице разделит её на должности, подберёт подходящих ИИ-агентов и соберёт итог.'
+                      : ''}
               </Box>
+              )}
               {composerSlotRef && (
                 <Box ref={composerSlotRef} aria-hidden sx={{ height: 'var(--bt-composer-h, 112px)', mb: 2.5 }} />
               )}
@@ -497,7 +557,7 @@ export function ChatWindow({
                   <Box sx={{ minWidth: 0, flex: 1 }}>
                     <Box sx={{ fontWeight: 600, fontSize: '0.9375rem', letterSpacing: '-0.02em' }}>{PILOT_LABEL}</Box>
                     <Box sx={{ color: 'text.secondary', fontSize: '0.8125rem', lineHeight: 1.4, mt: 0.2 }}>
-                      Оркестратор в песочнице: раздаёт должности подходящим ИИ-агентам
+                      Раздаёт должности подходящим ИИ-агентам в песочнице
                     </Box>
                   </Box>
                   <Box
@@ -534,7 +594,7 @@ export function ChatWindow({
           </Box>
         )}
 
-        {visibleMessages.map((msg) => (
+        {listMessages.map((msg) => (
           <Box
             key={msg.id}
             data-dialogue-id={msg.id}
@@ -546,7 +606,8 @@ export function ChatWindow({
             }}
           >
           <motion.div
-            initial={{ opacity: 0, y: 8 }}
+            // The reply being typed needs no entrance of its own: the typing is the entrance.
+            initial={msg.id === lastAssistantId && isReplyText(normalizeMarkdown(msg.content), reply) ? false : { opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.2, ease: [0.23, 1, 0.32, 1] }}
             style={{ minWidth: 0, width: '100%' }}
@@ -563,45 +624,74 @@ export function ChatWindow({
               sourcesActive={msg.id === activeSourceId}
               onOpenSources={() => onOpenSources?.(msg.id)}
               onRegenerate={onRegenerate}
-              onEdit={msg.role === 'user' && !thinking && !isClarifyReply(msg.content) ? (text) => onEditMessage?.(msg.id, text) : undefined}
+              onEdit={msg.role === 'user' && !isClarifyReply(msg.content) ? (text) => { if (!thinkingRef.current) onEditMessage?.(msg.id, text); } : undefined}
               onEditImage={onEditImage}
               onAcceptMode={(model) => selectModel.mutateAsync(model)}
               people={people}
               author={msg.author}
               mine={msg.mine}
+              revealTarget={msg.id === lastAssistantId}
+              touchActions={msg.id === lastAssistantId || msg.id === lastUserId}
             />
-            {msg.id === lastAssistantId && nextChips.length > 0 && (
-              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mt: 1, mb: 1.5, pl: { xs: 0, sm: 0.5 } }}>
-                {nextChips.map((chip) => (
-                  <Box
-                    key={chip.label}
-                    component="button"
-                    type="button"
-                    onClick={() => onSuggestion?.(chip.text)}
-                    sx={suggestionChipSx}
-                  >
-                    {chip.label}
-                  </Box>
-                ))}
-              </Box>
-            )}
           </motion.div>
           </Box>
         ))}
 
-        {thinking && (
-          <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-            {liveReasoning && (
-              <Box sx={{ width: '100%' }}>
-                <ReasoningTrace reasoning={liveReasoning} live />
+        <AnimatePresence initial={false}>
+          {thinking && (
+            <motion.div
+              key="activity"
+              initial={reduce ? false : { opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0, transition: { duration: 0.22, ease: [0.23, 1, 0.32, 1] } }}
+              // The status folds away while the answer starts, so the text slides up into its place.
+              exit={{ opacity: 0, height: 0, transition: { duration: reduce ? 0 : 0.18, ease: [0.23, 1, 0.32, 1] } }}
+              style={{ overflow: 'hidden' }}
+            >
+              {liveReasoning && (
+                <Box sx={{ width: '100%' }}>
+                  <ReasoningTrace reasoning={liveReasoning} live />
+                </Box>
+              )}
+              <Box sx={{ display: 'flex', justifyContent: 'flex-start', mb: 3 }}>
+                <ActivityFeed statusText={statusText} />
               </Box>
-            )}
-            <Box sx={{ display: 'flex', justifyContent: 'flex-start', mb: 3 }}>
-              <ActivityFeed statusText={statusText} />
-            </Box>
-          </motion.div>
-        )}
+            </motion.div>
+          )}
+        </AnimatePresence>
 
+        {chipsHost &&
+          nextChips.length > 0 &&
+          createPortal(
+            <Box
+              key={lastAssistantId}
+              sx={{
+                display: 'flex',
+                gap: 0.75,
+                // One row that scrolls sideways on a phone; it sits right above the composer.
+                flexWrap: 'nowrap',
+                overflowX: 'auto',
+                scrollbarWidth: 'none',
+                '&::-webkit-scrollbar': { display: 'none' },
+                pb: 1,
+                pl: { xs: 0, sm: 0.5 },
+                animation: 'bt-chips-in 0.22s cubic-bezier(0.23, 1, 0.32, 1) both',
+                '@keyframes bt-chips-in': { from: { opacity: 0, transform: 'translateY(4px)' }, to: { opacity: 1, transform: 'none' } },
+              }}
+            >
+              {nextChips.map((chip) => (
+                <Box
+                  key={chip.label}
+                  component="button"
+                  type="button"
+                  onClick={() => onSuggestion?.(chip.text)}
+                  sx={{ ...suggestionChipSx, flexShrink: 0, whiteSpace: 'nowrap', bgcolor: 'var(--bt-panel)' }}
+                >
+                  {chip.label}
+                </Box>
+              ))}
+            </Box>,
+            chipsHost,
+          )}
         <div ref={bottomRef} />
       </Box>
     </Box>

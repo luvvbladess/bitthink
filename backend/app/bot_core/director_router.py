@@ -47,16 +47,65 @@ def _employee_models(user_id: int) -> list[str]:
         return list(MODEL_POOL)
 
 
-def _clamped_planner_model(user_id: int) -> str:
+LIGHT_TASK_CHARS = 300
+COMPLEX_TASK_CHARS = 600
+_CODE_SKILLS = frozenset({"code", "debug", "science", "sql"})
+# "Make me an app / bot / site": the goal is open-ended, so the planner may need to ask first.
+_BUILD_RE = re.compile(
+    r"(?i)созда|разработ|построй|постро[ий]т|реализ|приложен|\bбот|сайт|сервис|проект|платформ|"
+    r"\bигр[уыа]\b|программ|автоматизир|настрой|"
+    r"сдела|собер|собра|подготов|оформ|сформир|выпуст|сгенерир|состав[ьи]"
+)
+
+
+def _sandbox_skills(text: str, user_id: int | None) -> List[str]:
+    """Playbooks the text calls for that need real tools (sandbox, files, mail, sites)."""
+    try:
+        from computer_skills.loader import builtin_names, match_skills, skill_scope
+
+        builtin = set(builtin_names())
+        names = match_skills(text or "", user_id=user_id, limit=3, sandbox=True)
+        return [n for n in names if n in builtin and skill_scope(n) == "sandbox"]
+    except Exception:
+        return []
+
+
+def _is_light_task(text: str, document_context: str, has_images: bool, user_id: int | None) -> bool:
+    """A short question with no files, photos or tools to run: it needs no planner and no team.
+
+    Planning it on Sol cost ~20x Luna and a whole extra round trip before any work started."""
+    if document_context or has_images or _wants_file(text) or _is_document_package_task(text):
+        return False
+    if len(text or "") > LIGHT_TASK_CHARS or _BUILD_RE.search(text or ""):
+        return False
+    return not _sandbox_skills(text, user_id)
+
+
+def _needs_strong_model(text: str, document_context: str, has_images: bool, user_id: int | None) -> bool:
+    """Only these earn Sol / DeepSeek Pro (9-20x Luna): files, long briefs, several tools, real code."""
+    if document_context or has_images or len(text or "") > COMPLEX_TASK_CHARS:
+        return True
+    if _wants_file(text) or _is_document_package_task(text):
+        return True
+    skills = _sandbox_skills(text, user_id)
+    return len(skills) >= 2 or bool(_CODE_SKILLS & set(skills))
+
+
+def _clamped_planner_model(user_id: int, first_round: bool = True, complex_task: bool = True) -> str:
     """Оркестратор целится в Sol, но не должен выдавать модель дороже тарифа
-    пользователя — как и composer, откатываемся на Luna, если Sol недоступен."""
+    пользователя — как и composer, откатываемся на Luna, если Sol недоступен.
+
+    Sol (20x Luna) решает, как разрезать задачу. Следующие раунды только отвечают
+    «хватает ли сделанного или нужен ещё шаг» – это по силам Luna, а промпт
+    планировщика (правила, каталог, журнал) отправляется каждый раунд заново."""
+    wanted = PLANNER_MODEL if first_round and complex_task else DIRECT_ANSWER_MODEL
     try:
         from conversations import conversation_manager
         from app.billing.plans import clamp_model
 
-        return clamp_model(conversation_manager.get_subscription(user_id).get("tier"), PLANNER_MODEL)
+        return clamp_model(conversation_manager.get_subscription(user_id).get("tier"), wanted)
     except Exception:
-        return PLANNER_MODEL
+        return wanted
 
 
 def _task_warrants_astra(task: str, document_context: str = "") -> bool:
@@ -152,17 +201,25 @@ def _clamp_employee_plan(
     allowed = _employee_models(user_id)
     allow_astra = "gpt-6-astra" in allowed and _task_warrants_astra(original_task, document_context)
     already = any(entry.get("model") == "gpt-6-astra" for entry in (journal or []))
+    strong = _needs_strong_model(original_task, document_context, False, user_id)
     employees = []
     astra_used = already
     for item in plan.get("new_employees") or []:
         model = item.get("model")
+        extra: Dict[str, Any] = {}
+        if model == "kimi-k2.6":
+            # Web research runs on Luna's hosted search: ~5 s against ~30 s on Kimi's loop, 9x cheaper
+            # in plan tokens, and it returns more cited sources.
+            model, extra = FALLBACK_EMPLOYEE_MODEL, {"web": True}
+        elif model in ("gpt-6-sol", "deepseek-v4-pro") and not strong:
+            model = FALLBACK_EMPLOYEE_MODEL
         if model == "gpt-6-astra" and (not allow_astra or astra_used):
             model = _astra_fallback(allowed)
         elif model not in allowed:
             model = FALLBACK_EMPLOYEE_MODEL if FALLBACK_EMPLOYEE_MODEL in allowed else (allowed[0] if allowed else FALLBACK_EMPLOYEE_MODEL)
         if model == "gpt-6-astra":
             astra_used = True
-        employees.append({**item, "model": model})
+        employees.append({**item, "model": model, **extra})
     return {**plan, "new_employees": employees}
 
 
@@ -193,8 +250,8 @@ _RU_MONTHS_GENITIVE = [
 def _preference_context(user_id: int) -> str:
     """Память и правило «как отвечать» — то же самое, что подмешивается в обычный чат
     через get_messages_for_api. Раньше планировщик, сотрудники и сборщик ответа
-    в режиме Пилот собирали свои промпты с нуля и никогда не видели ни память
-    пользователя, ни его активный кастомный промпт — отсюда жалобы, что Пилот
+    в режиме Оркестратор собирали свои промпты с нуля и никогда не видели ни память
+    пользователя, ни его активный кастомный промпт — отсюда жалобы, что Оркестратор
     «не помнит», «не слушается» и отвечает мимо инструкции, даже когда сотрудники
     честно нашли нужные данные."""
     parts: List[str] = []
@@ -233,7 +290,7 @@ def _current_date_note() -> str:
 
 
 # Только слова про сам снимок. «найд», «что на», «где в» ловили «найди ошибку»,
-# «что нам делать», «где в договоре» – и Пилот искал по фото вместо работы.
+# «что нам делать», «где в договоре» – и Оркестратор искал по фото вместо работы.
 PHOTO_RESEARCH_MARKERS = (
     "фото", "фотк", "снимк", "снимок", "картин", "изображ", "скрин", "где сня",
     "локац", "ориентир", "сделано данное", "это место", "за место",
@@ -324,8 +381,35 @@ def _web_research_employees(user_text: str) -> List[Dict[str, str]]:
             "Не пиши итог из памяти модели.\n"
             f"Запрос: {(user_text or '')[:1500]}"
         ),
-        "model": "kimi-k2.6",
+        "model": FALLBACK_EMPLOYEE_MODEL,
+        "web": True,
     }]
+
+
+def _light_research_employee(user_text: str) -> Dict[str, Any]:
+    """One lean searcher for a short factual question: the hosted search already cites its pages,
+    so no forced page-by-page reading (that was minutes of tool hops for one price)."""
+    return {
+        "role": "Поиск",
+        "task": (
+            "Ответь на вопрос по свежим данным из интернета: сделай веб-поиск и опирайся только на найденное. "
+            "Страницу открывай (browse_page) только если в выдаче нет нужной цифры или даты. "
+            "В ответе – факты с датой и источником, без вступлений.\n"
+            f"Вопрос: {(user_text or '')[:1500]}"
+        ),
+        "model": FALLBACK_EMPLOYEE_MODEL,
+        "web": True,
+    }
+
+
+def _has_sources(journal: List[Dict[str, Any]], minimum: int = 2) -> bool:
+    links = {
+        str(s.get("summary", "")).split("\n")[0]
+        for entry in journal
+        for s in entry.get("search", [])
+        if str(s.get("summary", "")).startswith("http")
+    }
+    return len(links) >= minimum
 
 
 def _verify_employee(user_text: str) -> Dict[str, str]:
@@ -348,7 +432,7 @@ def _ensure_research_plan(
     journal: List[Dict[str, Any]],
     has_images: bool,
 ) -> Dict[str, Any]:
-    """Пилот – исследователь: первый раунд не бывает пустым, второй – сверка.
+    """Оркестратор – исследователь: первый раунд не бывает пустым, второй – сверка.
 
     has_images – вопрос про фото из чата (wants_photo_research), а не просто
     «в чате когда-то была картинка»: иначе любой запрос превращался в поиск по фото.
@@ -500,7 +584,7 @@ def _build_roster_text(journal_view: List[Dict[str, Any]]) -> str:
     for entry in journal_view:
         rounds.setdefault(entry["round"], []).append(entry)
 
-    lines = ["**Пилот**:", ""]
+    lines = ["**Оркестратор**:", ""]
     for round_num in sorted(rounds.keys()):
         lines.append(f"Раунд {round_num}:")
         for entry in rounds[round_num]:
@@ -509,6 +593,46 @@ def _build_roster_text(journal_view: List[Dict[str, Any]]) -> str:
         lines.append("")
 
     return "\n".join(lines).strip()
+
+
+# Pilot hands the same files to the planner (every round), each employee (every tool hop
+# resends it) and the composer. Whole files made one turn burn a Pro+ pool, so each stage gets
+# the part of a file that matters to it; the rest is one read_chat_document call away.
+PLANNER_DOC_CHARS = 14_000
+COMPOSER_DOC_CHARS = 16_000
+EMPLOYEE_DOC_CHARS = 48_000
+PLANNER_HISTORY_CHARS = 16_000
+EMPLOYEE_HISTORY_CHARS = 10_000
+_DOC_HEADER = "Пользователь предоставил документ для контекста:"
+
+
+def _trim_documents(document_context: str, query: str, budget: int) -> str:
+    """Per file: the excerpt most relevant to `query`, within `budget` chars across all files."""
+    if not document_context or len(document_context) <= budget:
+        return document_context
+    from db_conversations import _relevant_document_excerpt
+
+    parts = [p for p in re.split(rf"(?m)(?=^{re.escape(_DOC_HEADER)})", document_context) if p.strip()]
+    share = max(3_000, budget // max(1, len(parts)))
+    out: List[str] = []
+    for part in parts:
+        if len(part) <= share:
+            out.append(part)
+            continue
+        head, sep, body = part.partition("Содержание:\n")
+        if not sep:
+            head, body = "", part
+        room = max(1_500, share - len(head) - 260)
+        excerpt = _relevant_document_excerpt(body, query, room)
+        out.append(
+            f"{head}{sep}{excerpt}\n\n[Показана часть файла: {len(excerpt)} из {len(body)} знаков. "
+            "Остальное – read_chat_document с точным именем и query.]"
+        )
+    return "\n\n".join(out)
+
+
+def _tail(text: str, limit: int) -> str:
+    return text if len(text) <= limit else "…" + text[-limit:]
 
 
 def _extract_document_context(messages: List[Dict[str, Any]]) -> str:
@@ -580,9 +704,11 @@ async def _execute_employee(
     from computer_tools import skills_prompt
 
     date_note = _current_date_note()
+    history_text = _tail(history_text, EMPLOYEE_HISTORY_CHARS)
+    document_context = _trim_documents(document_context, task, EMPLOYEE_DOC_CHARS)
     history_block = f"\n\nИстория диалога:\n{history_text}" if history_text else ""
     doc_block = f"\n\nДокументы пользователя:\n{document_context}" if document_context else ""
-    skills_block = f"\n\n{skills_prompt(user_id)}"
+    skills_block = f"\n\n{skills_prompt(user_id, compact=True)}"
     preferences_block = _preference_context(user_id)
     prefs_note = f"\n\n{preferences_block}" if preferences_block else ""
 
@@ -629,8 +755,10 @@ async def _execute_employee(
     try:
         from computer_skills.loader import preload_skills_block
 
+        # The task alone: matching on the whole chat history pulled in unrelated skills
+        # (a 7 KB "documents" playbook because someone once said "договор").
         skill_block = preload_skills_block(
-            f"{task}\n{history_text}",
+            task,
             has_images=has_images or "image_search" in (task or "").lower() or "фото" in (task or "").lower(),
             user_id=user_id,
             sandbox=True,
@@ -665,12 +793,20 @@ async def _execute_employee(
             answer = await get_kimi_search_brief(employee_messages, task, user_id=user_id)
             # Kimi builtin search hides raw sites, but we can at least surface the task and brief.
             search = [{"query": task, "summary": answer[:600]}] if answer else []
+            if "http" not in (answer or ""):
+                # Kimi gave no links (it gives up after its step limit); OpenAI hosted search does cite.
+                from openai_client import get_chat_response
+                answer, _, reasoning, search = await get_chat_response(
+                    employee_messages, model="gpt-6-luna", user_id=user_id, use_tools=True,
+                    reasoning_effort="low", force_web_search=True,
+                )
         else:
             from openai_client import get_chat_response
             builds_file = _is_document_package_task(task) or _wants_file(task) or "docx" in (task or "").lower()
             loops = PACKAGE_EMPLOYEE_TOOL_LOOPS if builds_file else None
             answer, _, reasoning, search = await get_chat_response(
                 employee_messages, model=model, user_id=user_id, use_tools=True, max_tool_loops=loops,
+                force_web_search=bool(employee.get("web")),
             )
 
         return {
@@ -715,8 +851,10 @@ def _select_composer_model(
         "миграц", "стратег", "расслед", "доказ", "противореч",
     )
     photo_task = any(marker in task for marker in ("фото", "где сня", "локац", "картин"))
+    # A file alone no longer buys Sol (20x Luna): the employees already read it, and the
+    # composer only merges their notes. Sol stays for contracts/audits and big result sets.
     needs_quality = (
-        bool(document_context)
+        (bool(document_context) and any(marker in task for marker in hard_markers))
         or len(original_task) > 1200
         or result_chars > 15000
         or len(ok_entries) >= 6
@@ -759,10 +897,13 @@ async def _plan_round(
 
     from computer_tools import connector_summary_for_prompt, skills_prompt
 
+    history_text = _tail(history_text, PLANNER_HISTORY_CHARS)
+    document_context_full = document_context
+    document_context = _trim_documents(document_context, original_task, PLANNER_DOC_CHARS)
     history_block = f"\n\nИстория диалога:\n{history_text}\n" if history_text else ""
     doc_block = f"\n\nДокументы пользователя:\n{document_context}\n" if document_context else ""
     connectors_block = connector_summary_for_prompt(user_id)
-    skills_block = skills_prompt(user_id)
+    skills_block = skills_prompt(user_id, compact=True)
     preferences_block = _preference_context(user_id)
     image_names = _chat_image_names(user_id)
     image_block = ""
@@ -799,7 +940,7 @@ async def _plan_round(
         f"2-{MAX_PARALLEL_PER_ROUND} сотрудника. Не режь их по раундам.\n"
         "- Следующий раунд только для шагов, которым реально нужны результаты предыдущих.\n"
         "- Не нанимай одного универсального сотрудника на всю задачу, если её можно разрезать.\n"
-        "- Пилот – исследователь, не чат из памяти. Раунд 1 без сотрудников запрещён, "
+        "- Оркестратор – исследователь, не чат из памяти. Раунд 1 без сотрудников запрещён, "
         "кроме приветствия. status=done только после того, как сотрудники уже собрали и сверили источники.\n"
         "- Запрещено закрывать задачу в раунде 1, если нужно найти факт, место, источник, цену или разобрать фото.\n"
         "- Если цель двусмысленная (неясно что строить, для кого, какой стек, какой результат) "
@@ -873,7 +1014,11 @@ async def _plan_round(
     try:
         response_text, _, _, _ = await get_chat_response(
             messages,
-            model=_clamped_planner_model(user_id),
+            model=_clamped_planner_model(
+                user_id,
+                first_round=not journal,
+                complex_task=_needs_strong_model(original_task, document_context_full, bool(image_names), user_id),
+            ),
             user_id=user_id,
             use_tools=False,
             reasoning_effort="none",
@@ -883,7 +1028,7 @@ async def _plan_round(
             _parse_director_plan(response_text),
             user_id,
             original_task,
-            document_context,
+            document_context_full,
             journal,
         )
     except Exception as e:
@@ -924,7 +1069,7 @@ async def _compose_answer(
     """Свести заметки сотрудников в обычный ответ чата — без отчёта и нумерации разделов."""
     from openai_client import get_chat_response
 
-    history_block = f"\n\nИстория диалога:\n{history_text}\n" if history_text else ""
+    history_block = f"\n\nИстория диалога:\n{_tail(history_text, PLANNER_HISTORY_CHARS)}\n" if history_text else ""
     # Факт из песочницы, а не пересказ сотрудника: без него сборщик писал
     # «файл не выпущен», когда файл уже лежал и уходил кнопкой в чат.
     if built_files and len(built_files) > 1:
@@ -943,7 +1088,10 @@ async def _compose_answer(
         )
     else:
         files_block = ""
-    doc_block = f"\n\nДокументы пользователя:\n{document_context}\n" if document_context else ""
+    # The employees already worked through the files; the composer only needs enough to stay
+    # consistent with them, not the whole text again.
+    composer_docs = _trim_documents(document_context, original_task, COMPOSER_DOC_CHARS)
+    doc_block = f"\n\nДокументы пользователя:\n{composer_docs}\n" if composer_docs else ""
     preferences_block = _preference_context(user_id)
     prefs_block = f"{preferences_block}\n\n" if preferences_block else ""
 
@@ -1073,8 +1221,12 @@ async def _plan_package_documents(
     prompt = (
         f"{_current_date_note()}\n\n"
         f"Запрос пользователя:\n{user_text}\n"
-        + (f"\nИстория диалога:\n{history_text}\n" if history_text else "")
-        + (f"\nДокументы пользователя:\n{document_context}\n" if document_context else "")
+        + (f"\nИстория диалога:\n{_tail(history_text, PLANNER_HISTORY_CHARS)}\n" if history_text else "")
+        + (
+            f"\nДокументы пользователя:\n{_trim_documents(document_context, user_text, PLANNER_DOC_CHARS)}\n"
+            if document_context
+            else ""
+        )
         + "\nПользователь просит сделать несколько файлов (комплект, пакет, «три документа», «остальные документы»)? "
         "Составь список файлов, которые нужно сделать В ЭТОМ ответе, в порядке работы. "
         "Документы, уже сделанные раньше в этом чате, не включай, если их не просят переделать. "
@@ -1243,7 +1395,9 @@ async def _run_director(
 
     journal: List[Dict[str, Any]] = []
     round_num = 0
-    has_images = wants_photo_research(user_text, packed_has_images(messages) or _turn_has_images(user_id))
+    turn_images = packed_has_images(messages) or _turn_has_images(user_id)
+    has_images = wants_photo_research(user_text, turn_images)
+    light = _is_light_task(user_text, document_context, turn_images, user_id)
 
     if _is_document_package_task(user_text):
         await _update_status(status_msg, "Составляю список документов")
@@ -1255,7 +1409,17 @@ async def _run_director(
 
     while round_num < MAX_ROUNDS and len(journal) < MAX_EMPLOYEES:
         round_num += 1
-        plan = await _plan_round(user_text, journal, user_id, document_context, history_text)
+        if light and round_num == 1:
+            # A short question with no files or tools: skip the Sol planner and its round trip.
+            searching = needs_research(user_text, False) and not is_smalltalk(user_text)
+            plan = {"status": "continue", "new_employees": [_light_research_employee(user_text)]} if searching else {
+                "status": "done", "new_employees": [],
+            }
+        elif light and _has_sources(journal):
+            # Already searched and cited: another planner call and a verification round add cost, not facts.
+            break
+        else:
+            plan = await _plan_round(user_text, journal, user_id, document_context, history_text)
         plan = _enforce_caps(round_num, len(journal), plan)
         plan = _ensure_research_plan(round_num, plan, user_text, journal, has_images)
         plan = _enforce_caps(round_num, len(journal), plan)

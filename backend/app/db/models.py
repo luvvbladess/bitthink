@@ -158,6 +158,7 @@ class Subscription(Base):
     last_reminded_date: Mapped[str | None] = mapped_column(String(255), nullable=True)
     selected_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     reasoning_effort: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    image_quality: Mapped[str | None] = mapped_column(String(16), nullable=True)
     period_start: Mapped[str | None] = mapped_column(String(32), nullable=True)
     chat_tokens_used: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     computer_tokens_used: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
@@ -207,6 +208,17 @@ class UserSkill(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     updated_at: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+
+
+class DisabledSkill(Base):
+    """A common (built-in) skill this user switched off. No row means it is on."""
+
+    __tablename__ = "disabled_skills"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_disabled_skills_user_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(32), nullable=False)
 
 
 class UsageRecord(Base):

@@ -207,7 +207,7 @@ export function MessageInput({
   const canSend = (text.trim() || pendingFiles.length > 0) && !disabled && !submitting && !(imageMode && !text.trim());
 
   return (
-    <Box sx={{ width: '100%' }}>
+    <Box sx={{ width: '100%', '&:focus-within .bt-key-hint': { opacity: 1 } }}>
     <Box
       component="form"
       onSubmit={handleSubmit}
@@ -494,8 +494,12 @@ export function MessageInput({
       </Box>
     </Box>
       <Box
+        className="bt-key-hint"
         sx={{
           display: isComputer || isStudio || isDocgen || imageMode ? 'block' : { xs: 'none', sm: 'block' },
+          // The plain Enter/Shift+Enter reminder shows while typing; the mode explanations stay.
+          opacity: isComputer || isStudio || isDocgen || imageMode || editingImage ? 1 : 0,
+          transition: 'opacity 0.2s cubic-bezier(0.23, 1, 0.32, 1)',
           mt: 0.7,
           px: 0.75,
           fontSize: '0.75rem',
@@ -511,7 +515,7 @@ export function MessageInput({
           : isStudio
             ? 'Готовый макет на холсте правится чатом. Можно прикрепить образец PPTX или PDF и файл ТЗ'
           : isComputer
-            ? `${PILOT_LABEL} в песочнице раздаёт должности подходящим ИИ-агентам и собирает ответ`
+            ? `${PILOT_LABEL}: раздаёт должности подходящим ИИ-агентам в песочнице и собирает ответ`
             : 'Enter отправит · Shift+Enter новая строка'}
       </Box>
     </Box>

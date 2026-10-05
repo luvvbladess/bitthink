@@ -124,7 +124,11 @@ def _inline_payload(kind: str, args: dict[str, Any]) -> dict[str, Any] | None:
         email = str(args.get("email") or "").strip()
         password = str(args.get("app_password") or args.get("password") or "").strip()
         if email and password:
-            return {"email": email, "app_password": password}
+            payload = {"email": email, "app_password": password}
+            if str(args.get("imap_host") or "").strip():
+                payload["imap_host"] = str(args["imap_host"]).strip()
+                payload["imap_port"] = args.get("imap_port") or 993
+            return payload
         return None
     if kind == "ssh":
         host = str(args.get("host") or "").strip()
@@ -173,6 +177,16 @@ def _inline_payload(kind: str, args: dict[str, Any]) -> dict[str, Any] | None:
 def resolve(user_id: int, kind: str, args: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
     inline = _inline_payload(kind, args)
     if inline:
+        if kind == "gmail" and "imap_host" not in inline:
+            # Re-sent password without the host must not wipe the host saved earlier.
+            for item in store.list_public(user_id):
+                if item["type"] == "gmail" and (item.get("hint") or "").lower() == inline["email"].lower():
+                    try:
+                        loaded = store.get_secret(user_id, item["id"])
+                    except ValueError:  # unreadable old row: just save the new one
+                        continue
+                    if loaded and loaded[1].get("imap_host"):
+                        inline["imap_host"], inline["imap_port"] = loaded[1]["imap_host"], loaded[1].get("imap_port") or 993
         try:
             hint = inline.get("email") or inline.get("host") or inline.get("base_url") or inline.get("login_url") or kind
             store.upsert_connector(user_id, kind, str(hint)[:80], inline)

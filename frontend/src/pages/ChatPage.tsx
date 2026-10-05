@@ -5,6 +5,7 @@ import { useColorMode } from '@/theme/ColorMode';
 import { headerGroupBtnSx, headerGroupSx, headerIconBtnSx } from '@/theme/effects';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
+import { replyReveal } from '@/features/chat/replyReveal';
 import { ChatSidebar, ConversationItem } from '@/features/chat/ChatSidebar';
 import { AccountMenu } from '@/components/AccountMenu';
 import { ChatWindow, DisplayMessage } from '@/features/chat/ChatWindow';
@@ -20,7 +21,7 @@ import { QuotaNotice } from '@/features/chat/QuotaNotice';
 import { ClarifyCard } from '@/features/chat/ClarifyCard';
 import { isClarifyMessage, isClarifyReply, splitSearch } from '@/features/chat/clarify';
 import { collectDialogueSources, parseSources, sourcesLabel } from '@/features/chat/sources';
-import { SourcesRail, SourcesSheet } from '@/features/chat/SourcesPanel';
+import { SourcesSheet } from '@/features/chat/SourcesPanel';
 import { dropJob, emptyJob, mergeRemoteJobs, upsertJob, type LiveJobPatch, type LiveJobsMap } from '@/features/chat/liveJobs';
 import { DialogueJumpChip, DialogueJumpSheet } from '@/features/chat/DialogueJumpSheet';
 import { MIN_DIALOGUE_QUESTIONS, type DialogueJumpFn } from '@/features/chat/dialogueNav';
@@ -86,9 +87,9 @@ export default function ChatPage() {
   // Sources dock beside the reply only when the 768px reading column plus its
   // gutters still fit next to the sidebar and a 292px panel. Narrower screens
   // open them from the header instead of squeezing the text.
-  const isWide = useMediaQuery('(min-width:1440px)');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sourcesSheetOpen, setSourcesSheetOpen] = useState(false);
+  const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
   const [dialogueSheetOpen, setDialogueSheetOpen] = useState(false);
   const [mobileCanvasOpen, setMobileCanvasOpen] = useState(false);
   const dialogueJumpRef = useRef<DialogueJumpFn | null>(null);
@@ -134,6 +135,7 @@ export default function ChatPage() {
   const finishJob = (convId?: string) => {
     if (!convId) return;
     delete imageBaselineRef.current[convId];
+    httpJobsRef.current.delete(convId);
     setJobs((prev) => {
       const current = prev[convId];
       const keepCanvas =
@@ -293,6 +295,16 @@ export default function ChatPage() {
               : base;
 
         const lastBaseAssistant = [...withUser].reverse().find((m) => m.role === 'assistant');
+        // The server saves the reply a moment before it streams the text. A poll that lands in that
+        // gap would show the whole answer at once, and the typing would have nothing left to type.
+        // Hold the saved answer back until the text starts arriving (the job stops "thinking").
+        // Without a live socket, or for an image job (plain HTTP), no stream is coming: show what the poll found.
+        const holdSavedAnswer =
+          pendingContent.thinking && wsStatus === 'open' && !(activeConvId && httpJobsRef.current.has(activeConvId));
+        const lastUserAt = withUser.map((m) => m.role).lastIndexOf('user');
+        const viewBase = holdSavedAnswer
+          ? withUser.filter((m, i) => !(i > lastUserAt && m.role === 'assistant' && !('attachment' in m && m.attachment?.interim)))
+          : withUser;
         const pendingClarify = splitSearch(pendingContent.search).questions.length > 0;
         const lastHasClarify = isClarifyMessage(
           lastBaseAssistant && 'search' in lastBaseAssistant ? lastBaseAssistant.search : undefined,
@@ -302,7 +314,7 @@ export default function ChatPage() {
           !lastHasClarify &&
           lastBaseAssistant?.content !== pendingContent.text
             ? [
-                ...withUser,
+                ...viewBase,
                 {
                   id: 'pending-assistant',
                   role: 'assistant' as const,
@@ -311,7 +323,7 @@ export default function ChatPage() {
                   search: pendingContent.search,
                 },
               ]
-            : withUser;
+            : viewBase;
 
         const lastAssistant = withAssistant[withAssistant.length - 1];
         const withFile = pendingContent.file
@@ -326,7 +338,7 @@ export default function ChatPage() {
                   role: 'assistant' as const,
                   content: `Файл готов: ${pendingContent.file.filename}`,
                   file: pendingContent.file,
-                  ...(withAssistant === withUser
+                  ...(withAssistant === viewBase
                     ? { reasoning: pendingContent.reasoning, search: pendingContent.search }
                     : {}),
                 },
@@ -363,7 +375,7 @@ export default function ChatPage() {
           ? base.some((message) => isFinalAnswer(message) && !imageBaseline.has(message.id))
           : pendingUserIndex >= 0
             && base.slice(pendingUserIndex + 1).some(isFinalAnswer);
-        if (pendingContent.thinking && recoveredAnswer) {
+        if (pendingContent.thinking && recoveredAnswer && !holdSavedAnswer) {
           setRegeneratingId(null);
           finishJob(activeConvId);
           if (activeConvId) delete imageBaselineRef.current[activeConvId];
@@ -419,6 +431,8 @@ export default function ChatPage() {
   const openingNewRef = useRef(false);
   const imageAbortRef = useRef<AbortController | null>(null);
   const imageBaselineRef = useRef<Record<string, Set<string>>>({});
+  // Chats whose current job runs over plain HTTP (images), not over the socket: no stream is coming.
+  const httpJobsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (wsStatus === 'open' && activeConvId) {
@@ -469,6 +483,7 @@ export default function ChatPage() {
         setJobs((prev) => upsertJob(prev, convId, { reasoning: (prev[convId]?.reasoning || '') + (msg.payload.text || '') }));
       }
       if (msg.type === 'chunk' && convId) {
+        replyReveal.push(convId, msg.payload.text || '');
         setJobs((prev) => {
           const current = prev[convId] || emptyJob(convId);
           const nextText = (current.text || '') + (msg.payload.text || '');
@@ -512,7 +527,15 @@ export default function ChatPage() {
         const doneConvId = convId || pendingContent.convId;
         if (doneConvId) ignoreByConvRef.current.delete(doneConvId);
         if (doneConvId === activeConvId) setRegeneratingId(null);
-        finishJob(doneConvId);
+        replyReveal.seal();
+        if (doneConvId && replyReveal.isTyping(doneConvId)) {
+          // The text arrives in milliseconds but is typed out over a few seconds. Keep the live
+          // copy on screen until then; it drops itself as soon as the saved message matches.
+          patchJob(doneConvId, { thinking: false, statusText: '' });
+          replyReveal.whenIdle(() => finishJob(doneConvId));
+        } else {
+          finishJob(doneConvId);
+        }
         if (doneConvId) {
           queryClient.invalidateQueries({ queryKey: ['messages', doneConvId] });
         }
@@ -522,12 +545,14 @@ export default function ChatPage() {
       if (msg.type === 'stopped') {
         const stoppedId = convId || pendingContent.convId;
         if (stoppedId) ignoreByConvRef.current.delete(stoppedId);
+        replyReveal.seal();
         patchJob(stoppedId, { thinking: false, statusText: '' });
       }
       if (msg.type === 'error') {
         const errConvId = convId || pendingContent.convId || activeConvId;
         if (errConvId) ignoreByConvRef.current.delete(errConvId);
         if (errConvId === activeConvId) setRegeneratingId(null);
+        replyReveal.seal();
         finishJob(errConvId);
         const raw = msg.payload.message || 'Internal error';
         const errorText = /законч|тариф|токен|картинк/i.test(raw) ? raw : `Ошибка: ${raw}`;
@@ -646,6 +671,7 @@ export default function ChatPage() {
       });
 
       if (mode === 'image') {
+        httpJobsRef.current.add(conversationId);
         const imageFiles = files.filter((file) => file.type.startsWith('image/'));
         const sourceUrl = imageFiles.length
           ? undefined
@@ -960,10 +986,6 @@ export default function ChatPage() {
   }, [activeConvId]);
 
   const openSources = (messageId: string) => {
-    if (isWide && !isStudio) {
-      setSourceMessageId((current) => (current === messageId ? undefined : messageId));
-      return;
-    }
     setSourceMessageId(messageId);
     setSourcesSheetOpen(true);
   };
@@ -980,10 +1002,10 @@ export default function ChatPage() {
     : undefined;
   const canRegenerateReply = !sharedRoom || activeConversation?.role === 'owner' || Boolean(previousUser?.mine);
 
-  // With the sources column on screen the action buttons move up to the whole
-  // work area, so they sit right above that column instead of ending beside it.
-  const railVisible = isWide && messagesReady && allSources.length > 0 && !isStudio;
-  const groupBtn = isMobile ? headerIconBtnSx : headerGroupBtnSx;
+  // Phones: bare icons (44px touch target, no plate) like the assistants people compare it to.
+  const phoneBtn = { ...headerIconBtnSx, bgcolor: 'transparent', borderColor: 'transparent', '&:hover': { bgcolor: 'transparent' } } as const;
+  const barBtn = isMobile ? phoneBtn : headerIconBtnSx;
+  const groupBtn = isMobile ? phoneBtn : headerGroupBtnSx;
 
   const chatHeader = (
         <Box
@@ -1011,7 +1033,7 @@ export default function ChatPage() {
         >
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, pointerEvents: 'auto', minWidth: 0, flex: { xs: 1, md: 'none' } }}>
             {isMobile && (
-              <IconButton onClick={() => setSidebarOpen(true)} sx={headerIconBtnSx} aria-label="Открыть список бесед">
+              <IconButton onClick={() => setSidebarOpen(true)} sx={barBtn} aria-label="Открыть список бесед">
                 <ListIcon size={22} weight="bold" />
               </IconButton>
             )}
@@ -1036,20 +1058,6 @@ export default function ChatPage() {
             )}
           </Box>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, pointerEvents: 'auto' }}>
-            {(!isWide || isStudio) && allSources.length > 0 && (
-              <Tooltip title={sourcesLabel(allSources.length)}>
-                <IconButton
-                  onClick={() => {
-                    setSourceMessageId(undefined);
-                    setSourcesSheetOpen(true);
-                  }}
-                  sx={headerIconBtnSx}
-                  aria-label={sourcesLabel(allSources.length)}
-                >
-                  <MagnifyingGlass size={22} weight="bold" />
-                </IconButton>
-              </Tooltip>
-            )}
             {isStudio && isMobile && (
               <Tooltip title="Открыть холст">
                 <IconButton
@@ -1071,6 +1079,20 @@ export default function ChatPage() {
               </Tooltip>
             )}
             <Box sx={isMobile ? { display: 'contents' } : headerGroupSx}>
+            {allSources.length > 0 && (
+              <Tooltip title={sourcesLabel(allSources.length)}>
+                <IconButton
+                  onClick={() => {
+                    setSourceMessageId(undefined);
+                    setSourcesSheetOpen(true);
+                  }}
+                  sx={groupBtn}
+                  aria-label={sourcesLabel(allSources.length)}
+                >
+                  <MagnifyingGlass size={22} weight="bold" />
+                </IconButton>
+              </Tooltip>
+            )}
             {activeConvId && !isMobile && (
               <Tooltip title="Файлы беседы">
                 <IconButton onClick={() => { setFilesScope('chat'); setFilesOpen(true); }} sx={groupBtn} aria-label="Файлы беседы">
@@ -1119,7 +1141,7 @@ export default function ChatPage() {
               // Seven round buttons do not fit a phone; the rarely used ones live here.
               <IconButton
                 onClick={(event) => setMoreAnchor(event.currentTarget)}
-                sx={headerIconBtnSx}
+                sx={barBtn}
                 aria-label="Ещё действия"
                 aria-haspopup="menu"
                 aria-expanded={Boolean(moreAnchor)}
@@ -1228,7 +1250,6 @@ export default function ChatPage() {
       )}
 
       <Box sx={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', overflow: 'hidden', position: 'relative' }}>
-      {railVisible && chatHeader}
       <Box
         sx={{
           ...(isStudio && !isMobile
@@ -1242,7 +1263,7 @@ export default function ChatPage() {
           position: 'relative',
         }}
       >
-        {!railVisible && chatHeader}
+        {chatHeader}
         {(wsStatus === 'closed' || wsStatus === 'error') && (
           <Box
             sx={{
@@ -1282,6 +1303,8 @@ export default function ChatPage() {
         )}
         <ChatWindow
           key={activeConvId || 'new'}
+          convId={activeConvId}
+          chipsHost={chipsHost}
           messages={displayMessages}
           thinking={thinking}
           statusText={statusText}
@@ -1338,6 +1361,7 @@ export default function ChatPage() {
               </Box>
             )}
             <QuotaNotice />
+            <Box ref={setChipsHost} />
             {clarifyQuestions.length > 0 && (
               <Box sx={{ mb: 1.5 }}>
                 <ClarifyCard
@@ -1364,29 +1388,6 @@ export default function ChatPage() {
           </Box>
         </Box>
       </Box>
-      {railVisible && (
-        <Box
-          sx={{
-            display: 'flex',
-            flexDirection: 'column',
-            width: 292,
-            flexShrink: 0,
-            minHeight: 0,
-            pt: '72px',
-            pr: 2,
-            pb: 2,
-            boxSizing: 'border-box',
-          }}
-        >
-          <SourcesRail
-            key={`${activeConvId || 'none'}-${sourceMessageId || 'all'}`}
-            sources={focusedSources}
-            scoped={Boolean(focusedSourceMessage)}
-            allCount={allSources.length}
-            onShowAll={() => setSourceMessageId(undefined)}
-          />
-        </Box>
-      )}
       {sharedRoom && activeConvId && (
         <RoomChat
           key={activeConvId}
@@ -1433,17 +1434,16 @@ export default function ChatPage() {
         onOpen={() => setDialogueSheetOpen(true)}
         onJump={(id) => dialogueJumpRef.current?.(id)}
       />
-      {(!isWide || isStudio) && (
-        <SourcesSheet
-          sources={focusedSources}
-          scoped={Boolean(focusedSourceMessage)}
-          allCount={allSources.length}
-          onShowAll={() => setSourceMessageId(undefined)}
-          open={sourcesSheetOpen}
-          onClose={() => setSourcesSheetOpen(false)}
-          onOpen={() => setSourcesSheetOpen(true)}
-        />
-      )}
+      <SourcesSheet
+        side={!isMobile}
+        sources={focusedSources}
+        scoped={Boolean(focusedSourceMessage)}
+        allCount={allSources.length}
+        onShowAll={() => setSourceMessageId(undefined)}
+        open={sourcesSheetOpen}
+        onClose={() => setSourcesSheetOpen(false)}
+        onOpen={() => setSourcesSheetOpen(true)}
+      />
       {activeConvId && (
         <ShareDialog conversationId={activeConvId} open={shareOpen} onClose={() => setShareOpen(false)} />
       )}

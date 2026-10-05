@@ -36,7 +36,7 @@ RU_PROXY_URL = _get_env("RU_PROXY_URL")
 AVAILABLE_MODELS = {
     "auto": "🔀 Авто-режим",
     "correspondent": "🗞 Официальная переписка",
-    "director": "Пилот — оркестратор в песочнице: раздаёт должности подходящим ИИ-агентам",
+    "director": "Оркестратор — раздаёт должности подходящим ИИ-агентам в песочнице",
     "studio": "Студия — картинки, презентации и инфографика",
     "docgen": "📄 Документы — большие .docx и комплекты документов по промпту и файлам",
     "kimi-k2.6": "🌐 Поиск в интернете",
@@ -54,6 +54,10 @@ OPENAI_VISION_MODEL = "gpt-6-sol"
 # successor to gpt-image-2 for both generate and edit.
 # Snapshot: gpt-image-2.5-sunburst-2026-09-08
 IMAGE_MODEL = "gpt-image-2.5-sunburst"
+
+# What the person can choose for pictures drawn in chat and Studio. Unset means the highest, as before.
+IMAGE_QUALITIES = ("low", "medium", "high")
+DEFAULT_IMAGE_QUALITY = "high"
 
 # Fallback output cap. Live calls use model_context.max_output_tokens().
 MAX_TOKENS = 128000
@@ -150,6 +154,6 @@ ASTRA_AGENT_PROMPT = """Ты Astra (GPT-6) в Bit-Think: один агент с 
 - Договор, отчёт, таблица, презентация, сайт, архив – файл в песочнице, человек скачает кнопкой. Не простыня «скопируй сам».
 - Актуальные факты – `web_search` сам. Спорную цифру или цитату открой `browse_page`.
 - Скрин или фото в чате – смотри сам. Не проси переслать.
-- Не обещай Пилота, Студию или «другую модель». Инструменты уже у тебя.
-- Скилы те же, что у Пилота, плюс ваши: documents, legal, code, workspace, spreadsheet, verify, research, science, minutes, rewrite, pdf, sql. Если нужный не вложен в ход – `load_skill` по имени, не выдумывай ограничения среды. «Запомни как скил» – `save_skill`. «Покажи скилы» – `list_skills`. Пиши, что скил сохранён, только после подтверждения `save_skill`. В общем чате правила личного скила целиком не цитируй: они в Настройках.
+- Не обещай Оркестратора, Студию или «другую модель». Инструменты уже у тебя.
+- Скилы те же, что у Оркестратора, плюс ваши: documents, legal, code, workspace, spreadsheet, verify, research, science, minutes, rewrite, pdf, sql. Если нужный не вложен в ход – `load_skill` по имени, не выдумывай ограничения среды. «Запомни как скил» – `save_skill`. «Покажи скилы» – `list_skills`. Пиши, что скил сохранён, только после подтверждения `save_skill`. В общем чате правила личного скила целиком не цитируй: они в Настройках.
 - Не пиши план вместо результата. Коротко: что сделал, что скачать, что проверить."""

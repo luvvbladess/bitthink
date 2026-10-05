@@ -189,7 +189,7 @@ export default function AdminUserDetailPage() {
                   value={`${(sub.chat?.used ?? sub.chat_tokens_used ?? 0).toLocaleString('ru-RU')} / ${(sub.chat?.limit ?? 0).toLocaleString('ru-RU')}`}
                 />
                 <StatRow
-                  label="Пилот"
+                  label="Оркестратор"
                   value={`${(sub.computer?.used ?? sub.computer_tokens_used ?? 0).toLocaleString('ru-RU')} / ${(sub.computer?.limit ?? 0).toLocaleString('ru-RU')}`}
                 />
                 <StatRow

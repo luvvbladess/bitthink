@@ -56,9 +56,9 @@ function pickNotice(sub?: Subscription, isComputer?: boolean): Notice | null {
   }
   const family = isComputer ? sub.windows?.computer : sub.windows?.chat;
   return (
-    windowNotice(`${isComputer ? 'computer' : 'chat'}.session`, isComputer ? 'пятичасовой квоты Пилота' : 'пятичасовой квоты', family?.session) ||
-    windowNotice(`${isComputer ? 'computer' : 'chat'}.week`, isComputer ? 'недельной квоты Пилота' : 'недельной квоты', family?.week) ||
-    windowNotice(`${isComputer ? 'computer' : 'chat'}.month`, isComputer ? 'месячной квоты Пилота' : 'месячной квоты', family?.month)
+    windowNotice(`${isComputer ? 'computer' : 'chat'}.session`, isComputer ? 'пятичасовой квоты Оркестратора' : 'пятичасовой квоты', family?.session) ||
+    windowNotice(`${isComputer ? 'computer' : 'chat'}.week`, isComputer ? 'недельной квоты Оркестратора' : 'недельной квоты', family?.week) ||
+    windowNotice(`${isComputer ? 'computer' : 'chat'}.month`, isComputer ? 'месячной квоты Оркестратора' : 'месячной квоты', family?.month)
   );
 }
 

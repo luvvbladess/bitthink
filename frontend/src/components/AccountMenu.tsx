@@ -142,6 +142,10 @@ export function AccountMenu({ variant = 'icon' }: { variant?: 'icon' | 'row' }) 
           onClick={(e) => setAnchor(e.currentTarget)}
           sx={{
             ...headerIconBtnSx,
+            // Just the avatar, no plate: it sits in a phone header next to other bare icons.
+            bgcolor: 'transparent',
+            borderColor: 'transparent',
+            '&:hover': { bgcolor: 'transparent' },
             ...(open && {
               color: 'primary.light',
               bgcolor: 'var(--bt-glow)',
