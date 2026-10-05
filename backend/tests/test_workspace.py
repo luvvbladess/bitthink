@@ -467,7 +467,7 @@ def test_director_detects_file_requests():
 
 
 def test_director_hires_builder_when_requested_file_is_missing(monkeypatch):
-    """Планировщик закрыл задачу на тексте без файла: Пилот один раз досылает сборщика."""
+    """Планировщик закрыл задачу на тексте без файла: Оркестратор один раз досылает сборщика."""
     import asyncio
 
     import director_router as dr
@@ -511,7 +511,7 @@ def test_director_hires_builder_when_requested_file_is_missing(monkeypatch):
 
 
 def test_markdown_leftovers_are_scrubbed_from_delivered_docx():
-    """Самодельная сборка Пилота оставляла «### 2.1.4 …» и «**» в тексте Word."""
+    """Самодельная сборка Оркестратора оставляла «### 2.1.4 …» и «**» в тексте Word."""
     import io
 
     from docx import Document

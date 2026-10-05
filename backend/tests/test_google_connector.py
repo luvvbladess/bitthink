@@ -179,3 +179,24 @@ def test_drive_search_can_look_into_the_trash(monkeypatch):
     assert asyncio.run(google_tools._drive_search({}, {"query": "впадина", "in_trash": True})) == "В корзине Диска таких файлов нет."
     assert asyncio.run(google_tools._drive_search({}, {"query": "впадина"})) == "Файлов не найдено."
     assert seen[0].endswith("trashed = true") and seen[1].endswith("trashed = false")
+
+
+def test_drive_folder_path_reuses_existing_and_creates_missing(monkeypatch):
+    calls = []
+
+    async def fake_api(payload, method, url, **kwargs):
+        calls.append((method, kwargs.get("params", {}).get("q"), kwargs.get("json_body")))
+        if method == "GET":  # «Суда» exists, the vessel folder does not
+            return {"files": [{"id": "ships", "webViewLink": ""}]} if "'Суда'" in kwargs["params"]["q"] else {"files": []}
+        return {"id": "aurora", "webViewLink": "https://drive/aurora"}
+
+    monkeypatch.setattr(google_tools, "api", fake_api)
+    full = {"scopes": list(google_oauth.SCOPES)}
+    result = asyncio.run(google_tools._drive_folder(full, {"path": "Суда/Ivan's Aurora"}))
+    assert "folder_id aurora" in result and "https://drive/aurora" in result
+    assert "'root' in parents" in calls[0][1]
+    assert "'ships' in parents" in calls[1][1] and "Ivan" + chr(92) + "'s Aurora" in calls[1][1]
+    posts = [c for c in calls if c[0] == "POST"]
+    assert len(posts) == 1 and posts[0][2]["parents"] == ["ships"]
+    read_only = {"scopes": ["https://www.googleapis.com/auth/gmail.readonly"]}
+    assert "Подключить заново" in asyncio.run(google_tools._drive_folder(read_only, {"path": "Суда"}))

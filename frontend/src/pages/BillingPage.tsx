@@ -166,7 +166,7 @@ export default function BillingPage() {
           </Stack>
         </AccountSection>
       ) : isFree ? (
-        <AccountSection title="Что осталось сегодня" hint="Пилот и Исследование открываются на Pro и выше.">
+        <AccountSection title="Что осталось сегодня" hint="Оркестратор и Исследование открываются на Pro и выше.">
           <Stack spacing={2}>
             <UsageMeter
               icon={<ChatText size={16} />}
@@ -198,7 +198,7 @@ export default function BillingPage() {
             <PoolBlock icon={<ChatText size={18} weight="bold" />} title="Чат">
               <WindowMeters family={sub?.windows?.chat} />
             </PoolBlock>
-            <PoolBlock icon={<Desktop size={18} weight="bold" />} title="Пилот" hint="ИИ-агенты в песочнице.">
+            <PoolBlock icon={<Desktop size={18} weight="bold" />} title="Оркестратор" hint="ИИ-агенты в песочнице.">
               <WindowMeters family={sub?.windows?.computer} />
             </PoolBlock>
             <PoolBlock icon={<Image size={18} weight="bold" />} title="Картинки">
@@ -295,7 +295,7 @@ export default function BillingPage() {
                     {formatTokens(plan.chat_session || 0)} сейчас · {formatTokens(plan.chat_week || 0)} / нед · {formatTokens(plan.chat_tokens)} / мес
                   </Typography>
                   <Typography sx={{ color: 'text.secondary', display: 'block', fontSize: '0.75rem', mt: 0.25 }}>
-                    Пилот {formatTokens(plan.computer_session || 0)} сейчас · {plan.images} картинок
+                    Оркестратор {formatTokens(plan.computer_session || 0)} сейчас · {plan.images} картинок
                   </Typography>
                 </Box>
                 <Typography

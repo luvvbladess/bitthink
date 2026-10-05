@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react';
 import { Box, IconButton, SwipeableDrawer } from '@mui/material';
-import { ArrowSquareOut, CaretDown, MagnifyingGlass, X } from '@phosphor-icons/react';
+import { ArrowSquareOut, MagnifyingGlass, X } from '@phosphor-icons/react';
 import type { ParsedSource } from './sources';
-import { groupSourcesByDomain, sitesLabel, sourcesLabel, sourceTitle, type SourceGroup } from './sources';
+import { groupSourcesByDomain, sourcesLabel, sourceTitle, type SourceGroup } from './sources';
 
 function Favicon({ domain, src }: { domain: string; src: string }) {
   const [failed, setFailed] = useState(false);
@@ -215,131 +215,6 @@ function SourceGroupBlock({ group }: { group: SourceGroup }) {
   );
 }
 
-export function SourcesRail({
-  sources,
-  scoped,
-  allCount,
-  onShowAll,
-}: {
-  sources: ParsedSource[];
-  scoped?: boolean;
-  allCount?: number;
-  onShowAll?: () => void;
-}) {
-  const [open, setOpen] = useState(true);
-  const groups = useMemo(() => groupSourcesByDomain(sources), [sources]);
-  return (
-    <Box
-      sx={{
-        display: 'flex',
-        width: '100%',
-        height: 'fit-content',
-        // The column starts under the action buttons and may use the rest of the screen.
-        maxHeight: 'calc(100dvh - 96px)',
-        flexDirection: 'column',
-        overflow: 'hidden',
-        borderRadius: '16px',
-        bgcolor: 'var(--bt-panel)',
-        border: '1px solid var(--bt-hairline)',
-      }}
-    >
-      <Box sx={{ display: 'flex', alignItems: 'center', minHeight: 48, flexShrink: 0, pr: 0.5 }}>
-        <Box
-          component="button"
-          type="button"
-          onClick={() => setOpen((value) => !value)}
-          aria-expanded={open}
-          aria-label={open ? 'Свернуть источники' : 'Развернуть источники'}
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 0.9,
-            minHeight: 48,
-            minWidth: 0,
-            flex: 1,
-            px: 1.25,
-            pl: 1.6,
-            border: 0,
-            bgcolor: 'transparent',
-            color: 'inherit',
-            font: 'inherit',
-            cursor: 'pointer',
-            textAlign: 'left',
-            '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2, borderRadius: '14px' },
-          }}
-        >
-          <Box component="span" sx={{ fontSize: '0.875rem', fontWeight: 600, letterSpacing: '-0.02em', whiteSpace: 'nowrap' }}>
-            {scoped ? 'Этот ответ' : 'Источники'}
-          </Box>
-          <Box component="span" sx={{ color: 'text.muted', fontSize: '0.8125rem', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
-            {groups.length > 1 && groups.length < sources.length ? `${sources.length} · ${sitesLabel(groups.length)}` : sources.length}
-          </Box>
-          <Box
-            component="span"
-            sx={{
-              ml: 'auto',
-              display: 'inline-flex',
-              color: 'text.secondary',
-              transform: open ? 'rotate(0deg)' : 'rotate(-90deg)',
-              transition: 'transform 0.16s ease',
-              '@media (prefers-reduced-motion: reduce)': { transition: 'none' },
-            }}
-          >
-            <CaretDown size={16} />
-          </Box>
-        </Box>
-        {scoped && onShowAll && (allCount || 0) > sources.length && (
-          <Box
-            component="button"
-            type="button"
-            onClick={onShowAll}
-            aria-label={`Показать все источники диалога, ${allCount}`}
-            sx={{
-              flexShrink: 0,
-              minHeight: 32,
-              px: 1.1,
-              border: '1px solid var(--bt-hairline)',
-              borderRadius: '999px',
-              bgcolor: 'transparent',
-              color: 'text.secondary',
-              font: 'inherit',
-              fontSize: '0.75rem',
-              fontWeight: 600,
-              cursor: 'pointer',
-              '&:hover': { color: 'text.primary', bgcolor: 'var(--bt-overlay-faint)' },
-              '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 2 },
-            }}
-          >
-            Все {allCount}
-          </Box>
-        )}
-      </Box>
-      {open && (
-        <Box
-          sx={{
-            flex: 1,
-            minHeight: 0,
-            overflowY: 'auto',
-            overscrollBehavior: 'contain',
-            borderTop: '1px solid var(--bt-hairline)',
-            pb: 0.75,
-            scrollbarWidth: 'thin',
-            scrollbarColor: 'var(--bt-line) transparent',
-            '&::-webkit-scrollbar': { width: 6 },
-            '&::-webkit-scrollbar-track': { background: 'transparent' },
-            '&::-webkit-scrollbar-thumb': { bgcolor: 'var(--bt-line)', borderRadius: 99 },
-            '&::-webkit-scrollbar-button': { display: 'none', width: 0, height: 0 },
-          }}
-        >
-          {groups.map((group) => (
-            <SourceGroupBlock key={group.domain} group={group} />
-          ))}
-        </Box>
-      )}
-    </Box>
-  );
-}
-
 export function SourcesSheet({
   sources,
   open,
@@ -348,6 +223,7 @@ export function SourcesSheet({
   scoped,
   allCount,
   onShowAll,
+  side = false,
 }: {
   sources: ParsedSource[];
   open: boolean;
@@ -356,27 +232,41 @@ export function SourcesSheet({
   scoped?: boolean;
   allCount?: number;
   onShowAll?: () => void;
+  /** Wide screens: a panel on the right, grouped by site. Phones: a bottom sheet of cards. */
+  side?: boolean;
 }) {
+  const groups = useMemo(() => groupSourcesByDomain(sources), [sources]);
   return (
     <SwipeableDrawer
-      anchor="bottom"
+      anchor={side ? 'right' : 'bottom'}
       open={open}
       onClose={onClose}
       onOpen={onOpen}
       disableDiscovery
+      disableSwipeToOpen
       PaperProps={{
-        sx: {
-          height: 'min(78vh, 640px)',
-          borderTopLeftRadius: '18px',
-          borderTopRightRadius: '18px',
-          bgcolor: 'var(--bt-paper)',
-          backgroundImage: 'none',
-          border: '1px solid var(--bt-overlay)',
-        },
+        sx: side
+          ? {
+              width: 380,
+              maxWidth: '100vw',
+              bgcolor: 'var(--bt-paper)',
+              backgroundImage: 'none',
+              borderLeft: '1px solid var(--bt-hairline)',
+              boxShadow: 'var(--bt-shadow-menu)',
+            }
+          : {
+              height: 'min(78vh, 640px)',
+              borderTopLeftRadius: '18px',
+              borderTopRightRadius: '18px',
+              bgcolor: 'var(--bt-paper)',
+              backgroundImage: 'none',
+              border: '1px solid var(--bt-overlay)',
+            },
       }}
-      BackdropProps={{ sx: { bgcolor: 'var(--bt-scrim)' } }}
+      // The page behind a side panel stays readable and clickable-through to close, not dimmed.
+      BackdropProps={{ sx: side ? { bgcolor: 'transparent' } : { bgcolor: 'var(--bt-scrim)' } }}
     >
-      <Box sx={{ width: 40, height: 4, borderRadius: 99, bgcolor: 'var(--bt-overlay-strong)', mx: 'auto', mt: 1.25, mb: 0.5 }} />
+      {!side && <Box sx={{ width: 40, height: 4, borderRadius: 99, bgcolor: 'var(--bt-overlay-strong)', mx: 'auto', mt: 1.25, mb: 0.5 }} />}
       <Box sx={{ display: 'flex', alignItems: 'center', px: 2, minHeight: 48, gap: 0.75 }}>
         <Box sx={{ fontWeight: 600, fontSize: '1rem', letterSpacing: '-0.02em' }}>{scoped ? 'Этот ответ' : 'Источники'}</Box>
         <Box sx={{ color: 'text.muted', fontSize: '0.875rem' }}>{sources.length}</Box>
@@ -406,11 +296,19 @@ export function SourcesSheet({
           <X size={18} />
         </IconButton>
       </Box>
-      <Box sx={{ px: 1.5, pb: 'max(16px, env(safe-area-inset-bottom))', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 0.85 }}>
-        {sources.map((source) => (
-          <SourceCard key={`${source.url}-${source.title}`} source={source} />
-        ))}
-      </Box>
+      {side ? (
+        <Box sx={{ overflowY: 'auto', overscrollBehavior: 'contain', borderTop: '1px solid var(--bt-hairline)', pb: 1.5 }}>
+          {groups.map((group) => (
+            <SourceGroupBlock key={group.domain} group={group} />
+          ))}
+        </Box>
+      ) : (
+        <Box sx={{ px: 1.5, pb: 'max(16px, env(safe-area-inset-bottom))', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 0.85 }}>
+          {sources.map((source) => (
+            <SourceCard key={`${source.url}-${source.title}`} source={source} />
+          ))}
+        </Box>
+      )}
     </SwipeableDrawer>
   );
 }

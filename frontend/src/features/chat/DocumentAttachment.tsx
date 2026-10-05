@@ -1,6 +1,7 @@
 import { Box, CircularProgress, IconButton, LinearProgress, Tooltip } from '@mui/material';
 import { FileText, FilePdf, FileXls, FileDoc, CheckCircle, WarningCircle, Trash, PencilSimpleLine } from '@phosphor-icons/react';
 import { isEditableDocument, useEditorEnabled, useEditorStore } from '@/features/editor/DocumentEditor';
+import { downloadCanvasFromUrl } from './studioExport';
 
 export interface AttachmentInfo {
   name: string;
@@ -39,13 +40,15 @@ function formatSize(bytes?: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
 }
 
-export function DocumentAttachment({ name, size, status, type, url, note, progress, progressLabel, onRemoveFromContext }: Props) {
+export function DocumentAttachment({ name, size, status, type, url, canvas, note, progress, progressLabel, onRemoveFromContext }: Props) {
   const Icon = iconForFile(name);
   const isImage = type === 'image';
   const editorEnabled = useEditorEnabled();
   const openEditor = useEditorStore((state) => state.open);
   const canEdit = editorEnabled && status === 'done' && isEditableDocument(name);
   const canDownload = status === 'done' && !!url && type !== 'image';
+  // A Studio canvas is a page that points to its pictures by site path; saved as is it opens black.
+  const isCanvasFile = canDownload && !!canvas && /\.html?$/i.test(name);
   const showProgress = status === 'uploading' && progress !== undefined;
   const progressValue = typeof progress === 'number' ? Math.max(0, Math.min(100, progress)) : 0;
   const card = (
@@ -67,6 +70,14 @@ export function DocumentAttachment({ name, size, status, type, url, note, progre
         '&:hover': canDownload ? { borderColor: 'primary.main', bgcolor: 'var(--bt-glow)' } : undefined,
       }}
         {...(canDownload ? { component: 'a' as const, href: url, download: name, rel: 'noopener' } : {})}
+        {...(isCanvasFile
+          ? {
+              onClick: (event: React.MouseEvent) => {
+                event.preventDefault();
+                downloadCanvasFromUrl(url!, name).catch(() => window.open(url, '_blank', 'noopener'));
+              },
+            }
+          : {})}
     >
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, minWidth: 0 }}>
       <Box
@@ -94,7 +105,7 @@ export function DocumentAttachment({ name, size, status, type, url, note, progre
         </Box>
         <Box sx={{ fontSize: '0.6875rem', color: 'text.muted' }}>
           {status === 'uploading' && (progressLabel || 'Загрузка...')}
-          {status === 'done' && `${isImage ? 'Изображение' : note || (canDownload ? 'Скачать' : 'Документ')}${formatSize(size) ? ` · ${formatSize(size)}` : ''}`}
+          {status === 'done' && `${isImage ? 'Изображение' : note || (canDownload ? 'Скачать' : 'Документ')}${!isCanvasFile && formatSize(size) ? ` · ${formatSize(size)}` : ''}`}
           {status === 'error' && 'Ошибка загрузки'}
         </Box>
       </Box>

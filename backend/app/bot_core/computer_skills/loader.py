@@ -96,7 +96,20 @@ def _user_skill_rows(user_id: int | None) -> list[dict]:
         return []
 
 
+def disabled_builtin_names(user_id: int | None) -> frozenset[str]:
+    """Общие скилы, которые этот человек выключил в Настройках."""
+    if not user_id:
+        return frozenset()
+    try:
+        from conversations import conversation_manager
+
+        return frozenset(conversation_manager.disabled_builtin_skills(int(user_id)))
+    except Exception:
+        return frozenset()
+
+
 def catalog(user_id: int | None = None) -> list[dict[str, str]]:
+    off = disabled_builtin_names(user_id)
     items = [
         {
             "name": item["name"],
@@ -105,6 +118,7 @@ def catalog(user_id: int | None = None) -> list[dict[str, str]]:
             "scope": item.get("scope") or skill_scope(item["name"]),
         }
         for item in builtin_catalog()
+        if item["name"] not in off
     ]
     seen = {item["name"] for item in items}
     for row in _user_skill_rows(user_id):
@@ -151,21 +165,30 @@ _SHARED_CUSTOM_NOTE = (
 )
 
 
-def catalog_for_prompt(user_id: int | None = None) -> str:
+def catalog_for_prompt(user_id: int | None = None, compact: bool = False) -> str:
+    """compact: Pilot sends this to the planner and to every employee on every hop, so the
+    common skills are bare names (the «Карта» line already says what each is for)."""
     items = catalog(user_id)
     if not items:
         return ""
     lines = []
-    for item in items:
-        mark = " (ваш)" if item.get("origin") == "custom" else ""
-        where = "везде" if item.get("scope") == "chat" else "песочница"
-        lines.append(f"- {item['name']}{mark} [{where}]: {item['description']}")
+    if compact:
+        for scope, label in (("chat", "везде"), ("sandbox", "песочница")):
+            names = [i["name"] for i in items if i.get("origin") != "custom" and i.get("scope") == scope]
+            if names:
+                lines.append(f"[{label}]: {', '.join(names)}")
+        lines += [f"- {i['name']} (ваш): {i['description']}" for i in items if i.get("origin") == "custom"]
+    else:
+        for item in items:
+            mark = " (ваш)" if item.get("origin") == "custom" else ""
+            where = "везде" if item.get("scope") == "chat" else "песочница"
+            lines.append(f"- {item['name']}{mark} [{where}]: {item['description']}")
     return (
         "Скилы Computer. Перед кодом, файлом, таблицей, презентацией, письмом или входом на сайт "
         "вызови load_skill с одним (редко двумя) именами. Не решай заранее, что скил «не нужен»: "
         "в нём ограничения среды, которых нет в памяти модели. Не грузи весь каталог.\n"
         "Если скил уже вложен в этот ход – не вызывай load_skill повторно.\n"
-        "[везде] работает и в обычном чате, и в песочнице. [песочница] – только Пилот и Astra: "
+        "[везде] работает и в обычном чате, и в песочнице. [песочница] – только Оркестратор и Astra: "
         "код, файлы, почта, сайт, SQL.\n"
         "Карта: слайды → deck; инфографика/схема процесса → infographic; таблицы/xlsx → spreadsheet; "
         "отчёт/docx/договор → documents или legal; код → code; почта → email; сайт → browser; "
@@ -195,6 +218,8 @@ def load_skill(name: str, user_id: int | None = None, *, shared: bool | None = N
     if not wanted:
         return "Укажи имя скила из list_skills."
     path = SKILLS_DIR / wanted / "SKILL.md"
+    if wanted in disabled_builtin_names(user_id):
+        return f"Скил «{wanted}» выключен человеком в Настройках. Работай без него, не проси включить."
     if path.is_file():
         parsed = _parse(path)
         return f"# {parsed['name']}\n{parsed.get('description', '')}\n\n{parsed['body']}"
@@ -379,11 +404,22 @@ def match_skills(
         if score >= _CUSTOM_MIN:
             ranked.append((score, 1, index, name))
     if not custom_only:
+        off = disabled_builtin_names(user_id)
+        known = set(builtin_names())
         order = 0
-        if sandbox and has_images:
+        # Pilot's planner writes «load_skill documents» into the task. Honour it here: left to
+        # the employee it costs a whole extra model hop, and every hop resends the documents.
+        for named in re.findall(r"load_skill\s+([a-z_]+)", blob):
+            if named in known and named not in off and (sandbox or skill_scope(named) == "chat"):
+                ranked.append((20, 0, order, named))
+                order += 1
+        if sandbox and has_images and "images" not in off:
             ranked.append((5, 0, order, "images"))
             order += 1
         for name, needles in _SKILL_TRIGGERS:
+            if name in off:
+                order += 1
+                continue
             score = _builtin_score(name, needles, blob, sandbox=sandbox)
             if score >= 4:
                 ranked.append((score, 0, order, name))

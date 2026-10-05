@@ -123,7 +123,7 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
       >
         <BrandLink variant="sidebar" />
         {onClose && (
-          <IconButton onClick={onClose} sx={headerIconBtnSx} aria-label="Закрыть меню">
+          <IconButton onClick={onClose} sx={{ ...headerIconBtnSx, bgcolor: 'transparent', borderColor: 'transparent', '&:hover': { bgcolor: 'transparent' } }} aria-label="Закрыть меню">
             <X size={22} weight="bold" />
           </IconButton>
         )}
@@ -136,10 +136,10 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
           onClick={onCreate}
           sx={{
             justifyContent: 'flex-start',
-            // A quiet tinted button: the one saturated CTA on this screen is Send, not a sidebar row.
+            // Neutral on purpose: the one saturated CTA on this screen is Send, not a sidebar row.
             color: 'text.primary',
-            bgcolor: 'var(--bt-glow)',
-            border: '1px solid var(--bt-line)',
+            bgcolor: 'var(--bt-overlay-faint)',
+            border: '1px solid var(--bt-hairline)',
             borderRadius: '12px',
             textTransform: 'none',
             fontWeight: 600,
@@ -147,7 +147,7 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
             px: 1.4,
             py: 1,
             '& .MuiButton-startIcon': { color: 'primary.light' },
-            '&:hover': { bgcolor: 'var(--bt-glow-strong)' },
+            '&:hover': { bgcolor: 'var(--bt-overlay)' },
             '&:active': { transform: 'scale(0.98)' },
           }}
         >
@@ -276,19 +276,6 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
                     bgcolor: active ? 'var(--bt-overlay)' : 'transparent',
                     boxShadow: 'none',
                     transition: 'background-color 0.18s cubic-bezier(0.23, 1, 0.32, 1), color 0.18s cubic-bezier(0.23, 1, 0.32, 1)',
-                    '&::before': {
-                      content: '""',
-                      position: 'absolute',
-                      left: 0,
-                      top: 10,
-                      bottom: 10,
-                      width: 2,
-                      borderRadius: 2,
-                      bgcolor: 'primary.main',
-                      opacity: active ? 1 : 0,
-                      transform: active ? 'scaleY(1)' : 'scaleY(0.4)',
-                      transition: 'opacity 0.18s cubic-bezier(0.23, 1, 0.32, 1), transform 0.18s cubic-bezier(0.23, 1, 0.32, 1)',
-                    },
                     '&.Mui-selected': {
                       bgcolor: 'var(--bt-overlay)',
                       '&:hover': { bgcolor: 'var(--bt-overlay-strong)' },

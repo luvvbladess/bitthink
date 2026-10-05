@@ -224,6 +224,7 @@ async def generate_image(data: dict, user_id: str = Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="Опишите изображение")
 
     bot_id = await _gate_image(user_id)
+    quality = await repo.get_user_image_quality(user_id)
 
     from openai_client import edit_image, generate_image as openai_generate
 
@@ -240,10 +241,10 @@ async def generate_image(data: dict, user_id: str = Depends(get_current_user)):
             "Меняю изображение" if sources else "Рисую изображение",
         )
         if sources:
-            url_or_data, revised = await edit_image(sources, prompt)
+            url_or_data, revised = await edit_image(sources, prompt, quality=quality)
             kind = "edit"
         else:
-            url_or_data, revised = await openai_generate(prompt)
+            url_or_data, revised = await openai_generate(prompt, quality=quality)
             kind = "generate"
         if not url_or_data:
             raise HTTPException(status_code=500, detail=revised or "Image generation failed")
@@ -283,6 +284,7 @@ async def edit_image_endpoint(
         raise HTTPException(status_code=400, detail="Опишите, что изменить")
 
     bot_id = await _gate_image(user_id)
+    quality = await repo.get_user_image_quality(user_id)
 
     saved_user = False
     tracked = False
@@ -301,7 +303,7 @@ async def edit_image_endpoint(
             raise HTTPException(status_code=400, detail="Прикрепите изображение или выберите картинку из чата")
 
         saved_user = await _begin_image_job(user_id, conversation_id, text, "Меняю изображение")
-        url_or_data, revised = await edit_image(sources, text)
+        url_or_data, revised = await edit_image(sources, text, quality=quality)
         if not url_or_data:
             raise HTTPException(status_code=500, detail=revised or "Image edit failed")
 

@@ -20,7 +20,7 @@ const pulse = keyframes`
 
 function computerBody(text: string): string | null {
   const trimmed = text.trim();
-  for (const prefix of ['Пилот:', 'Computer:', 'Дирижёр:']) {
+  for (const prefix of ['Оркестратор:', 'Пилот:', 'Computer:', 'Дирижёр:']) {
     const idx = trimmed.indexOf(prefix);
     if (idx !== -1) return trimmed.slice(idx + prefix.length).trim();
   }
@@ -95,7 +95,7 @@ const statusConfig = {
 };
 
 export function isComputerStatus(text: string): boolean {
-  return /Пилот:|Computer:|Дирижёр:/.test(text);
+  return /Оркестратор:|Пилот:|Computer:|Дирижёр:/.test(text);
 }
 
 export function ConductorStatus({ statusText }: Props) {
@@ -118,7 +118,7 @@ export function ConductorStatus({ statusText }: Props) {
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5, color: 'text.secondary' }}>
           <Desktop size={18} color="currentColor" />
           <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.secondary' }}>
-            Пилот
+            Оркестратор
           </Typography>
         </Box>
 

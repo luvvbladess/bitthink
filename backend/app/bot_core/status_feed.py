@@ -83,6 +83,10 @@ async def announce_tool(name: str, args: Optional[dict] = None) -> None:
         await push_status("mail", "Смотрю почту")
     elif name == "gmail_read":
         await push_status("mail", "Читаю письмо")
+    elif name == "gmail_attachments":
+        await push_status("mail", "Скачиваю вложения")
+    elif name == "google_drive_folder":
+        await push_status("think", "Готовлю папку на Диске")
     elif name == "gmail_send":
         to = str(args.get("to") or "").strip()
         await push_status("mail", f"Отправляю письмо{(' на ' + to) if to else ''}")

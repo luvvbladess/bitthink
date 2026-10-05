@@ -103,6 +103,7 @@ export function SkillsSection() {
 
   const builtin = useMemo(() => (data?.items || []).filter((item) => item.origin === 'builtin'), [data]);
   const custom = useMemo(() => (data?.items || []).filter((item) => item.origin === 'custom'), [data]);
+  const builtinOff = builtin.filter((item) => !item.enabled).length;
   const filteredBuiltin = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return builtin;
@@ -239,6 +240,7 @@ export function SkillsSection() {
         >
           <Typography sx={{ fontWeight: 600, fontSize: '0.8125rem' }}>
             Общие{builtin.length ? ` · ${builtin.length}` : ''}
+            {builtinOff ? ` · выключено ${builtinOff}` : ''}
           </Typography>
           <CaretDown
             size={16}
@@ -248,7 +250,7 @@ export function SkillsSection() {
         </Box>
         {!catalogOpen && (
           <Typography sx={{ color: 'text.secondary', fontSize: '0.8125rem', lineHeight: 1.45, mt: -0.25 }}>
-            Среда подхватывает сама. Везде — обычный чат тоже. Песочница — Пилот и Astra.
+            Среда подхватывает сама. Везде — обычный чат тоже. Песочница — Оркестратор и Astra. Любой можно выключить.
           </Typography>
         )}
         <Collapse in={catalogOpen}>
@@ -281,21 +283,52 @@ export function SkillsSection() {
                   <Box
                     key={skill.name}
                     sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 1,
                       px: 1.5,
-                      py: 1,
+                      py: 0.5,
                       minHeight: 44,
                       borderTop: index ? '1px solid var(--bt-hairline)' : 0,
+                      opacity: skill.enabled ? 1 : 0.6,
                     }}
                   >
-                    <Typography sx={{ fontWeight: 600, fontSize: '0.8125rem', letterSpacing: '-0.02em' }}>
-                      {skill.name}
-                      <Box component="span" sx={{ ml: 0.75, fontWeight: 500, color: 'text.secondary' }}>
-                        {skill.scope === 'chat' ? 'везде' : 'песочница'}
-                      </Box>
-                    </Typography>
-                    <Typography sx={{ color: 'text.secondary', fontSize: '0.8125rem', lineHeight: 1.4 }}>
-                      {skill.description}
-                    </Typography>
+                    <Box sx={{ minWidth: 0, py: 0.5 }}>
+                      <Typography sx={{ fontWeight: 600, fontSize: '0.8125rem', letterSpacing: '-0.02em' }}>
+                        {skill.name}
+                        <Box component="span" sx={{ ml: 0.75, fontWeight: 500, color: 'text.secondary' }}>
+                          {skill.scope === 'chat' ? 'везде' : 'песочница'}
+                        </Box>
+                      </Typography>
+                      <Typography sx={{ color: 'text.secondary', fontSize: '0.8125rem', lineHeight: 1.4 }}>
+                        {skill.description}
+                      </Typography>
+                    </Box>
+                    <Box
+                      component="button"
+                      type="button"
+                      role="switch"
+                      aria-checked={skill.enabled}
+                      aria-label={`${skill.enabled ? 'Выключить' : 'Включить'} скил ${skill.name}`}
+                      disabled={busy}
+                      onClick={() => patch.mutate({ name: skill.name, payload: { enabled: !skill.enabled } })}
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        flexShrink: 0,
+                        minWidth: 44,
+                        minHeight: 44,
+                        p: 0,
+                        border: 0,
+                        bgcolor: 'transparent',
+                        cursor: busy ? 'not-allowed' : 'pointer',
+                        WebkitTapHighlightColor: 'transparent',
+                      }}
+                    >
+                      <GlowSwitch checked={skill.enabled} />
+                    </Box>
                   </Box>
                 ))
               )}

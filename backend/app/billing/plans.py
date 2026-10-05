@@ -80,7 +80,7 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "models": ["auto", "kimi-k2.6", "gpt-5-nano", "gpt-6-luna"],
         "daily_replies": 30,
         "daily_searches": 5,
-        "features": ["30 ответов в день", "5 поисков в день", "3 картинки в месяц", "без Пилота, Студии и Исследования"],
+        "features": ["30 ответов в день", "5 поисков в день", "3 картинки в месяц", "без Оркестратора, Студии и Исследования"],
     },
     "trial": {
         "id": "trial",
@@ -103,7 +103,7 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "name": "Pro",
         "price_rub": 1_990,
         "price_year_rub": 19_900,
-        "description": "Повседневный чат и Пилот",
+        "description": "Повседневный чат и Оркестратор",
         "chat_tokens": 45_000_000,
         "computer_tokens": 15_000_000,
         "chat_week": 11_250_000,
@@ -112,7 +112,7 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "computer_session": 1_075_000,
         "images": 25,
         "models": list(PRO_MODELS),
-        "features": ["окно 5 часов и неделя", "45 млн токенов в месяц", "15 млн на Пилот", "Студия и рабочие ответы"],
+        "features": ["окно 5 часов и неделя", "45 млн токенов в месяц", "15 млн на Оркестратор", "Студия и рабочие ответы"],
     },
     "proplus": {
         "id": "proplus",
@@ -128,7 +128,7 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "computer_session": 3_570_000,
         "images": 40,
         "models": list(PROPLUS_MODELS),
-        "features": ["окно 5 часов и неделя", "81 млн токенов в месяц", "50 млн на Пилот", "GPT-6.1 Sol для сложных задач"],
+        "features": ["окно 5 часов и неделя", "81 млн токенов в месяц", "50 млн на Оркестратор", "GPT-6.1 Sol для сложных задач"],
     },
     "ultra": {
         "id": "ultra",

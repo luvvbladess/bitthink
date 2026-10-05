@@ -37,6 +37,7 @@ from app.db.models import (
     UsageRecord,
     User,
     UserMemory,
+    DisabledSkill,
     UserSkill,
 )
 
@@ -1255,6 +1256,26 @@ class DatabaseConversationManager:
             sub.reasoning_effort = effort
             session.commit()
 
+    def get_user_image_quality(self, user_id: int) -> str:
+        """low / medium / high; high when the person never chose (how pictures were always drawn)."""
+        from config import DEFAULT_IMAGE_QUALITY, IMAGE_QUALITIES
+
+        with SyncSessionLocal() as session:
+            sub = session.query(Subscription).filter_by(user_id=user_id).first()
+            value = sub.image_quality if sub else None
+            return value if value in IMAGE_QUALITIES else DEFAULT_IMAGE_QUALITY
+
+    def set_user_image_quality(self, user_id: int, quality: str) -> str:
+        from config import IMAGE_QUALITIES
+
+        if quality not in IMAGE_QUALITIES:
+            raise ValueError("Неизвестное качество изображений")
+        with SyncSessionLocal() as session:
+            sub = self._get_or_create_subscription(session, user_id)
+            sub.image_quality = quality
+            session.commit()
+        return quality
+
     # ------------------------------------------------------------------
     # Edit mode
     # ------------------------------------------------------------------
@@ -1508,6 +1529,25 @@ class DatabaseConversationManager:
             session.commit()
             session.refresh(row)
             return self._user_skill_dict(row)
+
+    def disabled_builtin_skills(self, user_id: int) -> set[str]:
+        with SyncSessionLocal() as session:
+            rows = session.query(DisabledSkill.name).filter_by(user_id=user_id).all()
+            return {name for (name,) in rows}
+
+    def set_builtin_skill_enabled(self, user_id: int, name: str, enabled: bool) -> None:
+        from computer_skills.loader import builtin_names
+
+        slug = (name or "").strip().lower()
+        if slug not in builtin_names():
+            raise ValueError("Такого общего скила нет.")
+        with SyncSessionLocal() as session:
+            row = session.query(DisabledSkill).filter_by(user_id=user_id, name=slug).first()
+            if enabled and row:
+                session.delete(row)
+            elif not enabled and not row:
+                session.add(DisabledSkill(user_id=user_id, name=slug))
+            session.commit()
 
     def delete_user_skill(self, user_id: int, name: str) -> bool:
         from computer_skills.loader import builtin_names

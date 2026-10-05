@@ -119,7 +119,7 @@ def test_guest_cannot_remove_owners_attachment():
 def test_supersede_drops_old_interim_and_keeps_the_new_one():
     manager = DatabaseConversationManager()
     owner = 976_200_001
-    conv = manager.create_conversation(owner, title="Пилот")
+    conv = manager.create_conversation(owner, title="Оркестратор")
     try:
         manager.add_message(owner, "user", "сделай комплект", conv_id=conv.id, author_user_id=owner)
         interim = manager.add_message(

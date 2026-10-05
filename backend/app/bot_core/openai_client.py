@@ -73,6 +73,29 @@ VISUALIZE_TOOL_RESPONSES = {
 # Нативный поиск Responses API (OpenAI сам выполняет — callback не нужен)
 WEB_SEARCH_TOOL = {"type": "web_search"}
 
+# A greeting is not a question for the internet. Forcing a search on it only confuses the model.
+_SMALLTALK_WORDS = {
+    "привет", "приветик", "здравствуй", "здравствуйте", "добрый", "доброе", "доброй", "хай", "хэй",
+    "hi", "hello", "hey", "спасибо", "благодарю", "пока", "ок", "окей", "ok", "okay", "тест", "test",
+}
+
+
+def _is_smalltalk(text: str) -> bool:
+    """One or two words that open or close a chat ("привет", "спасибо", "hello"), no question."""
+    words = re.findall(r"\w+", (text or "").lower())
+    return bool(words) and len(words) <= 2 and "?" not in (text or "") and words[0] in _SMALLTALK_WORDS
+
+
+def _last_user_text(messages: List[dict]) -> str:
+    for message in reversed(messages or []):
+        if message.get("role") == "user":
+            content = message.get("content")
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                return " ".join(str(part.get("text", "")) for part in content if isinstance(part, dict))
+    return ""
+
 
 _XHIGH_CAPABLE_MODELS = ("gpt-6-sol", "gpt-6-astra")
 _MAX_CAPABLE_MODELS = ("gpt-6-astra",)
@@ -416,7 +439,7 @@ async def get_chat_response(
     поиск, графики, страницы и файлы чата – для обычного режима Авто.
 
     max_tool_loops — сколько ходов с вызовами инструментов разрешено. По
-    умолчанию 6 (Astra — 12). Сотруднику Пилота, собирающему комплект файлов,
+    умолчанию 6 (Astra — 12). Сотруднику Оркестратора, собирающему комплект файлов,
     передаётся больше: шесть ходов кончались на первом же документе.
     Поддерживает: нативный web_search, reasoning, visualize_data, vision.
 
@@ -427,7 +450,7 @@ async def get_chat_response(
     нестриминговом вызове, так что вся логика ниже не меняется.
 
     use_skills=False отключает автоподбор скилов по тексту последнего user-сообщения.
-    Нужно для внутренних служебных вызовов (JSON-планирование Пилота, сборка
+    Нужно для внутренних служебных вызовов (JSON-планирование Оркестратора, сборка
     финального ответа, суммаризация документов в Map-Reduce) — там "user"-сообщение
     это не реальный вопрос человека, а собранный самим кодом промпт, и ключевые слова
     в нём (например, шаблонные фразы про "сравни", "договор", "фото") раньше случайно
@@ -523,22 +546,33 @@ async def get_chat_response(
             if user_id is not None:
                 # Один ключ на пользователя держит стабильный system-префикс на одном сервере кэша.
                 request["prompt_cache_key"] = f"web-{user_id}"[:64]
-            if force_web:
-                # With tool_choice="auto" search is optional. Explicit search
-                # mode and volatile Auto queries must never silently skip it.
-                request["tool_choice"] = "required"
+            if force_web and loop_i == 0 and not _is_smalltalk(_last_user_text(messages)):
+                # With tool_choice="auto" search is optional. Explicit search mode and volatile
+                # Auto queries must never silently skip it. Two rules keep this from backfiring:
+                # it is asked on the first hop only, and for the web search itself, not "any
+                # tool". With "required" on every hop the model answered by calling list_skills
+                # again and again until the API cut the response off (status incomplete).
+                request["tool_choice"] = {"type": WEB_SEARCH_TOOL["type"]}
             response = None
+            stream_error = ""
 
             async def _consume_stream(stream):
-                nonlocal response
+                nonlocal response, stream_error
                 async for event in stream:
                     etype = getattr(event, "type", "") or ""
                     if "reasoning" in etype and "delta" in etype:
                         delta_text = getattr(event, "delta", None)
                         if delta_text and on_reasoning_delta:
                             await on_reasoning_delta(delta_text)
-                    elif etype == "response.completed":
+                    elif etype in ("response.completed", "response.incomplete"):
+                        # incomplete still carries what the model managed to produce (a long answer
+                        # cut by the token cap is better shown than thrown away).
                         response = getattr(event, "response", None)
+                    elif etype == "response.failed":
+                        failed = getattr(getattr(event, "response", None), "error", None)
+                        stream_error = str(getattr(failed, "message", None) or failed or "response.failed")
+                    elif etype == "error":
+                        stream_error = str(getattr(event, "message", None) or getattr(event, "code", None) or "error")
                     elif "web_search" in etype and ("in_progress" in etype or "searching" in etype or etype.endswith(".added")):
                         try:
                             from status_feed import push_status
@@ -554,7 +588,10 @@ async def get_chat_response(
             if response is None:
                 # Стрим завершился без response.completed — считаем это сбоем API,
                 # а не тихо продолжаем с пустым ответом.
-                raise RuntimeError("Модель прервала поток без завершающего ответа")
+                raise RuntimeError(stream_error or "Модель прервала поток без завершающего ответа")
+            if getattr(response, "status", None) == "incomplete":
+                reason = getattr(getattr(response, "incomplete_details", None), "reason", None)
+                logger.warning("Responses API: response incomplete (%s), loop %s", reason, loop_i + 1)
             usage = getattr(response, "usage", None)
             if usage:
                 inp, out, cached, writes = _usage_token_counts(usage)
@@ -737,10 +774,18 @@ async def get_chat_response(
                         args = json.loads(fc_args_str)
                         query = args.get("query", "")
                         if query:
-                            from search_engine import smart_web_search
-                            tool_result = await smart_web_search(query)
+                            from search_engine import search_web, smart_web_search
+                            found = await search_web(query, max_results=14)
+                            tool_result = await smart_web_search(query, sources=found)
                             search_count += 1
-                            search_results.append({"query": query, "summary": (tool_result or "")[:500]})
+                            # One item per link: the UI lists only items whose summary starts with a URL.
+                            for src in found:
+                                url = src.get("url") or ""
+                                if url and not any(s.get("summary", "").startswith(url) for s in search_results):
+                                    search_results.append({
+                                        "query": src.get("title") or "Веб-поиск",
+                                        "summary": f"{url}\n{src.get('snippet') or ''}".strip(),
+                                    })
                         else:
                             tool_result = "❌ Ошибка: Пустой поисковой запрос."
                     except Exception as e:

@@ -252,6 +252,7 @@ DRIVE_FULL_SCOPE = "https://www.googleapis.com/auth/drive"
 # drive.file came first (only files the app made); an account connected then can still save.
 DRIVE_WRITE_SCOPES = (DRIVE_FULL_SCOPE, "https://www.googleapis.com/auth/drive.file")
 UPLOAD = "https://www.googleapis.com/upload/drive/v3/files"
+FOLDER_MIME = "application/vnd.google-apps.folder"
 MAX_RECIPIENTS = 10
 MAIL_MAX_BYTES = 18 * 1024 * 1024  # Gmail caps a message at 25 MB after base64.
 _EMAIL_RE = re.compile(r"^[^@\s<>,;\"]+@[^@\s<>,;\"]+\.[^@\s<>,;\"]+$")
@@ -377,6 +378,35 @@ async def _drive_upload(payload: dict, args: dict, user_id: int) -> str:
     )
 
 
+async def _drive_folder(payload: dict, args: dict) -> str:
+    """Find-or-create each segment of a folder path, so a repeated call never duplicates."""
+    missing = _missing_scope(payload, DRIVE_WRITE_SCOPES, "создавать папки на Диске")
+    if missing:
+        return missing
+    segments = [s.strip() for s in str(args.get("path") or "").replace("\\", "/").split("/") if s.strip()]
+    if not segments or len(segments) > 6:
+        return "Нужен путь папки из 1–6 частей, например Суда/Название судна."
+    parent = str(args.get("parent_id") or "").strip() or "root"
+    if parent != "root" and not parent.replace("-", "").replace("_", "").isalnum():
+        return "parent_id должен быть id папки из google_drive_search."
+    link = ""
+    for name in segments:
+        escaped = name.replace("\\", "\\\\").replace("'", "\\'")
+        found = await api(payload, "GET", DRIVE, params={
+            "q": f"name = '{escaped}' and mimeType = '{FOLDER_MIME}' and '{parent}' in parents and trashed = false",
+            "fields": "files(id,webViewLink)", "pageSize": 1,
+            "includeItemsFromAllDrives": "true", "supportsAllDrives": "true",
+        })
+        folder = (found.get("files") or [None])[0]
+        if not folder:
+            folder = await api(
+                payload, "POST", DRIVE, params={"fields": "id,webViewLink", "supportsAllDrives": "true"},
+                json_body={"name": name, "mimeType": FOLDER_MIME, "parents": [parent]},
+            )
+        parent, link = folder["id"], folder.get("webViewLink", "")
+    return f"Папка «{'/'.join(segments)}» готова. folder_id {parent}. {link}"
+
+
 async def _drive_trash(payload: dict, args: dict) -> str:
     """By default into the Drive trash, restorable for 30 days. permanent=true deletes
     outright, only when the person said so. drive.file accounts reach only app-made files."""
@@ -413,6 +443,8 @@ async def _drive_trash(payload: dict, args: dict) -> str:
 async def run_google_tool(name: str, args: dict[str, Any], payload: dict[str, Any], user_id: int) -> str:
     if name == "google_drive_trash":
         return await _drive_trash(payload, args)
+    if name == "google_drive_folder":
+        return await _drive_folder(payload, args)
     if name == "google_mail_send":
         return await _mail_send(payload, args, user_id)
     if name == "google_drive_upload":

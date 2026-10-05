@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Box, IconButton, TextField, Tooltip } from '@mui/material';
 import { Copy, Check, FileArrowDown, ArrowClockwise, PencilSimple, X } from '@phosphor-icons/react';
 import ReactMarkdown, { type Components } from 'react-markdown';
@@ -16,6 +16,8 @@ import { ModeSwitchCard } from './ModeSwitchCard';
 import { parseSources } from './sources';
 import { SourcesCountButton } from './SourcesPanel';
 import { ReasoningTrace, SearchItem } from './ReasoningTrace';
+import { normalizeMarkdown } from './markdownText';
+import { isReplyText, useReplySnapshot, useRevealShown } from './replyReveal';
 import '@/theme/highlight.css';
 
 /** Module-level on purpose: a component created inside render is a new type on every
@@ -53,43 +55,13 @@ interface Props {
   people?: boolean;
   author?: { name: string; avatar_url?: string | null } | null;
   mine?: boolean;
+  /** The newest assistant message. If it is the reply that is arriving, its text is typed out. */
+  revealTarget?: boolean;
+  /** Phones have no hover: only the newest message of each side keeps its action buttons on screen. */
+  touchActions?: boolean;
 }
 
 const ALLOWED_IMAGE_DATA_URI = /^data:image\/(png|jpe?g|gif|webp);base64,/i;
-
-function normalizeMarkdown(text: string): string {
-  const sourceHeading = /^(?:#{1,6}\s*)?(?:\*{1,2}|_{1,2})?(?:источники|sources)\s*:?\s*(?:\*{1,2}|_{1,2})?\s*$/i;
-  const sourceItem = /^(?:[-*+•‣∙·]|\d+[.)])?\s*(?:\*{1,2}|_{1,2})?источник(?:и)?\b/i;
-  const sourceList = /^(?:[-*+•‣∙·]|\d+[.)])\s*(?:\[[^\]]+\]\(https?:\/\/|<?https?:\/\/|\[\d+\])/i;
-  const isSourceLine = (line: string) => {
-    const stripped = line.trim();
-    return !stripped || sourceHeading.test(stripped) || sourceItem.test(stripped) || sourceList.test(stripped) || /^\[\d+\]\s+/.test(stripped);
-  };
-  const lines = text.split('\n');
-  let cut = lines.length;
-  for (let index = 0; index < lines.length; index += 1) {
-    const stripped = lines[index].trim();
-    if (!stripped) continue;
-    if ((sourceHeading.test(stripped) || sourceItem.test(stripped) || sourceList.test(stripped)) && lines.slice(index).every(isSourceLine)) {
-      cut = index;
-      break;
-    }
-  }
-  const kept = lines.slice(0, cut);
-  while (kept.length && !kept[kept.length - 1].trim()) kept.pop();
-  return kept
-    .join('\n')
-    .replace(/^[ \t]*[•‣∙·][ \t]+/gm, '- ')
-    .replace(/^[ \t]*(?:[-*+•‣∙·]|\d+[.)])[ \t]*$/gm, '')
-    .replace(/\[([^\]]+)\]\(https?:\/\/[^)]+\)/g, '$1')
-    .replace(/(?<!\()https?:\/\/[^\s<>)\]]+/g, '')
-    .replace(/\s*\[\d+\]/g, '')
-    .replace(/\s*\((?:www\.)?(?:[a-z0-9-]+\.)+(?:xn--[a-z0-9-]+|[a-z]{2,24})(?:\/[^\s)]*)?\)/gi, '')
-    .replace(/\(xn--[a-z0-9-]+(?:\.xn--[a-z0-9-]+)+\)/gi, '')
-    .replace(/\bxn--[a-z0-9-]+(?:\.xn--[a-z0-9-]+)+\b/gi, '')
-    .replace(/([A-Za-zА-Яа-яЁё])\.[\u0530-\u058F\u10A0-\u10FF\u0600-\u06FF\u0590-\u05FF\u0900-\u097F\u4E00-\u9FFF\u3040-\u30FF]+/g, '$1')
-    .replace(/\n{3,}/g, '\n\n');
-}
 
 function sanitizeUrl(url: string): string {
   if (ALLOWED_IMAGE_DATA_URI.test(url)) return url;
@@ -216,7 +188,49 @@ function CodeBlock({ children }: { children?: React.ReactNode }) {
   );
 }
 
-export function ChatMessage({
+const HIGHLIGHT = [rehypeHighlight];
+const NO_PLUGINS: never[] = [];
+
+type MdNode = { type: string; value?: string; children?: MdNode[] };
+
+/** A single newline is a line break in a chat ("two lines" must show as two lines), not a space. */
+function softBreaks() {
+  const walk = (node: MdNode) => {
+    if (!node.children) return;
+    node.children = node.children.flatMap((child): MdNode[] => {
+      if (child.type !== 'text' || !child.value?.includes('\n')) {
+        walk(child);
+        return [child];
+      }
+      return child.value
+        .split('\n')
+        .flatMap((part, index): MdNode[] =>
+          index ? [{ type: 'break' }, { type: 'text', value: part }] : [{ type: 'text', value: part }],
+        );
+    });
+  };
+  return walk;
+}
+
+const REMARK = [remarkGfm, softBreaks];
+
+function Markdown({ text, components, highlight = true }: { text: string; components: Components; highlight?: boolean }) {
+  return (
+    <ReactMarkdown remarkPlugins={REMARK} rehypePlugins={highlight ? HIGHLIGHT : NO_PLUGINS} urlTransform={sanitizeUrl} components={components}>
+      {text}
+    </ReactMarkdown>
+  );
+}
+
+/** The one place that follows the typing at ~30 fps; the rest of the chat does not re-render with it. */
+function RevealedMarkdown({ full, components }: { full: string; components: Components }) {
+  const shown = useRevealShown();
+  const typing = shown < full.length;
+  // Code is coloured once the text is complete: highlighting on every step is the costliest part of re-parsing.
+  return <Markdown text={typing ? full.slice(0, shown) : full} components={components} highlight={!typing} />;
+}
+
+const ChatMessageView = memo(function ChatMessageView({
   role,
   content,
   file,
@@ -234,6 +248,8 @@ export function ChatMessage({
   people = false,
   author,
   mine = false,
+  revealTarget = false,
+  touchActions = false,
 }: Props) {
   const isUser = role === 'user';
   const alignEnd = people ? isUser && mine : isUser;
@@ -268,6 +284,11 @@ export function ChatMessage({
   // itself and belongs above its files.
   const trimmedContent = (visibleContent || '').trim();
   const textBesideFiles = Boolean(trimmedContent) && !attachmentItems.some((item) => item.name === trimmedContent);
+  // Typed on the cleaned text, so the source list cut off at the end never flashes mid-reply.
+  const cleanContent = useMemo(() => normalizeMarkdown(visibleContent), [visibleContent]);
+  const reply = useReplySnapshot(revealTarget && !isUser);
+  const revealing = revealTarget && !isUser && isReplyText(cleanContent, reply);
+  const typing = revealing && reply.typing;
 
   const handleCopy = async () => {
     try {
@@ -346,6 +367,8 @@ export function ChatMessage({
         </Box>
       ) : (
         <Box
+          className={typing ? 'bt-typing' : undefined}
+          aria-busy={typing || undefined}
           sx={{
             minWidth: 0,
             width: isUser ? 'auto' : '100%',
@@ -421,16 +444,24 @@ export function ChatMessage({
             },
             '& th': { bgcolor: 'var(--bt-overlay-faint)', fontWeight: 600, whiteSpace: 'nowrap' },
             '& tr:last-child td': { borderBottom: 'none' },
+            // Typing caret: solid, and only while the text is being laid out. It rides the last text block.
+            '&.bt-typing > :is(p, h1, h2, h3, h4):last-child::after, &.bt-typing > :is(ul, ol):last-child > li:last-child::after, &.bt-typing > blockquote:last-child > p:last-child::after': {
+              content: '""',
+              display: 'inline-block',
+              width: '2px',
+              height: '1.05em',
+              ml: '3px',
+              verticalAlign: '-0.17em',
+              borderRadius: '1px',
+              bgcolor: 'primary.main',
+            },
           }}
         >
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[rehypeHighlight]}
-            urlTransform={sanitizeUrl}
-            components={mdComponents}
-          >
-            {normalizeMarkdown(visibleContent)}
-          </ReactMarkdown>
+          {revealing ? (
+            <RevealedMarkdown full={reply.full} components={mdComponents} />
+          ) : (
+            <Markdown text={cleanContent} components={mdComponents} />
+          )}
           {modeSwitch && onAcceptMode && (
             <ModeSwitchCard suggestion={modeSwitch} onAccept={() => onAcceptMode(modeSwitch.model)} />
           )}
@@ -474,8 +505,8 @@ export function ChatMessage({
             alignItems: 'center',
             gap: 0.5,
             mt: 0.5,
-            opacity: { xs: 1, md: 0 },
-            pointerEvents: { xs: 'auto', md: 'none' },
+            opacity: { xs: touchActions ? 1 : 0, md: 0 },
+            pointerEvents: { xs: touchActions ? 'auto' : 'none', md: 'none' },
             transition: 'opacity 0.2s',
             '.chat-message-row:hover &, .chat-message-row:focus-within &': {
               opacity: 1,
@@ -486,7 +517,7 @@ export function ChatMessage({
           {isUser ? (
             onEdit && !isClarifyReply(content) && (
               <Tooltip title="Изменить">
-                <IconButton size="small" onClick={startEdit} aria-label="Изменить сообщение" sx={{ color: 'text.muted' }}>
+                <IconButton size="small" onClick={startEdit} aria-label="Изменить сообщение" className="bt-edit" sx={{ color: 'text.muted', p: { xs: 1.1, md: 0.5 } }}>
                   <PencilSimple size={14} />
                 </IconButton>
               </Tooltip>
@@ -498,7 +529,7 @@ export function ChatMessage({
                   size="small"
                   onClick={handleCopy}
                   aria-label="Скопировать сообщение"
-                  sx={{ color: 'text.muted' }}
+                  sx={{ color: 'text.muted', p: { xs: 1.1, md: 0.5 } }}
                 >
                   {copied ? <Check size={14} /> : <Copy size={14} />}
                 </IconButton>
@@ -509,7 +540,7 @@ export function ChatMessage({
                     size="small"
                     onClick={() => downloadFile(file.filename, file.data)}
                     aria-label="Скачать файл"
-                    sx={{ color: 'text.muted' }}
+                    sx={{ color: 'text.muted', p: { xs: 1.1, md: 0.5 } }}
                   >
                     <FileArrowDown size={14} />
                   </IconButton>
@@ -517,7 +548,7 @@ export function ChatMessage({
               )}
               {isLastAssistant && onRegenerate && !modeSwitch && (
                 <Tooltip title="Повторить ответ">
-                  <IconButton size="small" onClick={onRegenerate} aria-label="Повторить ответ" sx={{ color: 'text.muted' }}>
+                  <IconButton size="small" onClick={onRegenerate} aria-label="Повторить ответ" sx={{ color: 'text.muted', p: { xs: 1.1, md: 0.5 } }}>
                     <ArrowClockwise size={14} />
                   </IconButton>
                 </Tooltip>
@@ -532,5 +563,39 @@ export function ChatMessage({
         </Box>
       )}
     </Box>
+  );
+});
+
+/**
+ * The list re-renders on every state change around a reply (sent, answered, saved, refetched).
+ * Without this each of those re-parsed the markdown of every message in the chat. The handlers
+ * the parent passes are new functions on every render, so the view gets stable ones that call
+ * the latest through a ref; only whether a handler exists (it decides which buttons show) is
+ * passed down as a prop.
+ */
+export function ChatMessage(props: Props) {
+  const latest = useRef(props);
+  latest.current = props;
+  const call = useMemo(
+    () => ({
+      onRemoveAttachment: () => latest.current.onRemoveAttachment?.(),
+      onRegenerate: () => latest.current.onRegenerate?.(),
+      onEdit: (text: string) => latest.current.onEdit?.(text),
+      onOpenSources: () => latest.current.onOpenSources?.(),
+      onEditImage: (url: string) => latest.current.onEditImage?.(url),
+      onAcceptMode: (model: string) => latest.current.onAcceptMode?.(model),
+    }),
+    [],
+  );
+  return (
+    <ChatMessageView
+      {...props}
+      onRemoveAttachment={props.onRemoveAttachment && call.onRemoveAttachment}
+      onRegenerate={props.onRegenerate && call.onRegenerate}
+      onEdit={props.onEdit && call.onEdit}
+      onOpenSources={props.onOpenSources && call.onOpenSources}
+      onEditImage={props.onEditImage && call.onEditImage}
+      onAcceptMode={props.onAcceptMode && call.onAcceptMode}
+    />
   );
 }

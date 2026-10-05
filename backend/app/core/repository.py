@@ -85,6 +85,14 @@ class ConversationRepository:
         bot_id = self._bot_id(web_user_id)
         await asyncio.to_thread(self._manager.set_user_reasoning_effort, bot_id, effort)
 
+    async def get_user_image_quality(self, web_user_id: str) -> str:
+        bot_id = self._bot_id(web_user_id)
+        return await asyncio.to_thread(self._manager.get_user_image_quality, bot_id)
+
+    async def set_user_image_quality(self, web_user_id: str, quality: str) -> str:
+        bot_id = self._bot_id(web_user_id)
+        return await asyncio.to_thread(self._manager.set_user_image_quality, bot_id, quality)
+
     async def get_conversations(self, web_user_id: str) -> list[dict]:
         bot_id = self._bot_id(web_user_id)
         convs = await asyncio.to_thread(self._manager.get_conversations, bot_id)
@@ -392,6 +400,14 @@ class ConversationRepository:
     async def save_user_skill(self, web_user_id: str, **fields) -> dict | None:
         bot_id = self._bot_id(web_user_id)
         return await asyncio.to_thread(self._manager.save_user_skill, bot_id, **fields)
+
+    async def disabled_builtin_skills(self, web_user_id: str) -> set[str]:
+        bot_id = self._bot_id(web_user_id)
+        return await asyncio.to_thread(self._manager.disabled_builtin_skills, bot_id)
+
+    async def set_builtin_skill_enabled(self, web_user_id: str, name: str, enabled: bool) -> None:
+        bot_id = self._bot_id(web_user_id)
+        await asyncio.to_thread(self._manager.set_builtin_skill_enabled, bot_id, name, enabled)
 
     async def delete_user_skill(self, web_user_id: str, name: str) -> bool:
         bot_id = self._bot_id(web_user_id)

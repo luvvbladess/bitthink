@@ -30,6 +30,9 @@ def _with_web_context(messages: List[dict], context: str) -> List[dict]:
     return grounded
 
 
+PILOT_MAP_REDUCE_TOKENS = 24_000
+
+
 def _merge_sources(
     primary: List[Dict[str, str]], extra: List[Dict[str, str]], limit: int = 12
 ) -> List[Dict[str, str]]:
@@ -78,6 +81,10 @@ async def reduce_heavy_context(
 
     total_tokens = estimate_messages_tokens(messages)
     MAP_REDUCE_THRESHOLD = int(input_budget_tokens(model) * 0.72)
+    if model == "director":
+        # Pilot sends the files to the planner, to every employee on every tool hop and to the
+        # composer. A cheap Luna pass that reads each file once is far less than that.
+        MAP_REDUCE_THRESHOLD = min(MAP_REDUCE_THRESHOLD, PILOT_MAP_REDUCE_TOKENS)
 
     if total_tokens < MAP_REDUCE_THRESHOLD:
         return messages
@@ -116,7 +123,16 @@ async def reduce_heavy_context(
         except Exception:
             pass
 
-    CHUNK_SIZE = 200000
+    # Pilot: small pieces, each read once by Luna. One 200k-char piece squeezed into a few
+    # lines lost whole clauses; the input cost is the same either way.
+    CHUNK_SIZE = 40_000 if model == "director" else 200000
+    keep_details = (
+        " Сохраняй номера пунктов и дословные короткие цитаты условий об ответственности, штрафах, "
+        "сроках, продлении, расторжении, ценах, правах одной стороны и спорах. В конце отдельным списком "
+        "«Необычные или невыгодные условия» перечисли такие пункты с номером и цитатой; если их нет – так и напиши."
+        if model == "director"
+        else ""
+    )
     MAP_CONCURRENCY = 4
 
     tasks_meta: List[Tuple[int, int, int, str]] = []
@@ -156,7 +172,7 @@ async def reduce_heavy_context(
                         "противоречия или неточности. НЕ пропускай и не отбрасывай фрагмент, даже если он не "
                         "отвечает на вопрос напрямую - если пользователь просит проверить или проанализировать "
                         "документ целиком, важно сохранить содержание каждого фрагмента для дальнейшего анализа, "
-                        "а не отфильтровать его как нерелевантное."
+                        "а не отфильтровать его как нерелевантное." + keep_details
                     ),
                 },
                 {"role": "user", "content": f"Вопрос пользователя: {user_text}\n\nТекст для анализа:\n{chunk}"},
@@ -566,15 +582,14 @@ async def get_smart_response(
     await push_status("think", "Проверяю выводы и оформляю ответ")
     source_limit = 28 if model == "director" else (24 if model in {"gpt-6-sol", "gpt-6-astra", "kimi-k2.6"} else 18)
     sources = _merge_sources(grounded_sources, model_sources, limit=source_limit)
-    if sources:
+    # The UI lists only items whose summary starts with a URL; Pilot's journal also carries
+    # URL-less briefs (skill loads, Kimi notes) that must not switch off the domain fallback.
+    if not any(s.get("summary", "").startswith("http") for s in sources):
+        from kimi_client import extract_domain_sources
+        sources = sources + extract_domain_sources(answer)[:source_limit]
+    if any(s.get("summary", "").startswith("http") for s in sources):
         from kimi_client import strip_source_links
         answer = strip_source_links(answer)
-    else:
-        from kimi_client import extract_domain_sources
-        sources = extract_domain_sources(answer)[:source_limit]
-        if sources:
-            from kimi_client import strip_source_links
-            answer = strip_source_links(answer)
     # Never expose raw provider chain-of-thought. The compact status feed is the
     # user-facing explanation of progress.
     from skill_commands import guard_unsaved_claim
