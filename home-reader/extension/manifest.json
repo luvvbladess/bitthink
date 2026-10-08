@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Bit-Think: домашний читатель",
+  "version": "1.9.0",
+  "minimum_chrome_version": "120",
+  "description": "Читает карточки товаров через обычный браузер по запросу вашего Bit-Think.",
+  "permissions": ["alarms", "storage", "scripting"],
+  "host_permissions": ["https://bit-think.space/*", "https://*.ozon.ru/*", "https://*.wildberries.ru/*", "https://*.wb.ru/*", "https://market.yandex.ru/*", "https://*.avito.ru/*", "https://*.aliexpress.ru/*", "https://*.megamarket.ru/*", "https://*.sbermegamarket.ru/*", "https://*.lamoda.ru/*", "https://*.citilink.ru/*", "https://*.dns-shop.ru/*", "https://*.mvideo.ru/*", "https://*.eldorado.ru/*", "https://*.lemanapro.ru/*", "https://*.leroymerlin.ru/*", "https://*.chipdip.ru/*", "https://*.terraelectronica.ru/*", "https://*.promelec.ru/*", "https://*.compel.ru/*", "https://*.platan.ru/*"],
+  "background": {"service_worker": "worker.js"},
+  "action": {"default_popup": "popup.html"}
+}

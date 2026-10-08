@@ -12,6 +12,7 @@ from app.db import models as _db_models  # noqa: F401 — register tables for cr
 from app.api import admin, auth, chat, conversations, models_router, documents, editor, media, billing, usage, connectors, memory, skills, share
 from app.db.base import Base
 from app.db.engine import sync_engine
+from app.api import marketplace_relay, desktop
 
 
 def _ensure_runtime_tables() -> None:
@@ -20,6 +21,7 @@ def _ensure_runtime_tables() -> None:
     from app.db.models import ConversationAside, ConversationMember, ConversationShare, EditorDocument, UserSkill
 
     UserSkill.__table__.create(bind=sync_engine, checkfirst=True)
+    _db_models.TokenReservation.__table__.create(bind=sync_engine, checkfirst=True)
     EditorDocument.__table__.create(bind=sync_engine, checkfirst=True)
     ConversationShare.__table__.create(bind=sync_engine, checkfirst=True)
     ConversationMember.__table__.create(bind=sync_engine, checkfirst=True)
@@ -83,6 +85,8 @@ def create_app() -> FastAPI:
     app.include_router(connectors.router, prefix="/connectors", tags=["connectors"])
     app.include_router(memory.router, prefix="/memory", tags=["memory"])
     app.include_router(skills.router, prefix="/skills", tags=["skills"])
+    app.include_router(marketplace_relay.router, prefix="/marketplace-relay", tags=["home-reader"])
+    app.include_router(desktop.router, prefix="/desktop", tags=["desktop"])
 
     # Chat and generated files are stored as sha256(email)[:16]/uuid.hex.ext.
     # Anything else under those trees is not a file we wrote.

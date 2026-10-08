@@ -122,6 +122,42 @@ def test_scraper_falls_back_to_kimi_fetch(monkeypatch):
     assert url == "https://example.com/blocked"
 
 
+def test_kimi_marketplace_browse_uses_shared_reader_before_external_fetch(monkeypatch):
+    calls=[]
+    async def shared(url, **kwargs):
+        calls.append(url)
+        return url, 'Домашняя карточка. Цена 1520 рублей. Доставка завтра.'
+    async def forbidden(*args, **kwargs):
+        raise AssertionError('External Kimi fetch must not precede the shared marketplace reader')
+    monkeypatch.setattr(web_scraper,'fetch_url_content',shared)
+    monkeypatch.setattr(kimi_web_search,'kimi_fetch',forbidden)
+    for url in ['https://www.ozon.ru/product/test-123/', 'https://www.wildberries.ru/catalog/123/detail.aspx', 'https://www.chipdip.ru/product/test']:
+        content,sources=asyncio.run(kimi_client._execute_kimi_tool('browse_page',{'url':url}))
+        assert 'Домашняя карточка' in content and sources[0]['summary']==url
+    assert len(calls)==3
+
+
+def test_kimi_block_page_is_rejected_and_uses_shared_fallback(monkeypatch):
+    async def blocked(url, **kwargs):
+        return {'url':url,'markdown':'Похоже, нет\u00a0соединения. Выключите VPN.'}
+    async def shared(url, **kwargs):
+        assert kwargs['use_kimi_fallback'] is False
+        return url,'Нормальная страница через сервер'
+    monkeypatch.setattr(kimi_web_search,'kimi_fetch',blocked)
+    monkeypatch.setattr(web_scraper,'fetch_url_content',shared)
+    content,_=asyncio.run(kimi_client._execute_kimi_tool('browse_page',{'url':'https://example.com/card'}))
+    assert 'Нормальная страница' in content and 'Выключите VPN' not in content
+    assert asyncio.run(web_scraper._recover_with_kimi_fetch('https://example.com/card'))==''
+
+
+def test_reply_cleanup_preserves_product_listing_links():
+    url='https://www.ozon.ru/product/g435-123/?seller=456'
+    body=f'Вот объявления:\n- [Logitech G435]({url})\n- [JBL](https://www.ozon.ru/product/jbl-123/)'
+    assert kimi_client.strip_source_links(body)==body
+    assert kimi_client.strip_source_links('Карточка: '+url)=='Карточка: '+url
+    assert kimi_client.strip_source_links(body+'\n\nИсточники\n- https://example.com/source')==body
+
+
 def test_grounded_context_uses_pro_chunks_and_skips_scrape(monkeypatch):
     scraped = []
 

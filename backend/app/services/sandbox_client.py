@@ -31,6 +31,11 @@ def sandbox_url() -> str:
 
 
 async def run_workspace_tool(name: str, args: dict[str, Any], user_id: int) -> str:
+    from app.services.desktop_context import local_tool
+
+    local = await local_tool(name, args)
+    if local is not None:
+        return local
     op = TOOL_OPS.get(name)
     if not op:
         return f"Инструмент {name} не найден."
@@ -81,6 +86,11 @@ async def _remote(base: str, payload: dict[str, Any]) -> str:
 
 async def collect_workspace_files(user_id: int, since: float) -> list[dict[str, Any]]:
     """Binary files the Computer job just wrote, ready to attach to the chat."""
+    from app.services.desktop_context import desktop_executor
+
+    if desktop_executor.get() is not None:
+        # Desktop artifacts already live in the selected project, not the server sandbox.
+        return []
     payload = {"user_id": int(user_id), "op": "deliverables", "since": float(since or 0)}
     raw = ""
     if os.environ.get("WORKSPACES_DIR"):

@@ -36,6 +36,7 @@ EXPECTED_SKILLS = {
     "images",
     "infographic",
     "legal",
+    "marketplaces",
     "minutes",
     "ops",
     "pdf",
@@ -138,6 +139,39 @@ def test_match_skills_preloads_photo_and_code_playbooks():
     block = preload_skills_block("найди где снято фото", has_images=True)
     assert "Скилы уже подобраны" in block
     assert "image_search" in block
+
+
+def test_marketplace_links_preload_parser_without_store_words():
+    from computer_skills.loader import match_skills, preload_skills_block
+
+    for url in (
+        "https://market.yandex.ru/card/test/123",
+        "https://www.wb.ru/catalog/123/detail.aspx",
+        "https://www.dns-shop.ru/product/123/test/",
+        "https://www.mvideo.ru/products/test-123",
+    ):
+        text = f"это что такое {url}"
+        assert match_skills(text, sandbox=False)[0] == "marketplaces"
+        block = preload_skills_block(text, sandbox=True)
+        assert "browse_page" in block
+        assert "Не запускай 5–8 поисков" in block
+    assert "marketplaces" not in match_skills("https://market.yandex.ru.evil.test/card/123", sandbox=False)
+
+
+def test_component_sourcing_preloads_stock_and_bom_workflow():
+    from computer_skills.loader import match_skills, preload_skills_block
+
+    for request in (
+        "найди где есть в наличии компоненты для платы",
+        "план закупки по спецификации: 300 позиций, доставка в Казань",
+        "проверь наличие STM32F103C8T6, нужно 100 штук",
+        "https://www.chipdip.ru/product/stm32f103c8t6",
+        "https://www.promelec.ru/product/427154/",
+    ):
+        assert 'marketplaces' in match_skills(request, sandbox=False)
+        block = preload_skills_block(request, sandbox=True)
+        assert 'MOQ' in block and '300 строк' in block and 'не закрывай' in block
+        assert 'склад поставщика' in block and 'реальные корзины' in block
 
 
 def test_chat_scope_skips_sandbox_playbooks():
