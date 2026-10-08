@@ -53,6 +53,7 @@ deploy.log
 graphify-out/
 .tmp-pptx-slides/
 tmp/
+output/
 Stolzl (1).zip
 _staffing_*.jpg
 testov/
