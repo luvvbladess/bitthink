@@ -248,14 +248,13 @@ def collect_snippet(user_id: int) -> str:
 async def _complete_nano(instructions: str, prompt: str, user_id: int = 0) -> str:
     from openai_client import _get_reasoning_config, _resolve_api_model, client
 
-    response = await client.responses.create(
-        model=_resolve_api_model("gpt-5-nano"),
-        input=[{"role": "user", "content": prompt}],
-        instructions=instructions,
-        max_output_tokens=400,
-        truncation="auto",
-        reasoning=_get_reasoning_config("gpt-5-nano", user_effort="low"),
-    )
+    from app.billing.call_budget import model_call
+    response = await model_call(client, {
+        "model": _resolve_api_model("gpt-5-nano"),
+        "input": [{"role": "user", "content": prompt}],
+        "instructions": instructions, "max_output_tokens": 400, "truncation": "auto",
+        "reasoning": _get_reasoning_config("gpt-5-nano", user_effort="low"),
+    }, model="gpt-5-nano", user_id=user_id, responses=True)
     chunks: list[str] = []
     for item in getattr(response, "output", []) or []:
         if getattr(item, "type", None) != "message":
@@ -263,17 +262,6 @@ async def _complete_nano(instructions: str, prompt: str, user_id: int = 0) -> st
         for part in getattr(item, "content", []) or []:
             if getattr(part, "type", None) == "output_text":
                 chunks.append(getattr(part, "text", "") or "")
-    usage = getattr(response, "usage", None)
-    if usage and user_id:
-        try:
-            _manager().track_tokens(
-                user_id,
-                "gpt-5-nano",
-                getattr(usage, "input_tokens", 0) or 0,
-                getattr(usage, "output_tokens", 0) or 0,
-            )
-        except Exception:
-            pass
     return "".join(chunks).strip()
 
 

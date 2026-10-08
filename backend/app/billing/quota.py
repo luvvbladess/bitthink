@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import time
+import threading
+from dataclasses import dataclass, field
+from functools import wraps
+from inspect import signature
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
@@ -17,6 +21,21 @@ from app.billing.plans import (
 )
 
 billing_pool: ContextVar[str] = ContextVar("billing_pool", default="chat")
+billing_user: ContextVar[int | None] = ContextVar("billing_user", default=None)
+
+
+def billing_scope(fn):
+    """Bind attribution for nested service calls, then restore the caller's scope."""
+    params = signature(fn)
+    @wraps(fn)
+    async def wrapped(*args, **kwargs):
+        user_id = params.bind_partial(*args, **kwargs).arguments.get("user_id")
+        token = billing_user.set(user_id or billing_user.get())
+        try:
+            return await fn(*args, **kwargs)
+        finally:
+            billing_user.reset(token)
+    return wrapped
 
 PoolName = Literal["chat", "computer"]
 MSK = timezone(timedelta(hours=3))
@@ -369,24 +388,39 @@ def raise_if_blocked(sub: dict[str, Any], pool: PoolName, model: str) -> bool:
     return True
 
 
-_paid_hold: ContextVar[tuple[int, str] | None] = ContextVar("paid_quota_hold", default=None)
+@dataclass
+class _PaidHold:
+    user_id: int
+    pool: str
+    active: bool = True
+    lock: Any = field(default_factory=threading.Lock)
+
+    def claim(self) -> bool:
+        # Child tasks inherit the same object; only one may refund/settle it.
+        with self.lock:
+            if not self.active:
+                return False
+            self.active = False
+            return True
+
+
+_paid_hold: ContextVar[_PaidHold | None] = ContextVar("paid_quota_hold", default=None)
 
 
 def assert_can_use(user_id: int, pool: PoolName = "chat", model: str = "gpt-6-luna") -> None:
     existing = _paid_hold.get()
-    if existing and existing[0] == int(user_id) and existing[1] == pool:
+    if existing and existing.active and existing.user_id == int(user_id) and existing.pool == pool:
         return
     if _manager().check_and_hold_quota(int(user_id), pool, model):
-        _paid_hold.set((int(user_id), pool))
+        _paid_hold.set(_PaidHold(int(user_id), pool))
 
 
 def release_paid_hold() -> None:
     pending = _paid_hold.get()
     _paid_hold.set(None)
-    if not pending:
+    if not pending or not pending.claim():
         return
-    user_id, pool = pending
-    _manager().release_paid_window(user_id, pool)
+    _manager().release_paid_window(pending.user_id, pending.pool)
 
 
 def debit_model_usage(
@@ -403,7 +437,7 @@ def debit_model_usage(
         pool = "chat"
     hold = _paid_hold.get()
     already = 0
-    if hold and hold[0] == int(user_id) and hold[1] == pool:
+    if hold and hold.user_id == int(user_id) and hold.pool == pool and hold.claim():
         _paid_hold.set(None)
         already = 1
     if charged <= 0:

@@ -46,18 +46,18 @@ def test_multipliers_and_long_context():
 
 
 def test_clamp_and_research_access():
-    assert clamp_model("pro", "gpt-6-sol") == "gpt-6-luna"
-    assert clamp_model("pro", "gpt-5.6-terra") == "gpt-6-luna"
+    assert clamp_model("pro", "gpt-6-sol") == "gpt-6-sol"
+    assert clamp_model("pro", "gpt-5.6-terra") == "gpt-6-sol"
     assert clamp_model("proplus", "gpt-5.6-sol") == "gpt-6-sol"
     assert clamp_model("ultra", "gpt-6-sol") == "gpt-6-sol"
     assert clamp_model("ultra", "gpt-6-astra") == "gpt-6-astra"
-    assert clamp_model("proplus", "gpt-6-astra") == "gpt-6-sol"
-    assert clamp_model("pro", "gpt-6-astra") == "gpt-6-luna"
-    assert research_model("pro") is None
+    assert clamp_model("proplus", "gpt-6-astra") == "gpt-6-astra"
+    assert clamp_model("pro", "gpt-6-astra") == "gpt-6-sol"
+    assert research_model("pro") == "gpt-6-sol"
     assert research_model("proplus") == "gpt-6-sol"
     assert research_model("ultra") == "gpt-6-sol"
     assert "gpt-6-astra" in computer_models("ultra")
-    assert "gpt-6-astra" not in computer_models("proplus")
+    assert "gpt-6-astra" in computer_models("proplus")
 
 
 def test_creator_has_every_ultra_capability():

@@ -94,7 +94,7 @@ def test_computer_orchestrator_downgrades_gracefully_below_terra_tier(monkeypatc
     monkeypatch.setattr(
         conversations.conversation_manager, "get_subscription", lambda _uid: {"tier": "pro"}
     )
-    assert dr._clamped_planner_model(1) == "gpt-6-luna"
+    assert dr._clamped_planner_model(1) == "gpt-6-sol"
 
     monkeypatch.setattr(
         conversations.conversation_manager, "get_subscription", lambda _uid: {"tier": "proplus"}
@@ -692,7 +692,7 @@ def test_prompt_style_source_lines_are_removed_from_answer():
     assert "http" not in cleaned
 
 
-def test_source_urls_and_inline_citation_numbers_are_removed_from_answer():
+def test_inline_links_survive_while_source_appendix_and_citations_are_removed():
     raw = """Факт подтверждён [1]. Смотрите [обзор](https://example.com/review).
 
 ## Источники
@@ -703,7 +703,8 @@ def test_source_urls_and_inline_citation_numbers_are_removed_from_answer():
     assert "Факт подтверждён." in cleaned
     assert "[1]" not in cleaned
     assert "обзор" in cleaned
-    assert "http" not in cleaned
+    assert "[обзор](https://example.com/review)" in cleaned
+    assert "second.example" not in cleaned
     assert "Источники" not in cleaned
 
 
@@ -739,7 +740,8 @@ def test_stripped_source_list_does_not_leave_empty_bullets():
 • [4]
 """
     cleaned = strip_source_links(raw)
-    assert "asus.com" not in cleaned
+    assert "https://asus.com/one" in cleaned
+    assert "(asus.com)" not in cleaned
     assert "[3]" not in cleaned
     assert not any(line.strip() in {"-", "*", "•"} for line in cleaned.splitlines())
     assert "Перезагрузите ноутбук." in cleaned

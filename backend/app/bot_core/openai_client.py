@@ -399,8 +399,15 @@ async def _settle_model_usage(
     cache_write_tokens: int,
     text: str,
     files: list,
+    *,
+    usage_already_tracked: bool = False,
 ) -> None:
     if not user_id:
+        return
+    if usage_already_tracked:
+        if not model_reply_is_billable(text, files):
+            from app.billing.quota import refund_quota_charge
+            refund_quota_charge()
         return
     if model_reply_is_billable(text, files):
         await asyncio.to_thread(
@@ -418,6 +425,10 @@ async def _settle_model_usage(
     refund_quota_charge()
 
 
+from app.billing.quota import billing_scope, billing_user
+
+
+@billing_scope
 async def get_chat_response(
     messages: List[dict],
     model: str = None,
@@ -505,9 +516,20 @@ async def get_chat_response(
             force_web=force_web,
             skill_tools=skill_tools,
         )
+        from app.billing.call_budget import model_call, wallet_user
+        metered_search = await asyncio.to_thread(wallet_user, user_id or billing_user.get())
+        search_tool = WEB_SEARCH_TOOL
+        if metered_search:
+            # Fetch explicitly, then count the resulting context on the next hop.
+            # Built-in search grows billed input inside a response after preflight.
+            search_tool = {
+                "type": "function", "name": "web_search",
+                "description": "Найти актуальную информацию в интернете с источниками.",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+            }
         tools: List[Dict] = []
         if "web_search" in wanted:
-            tools.append(WEB_SEARCH_TOOL)
+            tools.append(search_tool)
         if "visualize_data" in wanted:
             tools.append(VISUALIZE_TOOL_RESPONSES)
         tools.extend(tool for tool in COMPUTER_TOOLS_RESPONSES if tool.get("name") in wanted)
@@ -542,7 +564,8 @@ async def get_chat_response(
             if tools:
                 request["tools"] = tools
                 # Ask OpenAI to include raw web search results so we can show them in the UI.
-                request["include"] = ["web_search_call.results", "web_search_call.action.sources"]
+                if not metered_search:
+                    request["include"] = ["web_search_call.results", "web_search_call.action.sources"]
             if user_id is not None:
                 # Один ключ на пользователя держит стабильный system-префикс на одном сервере кэша.
                 request["prompt_cache_key"] = f"web-{user_id}"[:64]
@@ -552,7 +575,7 @@ async def get_chat_response(
                 # it is asked on the first hop only, and for the web search itself, not "any
                 # tool". With "required" on every hop the model answered by calling list_skills
                 # again and again until the API cut the response off (status incomplete).
-                request["tool_choice"] = {"type": WEB_SEARCH_TOOL["type"]}
+                request["tool_choice"] = ({"type": "function", "name": "web_search"} if metered_search else {"type": WEB_SEARCH_TOOL["type"]})
             response = None
             stream_error = ""
 
@@ -580,9 +603,13 @@ async def get_chat_response(
                         except Exception:
                             pass
 
+                if response is None:
+                    raise RuntimeError(stream_error or "Модель прервала поток без завершающего ответа")
+                return response
+
             try:
-                stream = await client.responses.create(**request, stream=True)
-                await asyncio.wait_for(_consume_stream(stream), timeout=420)
+                response = await model_call(client, {**request, "stream": True}, model=window_model,
+                                            user_id=user_id, responses=True, consume=_consume_stream)
             except asyncio.TimeoutError:
                 raise RuntimeError("Модель не ответила за 420 секунд (таймаут)")
             if response is None:
@@ -720,6 +747,7 @@ async def get_chat_response(
                     total_cache_write_tokens,
                     cleaned_text,
                     generated_files,
+                    usage_already_tracked=True,
                 )
                 return cleaned_text or "Нет ответа от модели", generated_files, "\n\n".join(reasoning_parts), search_results
 
@@ -825,6 +853,7 @@ async def get_chat_response(
             total_cache_write_tokens,
             cleaned_text,
             generated_files,
+            usage_already_tracked=True,
         )
         return cleaned_text or "Нет ответа от модели", generated_files, "\n\n".join(reasoning_parts), search_results
 
