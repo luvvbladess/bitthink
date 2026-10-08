@@ -39,6 +39,8 @@ backend/users.json
 # Local secrets (never commit)
 new_password*.txt
 serv.txt
+ruserv.txt
+home-reader/config.json
 # Google OAuth client downloaded from Cloud Console: keys live in the server .env only.
 client_secret_*.json
 

@@ -10,6 +10,13 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Awaitable, Callable, Iterator
 
+_reader_snapshots: ContextVar[dict | None] = ContextVar("reader_snapshots", default=None)
+
+
+def reader_snapshots() -> dict | None:
+    return _reader_snapshots.get()
+
+
 _turn_conversation_id: ContextVar[str | None] = ContextVar("turn_conversation_id", default=None)
 
 
@@ -20,10 +27,12 @@ def turn_conversation_id() -> str | None:
 @contextmanager
 def turn_conversation(conv_id: str | None) -> Iterator[None]:
     token = _turn_conversation_id.set(conv_id or None)
+    snapshots_token = _reader_snapshots.set({})
     try:
         yield
     finally:
         _turn_conversation_id.reset(token)
+        _reader_snapshots.reset(snapshots_token)
 
 
 # Files the reply decided to hand over. None: no decision, everything the

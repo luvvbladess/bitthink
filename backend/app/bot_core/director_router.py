@@ -14,6 +14,12 @@ from typing import Any, Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
 
+
+def _desktop_work_instructions() -> str:
+    # Kept out of original_task: format names/rules must not affect routing or pricing.
+    from app.services.desktop_context import desktop_work_context, desktop_mode
+    return desktop_work_context.get() if desktop_mode.get() == "director" else ""
+
 MODEL_POOL = [
     "gpt-5-nano",
     "gpt-6-luna",
@@ -70,6 +76,16 @@ def _sandbox_skills(text: str, user_id: int | None) -> List[str]:
         return []
 
 
+def _is_shopping_task(text: str, user_id: int | None) -> bool:
+    """«Найди лучшее предложение», «где купить дешевле»: the marketplaces playbook applies."""
+    try:
+        from computer_skills.loader import match_skills
+
+        return "marketplaces" in match_skills(text or "", user_id=user_id, limit=3, sandbox=False)
+    except Exception:
+        return False
+
+
 def _is_light_task(text: str, document_context: str, has_images: bool, user_id: int | None) -> bool:
     """A short question with no files, photos or tools to run: it needs no planner and no team.
 
@@ -77,6 +93,8 @@ def _is_light_task(text: str, document_context: str, has_images: bool, user_id: 
     if document_context or has_images or _wants_file(text) or _is_document_package_task(text):
         return False
     if len(text or "") > LIGHT_TASK_CHARS or _BUILD_RE.search(text or ""):
+        return False
+    if _is_shopping_task(text, user_id):
         return False
     return not _sandbox_skills(text, user_id)
 
@@ -149,7 +167,12 @@ _FILE_REQUEST_RE = re.compile(
 
 
 def _wants_file(text: str) -> bool:
-    return bool(_FILE_REQUEST_RE.search(text or ""))
+    value=text or ""
+    fixed_comparison=bool(re.search(r"сравни|сравне|compare",value,re.I) and len(re.findall(r"https?://",value))>=2)
+    explicit_format=bool(re.search(r"файл|документ|\b(?:docx|xlsx|csv|pdf|pptx|word|excel)\b|ворд|эксел",value,re.I))
+    if fixed_comparison and not explicit_format:
+        return False
+    return bool(_FILE_REQUEST_RE.search(value))
 
 
 async def _new_files(user_id: int, since: float) -> List[Dict[str, Any]] | None:
@@ -164,6 +187,12 @@ async def _new_files(user_id: int, since: float) -> List[Dict[str, Any]] | None:
 
 
 async def _new_file_names(user_id: int, since: float) -> List[str] | None:
+    from app.services.desktop_context import local_tool, desktop_executor
+    if desktop_executor.get() is not None:
+        try:
+            return json.loads(await local_tool("desktop_changed_files", {}) or "[]")
+        except (TypeError, ValueError):
+            return None
     files = await _new_files(user_id, since)
     if files is None:
         return None
@@ -632,6 +661,10 @@ def _trim_documents(document_context: str, query: str, budget: int) -> str:
 
 
 def _tail(text: str, limit: int) -> str:
+    from app.services.desktop_context import desktop_executor
+    if desktop_executor.get() is not None and limit in {PLANNER_HISTORY_CHARS, EMPLOYEE_HISTORY_CHARS}:
+        from app.services.desktop_policy import history_view_limit
+        limit = history_view_limit(limit, PLANNER_HISTORY_CHARS)
     return text if len(text) <= limit else "…" + text[-limit:]
 
 
@@ -652,6 +685,10 @@ def _format_chat_history(messages: List[Dict[str, Any]]) -> str:
     """История для планировщика/сотрудников: ранние вопросы юзера + длинный хвост."""
     from model_context import format_chat_history_for_prompt
 
+    from app.services.desktop_context import desktop_executor
+    if desktop_executor.get() is not None:
+        from app.services.desktop_policy import format_local_history
+        return format_local_history(messages)
     return format_chat_history_for_prompt(messages)
 
 
@@ -770,7 +807,7 @@ async def _execute_employee(
 
     employee_messages = [
         {"role": "system", "content": _OUTPUT_RULES},
-        {"role": "user", "content": prompt},
+        {"role": "user", "content": prompt + _desktop_work_instructions()},
     ]
     if model != "kimi-k2.6":
         try:
@@ -827,7 +864,8 @@ def _format_journal_for_prompt(journal: List[Dict[str, Any]]) -> str:
     parts = []
     for entry in journal:
         status_label = "успешно" if entry["status"] == "ok" else "ошибка"
-        parts.append(f"- Раунд {entry['round']}, {entry['role']} ({entry['model']}, {status_label}): {_clamp_result(entry['result'])}")
+        result = entry["result"][:14500] if entry.get("live_verification") else _clamp_result(entry["result"])
+        parts.append(f"- Раунд {entry['round']}, {entry['role']} ({entry['model']}, {status_label}): {result}")
     return "\n".join(parts)
 
 
@@ -959,6 +997,12 @@ async def _plan_round(
             if "gpt-6-astra" in pool_description
             else ""
         ) +
+        "Если ищут наличие электронных компонентов или план закупки BOM/спецификации – всем поисковым сотрудникам первой строкой load_skill marketplaces. "
+        "Раздели поиск: (ЧИП и ДИП, Терраэлектроника), (Промэлектроника, КОМПЭЛ, Платан), (Ozon, Wildberries, Яндекс Маркет и дополнительные магазины). "
+        "Каждому передай точные MPN, корпуса, количества, город и конкретный диапазон строк спецификации. Требуй открыть карточки browse_page: статус склада, доступное количество, MOQ, упаковка, цена для нужного количества и срок поставки отдельно от доставки. "
+        "Большую спецификацию разбирай партиями с сохранением CSV/XLSX; не теряй непроверенные строки. Обобщение: покрытие каждой позиции, дефицит и план по магазинам. Аналоги отдельно, не подменяют MPN. Реальные корзины и регистрацию не обещай.\n"
+        "При сравнении конкретных ссылок нанимай одного сотрудника: открыть именно присланные ссылки, максимум 20 отзывов на товар; внешняя сверка первых пяти сайтов по точной модели без глубокого обхода. Не ищи альтернативы и не создавай файлы без явной просьбы. "
+        "Для остальных задач найти товар, лучшее предложение или сравнить цены по магазинам – найми 3-4 поисковых сотрудников (model kimi-k2.6) ОДНОВРЕМЕННО, каждому первой строкой load_skill marketplaces и свою группу площадок: (Ozon, Wildberries), (Яндекс Маркет, Мегамаркет, DNS, Ситилинк), (отзывы и характеристики модели); для запроса «по миру» – ещё (Amazon, eBay, AliExpress). В task впиши товар, регион и цель человека. Второй раунд не нужен: таблицу соберёт сборщик ответа.\n"
         "Если нужны свежие данные с сайта - найми kimi-k2.6 для поиска или gpt-6-luna "
         "с задачей явно открыть URL через browse_page или войти через site_login. "
         "Если вопрос про фото (где снято, что на кадре, источник снимка) – в первом раунде "
@@ -1008,7 +1052,7 @@ async def _plan_round(
 
     messages = [
         {"role": "system", "content": "Ты Computer - оркестратор команды моделей. Отвечаешь только валидным JSON."},
-        {"role": "user", "content": prompt},
+        {"role": "user", "content": prompt + _desktop_work_instructions()},
     ]
 
     try:
@@ -1103,6 +1147,10 @@ async def _compose_answer(
         "обращение, формат вывода. Это важнее твоих привычек форматирования.\n"
         "Ниже – внутренние заметки сотрудников. Пользователь их не видит: не ссылайся на раунды, "
         "роли, «команду», «отчёт» и не делай оглавление.\n"
+        "Оценка соответствия запросу: reject исключи из выбора, unknown не называй лучшим, suitable оцени вместе с цитатами фактов. Не заполняй топ посторонними товарами или предложениями вне бюджета. "
+        "Фактическая проверка карточки — главный источник подтверждения предложения. Только её status=ok доказывает чтение через домашний браузер; даже это не подтверждает поля, отсутствующие в тексте. "
+        "Заметки поисковиков без такой проверки являются поисковыми подсказками. Не называй их проверенными и не говори что карточка не загрузилась, если попытки чтения не было. Рекомендуй только проверенные ссылки; остальные отдельно как кандидатов. "
+        "URL копируй буквально из успешной фактической проверки карточки: не конструируй slug, артикул или короткую ссылку. При not_found, unavailable, invalid_content или timeout не ставь кликабельную магазинную ссылку. После редиректа используй проверенный конечный URL, не адрес подборки. "
         "Пиши только то, что сотрудники нашли и открыли. Не дополняй место, дату, имя или цифру из памяти модели. "
         "Если сверки нет или источники расходятся – скажи об этом, не выдавай догадку как факт.\n"
         "Закрой очевидный следующий шаг в том же ответе, чтобы не пришлось спрашивать «а как именно».\n"
@@ -1110,6 +1158,13 @@ async def _compose_answer(
         "«Результаты Computer». Пиши прямо по вопросу.\n"
         "Длина и тон — как у нормального ответа ассистента: коротко, если вопрос простой; "
         "подробнее, только если это нужно по сути.\n"
+        "Если сотрудники собрали предложения на товар – дай одну сводную таблицу (Магазин | Товар и параметры | Цена | Рейтинг | Отзывы), ячейки до 6 слов, оговорки не в ячейки, а в «Проверь перед покупкой», лучшие строки сверху, затем «Лучший выбор» и «Проверь перед покупкой». "
+        "Цены и рейтинги только из заметок сотрудников; чего нет – «н/д». Для рекомендованной строки дай Markdown-ссылку на проверенную конкретную карточку. "
+        "Категории, поиск и подборки не выдавай за выбранный товар: сотрудник должен открыть конкретные предложения и сравнить цену, продавца, вариант, комплект и отзывы. "
+        "Если карточку не удалось прочитать, показывай отдельно как непроверенную, а не лучший выбор; допускается меньше трёх проверенных вариантов. "
+        "Не объявляй лучшим предложение без подтверждённой цены в бюджете, требуемого комплекта, продавца и данных рейтинга/отзывов, когда человек выбирает по отзывам. "
+        "Не получил отзывы — не значит нет отзывов. Если условия не закрыты, скажи что проверенного лучшего варианта нет. Другие магазины при заданных Ozon/WB показывай только отдельной альтернативой. "
+        "Для компонентов/BOM вместо потребительской таблицы используй покрытие позиций, наличие, MOQ и сроки, полный план в файле.\n"
         "Обычный разговор – проза. Списки и таблицы – только если без них хуже. Markdown можно, как в обычном чате.\n"
         "Не превращай ответ в анкету с вариантами. Не пиши «выберите 1/2/3». "
         "Не больше одного уточнения, и только если без него нельзя закончить.\n"
@@ -1136,7 +1191,7 @@ async def _compose_answer(
                 f"{_OUTPUT_RULES}"
             ),
         },
-        {"role": "user", "content": prompt},
+        {"role": "user", "content": prompt + _desktop_work_instructions()},
     ]
 
     try:
@@ -1188,7 +1243,7 @@ async def _answer_directly(
         "Действуй по уже сказанному.\n"
         f"{_OUTPUT_RULES}"
     )
-    chat = [{"role": "system", "content": system}, *messages]
+    chat = [{"role": "system", "content": system + _desktop_work_instructions()}, *messages]
     answer, _, reasoning, search = await get_chat_response(
         chat,
         model=DIRECT_ANSWER_MODEL,
@@ -1242,7 +1297,7 @@ async def _plan_package_documents(
         text, _, _, _ = await get_chat_response(
             [
                 {"role": "system", "content": "Ты Computer - оркестратор. Отвечаешь только валидным JSON."},
-                {"role": "user", "content": prompt},
+                {"role": "user", "content": prompt + _desktop_work_instructions()},
             ],
             model=_clamped_planner_model(user_id),
             user_id=user_id,
@@ -1380,7 +1435,21 @@ async def _run_director(
     import time
 
     started = time.time()
+    from app.services.desktop_context import desktop_executor, desktop_cwd, local_skills_instructions
+
+    if desktop_executor.get() is not None:
+        user_text = (
+            f"{user_text}\n\n[Среда BitClient: Windows, PowerShell. Рабочая папка: {desktop_cwd.get()}. "
+            "Все workspace_* выполняются ЛОКАЛЬНО в этой папке, а не в контейнере. "
+            "Для git/npm/сборки/тестов вызывай desktop_run_command. Файлы сразу доступны пользователю на диске. "
+            "Не утверждай, что работаешь в Linux, не используй /workspace. "
+            "Сначала исследуй проект, затем внеси изменения и проверь результат. "
+            "Запрашивай уточнение, если без него невозможно выполнить задачу. "
+            "Не предлагай другой режим: в BitClient используется только Оркестратор.]"
+        )
     wants_file = _wants_file(user_text)
+    if desktop_executor.get() is not None:
+        user_text += local_skills_instructions()
     forced_build = False
     document_context = _extract_document_context(messages)
     history_text = _format_chat_history(messages)
@@ -1473,7 +1542,14 @@ async def _run_director(
         except Exception as e:
             logger.error(f"Director direct answer failed: {e}", exc_info=True)
             answer, reasoning, search = f"Не удалось ответить: {str(e)[:200]}", "", []
-        return _sanitize_answer(answer), [], reasoning, search
+        if not _is_shopping_task(user_text, user_id):
+            return _sanitize_answer(answer), [], reasoning, search
+        journal.append({"round": 0, "role": "Поисковые кандидаты", "model": DIRECT_ANSWER_MODEL, "status": "ok", "result": answer, "search": search, "reasoning": reasoning})
+
+    if _is_shopping_task(user_text, user_id):
+        await _update_status(status_msg, "Открываю карточки через домашний читатель и проверяю предложения")
+        from marketplace_verification import verify_marketplace_cards
+        journal.extend(await verify_marketplace_cards(user_text, journal, user_id=user_id))
 
     await _update_status(status_msg, "Пишу ответ")
     # Всегда, а не только когда просили файл: сотрудник мог собрать его по ходу дела.
@@ -1487,6 +1563,10 @@ async def _run_director(
         answer, chosen = _split_file_choice(answer, built_files)
         choose_deliverables(chosen)
     answer = _sanitize_answer(answer)
+
+    if any(entry.get('live_verification') for entry in journal):
+        from marketplace_verification import guard_answer_links
+        answer=guard_answer_links(answer,journal)
 
     reasoning_sections = [
         f"### {entry['role']} (раунд {entry['round']})\n{entry['reasoning']}"

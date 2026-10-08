@@ -46,6 +46,8 @@ def query_requires_web(query: str) -> bool:
         r"\bцен(?:а|ы|у|е|ой|ам|ами|ах)?\b|\bсколько\s+стоит\b",
         r"\bкурс\w*\s+(?:доллар|евро|рубл|юан|тенге|валют|биткоин|btc|eth|крипт|акци)\w*",
         r"\b(?:котиров\w*|погод\w*|биткоин\w*|bitcoin)\b",
+        # Shopping: prices and offers change daily, memory is useless here.
+        r"\bлучш\w+\s+(?:предложен|цен)\w*|\bгде\s+(?:купить|дешевле|выгодн)\w*|\bмаркетплейс\w*|\bсравни\w*\s+цен\w*",
         r"https?://",
     )
     return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
@@ -118,17 +120,19 @@ async def _search_openai_sources(query: str, max_results: int) -> List[Dict[str,
     if not OPENAI_API_KEY:
         return []
     client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    from app.billing.call_budget import model_call
     last_error: Exception | None = None
     for attempt in range(2):
         try:
             resp = await asyncio.wait_for(
-                client.responses.create(
-                    model="gpt-6-luna",
-                    input=f"Выполни веб-поиск по запросу и используй актуальные источники: {query}",
-                    tools=[{"type": "web_search"}],
-                    tool_choice="required",
-                    include=["web_search_call.results", "web_search_call.action.sources"],
-                ),
+                model_call(client, {
+                    "model": "gpt-6-luna",
+                    "input": f"Выполни веб-поиск по запросу и используй актуальные источники: {query}",
+                    "tools": [{"type": "web_search"}], "tool_choice": "required",
+                    "include": ["web_search_call.results", "web_search_call.action.sources"],
+                    "max_output_tokens": 4000, "max_tool_calls": 1,
+                }, model="gpt-6-luna", responses=True, timeout=40,
+                   input_token_ceiling=1_050_000),
                 timeout=45,
             )
         except Exception as exc:

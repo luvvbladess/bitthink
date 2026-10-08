@@ -270,6 +270,24 @@ _WS_GLOB_PROPS = {
 
 _TOOL_SPECS = [
     (
+        "desktop_skill_read",
+        "Только BitClient: прочитать SKILL.md или относительный текстовый ресурс локального скила. skill_id из локального каталога, path относительно папки скила. Путь каталога возвращает имена файлов. Не читает произвольные файлы компьютера.",
+        {"skill_id": {"type": "string"}, "path": {"type": "string"}},
+        ["skill_id"],
+    ),
+    (
+        "desktop_skill_list",
+        "Только BitClient: каталог включённых локальных скилов Claude, Codex и BitClient. query фильтрует по названию и описанию. После выбора прочитай desktop_skill_read.",
+        {"query": {"type": "string"}},
+        [],
+    ),
+    (
+        "desktop_run_command",
+        "Только BitClient: выполнить команду PowerShell на компьютере пользователя в папке проекта. Для git, npm, сборки, тестов. В веб-чате недоступен.",
+        {"command": {"type": "string"}, "timeout_ms": {"type": "integer"}},
+        ["command"],
+    ),
+    (
         "browse_page",
         "Прочитать публичную страницу. query – что вытащить; без него начало. После поиска, когда сниппета мало. Не localhost и не замена read_chat_document.",
         _BROWSE_PROPS,
@@ -521,6 +539,9 @@ _TOOL_SPECS = [
     ),
 ]
 
+from app.services.desktop_apps import DESKTOP_APP_SPECS, DESKTOP_APP_NAMES, offered_desktop_apps, run_desktop_app
+_TOOL_SPECS.extend(DESKTOP_APP_SPECS)
+
 COMPUTER_TOOLS_RESPONSES = [_responses_tool(*spec) for spec in _TOOL_SPECS]
 COMPUTER_TOOLS_CHAT = [_chat_tool(*spec) for spec in _TOOL_SPECS]
 COMPUTER_TOOL_NAMES = {spec[0] for spec in _TOOL_SPECS}
@@ -556,6 +577,7 @@ def response_tool_names(
         names |= set(SKILL_TOOL_NAMES)
     if force_web and skill_tools:
         names |= set(SKILL_TOOL_NAMES)
+    names -= DESKTOP_APP_NAMES - offered_desktop_apps()
     return names
 
 
@@ -599,10 +621,14 @@ def _assert_public_http_url(url: str) -> str:
 
 
 async def _browse_public(url: str, query: str = "") -> str:
-    from web_scraper import fetch_url_content
+    from web_scraper import fetch_url_content, is_ru_marketplace
 
     _assert_public_http_url(url)
     fetched_url, text = await fetch_url_content(url)
+    # Compact marketplace snapshots already reserve space for each buying criterion.
+    # Query-only excerpts can otherwise discard price, seller or reviews.
+    if is_ru_marketplace(fetched_url) and len(text or "") <= 10_800:
+        return _clamp(f"URL: {fetched_url}\nЗапрос: {query.strip()}\n\n{text}")
     if (query or "").strip():
         from db_conversations import _relevant_document_excerpt
 
@@ -1033,6 +1059,12 @@ async def _studio_build(user_id: int, args: dict[str, Any]) -> str:
 
 
 async def run_computer_tool(name: str, args: dict[str, Any], user_id: int | None) -> str:
+    if name in DESKTOP_APP_NAMES:
+        return await run_desktop_app(name, args, user_id)
+    if name in {"desktop_run_command", "desktop_skill_read", "desktop_skill_list"}:
+        from app.services.desktop_context import local_tool
+        result = await local_tool(name, args)
+        return result if result is not None else "Этот инструмент доступен только в BitClient."
     try:
         from status_feed import announce_tool
         from app.security.redact import strip_secret_args

@@ -201,7 +201,8 @@ async def _generate_and_send(
         if not file_bytes:
             continue
         filename = _generated_filename(item)
-        if item.get("canvas") or filename.lower().endswith((".html", ".htm")):
+        from app.services.desktop_context import desktop_mode
+        if desktop_mode.get() != "chat" and (item.get("canvas") or filename.lower().endswith((".html", ".htm"))):
             try:
                 file_bytes = await _externalize_html_images(web_user_id, file_bytes)
             except Exception:
@@ -243,7 +244,9 @@ async def _generate_and_send(
     if send_extras and (reasoning_text or search_results):
         await best_effort(send_extras, reasoning_text, search_results)
 
-    if len(response_text) > 8000:
+    from app.services.desktop_context import desktop_mode
+
+    if len(response_text) > 8000 and desktop_mode.get() is None:
         from docx_generator import convert_markdown_to_docx
 
         base_template = await asyncio.to_thread(repo._manager.get_base_template, bot_user_id)
@@ -258,10 +261,10 @@ async def _generate_and_send(
     for filename, file_bytes, meta in outgoing:
         url = str(meta.get("url") or "")
         canvas = bool(meta.get("canvas")) or filename.lower().endswith((".html", ".htm"))
-        if canvas and url:
+        if canvas and url and desktop_mode.get() != "chat":
             await best_effort(send_file, filename, b"", url)
             continue
-        if canvas and len(file_bytes) > 350_000:
+        if canvas and len(file_bytes) > 350_000 and desktop_mode.get() != "chat":
             continue
         await best_effort(send_file, filename, file_bytes)
 

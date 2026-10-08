@@ -26,6 +26,7 @@ CHAT_SKILLS = frozenset(
         "extract",
         "humanize",
         "legal",
+        "marketplaces",
         "minutes",
         "prices",
         "privacy",
@@ -191,7 +192,7 @@ def catalog_for_prompt(user_id: int | None = None, compact: bool = False) -> str
         "[везде] работает и в обычном чате, и в песочнице. [песочница] – только Оркестратор и Astra: "
         "код, файлы, почта, сайт, SQL.\n"
         "Карта: слайды → deck; инфографика/схема процесса → infographic; таблицы/xlsx → spreadsheet; "
-        "отчёт/docx/договор → documents или legal; код → code; почта → email; сайт → browser; "
+        "отчёт/docx/договор → documents или legal; товар, цены по магазинам, лучшее предложение → marketplaces; код → code; почта → email; сайт → browser; "
         "фото → images; цены → prices; сверка → verify; выжимка → brief; песочница → workspace; "
         "ошибка → debug; расчёт → science; протокол → minutes; правка текста → rewrite; PDF → pdf; SQL → sql; "
         "инженерка: чертёж → eng_drawing, спецификация → eng_bom, схема → eng_schematic, допуск → eng_tolerance, "
@@ -296,6 +297,17 @@ _SKILL_TRIGGERS: tuple[tuple[str, tuple[str, ...]], ...] = (
         " гост ", "по госту", "гост р", "спдс", "актуальность гост", "статус гост", "нормативные ссылки",
         "нормативных ссылок", "найди гост", "подбери гост", "какой гост",
     )),
+    ("marketplaces", (
+        "лучшее предложение", "лучшие предложения", "лучшую цену", "лучшая цена", "где купить", "где дешевле",
+        "где выгодн", "самую низкую цену", "самый дешёвый", "самый дешевый", "самую дешёвую", "самую дешевую",
+        "сравни цены", "сравнение цен", "маркетплейс", "озон", "ozon", "wildberries", "вайлдберриз",
+        "яндекс маркет", "яндекс.маркет", "мегамаркет", "aliexpress", "алиэкспресс", "найди товар",
+        "подбери товар", "агрегатор цен", "купить дешевле", "по магазинам",
+        "чип и дип", "чипидип", "chipdip", "терраэлектроника", "промэлектроника",
+        "компоненты для платы", "компонентов для платы", "наличие компонентов", "электронные компоненты",
+        "план закупки", "план закупок", "закупка компонентов", "закупки компонентов", "закупка по спецификации",
+        "найди в наличии", "проверь наличие", "где есть в наличии", "скомплектуй плату", "закупи по bom",
+    )),
     ("images", ("фото", "картин", "скрин", "где сня", "линз", "поиск по картин", "изображ")),
     ("verify", ("проверь", "правда ли", "сверь", "подтверд")),
     ("browser", ("зайд", "сайт", "http://", "https://", "логин", "пароль")),
@@ -378,6 +390,11 @@ def _custom_score(row: dict, blob: str) -> int:
 def _builtin_score(name: str, needles: tuple[str, ...], blob: str, *, sandbox: bool) -> int:
     if not sandbox and skill_scope(name) != "chat":
         return 0
+    if name == "marketplaces":
+        from web_scraper import find_urls, is_ru_marketplace
+
+        if any(is_ru_marketplace(url) for url in find_urls(blob)):
+            return 8
     hits = sum(1 for needle in needles if needle in blob)
     if hits <= 0:
         return 0

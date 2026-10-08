@@ -72,6 +72,8 @@ class Settings(BaseSettings):
     ONLYOFFICE_INTERNAL_URL: str = "http://onlyoffice"
     BACKEND_INTERNAL_URL: str = "http://backend:8000"
     PUBLIC_APP_URL: str = ""
+    # Home browser polling credential; an empty value disables this route.
+    HOME_RELAY_TOKEN: str = ""
     # "Подключить Google" for Pilot (Gmail, Drive, Calendar). Empty = button off.
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""

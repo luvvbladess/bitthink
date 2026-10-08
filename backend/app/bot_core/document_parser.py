@@ -222,13 +222,14 @@ async def _ocr_image_via_openai(image_bytes: bytes, user_id: int = None) -> str:
         b64_image = base64.b64encode(image_bytes).decode("utf-8")
         mime = "image/jpeg" if image_bytes[:3] == b"\xff\xd8\xff" else "image/png"
         
-        response = await client.chat.completions.create(
-            model=OCR_MODEL,
-            messages=[{
+        from app.billing.call_budget import model_call
+        response = await model_call(client, {
+            "model": OCR_MODEL,
+            "input": [{
                 "role": "user",
                 "content": [
                     {
-                        "type": "text",
+                        "type": "input_text",
                         "text": (
                             "Внимательно проанализируй это изображение и извлеки ВСЮ информацию:\n"
                             "1. Если это ЧЕРТЁЖ или ТЕХНИЧЕСКИЙ РИСУНОК – перечисли ВСЕ размеры (в мм), "
@@ -244,26 +245,16 @@ async def _ocr_image_via_openai(image_bytes: bytes, user_id: int = None) -> str:
                         )
                     },
                     {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:{mime};base64,{b64_image}",
-                            "detail": "high"
-                        }
+                        "type": "input_image",
+                        "image_url": f"data:{mime};base64,{b64_image}",
+                        "detail": "high"
                     }
                 ]
             }],
-            max_completion_tokens=4000
-        )
+            "max_output_tokens": 4000,
+        }, model=OCR_MODEL, user_id=user_id, responses=True)
 
-        usage = getattr(response, "usage", None)
-        if usage and user_id:
-            conversation_manager.track_tokens(
-                user_id, OCR_MODEL,
-                getattr(usage, "prompt_tokens", 0) or 0,
-                getattr(usage, "completion_tokens", 0) or 0,
-            )
-
-        return response.choices[0].message.content or ""
+        return response.output_text or ""
     except Exception as e:
         logger.error(f"OCR via OpenAI failed: {e}")
         return f"[Не удалось распознать изображение: {str(e)[:80]}]"

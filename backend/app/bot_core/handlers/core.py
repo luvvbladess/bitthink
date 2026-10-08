@@ -18,8 +18,9 @@ def _with_web_context(messages: List[dict], context: str) -> List[dict]:
     instruction = {
         "role": "system",
         "content": (
-            "Ниже результаты актуального веб-поиска. Используй их при ответе, но не вставляй "
-            "в текст ссылки, домены, номера источников или сноски: интерфейс покажет источники отдельно. "
+            "Ниже результаты актуального веб-поиска. Используй их при ответе. Номера источников и сноски "
+            "интерфейс покажет отдельно. Ссылки на товары и ссылки, которые просит человек, "
+            "давай кликабельным Markdown прямо в ответе; не выдумывай URL. "
             "Не выдумывай факты, которых нет в материалах.\n\n" + context
         ),
     }
@@ -28,6 +29,19 @@ def _with_web_context(messages: List[dict], context: str) -> List[dict]:
     else:
         grounded.append(instruction)
     return grounded
+
+
+def _with_link_context(messages: List[dict], block: str) -> List[dict]:
+    """Put the pre-read links into the user's own message: every mode keeps that, while a
+    separate system note is dropped by the search-only views (Kimi sees only user/assistant turns)."""
+    out = list(messages)
+    for index in range(len(out) - 1, -1, -1):
+        message = out[index]
+        if message.get("role") == "user" and isinstance(message.get("content"), str):
+            out[index] = {**message, "content": f"{message['content']}\n\n{block}"}
+            return out
+    out.append({"role": "system", "content": block})
+    return out
 
 
 PILOT_MAP_REDUCE_TOKENS = 24_000
@@ -244,6 +258,10 @@ async def reduce_heavy_context(
     return final_messages
 
 
+from app.billing.quota import billing_scope
+
+
+@billing_scope
 async def get_smart_response(
     user_id: int,
     user_text: str,
@@ -253,7 +271,11 @@ async def get_smart_response(
 ) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
     """Маршрутизация ответа по выбранной модели, с Map-Reduce для больших документов."""
 
-    model = conversation_manager.get_user_model(user_id)
+    from app.services.desktop_context import desktop_executor, desktop_mode, desktop_chat_model
+
+    is_desktop = desktop_executor.get() is not None
+    desktop_chat = desktop_mode.get() == "chat"
+    model = "director" if is_desktop else desktop_chat_model.get() if desktop_chat else conversation_manager.get_user_model(user_id)
     reasoning_effort = conversation_manager.get_user_reasoning_effort(user_id)
     sub = conversation_manager.get_subscription(user_id)
     from app.billing.plans import allowed_models, clamp_model
@@ -262,9 +284,13 @@ async def get_smart_response(
 
     view = usage_view(sub)
     tier = view["tier"]
+    if is_desktop and "director" not in allowed_models(tier):
+        raise QuotaError("Оркестратор недоступен на вашем тарифе. Откройте тарифы Bit-Think.", "plan")
+    if desktop_chat and (model not in allowed_models(tier) or model not in {"auto", "gpt-6-sol", "studio"}):
+        raise QuotaError("Эта модель недоступна для обычных бесед на вашем тарифе.", "plan")
     model = clamp_model(tier, model)
     # Before quota: a mode hint must not spend a reply or start a model call.
-    suggestion = suggest_mode_switch(model, user_text, allowed=allowed_models(tier))
+    suggestion = None if is_desktop or desktop_chat else suggest_mode_switch(model, user_text, allowed=allowed_models(tier))
     if suggestion:
         return suggestion["text"], [], "", pack_mode_switch(suggestion)
     # Before quota and before Studio / Documents / Pilot / Search branch:
@@ -325,9 +351,11 @@ async def get_smart_response(
 
         return await get_docgen_response(messages, user_text, user_id, status_msg)
 
-    messages = await reduce_heavy_context(messages, user_text, status_msg, user_id=user_id, model=model)
     from model_context import fit_for_mode, search_hop_messages
-    messages = await fit_for_mode(messages, model, user_id=user_id)
+    # BitClient manages its own visible compaction and preserves the transcript.
+    if not is_desktop:
+        messages = await reduce_heavy_context(messages, user_text, status_msg, user_id=user_id, model=model)
+        messages = await fit_for_mode(messages, model, user_id=user_id)
 
     total_chars_after = sum(len(m.get("content", "")) for m in messages)
     logger.info(
@@ -360,6 +388,17 @@ async def get_smart_response(
 
     # Legacy DeepSeek routes use the shared Kimi-first retrieval layer. Public
     # Search/Auto/Research routes below use Kimi directly and validate its result.
+    # Links to sites that refuse our server (Ozon, Wildberries, ...) are read ahead of the model,
+    # so every mode sees what is known about them instead of improvising a "no connection" excuse.
+    from web_scraper import walled_links_context
+
+    link_block = await walled_links_context(user_text)
+    if link_block:
+        from status_feed import push_status
+
+        await push_status("think", "Читаю ссылку")
+        messages = _with_link_context(messages, link_block)
+
     grounded_sources: List[Dict[str, str]] = []
     if web_required and "deepseek" in model:
         web_context, grounded_sources = await build_grounded_web_context(
