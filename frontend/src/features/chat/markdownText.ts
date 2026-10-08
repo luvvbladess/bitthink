@@ -1,5 +1,7 @@
 /** Cleans a model reply for display: drops the trailing sources list, bare URLs and stray markers. */
-export function normalizeMarkdown(text: string): string {
+export function normalizeMarkdown(text: string, role: 'user' | 'assistant' = 'assistant'): string {
+  // User messages are the original input, not a model-generated source list.
+  if (role === 'user') return text;
   const sourceHeading = /^(?:#{1,6}\s*)?(?:\*{1,2}|_{1,2})?(?:источники|sources)\s*:?\s*(?:\*{1,2}|_{1,2})?\s*$/i;
   const sourceItem = /^(?:[-*+•‣∙·]|\d+[.)])?\s*(?:\*{1,2}|_{1,2})?источник(?:и)?\b/i;
   const sourceList = /^(?:[-*+•‣∙·]|\d+[.)])\s*(?:\[[^\]]+\]\(https?:\/\/|<?https?:\/\/|\[\d+\])/i;
@@ -12,7 +14,7 @@ export function normalizeMarkdown(text: string): string {
   for (let index = 0; index < lines.length; index += 1) {
     const stripped = lines[index].trim();
     if (!stripped) continue;
-    if ((sourceHeading.test(stripped) || sourceItem.test(stripped) || sourceList.test(stripped)) && lines.slice(index).every(isSourceLine)) {
+    if ((sourceHeading.test(stripped) || sourceItem.test(stripped)) && lines.slice(index).every(isSourceLine)) {
       cut = index;
       break;
     }
@@ -23,8 +25,6 @@ export function normalizeMarkdown(text: string): string {
     .join('\n')
     .replace(/^[ \t]*[•‣∙·][ \t]+/gm, '- ')
     .replace(/^[ \t]*(?:[-*+•‣∙·]|\d+[.)])[ \t]*$/gm, '')
-    .replace(/\[([^\]]+)\]\(https?:\/\/[^)]+\)/g, '$1')
-    .replace(/(?<!\()https?:\/\/[^\s<>)\]]+/g, '')
     .replace(/\s*\[\d+\]/g, '')
     .replace(/\s*\((?:www\.)?(?:[a-z0-9-]+\.)+(?:xn--[a-z0-9-]+|[a-z]{2,24})(?:\/[^\s)]*)?\)/gi, '')
     .replace(/\(xn--[a-z0-9-]+(?:\.xn--[a-z0-9-]+)+\)/gi, '')
