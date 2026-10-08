@@ -797,6 +797,8 @@ class DatabaseConversationManager:
         output_tokens: int = 0,
         cached_input_tokens: int = 0,
         cache_write_tokens: int = 0,
+        *,
+        debit: bool = True,
     ) -> None:
         date = _msk_today()
         with SyncSessionLocal() as session:
@@ -805,6 +807,8 @@ class DatabaseConversationManager:
             record.output_tokens += output_tokens
             record.cached_input_tokens = (record.cached_input_tokens or 0) + max(0, int(cached_input_tokens or 0))
             session.commit()
+        if not debit:
+            return
         try:
             from app.billing.quota import debit_model_usage
 
@@ -930,6 +934,8 @@ class DatabaseConversationManager:
         _apply_subscription_payload(sub, data)
 
     def get_subscription(self, user_id: int) -> dict:
+        from app.billing.call_budget import recover_expired
+        recover_expired(self, user_id)
         with SyncSessionLocal() as session:
             sub = self._get_or_create_subscription(session, user_id)
             self._reset_daily_if_needed(sub)

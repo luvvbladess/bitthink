@@ -176,3 +176,32 @@ def test_has_sources_needs_distinct_links():
     assert not dr._has_sources([entry])
     entry["search"].append({"summary": "https://b.ru/y\nt"})
     assert dr._has_sources([entry])
+
+
+def test_marketplaces_skill_is_picked_for_shopping_requests_in_every_mode():
+    from computer_skills.loader import builtin_names, skill_scope
+
+    assert "marketplaces" in builtin_names() and skill_scope("marketplaces") == "chat"
+    asks = [
+        "Найди лучшее предложение на iPhone 15 128 ГБ в Москве",
+        "где купить PlayStation 5 подешевле по России",
+        "сравни цены на кофемашину DeLonghi на озоне и вайлдберриз",
+        "подбери товар: наушники с шумоподавлением до 15 тысяч",
+    ]
+    for text in asks:
+        assert "marketplaces" in match_skills(text, user_id=97010, sandbox=False), text
+        assert "marketplaces" in match_skills(text, user_id=97010, sandbox=True), text
+    assert "marketplaces" not in match_skills("Объясни, как работает кэш в браузере", user_id=97010)
+    body = load_skill("marketplaces", user_id=97010)
+    assert "Ozon" in body and "Лучший выбор" in body and "н/д" in body
+
+
+def test_shopping_forces_a_web_search_and_is_not_a_light_task():
+    from search_engine import query_requires_web
+
+    assert query_requires_web("Найди лучшее предложение на ноутбук для учёбы")
+    assert query_requires_web("где купить дешевле Dyson Airwrap")
+    assert not query_requires_web("Объясни, чем отличается TCP от UDP")
+    # A shopping request fans out over several stores: it must reach the planner, not the one-searcher shortcut.
+    assert not dr._is_light_task("Найди лучшее предложение на iPhone 15 в Москве", "", False, 1)
+    assert dr._is_light_task("Какая сейчас цена нефти Brent?", "", False, 1)

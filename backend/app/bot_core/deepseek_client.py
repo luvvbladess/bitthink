@@ -11,6 +11,7 @@ from openai import AsyncOpenAI
 from config import DEEPSEEK_API_KEY
 from conversations import conversation_manager
 from model_context import cached_prompt_tokens, max_output_tokens
+from app.billing.quota import billing_scope
 from search_engine import get_web_search_sources
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,7 @@ WEB_SEARCH_TOOL_DEEPSEEK = {
 }
 
 
+@billing_scope
 async def get_deepseek_response(
     messages: List[Dict[str, Any]],
     model: str = "deepseek-v4-pro",
@@ -205,17 +207,16 @@ async def get_deepseek_response(
                         if func and func.arguments:
                             slot["arguments"] += func.arguments
 
+            return stream_usage
+
         try:
-            stream = await client.chat.completions.create(
-                model=model,
-                messages=current_messages,
-                tools=active_tools or None,
-                extra_body={"thinking": {"type": "enabled" if reasoning_enabled else "disabled"}},
-                max_tokens=max_output_tokens(model),
-                stream=True,
-                stream_options={"include_usage": True},
-            )
-            await asyncio.wait_for(_consume_stream(stream), timeout=420)
+            from app.billing.call_budget import model_call
+            await model_call(client, {
+                "model": model, "messages": current_messages, "tools": active_tools or None,
+                "extra_body": {"thinking": {"type": "enabled" if reasoning_enabled else "disabled"}},
+                "max_tokens": max_output_tokens(model), "stream": True,
+                "stream_options": {"include_usage": True},
+            }, model=model, user_id=user_id, consume=_consume_stream, usage_is_result=True)
         except asyncio.TimeoutError:
             logger.error("DeepSeek API call timed out after 420s")
             return "❌ Модель DeepSeek не ответила за 420 секунд (таймаут)", [], "\n\n".join(reasoning_parts), search_results
@@ -274,8 +275,6 @@ async def get_deepseek_response(
         # Если вызова функций нет — возвращаем итоговый ответ
         if not tool_calls:
             logger.info(f"DeepSeek completed successfully on loop {loop_i+1}")
-            if user_id:
-                conversation_manager.track_tokens(user_id, model, total_input_tokens, total_output_tokens, total_cached_tokens)
             return message_content or "Нет ответа от модели", generated_files, "\n\n".join(reasoning_parts), search_results[:20]
 
         # Выполняем каждый tool call
@@ -354,6 +353,4 @@ async def get_deepseek_response(
             })
 
     logger.warning("DeepSeek API: exhausted max loops")
-    if user_id:
-        conversation_manager.track_tokens(user_id, model, total_input_tokens, total_output_tokens, total_cached_tokens)
     return last_text or "Нет ответа от модели", generated_files, "\n\n".join(reasoning_parts), search_results[:20]

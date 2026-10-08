@@ -18,6 +18,7 @@ _POOL_COLUMNS = {
     "week_start": "ALTER TABLE subscriptions ADD COLUMN week_start VARCHAR(32)",
     "week_chat_used": "ALTER TABLE subscriptions ADD COLUMN week_chat_used BIGINT DEFAULT 0 NOT NULL",
     "week_computer_used": "ALTER TABLE subscriptions ADD COLUMN week_computer_used BIGINT DEFAULT 0 NOT NULL",
+    "image_quality": "ALTER TABLE subscriptions ADD COLUMN image_quality VARCHAR(16)",
 }
 
 

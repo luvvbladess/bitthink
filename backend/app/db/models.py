@@ -140,6 +140,23 @@ class Document(Base):
     conversation: Mapped["Conversation"] = relationship("Conversation", back_populates="documents")
 
 
+class TokenReservation(Base):
+    """A bounded in-flight model call, refundable after completion or timeout."""
+
+    __tablename__ = "token_reservations"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    pool: Mapped[str] = mapped_column(String(16), nullable=False)
+    amount: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    tier: Mapped[str] = mapped_column(String(32), nullable=False)
+    subscription_expires_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    period_start: Mapped[str] = mapped_column(String(32), nullable=False)
+    week_start: Mapped[str] = mapped_column(String(32), nullable=False)
+    session_started_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    expires_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
 class Subscription(Base):
     __tablename__ = "subscriptions"
 

@@ -15,6 +15,8 @@ import re
 from config import KIMI_API_KEY, KIMI_MODEL
 from conversations import conversation_manager
 from model_context import cached_prompt_tokens, max_output_tokens, search_hop_messages
+from app.billing.call_budget import model_call
+from app.billing.quota import billing_scope
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +86,7 @@ KIMI_WEB_SEARCH_SYSTEM_PROMPT = (
     "Сниппет – не доказательство спорной цифры: открой страницу через browse_page. "
     "После поиска отвечай на русском, с конкретными фактами и датами. "
     "Закрой задачу: как применить, ограничение, что проверить. Не обрывай тизером «могу подробнее». "
-    "В основном тексте не ставь URL, Markdown-ссылки или маркеры цитат [1], [2]. "
+    "Маркеры цитат [1], [2] оставляй для списка источников. Ссылки на товары и ссылки, которые просит человек, давай кликабельным Markdown прямо в ответе. "
     "Не делай вид, что отсутствие в первой выдаче значит «этого нет». "
     "В конце ответа обязательно приведи список использованных источников в строгом формате:\n"
     "[1] Название источника — https://example.com/page1\n"
@@ -148,8 +150,19 @@ async def _execute_kimi_tool(
 
     if name == "browse_page":
         url = str(arguments.get("url") or "").strip()
+        from web_scraper import fetch_url_content, is_ru_marketplace, _looks_like_bot_wall
+
+        # All agents share the home-browser route for Russian shop cards.
+        # Kimi's nonempty block/index page must not bypass the home reader.
+        if is_ru_marketplace(url):
+            try:
+                fetched_url, text = await fetch_url_content(url)
+            except Exception as exc:
+                return f"Не удалось открыть страницу: {type(exc).__name__}", []
+            source = {"query": fetched_url or url, "summary": fetched_url or url}
+            return f"URL: {fetched_url}\n\n{text}", [source]
         fetched = await kimi_fetch(url, user_id=user_id)
-        if fetched and fetched.get("markdown"):
+        if fetched and fetched.get("markdown") and not _looks_like_bot_wall(fetched["markdown"]):
             title = fetched.get("title") or url
             markdown = fetched["markdown"][:12000]
             source = {"query": title, "summary": fetched.get("url") or url}
@@ -228,6 +241,7 @@ async def _append_tool_results(
     return collected
 
 
+@billing_scope
 async def get_kimi_search_brief(messages: List[Dict[str, Any]], user_text: str, user_id: int = None) -> str:
     """Ищет внешние факты и источники через Kimi REST web search."""
     global client
@@ -262,29 +276,28 @@ async def get_kimi_search_brief(messages: List[Dict[str, Any]], user_text: str, 
     total_output_tokens = 0
     total_cached_tokens = 0
 
-    def _track():
-        if user_id:
-            conversation_manager.track_tokens(user_id, KIMI_MODEL, total_input_tokens, total_output_tokens, total_cached_tokens)
-
-    for _ in range(4):
+    step_limit = 4
+    try:
+        from computer_skills.loader import match_skills
+        if 'marketplaces' in match_skills(user_text,user_id=user_id,sandbox=False,limit=3):
+            step_limit = 8  # Search -> listing discovery -> exact cards -> comparison.
+    except Exception:
+        pass
+    for _ in range(step_limit):
         try:
             response = await asyncio.wait_for(
-                client.chat.completions.create(
-                    model=KIMI_MODEL,
-                    messages=current_messages,
-                    tools=KIMI_SEARCH_TOOLS,
-                    extra_body={"thinking": {"type": "disabled"}},
-                    max_tokens=max_output_tokens(KIMI_MODEL),
-                ),
+                model_call(client, {
+                    "model": KIMI_MODEL, "messages": current_messages, "tools": KIMI_SEARCH_TOOLS,
+                    "extra_body": {"thinking": {"type": "disabled"}},
+                    "max_tokens": max_output_tokens(KIMI_MODEL),
+                }, model=KIMI_MODEL, user_id=user_id),
                 timeout=60,
             )
         except asyncio.TimeoutError:
             logger.error("Kimi search brief call timed out after 60s")
-            _track()
             return last_text or "Поиск через Kimi не завершился за отведённое время."
         except Exception as e:
             logger.error(f"Kimi search brief call failed: {e}", exc_info=True)
-            _track()
             return last_text or f"Ошибка поиска через Kimi: {str(e)[:200]}"
         usage = getattr(response, "usage", None)
         if usage:
@@ -299,7 +312,6 @@ async def get_kimi_search_brief(messages: List[Dict[str, Any]], user_text: str, 
 
         tool_calls = getattr(message, "tool_calls", None)
         if not tool_calls:
-            _track()
             return message.content or last_text or "Kimi не вернул результат поиска."
 
         current_messages.append({
@@ -319,7 +331,6 @@ async def get_kimi_search_brief(messages: List[Dict[str, Any]], user_text: str, 
         })
         await _append_tool_results(current_messages, tool_calls, user_id=user_id)
 
-    _track()
     return last_text or "Kimi web search не завершился за лимит шагов."
 
 
@@ -438,7 +449,7 @@ def _cut_trailing_source_block(lines: List[str]) -> List[str]:
         stripped = line.strip()
         if not stripped:
             continue
-        if _SOURCE_HEADING_RE.match(stripped) or _SOURCE_ITEM_RE.match(stripped) or _SOURCE_LIST_RE.match(stripped):
+        if _SOURCE_HEADING_RE.match(stripped) or _SOURCE_ITEM_RE.match(stripped):
             rest = lines[index:]
             if all(_is_source_line(item) for item in rest):
                 start = index
@@ -452,11 +463,11 @@ def _cut_trailing_source_block(lines: List[str]) -> List[str]:
 
 
 def strip_source_links(text: str) -> str:
-    """Убирает ссылки и inline-цитаты; источники остаются только в панели UI."""
+    """Remove citation lists/markers while preserving actionable inline links."""
     if not text:
         return text
     cleaned_lines: List[str] = []
-    for line in text.splitlines():
+    for line in _cut_trailing_source_block(text.splitlines()):
         stripped = line.strip()
         if re.match(r"^\s*\[\d+\]\s+.*(?:https?://\S+|\([\w.-]+\.[a-z]{2,}\))\s*$", line, re.I):
             continue
@@ -465,8 +476,6 @@ def strip_source_links(text: str) -> str:
         cleaned_lines.append(line)
     cleaned_lines = _cut_trailing_source_block(cleaned_lines)
     cleaned = "\n".join(cleaned_lines)
-    cleaned = re.sub(r"\[([^\]]+)\]\(https?://[^)]+\)", r"\1", cleaned)
-    cleaned = re.sub(r"(?<!\()https?://[^\s<>)\]]+", "", cleaned)
     cleaned = re.sub(r"\s*\[\d+\]", "", cleaned)
     # Hosted search models sometimes render citation annotations as a bare
     # domain in parentheses, e.g. "(casio.com)" or a punycode ".рф" host.
@@ -510,6 +519,7 @@ def kimi_result_is_grounded(answer: str, sources: List[Dict[str, str]], minimum_
     )
 
 
+@billing_scope
 async def get_kimi_chat_response(
     messages: List[Dict[str, Any]], user_id: int = None, on_reasoning_delta: Optional[Any] = None,
     research: bool = False,
@@ -549,32 +559,24 @@ async def get_kimi_chat_response(
     total_output_tokens = 0
     total_cached_tokens = 0
 
-    def _track():
-        if user_id:
-            conversation_manager.track_tokens(user_id, KIMI_MODEL, total_input_tokens, total_output_tokens, total_cached_tokens)
-
     def _final_sources(text: str) -> List[Dict[str, str]]:
         return _merge_ui_sources(collected_sources, _build_search_results_from_text(text or ""))
 
     for _ in range(10):
         try:
             response = await asyncio.wait_for(
-                client.chat.completions.create(
-                    model=KIMI_MODEL,
-                    messages=current_messages,
-                    tools=KIMI_SEARCH_TOOLS,
-                    extra_body={"thinking": {"type": "disabled"}},
-                    max_tokens=max_output_tokens(KIMI_MODEL),
-                ),
+                model_call(client, {
+                    "model": KIMI_MODEL, "messages": current_messages, "tools": KIMI_SEARCH_TOOLS,
+                    "extra_body": {"thinking": {"type": "disabled"}},
+                    "max_tokens": max_output_tokens(KIMI_MODEL),
+                }, model=KIMI_MODEL, user_id=user_id),
                 timeout=420,
             )
         except asyncio.TimeoutError:
             logger.error("Kimi chat API call timed out after 420s")
-            _track()
             return "❌ Модель Kimi не ответила за 420 секунд (таймаут)", [], "", _final_sources(last_text)
         except Exception as e:
             logger.error(f"Kimi chat API call failed: {e}", exc_info=True)
-            _track()
             return f"❌ Ошибка API Kimi: {str(e)}", [], "", _final_sources(last_text)
 
         usage = getattr(response, "usage", None)
@@ -602,7 +604,6 @@ async def get_kimi_chat_response(
         current_messages.append(assistant_msg)
 
         if not tool_calls:
-            _track()
             search_results = _final_sources(message.content or "")
             answer = strip_source_links(message.content or "")
             return answer or "Нет ответа от модели", generated_files, "", search_results
@@ -614,5 +615,4 @@ async def get_kimi_chat_response(
         )
 
     logger.warning("Kimi chat: exhausted max loops")
-    _track()
     return last_text or "Нет ответа от модели", generated_files, "", _final_sources(last_text)

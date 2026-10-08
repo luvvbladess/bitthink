@@ -51,9 +51,9 @@ CHEAP_MODELS = [
     "deepseek-v4-flash",
 ]
 
-PRO_MODELS = CHEAP_MODELS + ["director", "studio"]
-PROPLUS_MODELS = PRO_MODELS + ["gpt-6-sol"]
-ULTRA_MODELS = PROPLUS_MODELS + ["gpt-6-astra"]
+PRO_MODELS = CHEAP_MODELS + ["director", "studio", "gpt-6-sol"]
+PROPLUS_MODELS = PRO_MODELS + ["gpt-6-astra"]
+ULTRA_MODELS = list(PROPLUS_MODELS)
 # Creator is the internal unlimited seat. It must never lag behind Ultra.
 # docgen (режим «Документы») is creator-only: a single run can take hours and
 # generate thousands of model calls, so it stays off every paid, quota-bound tier.
@@ -103,7 +103,7 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "name": "Pro",
         "price_rub": 1_990,
         "price_year_rub": 19_900,
-        "description": "Повседневный чат и Оркестратор",
+        "description": "GPT-6.1 Sol, Исследование и Оркестратор",
         "chat_tokens": 45_000_000,
         "computer_tokens": 15_000_000,
         "chat_week": 11_250_000,
@@ -112,14 +112,14 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "computer_session": 1_075_000,
         "images": 25,
         "models": list(PRO_MODELS),
-        "features": ["окно 5 часов и неделя", "45 млн токенов в месяц", "15 млн на Оркестратор", "Студия и рабочие ответы"],
+        "features": ["окно 5 часов и неделя", "45 млн единиц на чат", "15 млн на Оркестратор", "GPT-6.1 Sol и Исследование", "Студия", "25 изображений в месяц"],
     },
     "proplus": {
         "id": "proplus",
         "name": "Pro+",
         "price_rub": 3_990,
         "price_year_rub": 39_900,
-        "description": "GPT-6.1 Sol для сложных задач",
+        "description": "GPT-6 Astra и больше ресурсов для сложных задач",
         "chat_tokens": 81_000_000,
         "computer_tokens": 50_000_000,
         "chat_week": 20_250_000,
@@ -128,7 +128,7 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "computer_session": 3_570_000,
         "images": 40,
         "models": list(PROPLUS_MODELS),
-        "features": ["окно 5 часов и неделя", "81 млн токенов в месяц", "50 млн на Оркестратор", "GPT-6.1 Sol для сложных задач"],
+        "features": ["окно 5 часов и неделя", "81 млн единиц на чат", "50 млн на Оркестратор", "всё из Pro", "GPT-6 Astra", "40 изображений в месяц"],
     },
     "ultra": {
         "id": "ultra",
@@ -144,7 +144,7 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "computer_session": 9_630_000,
         "images": 80,
         "models": list(ULTRA_MODELS),
-        "features": ["окно 5 часов и неделя", "270 млн токенов в месяц", "GPT-6 Astra для самых сложных задач"],
+        "features": ["окно 5 часов и неделя", "270 млн единиц на чат", "135 млн на Оркестратор", "всё из Pro+", "80 изображений в месяц"],
     },
     "creator": {
         "id": "creator",
