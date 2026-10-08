@@ -152,14 +152,15 @@ function clock(seconds: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
-/** Whole seconds since the feed appeared, i.e. since the reply started being worked on. */
-function useElapsed(): number {
+/** Seconds spent on the current action, rather than the whole reply. */
+function useElapsed(action: string): number {
   const [seconds, setSeconds] = useState(0);
   useEffect(() => {
+    setSeconds(0);
     const started = Date.now();
     const id = window.setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [action]);
   return seconds;
 }
 
@@ -222,9 +223,9 @@ function DoneNode() {
 }
 
 export function ActivityFeed({ statusText }: { statusText?: string }) {
-  const elapsed = useElapsed();
   const steps = parseActivitySteps(statusText || '');
   const rows = (steps.length ? steps : [{ kind: 'think' as const, text: statusText || 'Думаю' }]).map(describe);
+  const elapsed = useElapsed(steps[steps.length - 1]?.text || statusText || "");
   const shown = rows.slice(-VISIBLE_STEPS);
   const earlier = rows.length - shown.length;
   const last = shown.length - 1;

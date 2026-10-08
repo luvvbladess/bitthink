@@ -1,4 +1,4 @@
-import { memo, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Box, IconButton, TextField, Tooltip } from '@mui/material';
 import { Copy, Check, FileArrowDown, ArrowClockwise, PencilSimple, X } from '@phosphor-icons/react';
 import ReactMarkdown, { type Components } from 'react-markdown';
@@ -22,6 +22,19 @@ import '@/theme/highlight.css';
 
 /** Module-level on purpose: a component created inside render is a new type on every
  *  render, React remounts it, and a table loses its horizontal scroll position. */
+/** A price or a count must not break across lines: "59 315 ₽" stays in one piece. */
+function keepNumbersTogether(node: ReactNode): ReactNode {
+  if (typeof node === 'string') {
+    return node.replace(/(\d) (?=\d{3}(?!\d))/g, '$1 ').replace(/(\d) (?=[₽$€%])/g, '$1 ');
+  }
+  if (Array.isArray(node)) return node.map(keepNumbersTogether);
+  return node;
+}
+
+function MarkdownCell({ children, style }: { children?: ReactNode; style?: CSSProperties }) {
+  return <td style={style}>{keepNumbersTogether(children)}</td>;
+}
+
 function MarkdownTable({ children }: { children?: ReactNode }) {
   return (
     <Box
@@ -265,6 +278,7 @@ const ChatMessageView = memo(function ChatMessageView({
       ({
         pre: CodeBlock,
         table: MarkdownTable,
+        td: MarkdownCell,
         img: ({ src, alt }: { src?: string | Blob; alt?: string }) =>
           typeof src === 'string' && src ? (
             <ChatImage
@@ -285,7 +299,7 @@ const ChatMessageView = memo(function ChatMessageView({
   const trimmedContent = (visibleContent || '').trim();
   const textBesideFiles = Boolean(trimmedContent) && !attachmentItems.some((item) => item.name === trimmedContent);
   // Typed on the cleaned text, so the source list cut off at the end never flashes mid-reply.
-  const cleanContent = useMemo(() => normalizeMarkdown(visibleContent), [visibleContent]);
+  const cleanContent = useMemo(() => normalizeMarkdown(visibleContent, isUser ? 'user' : 'assistant'), [visibleContent, isUser]);
   const reply = useReplySnapshot(revealTarget && !isUser);
   const revealing = revealTarget && !isUser && isReplyText(cleanContent, reply);
   const typing = revealing && reply.typing;
