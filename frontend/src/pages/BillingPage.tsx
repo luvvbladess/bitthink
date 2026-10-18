@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { useEffect } from 'react';
 import { Box, Typography, Stack } from '@mui/material';
 import { useQuery } from '@tanstack/react-query';
-import { ChatText, Desktop, Image, Lightning } from '@phosphor-icons/react';
+import { ChatText, Image, Lightning } from '@phosphor-icons/react';
 import { apiFetch } from '@/api/client';
 import { formatResetIn, type Plan, type Subscription, type UsageWindow } from '@/api/billing';
 import { UsageMeter } from '@/components/UsageMeter';
@@ -26,7 +26,7 @@ function WindowMeters({
   return (
     <Stack spacing={1.75}>
       <UsageMeter
-        label="Сейчас"
+        label="На 5 часов"
         used={family?.session?.used || 0}
         limit={family?.session?.limit || 0}
         remaining={family?.session?.remaining}
@@ -109,7 +109,9 @@ export default function BillingPage() {
       lede={
         sub?.unlimited
           ? 'Лимитов нет. Ниже оценка расхода по ценам API за сегодня и за месяц.'
-          : 'Сначала списывается короткое окно, потом неделя, потом месяц. Остаток не копится.'
+          : isFree
+            ? '30 ответов в день, из них до 15 с поиском. Дневной лимит обновляется по Москве.'
+            : 'Один запас для чата, Оркестратора и Студии. Ограничения на 5 часов, неделю и месяц действуют одновременно.'
       }
     >
       <AccountSection featured>
@@ -178,9 +180,10 @@ export default function BillingPage() {
             />
             <UsageMeter
               icon={<Lightning size={16} />}
-              label="Поиски"
+              label="Ответы с поиском"
+              caption="Входят в общие 30 ответов в день"
               used={sub?.free_daily?.searches || 0}
-              limit={sub?.free_daily?.searches_limit || 5}
+              limit={sub?.free_daily?.searches_limit || 15}
               count
             />
             <UsageMeter
@@ -193,13 +196,10 @@ export default function BillingPage() {
           </Stack>
         </AccountSection>
       ) : (
-        <AccountSection title="Что осталось" hint="Сначала короткое окно, затем неделя, затем месяц.">
+        <AccountSection title="Что осталось" hint="Работу ограничивает тот период, в котором запас закончится первым.">
           <Stack spacing={3}>
-            <PoolBlock icon={<ChatText size={18} weight="bold" />} title="Чат">
-              <WindowMeters family={sub?.windows?.chat} />
-            </PoolBlock>
-            <PoolBlock icon={<Desktop size={18} weight="bold" />} title="Оркестратор" hint="ИИ-агенты в песочнице.">
-              <WindowMeters family={sub?.windows?.computer} />
+            <PoolBlock icon={<ChatText size={18} weight="bold" />} title="Общий запас" hint="Чат, Оркестратор и Студия расходуют один бюджет.">
+              <WindowMeters family={sub?.windows?.shared || sub?.windows?.chat} />
             </PoolBlock>
             <PoolBlock icon={<Image size={18} weight="bold" />} title="Картинки">
               <UsageMeter
@@ -212,7 +212,7 @@ export default function BillingPage() {
             </PoolBlock>
             {isPaid && (sub?.nano_cushion?.limit || 0) > 0 && (sub?.chat?.remaining || 0) <= 0 && (
               <Typography sx={{ color: 'text.secondary', fontSize: '0.875rem', lineHeight: 1.5 }}>
-                Пул чата на месяц закончился. Сегодня ещё {Math.max(0, (sub?.nano_cushion?.limit || 0) - (sub?.nano_cushion?.used || 0))} быстрых ответов.
+                Общий запас на месяц закончился. Сегодня ещё {Math.max(0, (sub?.nano_cushion?.limit || 0) - (sub?.nano_cushion?.used || 0))} быстрых ответов.
               </Typography>
             )}
           </Stack>
@@ -220,7 +220,7 @@ export default function BillingPage() {
       )}
 
       {!sub?.unlimited && (
-        <AccountSection title="Как считаются токены" hint="1 наш токен равен 1 токену Luna. Если контекст больше 272 тыс. входных токенов, ход считается вдвойне.">
+        <AccountSection title="Как расходуется запас" hint="Единицы зависят от модели, длины контекста и ответа. Собственный поиск не имеет отдельной платы; обработка найденного моделью расходует общий запас. Контекст больше 272 тыс. входных токенов считается вдвойне.">
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
             {Object.entries(sub?.multipliers || { 'Luna / Nano': 1, Kimi: 9, DeepSeek: 9, Sol: 20, Astra: 100 }).map(
               ([name, factor]) => (
@@ -292,10 +292,10 @@ export default function BillingPage() {
                     {plan.description}
                   </Typography>
                   <Typography sx={{ color: 'text.secondary', mt: 0.35, fontSize: '0.8125rem', lineHeight: 1.45 }}>
-                    {formatTokens(plan.chat_session || 0)} сейчас · {formatTokens(plan.chat_week || 0)} / нед · {formatTokens(plan.chat_tokens)} / мес
+                    {formatTokens(plan.session_tokens || 0)} / 5 ч · {formatTokens(plan.weekly_tokens || 0)} / нед · {formatTokens(plan.total_tokens || 0)} / мес
                   </Typography>
                   <Typography sx={{ color: 'text.secondary', display: 'block', fontSize: '0.75rem', mt: 0.25 }}>
-                    Оркестратор {formatTokens(plan.computer_session || 0)} сейчас · {plan.images} картинок
+                    Единый запас для чата и Оркестратора · {plan.images} картинок
                   </Typography>
                 </Box>
                 <Typography

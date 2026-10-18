@@ -748,18 +748,20 @@ def test_stripped_source_list_does_not_leave_empty_bullets():
     assert drop_empty_list_items("7. Готово.\n\n-\n-\n•\n8.\n") == "7. Готово."
 
 
-def test_kimi_result_must_have_real_answer_and_multiple_sources():
-    answer = "Проверенный результат поиска. " * 8
+def test_kimi_result_must_cite_observed_sources_not_meet_a_source_count():
+    answer = "Проверенный результат поиска. [Источник](https://one.example)"
     sources = [
         {"query": "One", "summary": "https://one.example"},
         {"query": "Two", "summary": "https://two.example"},
     ]
     assert kimi_result_is_grounded(answer, sources)
     assert not kimi_result_is_grounded("❌ Ошибка API", sources)
-    assert not kimi_result_is_grounded(answer, sources[:1])
+    assert kimi_result_is_grounded(answer, sources[:1])
+    assert not kimi_result_is_grounded("Ответ без связи с источником", sources)
 
 
 def test_shared_search_uses_kimi_before_openai_and_never_calls_ddg(monkeypatch):
+    monkeypatch.setenv('WEB_SEARCH_BACKEND', 'kimi')
     calls = []
 
     async def fake_kimi(_query, _max_results):

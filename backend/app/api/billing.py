@@ -70,6 +70,10 @@ def _public_plans() -> list[dict]:
             "chat_session": plan.get("chat_session", 0),
             "computer_week": plan.get("computer_week", 0),
             "computer_session": plan.get("computer_session", 0),
+            "shared_budget": plan.get("shared_budget", False),
+            "total_tokens": plan.get("total_tokens", 0),
+            "weekly_tokens": plan.get("weekly_tokens", 0),
+            "session_tokens": plan.get("session_tokens", 0),
             "images": plan["images"],
         })
     return plans

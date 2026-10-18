@@ -42,6 +42,7 @@ interface Props {
   liveReasoning?: string;
   onRemoveAttachment?: (messageId: string) => void;
   onRegenerate?: () => void;
+  onStop?: () => void;
   onEditMessage?: (messageId: string, newContent: string) => void;
   onEditImage?: (url: string) => void;
   onSuggestion?: (text: string) => void;
@@ -129,6 +130,7 @@ export function ChatWindow({
   liveReasoning,
   onRemoveAttachment,
   onRegenerate,
+  onStop,
   onEditMessage,
   onEditImage,
   onSuggestion,
@@ -147,6 +149,7 @@ export function ChatWindow({
   const scrollerRef = useRef<HTMLDivElement>(null);
   const pinToBottomRef = useRef(true);
   const skipPinUpdateRef = useRef(false);
+  const scrollGeometryRef = useRef({ height: 0, viewport: 0 });
   // Editing is locked while a reply is generated. Read through a ref and a CSS class, not a prop:
   // a prop that flips with `thinking` re-renders (and re-parses) every user message twice per turn.
   const thinkingRef = useRef(thinking);
@@ -212,6 +215,7 @@ export function ChatWindow({
     skipPinUpdateRef.current = true;
     pinToBottomRef.current = true;
     node.scrollTop = node.scrollHeight;
+    scrollGeometryRef.current = { height: node.scrollHeight, viewport: node.clientHeight };
     requestAnimationFrame(() => {
       node.scrollTop = node.scrollHeight;
       skipPinUpdateRef.current = false;
@@ -242,7 +246,13 @@ export function ChatWindow({
     if (skipPinUpdateRef.current) return;
     const node = scrollerRef.current;
     if (!node) return;
-    pinToBottomRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 160;
+    // Expanding the composer changes padding below the reply. Browser scroll
+    // anchoring can emit a scroll event before the resize observer follows it;
+    // that layout change must not be mistaken for the reader scrolling away.
+    const geometry = scrollGeometryRef.current;
+    if (geometry.height === node.scrollHeight && geometry.viewport === node.clientHeight) {
+      pinToBottomRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 160;
+    }
     measureJump();
   };
 
@@ -281,6 +291,8 @@ export function ChatWindow({
   // arrows and the pinned-to-bottom state follow the column's real height instead.
   const followRef = useRef<() => void>(() => undefined);
   followRef.current = () => {
+    const node = scrollerRef.current;
+    if (node) scrollGeometryRef.current = { height: node.scrollHeight, viewport: node.clientHeight };
     if (pinToBottomRef.current) scrollToBottom();
     else measureJump();
   };
@@ -295,7 +307,9 @@ export function ChatWindow({
         followRef.current();
       });
     });
-    observer.observe(column);
+    // Composer growth changes the column's bottom padding, so observe the
+    // border box too; content-box measurements miss that extra reserved space.
+    observer.observe(column, { box: 'border-box' });
     return () => {
       observer.disconnect();
       cancelAnimationFrame(frame);
@@ -364,9 +378,11 @@ export function ChatWindow({
         ...CHAT_COL,
         ...(splitPane ? { maxWidth: '100%', px: { xs: 1.25, sm: 1.75 } } : {}),
         pt: HEADER_SCROLL_PAD,
-        // --bt-composer-h-pad follows the measured composer dock (ChatPage); the
-        // constants only cover the first paint before it is measured.
-        pb: clarifyDocked
+        // Empty desktop chat already reserves the dock in its heading slot.
+        // Replies use bottom padding instead, so a growing composer is counted once.
+        pb: composerSlotRef && messages.length === 0 && !thinking
+          ? 2
+          : clarifyDocked
           ? { xs: `var(--bt-composer-h-pad, ${CLARIFY_SCROLL_PAD.xs})`, md: `var(--bt-composer-h-pad, ${CLARIFY_SCROLL_PAD.md})` }
           : { xs: `var(--bt-composer-h-pad, ${COMPOSER_SCROLL_PAD.xs})`, md: `var(--bt-composer-h-pad, ${COMPOSER_SCROLL_PAD.md})` },
         flexGrow: 1,
@@ -653,7 +669,7 @@ export function ChatWindow({
                 </Box>
               )}
               <Box sx={{ display: 'flex', justifyContent: 'flex-start', mb: 3 }}>
-                <ActivityFeed statusText={statusText} />
+                <ActivityFeed statusText={statusText} onStop={onStop} />
               </Box>
             </motion.div>
           )}

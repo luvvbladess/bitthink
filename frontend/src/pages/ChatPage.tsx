@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Box, Drawer, SwipeableDrawer, IconButton, Tooltip, Menu, MenuItem, ListItemIcon, ListItemText, useMediaQuery, useTheme } from '@mui/material';
+import { Box, Button, Snackbar, Alert, Drawer, SwipeableDrawer, IconButton, Tooltip, Menu, MenuItem, ListItemIcon, ListItemText, useMediaQuery, useTheme } from '@mui/material';
 import { List as ListIcon, FileArrowDown, MagnifyingGlass, WarningCircle, SquareHalf, Users, ChatsCircle, FolderSimple, DotsThree, Sun, Moon } from '@phosphor-icons/react';
 import { useColorMode } from '@/theme/ColorMode';
 import { headerGroupBtnSx, headerGroupSx, headerIconBtnSx } from '@/theme/effects';
@@ -30,6 +30,7 @@ import { ShareDialog } from '@/features/chat/ShareDialog';
 import { DocumentEditorDialog } from '@/features/editor/DocumentEditor';
 import { ConversationFilesDrawer, filesQueryKey, type FilesScope } from '@/features/editor/ConversationFiles';
 import { RoomChat } from '@/features/chat/RoomChat';
+import { ProjectWorkspace, type ProjectItem, type ProjectSpace } from '@/features/chat/ProjectWorkspace';
 import { applyPageMeta } from '@/seo';
 
 // Same-origin by default so it goes through the reverse proxy (nginx routes
@@ -95,6 +96,11 @@ export default function ChatPage() {
   const dialogueJumpRef = useRef<DialogueJumpFn | null>(null);
   const [sourceMessageId, setSourceMessageId] = useState<string | undefined>();
   const [activeConvId, setActiveConvId] = useState<string | undefined>();
+  const [projectPanel, setProjectPanel] = useState<string | null>(null);
+  const [projectOpenError, setProjectOpenError] = useState('');
+  const [projectExpanded, setProjectExpanded] = useState(false);
+  const projectRequestRef = useRef(0);
+  const projectsQuery = useQuery<ProjectItem[]>({ queryKey: ['projects'], queryFn: () => apiFetch('/projects') });
   const [searchParams, setSearchParams] = useSearchParams();
   const openNewChat = searchParams.get('new') === '1';
 
@@ -196,7 +202,10 @@ export default function ChatPage() {
     observer.observe(slotEl);
     if (slotEl.parentElement) observer.observe(slotEl.parentElement);
     observer.observe(column);
-    return () => observer.disconnect();
+    // The placeholder can move when the greeting scrolls on a short screen.
+    // Keep the parked composer aligned with it, not only when sizes change.
+    column.addEventListener('scroll', measure, true);
+    return () => { observer.disconnect(); column.removeEventListener('scroll', measure, true); };
   }, [slotEl]);
   const composerInSlot = slotEl !== null && slotTop !== null;
   const colorMode = useColorMode();
@@ -215,6 +224,9 @@ export default function ChatPage() {
 
   const activeConversation = conversations.find((conversation) => conversation.id === activeConvId);
   const sharedRoom = Boolean(activeConversation?.shared);
+  const projectBinding = useQuery<{ project_id: string | null }>({ queryKey: ['project-chat', activeConvId], queryFn: () => apiFetch(`/projects/chat/${activeConvId}`), enabled: !!activeConvId && !sharedRoom });
+  const canSplitProject = useMediaQuery('(min-width: 1280px)') && !isStudio;
+  const projectSideBySide = canSplitProject && !projectExpanded;
   const messagesQuery = useQuery<{
     id: string;
     message_id?: number;
@@ -524,6 +536,8 @@ export default function ChatPage() {
         });
       }
       if (msg.type === 'done') {
+        queryClient.invalidateQueries({ queryKey: ['project-workspace'] });
+        queryClient.invalidateQueries({ queryKey: ['project-suggestions'] });
         const doneConvId = convId || pendingContent.convId;
         if (doneConvId) ignoreByConvRef.current.delete(doneConvId);
         if (doneConvId === activeConvId) setRegeneratingId(null);
@@ -583,6 +597,7 @@ export default function ChatPage() {
   }, [isStudio, isMobile, canvasSource?.url, canvasSource?.html, canvasSource?.name]);
 
   const handleSelect = async (id: string) => {
+    setProjectPanel(null);
     // Tapping the chat that is already open must not blank it: activeConvId stays the
     // same, so nothing would refill displayMessages afterwards.
     if (id === activeConvId) {
@@ -598,12 +613,18 @@ export default function ChatPage() {
     if (isMobile) setSidebarOpen(false);
   };
 
-  const handleCreate = async () => {
+  const handleCreate = async (targetProject?: string | null) => {
+    ++projectRequestRef.current;
+    const pid = targetProject === undefined ? (projectPanel || projectBinding.data?.project_id || null) : targetProject;
+    setProjectPanel(null);
     const blank = conversations.find(
       (conversation) =>
-        conversation.message_count === 0 && /^(Новый чат|Новая беседа|Беседа #\d+)$/.test(conversation.title),
+        !conversation.shared && conversation.message_count === 0 && /^(Новый чат|Новая беседа|Беседа #\d+)$/.test(conversation.title),
     );
     if (blank) {
+      await apiFetch(`/projects/chat/${blank.id}`, { method: 'PUT', body: JSON.stringify({ project_id: pid }) });
+      queryClient.invalidateQueries({ queryKey: ['project-chat'] });
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
       if (blank.id !== activeConvId) {
         await activateMutation.mutateAsync(blank.id);
         setActiveConvId(blank.id);
@@ -615,6 +636,9 @@ export default function ChatPage() {
       return;
     }
     const conv = await createMutation.mutateAsync();
+    if (pid) await apiFetch(`/projects/chat/${conv.id}`, { method: 'PUT', body: JSON.stringify({ project_id: pid }) });
+    queryClient.invalidateQueries({ queryKey: ['project-chat'] });
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
     setActiveConvId(conv.id);
     setDisplayMessages([]);
     setSourceMessageId(undefined);
@@ -630,6 +654,48 @@ export default function ChatPage() {
       openingNewRef.current = false;
     });
   }, [openNewChat, conversationsFetched]);
+
+  const moveChatToProject = async (cid: string, pid: string | null) => {
+    await apiFetch(`/projects/chat/${cid}`, { method: 'PUT', body: JSON.stringify({ project_id: pid }) });
+    ++projectRequestRef.current;
+    if (cid === activeConvId) setProjectPanel(null);
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['projects'] }),
+      queryClient.invalidateQueries({ queryKey: ['project-chat', cid] }),
+      queryClient.invalidateQueries({ queryKey: ['project-workspace'] }),
+    ]);
+  };
+
+  const [projectNotice, setProjectNotice] = useState<{ text: string; warning: boolean } | null>(null);
+  const handleProjectDeleted = (pid: string, cleanupPending = false) => {
+    ++projectRequestRef.current;
+    if (projectPanel === pid) { setProjectPanel(null); setProjectOpenError(''); }
+    if (projectBinding.data?.project_id === pid && activeConvId) queryClient.setQueryData(['project-chat', activeConvId], { project_id: null });
+    queryClient.setQueryData<ProjectItem[]>(['projects'], old => old?.filter(p => p.id !== pid));
+    setProjectNotice({ text: cleanupPending ? 'Проект удалён, беседы сохранены. Очистка копий файлов пока не завершена.' : 'Проект удалён. Беседы сохранены в разделе «Беседы вне проектов».', warning: cleanupPending });
+  };
+
+  const openProject = async (pid: string) => {
+    const request = ++projectRequestRef.current;
+    setProjectPanel(pid); setSidebarOpen(false); setProjectOpenError('');
+    try {
+      const space = await apiFetch(`/projects/${pid}/workspace`) as ProjectSpace;
+      let cid = space.chats.find(chat => chat.id === activeConvId)?.id || space.chats[0]?.id;
+      if (!cid) {
+        const chat = await createMutation.mutateAsync(); cid = chat.id;
+        await apiFetch(`/projects/chat/${cid}`, { method: 'PUT', body: JSON.stringify({ project_id: pid }) });
+      }
+      if (request !== projectRequestRef.current) return;
+      await handleSelect(cid!);
+      if (request !== projectRequestRef.current) return;
+      setProjectPanel(pid);
+      queryClient.invalidateQueries({ queryKey: ['project-chat'] });
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.invalidateQueries({ queryKey: ['project-workspace', pid] });
+    } catch {
+      if (request === projectRequestRef.current) setProjectOpenError('Не удалось открыть беседу проекта. Выберите проект ещё раз, чтобы повторить.');
+    }
+  };
 
   const handleSend = async (rawText: string, files: File[] = [], mode: 'chat' | 'image' = 'chat'): Promise<boolean> => {
     const text = rawText || (files.length ? 'Проанализируй прикреплённые файлы.' : '');
@@ -1217,8 +1283,9 @@ export default function ChatPage() {
           <ChatSidebar
             conversations={conversations}
             activeId={activeConvId}
-            onSelect={handleSelect}
-            onCreate={handleCreate}
+            onSelect={id => { ++projectRequestRef.current; void handleSelect(id); }}
+            onCreate={() => { void handleCreate(null); }}
+            onCreateInProject={pid => handleCreate(pid)}
             onDelete={(id) => {
               send('stop', { conversation_id: id });
               finishJob(id);
@@ -1228,6 +1295,12 @@ export default function ChatPage() {
             onClose={() => setSidebarOpen(false)}
             onLibrary={() => { setFilesScope('all'); setFilesOpen(true); if (isMobile) setSidebarOpen(false); }}
             generatingIds={generatingIds}
+            onProjectDeleted={handleProjectDeleted}
+            onMoveChat={moveChatToProject}
+            projects={projectsQuery.data || []}
+            activeProjectId={projectPanel || projectBinding.data?.project_id}
+            onProject={pid => { void openProject(pid); }}
+            onCreateProject={() => { ++projectRequestRef.current; setProjectOpenError(''); setProjectPanel(''); setSidebarOpen(false); }}
           />
         </SwipeableDrawer>
       ) : (
@@ -1235,8 +1308,9 @@ export default function ChatPage() {
           <ChatSidebar
             conversations={conversations}
             activeId={activeConvId}
-            onSelect={handleSelect}
-            onCreate={handleCreate}
+            onSelect={id => { ++projectRequestRef.current; void handleSelect(id); }}
+            onCreate={() => { void handleCreate(null); }}
+            onCreateInProject={pid => handleCreate(pid)}
             onDelete={(id) => {
               send('stop', { conversation_id: id });
               finishJob(id);
@@ -1245,6 +1319,12 @@ export default function ChatPage() {
             onRename={(id, title) => renameMutation.mutate({ id, title })}
             onLibrary={() => { setFilesScope('all'); setFilesOpen(true); if (isMobile) setSidebarOpen(false); }}
             generatingIds={generatingIds}
+            onProjectDeleted={handleProjectDeleted}
+            onMoveChat={moveChatToProject}
+            projects={projectsQuery.data || []}
+            activeProjectId={projectPanel || projectBinding.data?.project_id}
+            onProject={pid => { void openProject(pid); }}
+            onCreateProject={() => { ++projectRequestRef.current; setProjectOpenError(''); setProjectPanel(''); setSidebarOpen(false); }}
           />
         </Box>
       )}
@@ -1257,13 +1337,14 @@ export default function ChatPage() {
             : { flex: 1 }),
           minWidth: 0,
           minHeight: 0,
-          display: 'flex',
+          display: projectPanel !== null && (!projectSideBySide || !projectPanel) ? 'none' : 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
           position: 'relative',
         }}
       >
         {chatHeader}
+        {!sharedRoom && projectBinding.data?.project_id && <Box sx={{ px: 2, pb: .75, flexShrink: 0 }}><Button size="small" color="inherit" startIcon={<FolderSimple size={15} />} onClick={() => setProjectPanel(projectBinding.data!.project_id)} sx={{ color: 'text.secondary', fontSize: 12 }}>Проект · {projectsQuery.data?.find(p => p.id === projectBinding.data?.project_id)?.name || 'Материалы'}</Button></Box>}
         {(wsStatus === 'closed' || wsStatus === 'error') && (
           <Box
             sx={{
@@ -1311,6 +1392,7 @@ export default function ChatPage() {
           liveReasoning={pendingContent.convId === activeConvId ? pendingContent.reasoning : undefined}
           onRemoveAttachment={handleRemoveAttachment}
           onRegenerate={canRegenerateReply ? handleRegenerate : undefined}
+          onStop={handleStop}
           onEditMessage={handleEditMessage}
           onEditImage={
             isDocgen
@@ -1374,6 +1456,8 @@ export default function ChatPage() {
               </Box>
             )}
             <MessageInput
+              conversationId={activeConvId}
+              onOpenProjects={() => setProjectPanel(projectBinding.data?.project_id || '')}
               onSend={handleSend}
               disabled={thinking}
               isGenerating={thinking}
@@ -1396,11 +1480,18 @@ export default function ChatPage() {
           onClose={() => setRoomOpenById((prev) => ({ ...prev, [activeConvId]: false }))}
         />
       )}
-      {isStudio && !isMobile && (
+      <Snackbar open={!!projectNotice} autoHideDuration={projectNotice?.warning ? undefined : 6000} onClose={(_, reason) => { if (reason !== 'clickaway') setProjectNotice(null); }} anchorOrigin={{ vertical: 'top', horizontal: 'center' }}><Alert severity={projectNotice?.warning ? 'warning' : 'success'} onClose={() => setProjectNotice(null)} sx={{ maxWidth: 480 }}>{projectNotice?.text}</Alert></Snackbar>
+      {projectPanel !== null && <Box sx={{ flex: projectSideBySide && projectPanel ? '0 0 48%' : '1 1 100%', minWidth: 0, minHeight: 0, borderLeft: projectSideBySide && projectPanel ? '1px solid var(--bt-hairline)' : 'none' }}>
+        <ProjectWorkspace onProjectDeleted={handleProjectDeleted} key={projectPanel || 'create-project'} projectId={projectPanel} conversationId={!sharedRoom && projectBinding.data?.project_id === projectPanel ? activeConvId : undefined} externalError={projectOpenError} expanded={projectExpanded} onToggleSize={canSplitProject ? () => setProjectExpanded(value => !value) : undefined}
+          onClose={() => { ++projectRequestRef.current; setProjectPanel(null); }}
+          onCreated={project => { queryClient.invalidateQueries({ queryKey: ['projects'] }); void openProject(project.id); }}
+          onSelectChat={id => { ++projectRequestRef.current; void handleSelect(id); }} />
+      </Box>}
+      {projectPanel === null && isStudio && !isMobile && (
         <DesignCanvas source={canvasSource} thinking={thinking} statusText={statusText} />
       )}
       </Box>
-      {isStudio && isMobile && (
+      {projectPanel === null && isStudio && isMobile && (
         <Drawer
           anchor="bottom"
           open={mobileCanvasOpen}

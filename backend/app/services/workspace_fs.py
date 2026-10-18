@@ -625,8 +625,14 @@ def _recent_workspace_files(
             if stat.st_size <= 0 or stat.st_size > MAX_FILE_BYTES:
                 continue
             rel = path.relative_to(root).as_posix()
+            # Imported references are inputs, never a completed drawing package.
+            if rel.startswith('engineering/materials/'):
+                continue
             found.append((stat.st_mtime, rel, path, stat.st_size))
     found.sort(key=lambda item: item[0], reverse=True)
+    latest = next((rel.split('/')[2] for _,rel,_,_ in found if rel.startswith('engineering/output/') and len(rel.split('/'))>3), None)
+    if latest:
+        found = [item for item in found if not item[1].startswith('engineering/output/') or item[1].split('/')[2]==latest]
     return found
 
 

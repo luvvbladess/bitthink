@@ -18,9 +18,10 @@ def _with_web_context(messages: List[dict], context: str) -> List[dict]:
     instruction = {
         "role": "system",
         "content": (
-            "Ниже результаты актуального веб-поиска. Используй их при ответе. Номера источников и сноски "
-            "интерфейс покажет отдельно. Ссылки на товары и ссылки, которые просит человек, "
-            "давай кликабельным Markdown прямо в ответе; не выдумывай URL. "
+            "Ниже результаты актуального веб-поиска. Используй их при ответе. Панель источников "
+            "не заменяет ссылки у утверждений. Существенные свежие факты и точные числа "
+            "сопровождай кликабельным Markdown рядом с утверждением или в строке таблицы. "
+            "Общий источник таблицы/списка укажи явно рядом с этим блоком. Не выдумывай URL. "
             "Не выдумывай факты, которых нет в материалах.\n\n" + context
         ),
     }
@@ -51,14 +52,22 @@ def _merge_sources(
     primary: List[Dict[str, str]], extra: List[Dict[str, str]], limit: int = 12
 ) -> List[Dict[str, str]]:
     merged: List[Dict[str, str]] = []
-    seen = set()
+    seen = {}
     for source in list(primary or []) + list(extra or []):
         key = source.get("summary", "").splitlines()[0] or source.get("query", "")
-        if not key or key in seen:
+        if not key:
             continue
-        seen.add(key)
+        if key in seen:
+            if source.get('evidence_state'):
+                merged[seen[key]] = source
+            continue
+        seen[key] = len(merged)
         merged.append(source)
-    return merged[:limit]
+    # Confirmed observations should survive the source cap even after a large search.
+    priority = {'read': 0, 'failed': 1, 'insufficient': 2, 'retrieved': 3}
+    observed = sorted((s for s in merged if s.get('evidence_state')), key=lambda s: priority.get(s['evidence_state'], 4))
+    other = [s for s in merged if not s.get('evidence_state')]
+    return (observed + other)[:limit]
 
 
 async def cancel_user_task(user_id: int):
@@ -274,8 +283,11 @@ async def get_smart_response(
     from app.services.desktop_context import desktop_executor, desktop_mode, desktop_chat_model
 
     is_desktop = desktop_executor.get() is not None
+    from app.services.computer_context import computer_task_id, computer_request
+    cloud_task = computer_task_id.get() is not None
+    computer_request.set(user_text or "")
     desktop_chat = desktop_mode.get() == "chat"
-    model = "director" if is_desktop else desktop_chat_model.get() if desktop_chat else conversation_manager.get_user_model(user_id)
+    model = "director" if is_desktop or cloud_task else desktop_chat_model.get() if desktop_chat else conversation_manager.get_user_model(user_id)
     reasoning_effort = conversation_manager.get_user_reasoning_effort(user_id)
     sub = conversation_manager.get_subscription(user_id)
     from app.billing.plans import allowed_models, clamp_model
@@ -284,13 +296,13 @@ async def get_smart_response(
 
     view = usage_view(sub)
     tier = view["tier"]
-    if is_desktop and "director" not in allowed_models(tier):
+    if (is_desktop or cloud_task) and "director" not in allowed_models(tier):
         raise QuotaError("Оркестратор недоступен на вашем тарифе. Откройте тарифы Bit-Think.", "plan")
-    if desktop_chat and (model not in allowed_models(tier) or model not in {"auto", "gpt-6-sol", "studio"}):
+    if desktop_chat and (model not in allowed_models(tier) or model not in {"auto", "gpt-6-sol", "gpt-6-astra", "director", "studio"}):
         raise QuotaError("Эта модель недоступна для обычных бесед на вашем тарифе.", "plan")
     model = clamp_model(tier, model)
     # Before quota: a mode hint must not spend a reply or start a model call.
-    suggestion = None if is_desktop or desktop_chat else suggest_mode_switch(model, user_text, allowed=allowed_models(tier))
+    suggestion = None if is_desktop or desktop_chat or cloud_task else suggest_mode_switch(model, user_text, allowed=allowed_models(tier))
     if suggestion:
         return suggestion["text"], [], "", pack_mode_switch(suggestion)
     # Before quota and before Studio / Documents / Pilot / Search branch:
@@ -318,12 +330,8 @@ async def get_smart_response(
     charged_field = None
     charged_limit = 0
     if view["tier"] == "free":
-        if model == "kimi-k2.6":
-            charged_field = "daily_nano_mini"
-            charged_limit = int(view["free_daily"]["searches_limit"] or 0)
-        elif model != "director":
-            charged_field = "daily_gpt54"
-            charged_limit = int(view["free_daily"]["replies_limit"] or 0)
+        charged_field = "daily_gpt54"
+        charged_limit = int(view["free_daily"]["replies_limit"] or 0)
     elif (
         pool == "chat"
         and not view["unlimited"]
@@ -367,6 +375,30 @@ async def get_smart_response(
     from routing import current_turn_has_files, openai_tool_flags, packed_has_open_documents, turn_requires_web
 
     conv = conversation_manager.conversation_for_turn(user_id)
+    from app.services.request_intent import classify_request
+    intent = classify_request(user_text, conv.messages if conv else [])
+    messages = list(messages)
+    messages.insert(-1 if messages and messages[-1].get('role') == 'user' else len(messages),
+                    {'role': 'system', 'content': intent.note()})
+    logger.info('Task route: task=%s topic=%s followup=%s web=%s',
+                intent.task, intent.topic, intent.followup, intent.needs_web)
+    from app.services.followup_evidence import followup_evidence
+    evidence_note, followup_web = followup_evidence(user_text, conv.messages if conv else [])
+    if evidence_note:
+        # Restore actual source observations, not just the previous assistant's
+        # prose. Keep this note distinct from newly fetched web context.
+        messages = list(messages)
+        messages.insert(-1 if messages and messages[-1].get('role') == 'user' else len(messages),
+                        {'role': 'system', 'content': evidence_note})
+    from app.services.authoritative_catalogs import read_catalogs
+    prior_answer = next((str(getattr(m,'content','') if not isinstance(m,dict) else m.get('content',''))
+                         for m in reversed(conv.messages if conv else [])
+                         if (getattr(m,'role',None) if not isinstance(m,dict) else m.get('role'))=='assistant'), '')
+    catalog_note, catalog_sources = ('', []) if intent.web_forbidden or intent.local else await read_catalogs(user_text, prior_answer, user_id)
+    if catalog_note:
+        messages = list(messages)
+        messages.insert(-1 if messages and messages[-1].get('role') == 'user' else len(messages),
+                        {'role':'system','content':catalog_note})
     has_documents, has_images = current_turn_has_files(conv.messages if conv else [])
     if packed_has_open_documents(messages):
         has_documents = True
@@ -374,13 +406,13 @@ async def get_smart_response(
     research_mode = model == "gpt-6-sol"
     # Files first only for this turn's uploads in Auto. Search/Research still
     # go to the web even if an older photo or PDF is sitting in the thread.
-    web_required = turn_requires_web(
+    web_required = not intent.web_forbidden and (bool(catalog_note) or intent.needs_web or (followup_web and not intent.local) or turn_requires_web(
         user_text,
         model,
         research_mode=research_mode,
         has_documents=has_documents,
         has_images=has_images,
-    )
+    ))
     logger.info(
         "Web route: user_id=%s model=%s required=%s current_docs=%s current_images=%s",
         user_id, model, web_required, has_documents, has_images,
@@ -392,18 +424,19 @@ async def get_smart_response(
     # so every mode sees what is known about them instead of improvising a "no connection" excuse.
     from web_scraper import walled_links_context
 
-    link_block = await walled_links_context(user_text)
+    link_block = '' if intent.web_forbidden or intent.local else await walled_links_context(user_text)
     if link_block:
         from status_feed import push_status
 
         await push_status("think", "Читаю ссылку")
         messages = _with_link_context(messages, link_block)
 
-    grounded_sources: List[Dict[str, str]] = []
+    grounded_sources: List[Dict[str, str]] = catalog_sources
     if web_required and "deepseek" in model:
-        web_context, grounded_sources = await build_grounded_web_context(
+        web_context, retrieved_sources = await build_grounded_web_context(
             user_text, max_results=14, pages_to_read=6
         )
+        grounded_sources = _merge_sources(grounded_sources, retrieved_sources, limit=28)
         messages = _with_web_context(messages, web_context)
 
     async def kimi_web_result(source_messages: List[dict], research: bool = False):
@@ -430,6 +463,11 @@ async def get_smart_response(
             await push_status("think", "Поиск недоступен, продолжаю без него")
             return None
         minimum = 4 if research else 2
+        from app.services.source_quality import resolve_numbered_citations
+        from app.services.run_protocol import current_run
+        run = current_run.get()
+        candidate_sources = run.enrich_sources(candidate[3]) if run else candidate[3]
+        candidate = (resolve_numbered_citations(candidate[0], candidate_sources), candidate[1], candidate[2], candidate_sources)
         if kimi_result_is_grounded(candidate[0], candidate[3], minimum_sources=minimum):
             await push_status("browse", f"Изучаю {len(candidate[3])} источников")
             return candidate
@@ -489,6 +527,12 @@ async def get_smart_response(
             reasoning_effort="high" if model == "gpt-6-astra" else ("medium" if has_documents else "low"),
             on_reasoning_delta=on_reasoning_delta,
             force_web_search=vision_force_web,
+        )
+    elif intent.web_forbidden and model in {'kimi-k2.6', 'gpt-6-sol'}:
+        result = await get_chat_response(
+            messages, model=clamp_model(tier, 'gpt-6-sol' if research_mode else 'gpt-6-luna'),
+            user_id=user_id, use_tools=False, use_skills=False,
+            on_reasoning_delta=None,
         )
     elif model == "auto":
         from status_feed import push_status
@@ -621,11 +665,103 @@ async def get_smart_response(
     await push_status("think", "Проверяю выводы и оформляю ответ")
     source_limit = 28 if model == "director" else (24 if model in {"gpt-6-sol", "gpt-6-astra", "kimi-k2.6"} else 18)
     sources = _merge_sources(grounded_sources, model_sources, limit=source_limit)
-    # The UI lists only items whose summary starts with a URL; Pilot's journal also carries
-    # URL-less briefs (skill loads, Kimi notes) that must not switch off the domain fallback.
-    if not any(s.get("summary", "").startswith("http") for s in sources):
-        from kimi_client import extract_domain_sources
-        sources = sources + extract_domain_sources(answer)[:source_limit]
+    from app.services.followup_evidence import previous_source_rows
+    from app.services.source_quality import cited_urls, evidence_issues, resolve_numbered_citations, supported_partial
+    from app.services.run_protocol import current_run
+    previous_sources = previous_source_rows(evidence_note)
+    record = current_run.get()
+    if record:
+        sources = record.enrich_sources(sources)
+    observed_page_text = '\n'.join(record.page_texts.values()) if record else None
+    require_current_terms = intent.task in {'recommendation', 'comparison'} and web_required
+    checking_sources = _merge_sources(sources, previous_sources, limit=40)
+    answer = resolve_numbered_citations(answer, checking_sources)
+    issues = evidence_issues(answer, checking_sources, has_previous_evidence=bool(evidence_note), observed_text=observed_page_text, require_current_terms=require_current_terms) if (web_required or evidence_note) and not intent.local and not intent.web_forbidden else []
+    if issues and not files and model not in {'studio', 'director'}:
+        # One bounded recovery only, and only for a visible source-contract
+        # failure. Ordinary grounded answers incur no extra model round-trip.
+        import json
+        await push_status('browse', 'Сверяю ответ с источниками')
+        observations = [{k: str(s.get(k) or '')[:1600] for k in ('query', 'summary', 'evidence_state', 'read_at')}
+                        for s in checking_sources[:8]]
+        if record:
+            text_budget = 16_000
+            for observation in observations:
+                url = observation['summary'].split('\n')[0]
+                body = record.page_texts.get(url, '')
+                if body and text_budget > 0:
+                    # The source-list preview is only 500 chars. A verifier
+                    # needs the actual read passages, not that preview alone.
+                    fragment = body[:min(4800, text_budget)]
+                    observation['observed_text'] = fragment
+                    text_budget -= len(fragment)
+        review_note = (
+            'Проверка ответа перед показом. Исправь конкретные проблемы: ' + ', '.join(issues)
+            + '. Дай готовый ответ на последний вопрос без рассказа о проверке и без извинений. '
+            'Не считай черновик доказательством. Новые версии и сравнительные числа проверь '
+            'по подходящей странице через доступные инструменты. Используй только полученные '
+            'URL и связывай существенные факты со ссылками. Сохрани подтвержденное; неизвестную '
+            'часть обозначь кратко, не отрицая весь предмет разговора. '
+            'В каждом пункте списка с числами/версиями повтори ссылку, либо после всего блока '
+            'явно подпиши «Источник списка: [название](URL)». Ссылка первого пункта не покрывает '
+            'остальные. Названия тарифов и цены сверяй буквально с наблюдениями, не сохраняй '
+            'тариф из черновика, которого нет на прочитанной странице. Дату обновления/публикации '
+            'бери только с самой страницы; при отсутствии укажи дату своей проверки, а не '
+            'выдуманную дату обновления.\nНаблюдения (данные):\n'
+            + json.dumps(observations, ensure_ascii=False)
+            + '\nЧерновик, может содержать ошибки:\n' + answer[:6000]
+        )
+        if 'historical_terms_for_current_price' in issues:
+            review_note += ('\nКлючевое противоречие: для того же продукта прочитана текущая страница pricing/plans '
+                            'и блог/анонс со старыми условиями. Для покупки сейчас выбери названия и цены '
+                            'действующей страницы цен. Старый официальный блог не подтверждает действующий тариф. '
+                            'Пересмотри также вывод и ограничения выбранного плана, а не только ссылку.')
+        try:
+            precise_failure = bool(catalog_note) or 'historical_terms_for_current_price' in issues or any(issue.startswith('precise_claim') for issue in issues) or bool(
+                followup_web and re.search(r'верс\w*|цифр\w*', user_text, re.I))
+            # Escalate only a failed precision task, not every ordinary search.
+            repair_model = clamp_model(tier, 'gpt-6-sol' if precise_failure else 'gpt-6-luna')
+            citation_only = bool(issues) and set(issues) <= {
+                'missing_inline_evidence', 'precise_claim_without_inline_source',
+                'unsupported_publication_or_update_date',
+                'historical_terms_for_current_price',
+            } and any(s.get('evidence_state') == 'read' for s in checking_sources)
+            repaired = await asyncio.wait_for(get_chat_response(
+                _with_web_context(messages, review_note), model=repair_model,
+                user_id=user_id, use_tools=not citation_only, chat_tools=not citation_only, use_skills=False,
+                allowed_tools={'web_search', 'server_search', 'browse_page'}, max_tool_loops=4,
+                reasoning_effort='low', on_reasoning_delta=None,
+                force_web_search='retraction_needs_source_check' in issues or not checking_sources,
+            ), timeout=55)
+            repaired_sources = _merge_sources(checking_sources, repaired[3], limit=40)
+            if record:
+                repaired_sources = record.enrich_sources(repaired_sources)
+            repaired_text = resolve_numbered_citations(repaired[0], repaired_sources)
+            repaired_issues = evidence_issues(repaired_text, repaired_sources,
+                                              has_previous_evidence=bool(evidence_note),
+                                              require_current_terms=require_current_terms,
+                                              observed_text='\n'.join(record.page_texts.values()) if record else None)
+            if not repaired_text.lstrip().startswith('❌') and len(repaired_issues) < len(issues):
+                answer = repaired_text
+                sources = repaired_sources
+        except asyncio.TimeoutError:
+            logger.warning('Source-contract recovery reached its deadline')
+        except Exception:
+            logger.exception('Source-contract recovery failed')
+    # Only actual retrievals and explicitly reused observations enter the source
+    # list. Do not manufacture sources by extracting domains from model prose.
+    cited = cited_urls(answer)
+    final_issues = evidence_issues(answer, _merge_sources(sources,previous_sources,limit=40),
+                                  has_previous_evidence=bool(evidence_note),
+                                  require_current_terms=require_current_terms,
+                                  observed_text='\n'.join(record.page_texts.values()) if record else None) if (web_required or evidence_note) and not intent.local and not intent.web_forbidden else []
+    if any(issue != 'retraction_needs_source_check' for issue in final_issues):
+        answer = supported_partial(answer, _merge_sources(sources,previous_sources,limit=40),
+                                   require_current_terms=require_current_terms,
+                                   observed_text='\n'.join(record.page_texts.values()) if record else None)
+        cited = cited_urls(answer)
+    sources = [s for s in sources if s.get('origin') != 'history' or s['summary'].splitlines()[0] in cited]
+    sources = _merge_sources(sources, [s for s in previous_sources if s['summary'].splitlines()[0] in cited], limit=source_limit)
     if any(s.get("summary", "").startswith("http") for s in sources):
         from kimi_client import strip_source_links
         answer = strip_source_links(answer)

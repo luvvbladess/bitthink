@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { Box, Collapse, Drawer, Popover, Button, Typography, Tooltip, useMediaQuery, type PopoverActions } from '@mui/material';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { Box, Collapse, Drawer, Popover, Button, Typography, Tooltip, useMediaQuery } from '@mui/material';
 import { CaretDown, Check, Lightning, MagnifyingGlass, Books, Desktop, Presentation, Atom, FileText, Lock, Brain, Image as ImageIcon } from '@phosphor-icons/react';
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/api/client';
@@ -35,8 +35,8 @@ interface ModelsCache {
 const ANSWER_MODES = [
   { id: 'auto', label: EXPRESS_LABEL, description: 'Быстро и экономно: сам подберёт модель', model: 'auto', icon: Lightning },
   { id: 'search', label: 'Поиск', description: 'Свежие ответы с источниками', model: 'kimi-k2.6', icon: MagnifyingGlass },
-  { id: 'research', label: 'Исследование', description: 'Глубокий разбор источников на Sol', model: 'gpt-6-sol', icon: Books },
-  { id: 'astra', label: ASTRA_LABEL, description: 'Песочница GPT-6: код, договоры, файлы', model: 'gpt-6-astra', icon: Atom },
+  { id: 'research', label: 'Исследование', description: 'Глубокий разбор и проверка источников', model: 'gpt-6-sol', icon: Books },
+  { id: 'astra', label: ASTRA_LABEL, description: 'Сложные задачи: код, договоры, файлы', model: 'gpt-6-astra', icon: Atom },
   { id: 'studio', label: STUDIO_LABEL, description: 'Живой холст: картинки, слайды, лендинг', model: 'studio', icon: Presentation },
   { id: 'docgen', label: DOCGEN_LABEL, description: 'Большой .docx или комплект документов по Word, PDF, Excel и архивам', model: 'docgen', icon: FileText },
   { id: 'computer', label: PILOT_LABEL, description: 'Раздаёт должности подходящим ИИ-агентам в песочнице', model: 'director', icon: Desktop },
@@ -119,7 +119,7 @@ export function SearchModeSelector() {
   const multipliers = data?.multipliers || {};
   const modes = ANSWER_MODES.map((mode) => {
     if (mode.id === 'research') {
-      return { ...mode, model: researchModel || 'gpt-6-sol', description: 'Глубокий разбор на Sol' };
+      return { ...mode, model: researchModel || 'gpt-6-sol', description: 'Глубокий разбор и проверка источников' };
     }
     return mode;
   });
@@ -146,9 +146,27 @@ export function SearchModeSelector() {
   const hiddenSelected = moreModes.some((mode) => mode.id === selectedMode.id);
   // The list is folded away, unless the mode in use lives in it: then it must be visible.
   const [moreOpen, setMoreOpen] = useState(false);
-  const popoverActions = useRef<PopoverActions | null>(null);
+  const [menuPosition, setMenuPosition] = useState<{ above: boolean; edge: number; maxHeight: number } | null>(null);
   // Phones get a bottom sheet (thumb reach, no half-covered chat); larger screens keep the popover.
   const isPhone = useMediaQuery('(max-width:599.95px)');
+  const reduceMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
+
+  // Anchor an edge with CSS, so Collapse cannot push the menu down and then
+  // snap it back up. Only the viewport/trigger geometry needs recalculation.
+  useLayoutEffect(() => {
+    if (!anchor || isPhone) return;
+    const place = () => {
+      const rect = anchor.getBoundingClientRect();
+      const height = window.innerHeight;
+      const above = rect.top >= height - rect.bottom;
+      setMenuPosition({ above, edge: above ? height - rect.top + 8 : rect.bottom + 8,
+        maxHeight: Math.max(0, (above ? rect.top : height - rect.bottom) - 24) });
+    };
+    place();
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => { window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); };
+  }, [anchor, isPhone]);
 
   const renderMode = (mode: ModeItem) => {
             const Icon = mode.icon;
@@ -257,7 +275,7 @@ export function SearchModeSelector() {
           open={moreOpen}
           onToggle={() => setMoreOpen((value) => !value)}
           renderMode={renderMode}
-          onResized={() => popoverActions.current?.updatePosition()}
+          reduceMotion={reduceMotion}
         />
     </>
   );
@@ -318,14 +336,19 @@ export function SearchModeSelector() {
         <Popover
           open={Boolean(anchor)}
           anchorEl={anchor}
-          action={popoverActions}
+          transitionDuration={reduceMotion ? 0 : undefined}
           onClose={() => setAnchor(null)}
           anchorOrigin={{ vertical: 'top', horizontal: 'left' }}
           transformOrigin={{ vertical: 'bottom', horizontal: 'left' }}
           slotProps={{
             paper: {
               sx: {
-                mb: 1,
+                ...(menuPosition && {
+                  top: menuPosition.above ? 'auto !important' : `${menuPosition.edge}px !important`,
+                  bottom: menuPosition.above ? `${menuPosition.edge}px` : 'auto',
+                  maxHeight: menuPosition.maxHeight,
+                  transformOrigin: menuPosition.above ? 'left bottom !important' : 'left top !important',
+                }),
                 p: 1,
                 width: 336,
                 maxWidth: 'calc(100vw - 24px)',
@@ -351,21 +374,22 @@ function MoreModes({
   open,
   onToggle,
   renderMode,
-  onResized,
+  reduceMotion,
 }: {
   modes: readonly ModeItem[];
   open: boolean;
   onToggle: () => void;
   renderMode: (mode: ModeItem) => JSX.Element;
-  onResized: () => void;
+  reduceMotion: boolean;
 }) {
+  const contentId = useId();
   return (
     <Box sx={{ mt: 1.25, borderTop: '1px solid var(--bt-hairline)' }}>
       <Box
         component="button"
         type="button"
         aria-expanded={open}
-        aria-controls="more-modes"
+        aria-controls={contentId}
         onClick={onToggle}
         sx={{
           display: 'flex',
@@ -387,13 +411,12 @@ function MoreModes({
       >
         <Box sx={{ minWidth: 0, flex: 1 }}>
           <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, lineHeight: 1.2 }}>Ещё</Typography>
-          {!open && (
             <Typography
-              sx={{ color: 'text.secondary', fontSize: '0.75rem', lineHeight: 1.35, mt: 0.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+              aria-hidden={open}
+              sx={{ visibility: open ? 'hidden' : 'visible', color: 'text.secondary', fontSize: '0.75rem', lineHeight: 1.35, mt: 0.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
             >
               {modes.map((mode) => mode.label).join(', ')}
             </Typography>
-          )}
         </Box>
         <CaretDown
           size={16}
@@ -402,8 +425,8 @@ function MoreModes({
           style={{ flexShrink: 0, transform: open ? 'rotate(180deg)' : undefined, transition: 'transform 0.16s cubic-bezier(0.23, 1, 0.32, 1)' }}
         />
       </Box>
-      <Collapse in={open} onEntered={onResized} onExited={onResized}>
-        <Box id="more-modes" sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, pt: 0.5 }}>
+      <Collapse in={open} timeout={reduceMotion ? 0 : 180}>
+        <Box id={contentId} sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, pt: 0.5 }}>
           {modes.map(renderMode)}
         </Box>
       </Collapse>

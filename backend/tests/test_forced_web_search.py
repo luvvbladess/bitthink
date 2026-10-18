@@ -48,6 +48,31 @@ def _completed(*output):
     return [NS(type="response.completed", response=_response(list(output)))]
 
 
+def test_parallel_read_results_keep_call_ids_in_responses_loop(monkeypatch):
+    import computer_tools
+    active = peak = 0
+    requests = []
+    scripted = [_completed(*[NS(type='function_call', name='browse_page', arguments='{"url":"https://example.com/%d"}' % i,
+                                  call_id=f'read-{i}', id=f'read-{i}') for i in range(3)]), _completed(_message('Сравнение готово'))]
+    async def create(**request):
+        requests.append(request)
+        return _Stream(scripted.pop(0))
+    async def read(name, args, uid):
+        nonlocal active, peak
+        active += 1; peak = max(peak, active)
+        await asyncio.sleep(.02)
+        active -= 1
+        return 'URL: ' + args['url'] + '\n\nПрочитанные параметры'
+    monkeypatch.setattr(oc, 'client', NS(responses=NS(create=create)))
+    monkeypatch.setattr(computer_tools, 'run_computer_tool', read)
+    result = asyncio.run(oc.get_chat_response([{'role':'user','content':'Сравни три страницы'}],
+                                            model='gpt-6-luna', use_tools=True, chat_tools=True))
+    assert peak == 3 and result[0] == 'Сравнение готово'
+    outputs = [item for item in requests[1]['input'] if isinstance(item, dict) and item.get('type') == 'function_call_output']
+    assert [item['call_id'] for item in outputs] == ['read-0', 'read-1', 'read-2']
+    assert all(f'https://example.com/{i}' in item['output'] for i, item in enumerate(outputs))
+
+
 @pytest.mark.parametrize("text", ["привет", "Привет!", "hello", "спасибо", "пока", "привет, друг"])
 def test_a_greeting_is_not_a_search_request(text):
     assert oc._is_smalltalk(text)
@@ -60,8 +85,23 @@ def test_real_questions_are_not_smalltalk(text):
 
 def test_forced_search_demands_the_web_search_itself_on_a_real_question(monkeypatch):
     result, requests = _run(monkeypatch, [_completed(_message("94,3 ₽"))], text="Какой сейчас курс евро?")
-    assert requests[0]["tool_choice"] == {"type": "web_search"}
+    assert requests[0]["tool_choice"] == {"type": "function", "name": "web_search"}
     assert result[0] == "94,3 ₽"
+
+
+def test_forced_research_can_read_a_page_after_search_without_mutation_tools(monkeypatch):
+    import computer_tools
+    read = NS(type='function_call', name='browse_page', arguments='{"url":"https://stats.example/hero"}', call_id='read', id='read')
+    async def page(name, args, uid):
+        assert name == 'browse_page'
+        return 'URL: https://stats.example/hero\n\nWin rate 51.5%, ranked, last 7 days'
+    monkeypatch.setattr(computer_tools, 'run_computer_tool', page)
+    result, requests = _run(monkeypatch, [_completed(read), _completed(_message('51.5%, ranked, 7 days'))], text='Find current hero winrate')
+    offered = {t.get('name') for t in requests[0]['tools']}
+    assert {'web_search', 'server_search', 'browse_page'} <= offered
+    assert not {'ssh_exec', 'workspace_write', 'site_login', 'project_result'} & offered
+    assert '51.5%' in result[0]
+    assert any('51.5%' in str(item.get('output', '')) for item in requests[1]['input'] if isinstance(item, dict))
 
 
 def test_a_greeting_in_search_mode_is_just_answered(monkeypatch):
@@ -80,7 +120,7 @@ def test_the_demand_is_made_once_not_on_every_hop(monkeypatch):
         text="Какой сейчас курс евро?",
     )
     assert len(requests) == 2
-    assert requests[0]["tool_choice"] == {"type": "web_search"}
+    assert requests[0]["tool_choice"] == {"type": "function", "name": "web_search"}
     assert "tool_choice" not in requests[1]
     assert result[0] == "Готово"
 
@@ -91,6 +131,17 @@ def test_an_answer_cut_short_is_shown_not_discarded(monkeypatch):
     ))]
     result, _ = _run(monkeypatch, [cut], text="Расскажи подробно про курс евро")
     assert result[0] == "Начало ответа"
+
+
+def test_short_research_reserves_last_hop_for_synthesis(monkeypatch):
+    call = NS(type="function_call", name="list_skills", arguments="{}", call_id="c1", id="c1")
+    result, requests = _run(
+        monkeypatch, [_completed(call), _completed(_message("Готовый ответ по найденным данным"))],
+        text="Найди свежие обзоры", max_tool_loops=2,
+    )
+    assert requests[0]["tool_choice"] == {"type": "function", "name": "web_search"}
+    assert requests[1]["tool_choice"] == "none"
+    assert result[0] == "Готовый ответ по найденным данным"
 
 
 def test_the_real_reason_is_shown_when_the_response_fails(monkeypatch):

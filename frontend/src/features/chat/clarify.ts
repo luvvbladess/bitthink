@@ -8,6 +8,15 @@ export interface ClarifyQuestion {
 export interface SearchItem {
   query: string;
   summary: string;
+  evidence_state?: 'read' | 'retrieved' | 'failed' | 'insufficient';
+  reviews_state?: 'read' | 'not_extracted' | 'unknown';
+  read_at?: string;
+  cached?: boolean;
+  source_id?: string;
+  origin?: 'search' | 'page' | 'archive';
+  published_at?: string;
+  answer_excerpt?: string;
+  answer_context?: string;
 }
 
 export function splitSearch(search?: SearchItem[] | null): {

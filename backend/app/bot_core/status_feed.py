@@ -60,7 +60,7 @@ async def push_status(kind: str, detail: str) -> None:
 
 async def announce_tool(name: str, args: Optional[dict] = None) -> None:
     args = args or {}
-    if name in ("web_search", "$web_search"):
+    if name in ("web_search", "$web_search", "server_search"):
         q = str(args.get("query") or args.get("q") or args.get("text_query") or "").strip()
         await push_status("search", q or "Ищу в интернете")
     elif name == "image_search":
@@ -155,5 +155,11 @@ async def announce_tool(name: str, args: Optional[dict] = None) -> None:
         await push_status("think", f"pip {label}".strip() or "Ставлю пакеты")
     elif name == "visualize_data":
         await push_status("chart", str(args.get("title") or "Строю график"))
+    elif name == 'engineering_import':
+        await push_status('think','Загружаю исходные материалы для чертежей')
+    elif name == 'engineering_read_page':
+        await push_status('think',f"Просматриваю лист {args.get('page',1)} чертежа")
+    elif name == 'engineering_build':
+        await push_status('think','Черчу и проверяю комплект КД')
     else:
         await push_status("think", name)

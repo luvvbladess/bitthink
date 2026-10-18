@@ -1,0 +1,289 @@
+[
+  {
+    "id": "e01-good",
+    "snapshot_date": "2026-10-17",
+    "synthetic": true,
+    "text": "Model A стоит 20 $. [Каталог](https://example.com/catalog)",
+    "sources": [
+      {
+        "query": "Pinned synthetic catalog, 2026-10-17",
+        "summary": "https://example.com/catalog\nModel A costs 20 USD, rating 4.8, 120 reviews.",
+        "evidence_state": "read"
+      }
+    ],
+    "answer": {
+      "facts": [
+        "20 \\$"
+      ]
+    },
+    "expected_errors": []
+  },
+  {
+    "id": "e02-wrong-value",
+    "snapshot_date": "2026-10-17",
+    "synthetic": true,
+    "text": "Model A стоит 30 $. [Каталог](https://example.com/catalog)",
+    "sources": [
+      {
+        "query": "Pinned synthetic catalog, 2026-10-17",
+        "summary": "https://example.com/catalog\nModel A costs 20 USD, rating 4.8, 120 reviews.",
+        "evidence_state": "read"
+      }
+    ],
+    "answer": {
+      "facts": [
+        "20 \\$"
+      ]
+    },
+    "expected_errors": [
+      "incorrect_snapshot_fact:20 \\$"
+    ]
+  },
+  {
+    "id": "e03-fabricated-link",
+    "snapshot_date": "2026-10-17",
+    "synthetic": true,
+    "text": "Model A стоит 20 $. [Каталог](https://fake.example/catalog)",
+    "sources": [
+      {
+        "query": "Pinned synthetic catalog, 2026-10-17",
+        "summary": "https://example.com/catalog\nModel A costs 20 USD, rating 4.8, 120 reviews.",
+        "evidence_state": "read"
+      }
+    ],
+    "answer": {},
+    "expected_errors": [
+      "unobserved_citation_url",
+      "missing_inline_evidence",
+      "precise_claim_without_inline_source"
+    ]
+  },
+  {
+    "id": "e04-only-snippet",
+    "snapshot_date": "2026-10-17",
+    "synthetic": true,
+    "text": "Рейтинг 4.8 [Каталог](https://example.com/catalog)",
+    "sources": [
+      {
+        "query": "Pinned synthetic catalog, 2026-10-17",
+        "summary": "https://example.com/catalog\nModel A costs 20 USD, rating 4.8, 120 reviews.",
+        "evidence_state": "retrieved"
+      }
+    ],
+    "answer": {},
+    "expected_errors": [
+      "precise_claim_needs_page_read"
+    ]
+  },
+  {
+    "id": "e05-unlinked",
+    "snapshot_date": "2026-10-17",
+    "synthetic": true,
+    "text": "Рейтинг 4.8",
+    "sources": [
+      {
+        "query": "Pinned synthetic catalog, 2026-10-17",
+        "summary": "https://example.com/catalog\nModel A costs 20 USD, rating 4.8, 120 reviews.",
+        "evidence_state": "read"
+      }
+    ],
+    "answer": {},
+    "expected_errors": [
+      "missing_inline_evidence",
+      "precise_claim_without_inline_source"
+    ]
+  },
+  {
+    "id": "e06-valid-table",
+    "snapshot_date": "2026-10-17",
+    "synthetic": true,
+    "text": "| Модель | Цена |\n|---|---|\n| A | 20 $ |\n\nИсточник таблицы: [каталог](https://example.com/catalog)",
+    "sources": [
+      {
+        "query": "Pinned synthetic catalog, 2026-10-17",
+        "summary": "https://example.com/catalog\nModel A costs 20 USD, rating 4.8, 120 reviews.",
+        "evidence_state": "read"
+      }
+    ],
+    "answer": {},
+    "expected_errors": []
+  },
+  {
+    "id": "e07-blanket-refusal",
+    "snapshot_date": "2026-10-17",
+    "synthetic": true,
+    "text": "Не могу подтвердить цену.",
+    "sources": [
+      {
+        "query": "Pinned synthetic catalog, 2026-10-17",
+        "summary": "https://example.com/catalog\nModel A costs 20 USD, rating 4.8, 120 reviews.",
+        "evidence_state": "read"
+      }
+    ],
+    "answer": {},
+    "expected_errors": [
+      "incomplete_answer_needs_recovery",
+      "missing_inline_evidence"
+    ]
+  },
+  {
+    "id": "e08-no-answer",
+    "snapshot_date": "2026-10-17",
+    "synthetic": true,
+    "text": "",
+    "sources": [],
+    "answer": {},
+    "expected_errors": [
+      "empty_or_failed"
+    ]
+  },
+  {
+    "id": "e09-missing-reviews",
+    "snapshot_date": "2026-10-17",
+    "synthetic": true,
+    "text": "Рейтинг 4.8 [Каталог](https://example.com/catalog)",
+    "sources": [
+      {
+        "query": "Pinned synthetic catalog, 2026-10-17",
+        "summary": "https://example.com/catalog\nModel A costs 20 USD, rating 4.8, 120 reviews.",
+        "evidence_state": "read"
+      }
+    ],
+    "answer": {
+      "required": [
+        "120 отзывов"
+      ]
+    },
+    "expected_errors": [
+      "missing_content:120 отзывов"
+    ]
+  },
+  {
+    "id": "e10-apology",
+    "snapshot_date": "2026-10-17",
+    "synthetic": true,
+    "text": "Извини, рейтинг 4.8. [Каталог](https://example.com/catalog)",
+    "sources": [
+      {
+        "query": "Pinned synthetic catalog, 2026-10-17",
+        "summary": "https://example.com/catalog\nModel A costs 20 USD, rating 4.8, 120 reviews.",
+        "evidence_state": "read"
+      }
+    ],
+    "answer": {
+      "forbidden": [
+        "извини"
+      ]
+    },
+    "expected_errors": [
+      "forbidden_content:извини"
+    ]
+  },
+  {
+    "id": "e11-stable-explanation",
+    "snapshot_date": "2026-10-17",
+    "synthetic": true,
+    "text": "Трансформатор передает энергию между обмотками.",
+    "sources": [],
+    "answer": {},
+    "expected_errors": []
+  },
+  {
+    "id": "e12-literal-review",
+    "snapshot_date": "2026-10-17",
+    "synthetic": true,
+    "text": "В выборке отзывов хвалят звук. [Каталог](https://example.com/catalog)",
+    "sources": [
+      {
+        "query": "Pinned synthetic catalog, 2026-10-17",
+        "summary": "https://example.com/catalog\nModel A costs 20 USD, rating 4.8, 120 reviews.",
+        "evidence_state": "read"
+      }
+    ],
+    "answer": {
+      "required": [
+        "звук"
+      ]
+    },
+    "expected_errors": []
+  },
+  {
+    "id": "e13-caption-after-cleanup",
+    "snapshot_date": "2026-10-17",
+    "synthetic": true,
+    "text": "| Модель | Цена |\n|---|---|\n| A | 20 $ |\n\nИсточник таблицы: [каталог](https://example.com/catalog)",
+    "sources": [
+      {
+        "query": "Pinned synthetic catalog, 2026-10-17",
+        "summary": "https://example.com/catalog\nModel A costs 20 USD, rating 4.8, 120 reviews.",
+        "evidence_state": "read"
+      }
+    ],
+    "answer": {},
+    "expected_errors": [],
+    "clean_first": true
+  },
+  {
+    "id": "e15-leading-dollar",
+    "snapshot_date": "2026-10-17",
+    "synthetic": true,
+    "text": "Тариф стоит $20.\n\nДругая информация [каталог](https://example.com/catalog)",
+    "sources": [
+      {
+        "query": "Pinned synthetic catalog, 2026-10-17",
+        "summary": "https://example.com/catalog\nModel A costs 20 USD, rating 4.8, 120 reviews.",
+        "evidence_state": "read"
+      }
+    ],
+    "answer": {},
+    "expected_errors": [
+      "precise_claim_without_inline_source"
+    ]
+  },
+  {
+    "id": "e16-multiple-sentences-in-row",
+    "snapshot_date": "2026-10-17",
+    "synthetic": true,
+    "text": "| План | Цена | Условия |\n|---|---|---|\n| A | $20 | Агент в IDE. Есть лимиты. [тариф](https://example.com/catalog) |",
+    "sources": [
+      {
+        "query": "Pinned synthetic catalog, 2026-10-17",
+        "summary": "https://example.com/catalog\nModel A costs 20 USD, rating 4.8, 120 reviews.",
+        "evidence_state": "read"
+      }
+    ],
+    "answer": {},
+    "expected_errors": []
+  },
+  {
+    "id": "e17-paragraph-citation",
+    "snapshot_date": "2026-10-17",
+    "synthetic": true,
+    "text": "Рейтинг Model A — 4.8. У карточки 120 отзывов. [каталог](https://example.com/catalog)",
+    "sources": [
+      {
+        "query": "Pinned synthetic catalog, 2026-10-17",
+        "summary": "https://example.com/catalog\nModel A costs 20 USD, rating 4.8, 120 reviews.",
+        "evidence_state": "read"
+      }
+    ],
+    "answer": {},
+    "expected_errors": []
+  },
+  {
+    "id": "e14-numeric-anchor-after-cleanup",
+    "snapshot_date": "2026-10-17",
+    "synthetic": true,
+    "text": "Рейтинг 4.8 [1](https://example.com/catalog)",
+    "sources": [
+      {
+        "query": "Pinned synthetic catalog, 2026-10-17",
+        "summary": "https://example.com/catalog\nModel A costs 20 USD, rating 4.8, 120 reviews.",
+        "evidence_state": "read"
+      }
+    ],
+    "answer": {},
+    "expected_errors": [],
+    "clean_first": true
+  }
+]

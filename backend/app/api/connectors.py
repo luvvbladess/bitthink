@@ -15,6 +15,53 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@router.post("/{connector_id}/mcp/discover")
+async def discover_mcp(connector_id: int, user_id: str = Depends(get_current_user)):
+    from app.services.mcp_client import discover
+    try:
+        return await discover(await repo.ensure_user(user_id), connector_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        logger.info("MCP discovery failed: %s", type(exc).__name__)
+        raise HTTPException(502, "MCP-сервер не ответил. Проверьте адрес и токен доступа.") from exc
+
+
+@router.patch("/{connector_id}/mcp/tools")
+async def enable_mcp_tools(connector_id: int, payload: dict, user_id: str = Depends(get_current_user)):
+    import asyncio
+    from app.services.mcp_client import discover
+    uid = await repo.ensure_user(user_id)
+    loaded = await asyncio.to_thread(connector_store.get_secret, uid, connector_id)
+    if not loaded or loaded[0].type != "mcp":
+        raise HTTPException(404, "MCP-подключение не найдено.")
+    names = payload.get("allowed_tools")
+    if not isinstance(names, list) or any(not isinstance(n, str) for n in names):
+        raise HTTPException(400, "Нужен список разрешённых инструментов.")
+    try:
+        available = {t["name"] for t in (await discover(uid, connector_id))["tools"]}
+        if not set(names) <= available:
+            raise ValueError("Некоторые инструменты не найдены на сервере.")
+        row, secret = loaded
+        secret["allowed_tools"] = names
+        from app.core.crypto import encrypt_json
+        from app.db.engine import SyncSessionLocal
+        from app.db.models import Connector
+        def save():
+            with SyncSessionLocal() as session:
+                target = session.get(Connector, connector_id)
+                if not target or target.user_id != uid:
+                    raise ValueError("Подключение удалено.")
+                target.payload_encrypted = encrypt_json(secret)
+                session.commit()
+        await asyncio.to_thread(save)
+        return {"ok": True, "allowed_tools": names}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, "Не удалось получить инструменты MCP.") from exc
+
+
 async def _account_uid(user_id: str) -> int:
     return await repo.ensure_user(user_id)
 

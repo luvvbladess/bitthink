@@ -26,6 +26,7 @@ EXPECTED_SKILLS = {
     "eng_drawing",
     "eng_normcontrol",
     "eng_report",
+    "eng_reverse",
     "eng_schematic",
     "eng_standard",
     "eng_tolerance",
@@ -80,7 +81,7 @@ def test_engineering_skills_match_engineering_requests_only():
     assert skill_scope("eng_cad") == "sandbox"
     assert "eng_cad" not in match_skills("разбери этот .dxf файл", sandbox=False)
     for name in EXPECTED_SKILLS:
-        if name.startswith("eng_") and name != "eng_cad":
+        if name.startswith("eng_") and name not in {"eng_cad", "eng_reverse"}:
             assert name in CHAT_SKILLS, name
     # Everyday speech must not pull engineering playbooks.
     for text in (
@@ -95,7 +96,9 @@ def test_engineering_skills_match_engineering_requests_only():
 def test_skills_catalog_covers_core_playbooks():
     catalog.cache_clear()
     names = {item["name"] for item in catalog()}
-    assert names == EXPECTED_SKILLS
+    from computer_skills.adaptations import registry
+    adapted = {name for name, row in registry().items() if row['adaptation'] == 'builtin'}
+    assert names == EXPECTED_SKILLS | adapted
     text = load_skill("humanize")
     assert "канцелярита" in text or "живой" in text.lower()
     assert "самодостаточный HTML" in load_skill("canvas")

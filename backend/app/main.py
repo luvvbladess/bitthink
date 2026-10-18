@@ -12,7 +12,8 @@ from app.db import models as _db_models  # noqa: F401 — register tables for cr
 from app.api import admin, auth, chat, conversations, models_router, documents, editor, media, billing, usage, connectors, memory, skills, share
 from app.db.base import Base
 from app.db.engine import sync_engine
-from app.api import marketplace_relay, desktop
+from app.api import marketplace_relay, desktop, computer
+from app.api import projects
 
 
 def _ensure_runtime_tables() -> None:
@@ -22,6 +23,8 @@ def _ensure_runtime_tables() -> None:
 
     UserSkill.__table__.create(bind=sync_engine, checkfirst=True)
     _db_models.TokenReservation.__table__.create(bind=sync_engine, checkfirst=True)
+    for model in (_db_models.ComputerTask, _db_models.ComputerEvent, _db_models.ComputerHook, _db_models.SkillResource):
+        model.__table__.create(bind=sync_engine, checkfirst=True)
     EditorDocument.__table__.create(bind=sync_engine, checkfirst=True)
     ConversationShare.__table__.create(bind=sync_engine, checkfirst=True)
     ConversationMember.__table__.create(bind=sync_engine, checkfirst=True)
@@ -44,7 +47,12 @@ async def lifespan(app: FastAPI):
     if settings.DATABASE_URL.startswith("sqlite"):
         Base.metadata.create_all(bind=sync_engine)
     _ensure_runtime_tables()
-    yield
+    from app.services.computer_tasks import worker
+    await worker.start()
+    try:
+        yield
+    finally:
+        await worker.stop()
 
 
 def create_app() -> FastAPI:
@@ -87,6 +95,8 @@ def create_app() -> FastAPI:
     app.include_router(skills.router, prefix="/skills", tags=["skills"])
     app.include_router(marketplace_relay.router, prefix="/marketplace-relay", tags=["home-reader"])
     app.include_router(desktop.router, prefix="/desktop", tags=["desktop"])
+    app.include_router(computer.router, prefix="/computer", tags=["computer"])
+    app.include_router(projects.router, prefix="/projects", tags=["projects"])
 
     # Chat and generated files are stored as sha256(email)[:16]/uuid.hex.ext.
     # Anything else under those trees is not a file we wrote.

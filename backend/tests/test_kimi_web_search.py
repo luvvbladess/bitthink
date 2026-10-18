@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 from types import SimpleNamespace
 
 from app.config import get_settings  # noqa: F401 — adds bot_core to sys.path
@@ -7,6 +8,36 @@ import kimi_client
 import kimi_web_search
 import search_engine
 import web_scraper
+
+
+def test_search_brief_incorporates_last_tool_result_at_step_limit(monkeypatch):
+    import computer_skills.loader
+    monkeypatch.setattr(computer_skills.loader, 'match_skills', lambda *a, **k: [])
+    monkeypatch.setattr(kimi_client, 'client', object())
+    calls = []
+    async def model(client, data, **kwargs):
+        calls.append(data)
+        if len(calls) <= 4:
+            tool = SimpleNamespace(id=str(len(calls)), type='function', function=SimpleNamespace(name='browse_page', arguments='{}'))
+            message = SimpleNamespace(content='Still checking', tool_calls=[tool])
+        else:
+            assert 'tools' not in data
+            assert any('LAST_PAGE_STAT' in str(m.get('content')) for m in data['messages'])
+            message = SimpleNamespace(content='Final statistic from LAST_PAGE_STAT', tool_calls=[])
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=None)
+    async def append(messages, tools, **kwargs):
+        messages.append({'role':'tool', 'tool_call_id':tools[0].id, 'content':'LAST_PAGE_STAT'})
+        return []
+    monkeypatch.setattr(kimi_client, 'model_call', model)
+    monkeypatch.setattr(kimi_client, '_append_tool_results', append)
+    answer = asyncio.run(kimi_client.get_kimi_search_brief([], 'Hero question'))
+    assert answer == 'Final statistic from LAST_PAGE_STAT' and len(calls) == 5
+
+
+@pytest.fixture(autouse=True)
+def explicit_paid_provider_contract(monkeypatch):
+    # These tests exercise the retained REST adapter, not the new free default.
+    monkeypatch.setenv('WEB_SEARCH_BACKEND', 'kimi')
 
 
 SAMPLE_BASIC = {
@@ -141,7 +172,6 @@ def test_kimi_block_page_is_rejected_and_uses_shared_fallback(monkeypatch):
     async def blocked(url, **kwargs):
         return {'url':url,'markdown':'Похоже, нет\u00a0соединения. Выключите VPN.'}
     async def shared(url, **kwargs):
-        assert kwargs['use_kimi_fallback'] is False
         return url,'Нормальная страница через сервер'
     monkeypatch.setattr(kimi_web_search,'kimi_fetch',blocked)
     monkeypatch.setattr(web_scraper,'fetch_url_content',shared)

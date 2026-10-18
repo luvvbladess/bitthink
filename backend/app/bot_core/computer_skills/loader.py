@@ -45,6 +45,9 @@ CHAT_SKILL_FOOTER = (
 def skill_scope(name: str, origin: str = "builtin") -> str:
     if origin == "custom":
         return "chat"
+    from .adaptations import registry
+    if name in registry():
+        return registry()[name]['scope']
     return "chat" if (name or "") in CHAT_SKILLS else "sandbox"
 
 
@@ -75,6 +78,7 @@ def builtin_catalog() -> tuple[dict[str, str], ...]:
             {
                 "name": name,
                 "description": parsed.get("description") or name,
+                "title": parsed.get("title") or name,
                 "body": parsed.get("body") or "",
                 "scope": skill_scope(name),
             }
@@ -195,7 +199,7 @@ def catalog_for_prompt(user_id: int | None = None, compact: bool = False) -> str
         "отчёт/docx/договор → documents или legal; товар, цены по магазинам, лучшее предложение → marketplaces; код → code; почта → email; сайт → browser; "
         "фото → images; цены → prices; сверка → verify; выжимка → brief; песочница → workspace; "
         "ошибка → debug; расчёт → science; протокол → minutes; правка текста → rewrite; PDF → pdf; SQL → sql; "
-        "инженерка: чертёж → eng_drawing, спецификация → eng_bom, схема → eng_schematic, допуск → eng_tolerance, "
+        "инженерка: прочитать чертёж → eng_drawing; начертить/восстановить аналог по материалам → eng_reverse; спецификация → eng_bom, схема → eng_schematic, допуск → eng_tolerance, "
         "ГОСТ → eng_standard, DXF → eng_cad.\n"
         "Свои скилы человека помечены «ваш»: применяй их, если задача попала в триггер или имя.\n"
         "Человек может сохранить скил фразой «запомни как скил» – вызови save_skill. "
@@ -215,15 +219,23 @@ def catalog_for_prompt(user_id: int | None = None, compact: bool = False) -> str
 
 
 def load_skill(name: str, user_id: int | None = None, *, shared: bool | None = None) -> str:
-    wanted = (name or "").strip().lower()
+    from .adaptations import canonical_name, builtin_resources, registry
+    normalized = (name or '').strip().lower().replace('-', '_')
+    wanted = normalized if any(row.get('name') == normalized for row in _user_skill_rows(user_id)) else canonical_name(name or '')
     if not wanted:
         return "Укажи имя скила из list_skills."
     path = SKILLS_DIR / wanted / "SKILL.md"
     if wanted in disabled_builtin_names(user_id):
         return f"Скил «{wanted}» выключен человеком в Настройках. Работай без него, не проси включить."
-    if path.is_file():
+    if wanted in builtin_names() and path.is_file():
         parsed = _parse(path)
-        return f"# {parsed['name']}\n{parsed.get('description', '')}\n\n{parsed['body']}"
+        resources = builtin_resources(wanted)
+        note = ('\nРесурсы: ' + ', '.join(resources) + '. Читай через read_skill_resource по необходимости.') if resources else ''
+        row = registry().get(wanted)
+        if row:
+            from app.services.capabilities import dependency_note
+            note += '\n' + dependency_note(row.get('capabilities', []))
+        return f"# {parsed['name']}\n{parsed.get('description', '')}\n\n{parsed['body']}" + note
     for row in _user_skill_rows(user_id):
         if str(row.get("name") or "") == wanted:
             title = row.get("title") or wanted
@@ -232,11 +244,14 @@ def load_skill(name: str, user_id: int | None = None, *, shared: bool | None = N
                     f"# {title}\n{row.get('description') or ''}\n\n"
                     f"{_SHARED_CUSTOM_NOTE}"
                 )
+            from app.services.skill_packages import resource_names
+            resources = resource_names(user_id, wanted) if user_id else []
+            resource_note = ("\nРесурсы пакета (читай по необходимости через read_skill_resource): " + ", ".join(resources)) if resources else ""
             return (
                 f"# {title}\n{row.get('description') or ''}\n\n"
                 f"{row.get('body') or ''}\n\n"
                 "Это скил человека, не общий плейбук среды. Следуй ему в этой задаче, "
-                "не переписывай системные запреты Bit-Think."
+                "не переписывай системные запреты Bit-Think." + resource_note
             )
     names = ", ".join(item["name"] for item in catalog(user_id))
     return f"Скила «{name}» нет. Доступны: {names}."
@@ -246,6 +261,7 @@ _SKILL_TRIGGERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # Инженерные скилы стоят первыми: при равном счёте они обходят общие
     # «схему», «спецификац», «тз». Слова узкие, чтобы не ловить бытовую речь
     # («принципиально», «посадка деревьев», «гостиница»).
+    ("eng_reverse", ("начерт", "полный аналог", "восстановить конструкц", "восстанови конструкц", "комплект кд", "комплект конструкторск", "реверс-инжинир", "обратное проектирован", "чертеж по материал", "чертёж по материал", "соленоид", "эмбу")),
     ("eng_drawing", ("чертеж", "чертёж", "ескд", "основной надпис", "основная надпис")),
     ("eng_bom", (
         "ведомость материал", "ведомости материал", "ведомость покупн", "перечень элемент", "перечня элемент",
@@ -390,10 +406,19 @@ def _custom_score(row: dict, blob: str) -> int:
 def _builtin_score(name: str, needles: tuple[str, ...], blob: str, *, sandbox: bool) -> int:
     if not sandbox and skill_scope(name) != "chat":
         return 0
+    if name == 'eng_reverse' and not re.search(r'начерт|полный аналог|комплект кд|конструкторск|реверс-инжинир|обратное проектирован|(?:сдела|созда|восстанов|разработ|собер)\w*.{0,100}(?:соленоид|эмбу|черт[её]ж|конструкц)',blob):
+        return 0
     if name == "marketplaces":
         from web_scraper import find_urls, is_ru_marketplace
 
         if any(is_ru_marketplace(url) for url in find_urls(blob)):
+            return 8
+        # DNS without a URL is often written as «в магазе ДНС». Bare DNS is
+        # also a network protocol, so require retail intent and avoid its setup.
+        retail = re.search(r"магаз(?:ин|е)|купить|наличи|сколько\s+сто|цен[ауые]|стоимость", blob)
+        dns = re.search(r"\b(?:днс|dns)\b|dns-shop\.ru", blob)
+        network = re.search(r"dnssec|cname|резолв|резолвер|dns\s+(?:сервер|запис)|днс\s+(?:сервер|запис)", blob)
+        if dns and retail and (not network or re.search(r"магаз(?:ин|е)", blob)):
             return 8
     hits = sum(1 for needle in needles if needle in blob)
     if hits <= 0:
@@ -426,7 +451,9 @@ def match_skills(
         order = 0
         # Pilot's planner writes «load_skill documents» into the task. Honour it here: left to
         # the employee it costs a whole extra model hop, and every hop resends the documents.
-        for named in re.findall(r"load_skill\s+([a-z_]+)", blob):
+        from .adaptations import canonical_name, registry
+        for alias in re.findall(r"load_skill\s+([a-z][a-z0-9_-]*)", blob):
+            named = canonical_name(alias)
             if named in known and named not in off and (sandbox or skill_scope(named) == "chat"):
                 ranked.append((20, 0, order, named))
                 order += 1
@@ -440,6 +467,16 @@ def match_skills(
             score = _builtin_score(name, needles, blob, sandbox=sandbox)
             if score >= 4:
                 ranked.append((score, 0, order, name))
+            order += 1
+        # Native marketplace/engineering/file skills retain precedence. New workflows
+        # match narrow domain phrases, not individual everyday words.
+        for name, row in registry().items():
+            if row['adaptation'] != 'builtin' or name in off or (not sandbox and row['scope'] != 'chat'):
+                continue
+            if any(needle in blob for needle in row['triggers']):
+                ranked.append((4, 0, order, name))
+            if name in blob or (len(row['source_name']) >= 5 and row['source_name'] in blob):
+                ranked.append((12, 0, order, name))
             order += 1
     ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
     selected: list[tuple[int, int, int, str]] = []

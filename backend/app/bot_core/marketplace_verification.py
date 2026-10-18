@@ -13,7 +13,24 @@ MAX_CARDS = 8
 TARGET_OFFERS = 3
 FIRST_BATCH = 4
 MAX_DISCOVERY = 2
-BUDGET_SECONDS = 240
+BUDGET_SECONDS = 120
+
+
+def single_store_price_lookup(task):
+    """A price question about one store is not a top-three shopping selection."""
+    if re.search(r"(?:dns|днс)\s+(?:сервер|запис)|dnssec|cname",task,re.I) and not re.search(r"магаз(?:ин|е)",task,re.I):
+        return False
+    price = re.search(r"сколько\s+сто|\bцен[ауы]\b|стоимость", task, re.I)
+    many = re.search(r"сравн|compare|\bтоп\b|лучши|лучше|подбери|где дешевле|спецификац|\bbom\b|план закуп", task, re.I)
+    store = re.search(r"\b(?:днс|dns|озон|ozon|wildberries|wb|ситилинк|citilink)\b|яндекс.?маркет|dns-shop\.ru|магаз(?:ине|е)", task, re.I)
+    return bool(price and store and not many and len(price_store_domains(task)) <= 1 and len(URL_RE.findall(task)) <= 1)
+
+
+def price_store_domains(task):
+    stores = {'dns-shop.ru': r'\b(?:днс|dns)\b|dns-shop\.ru', 'ozon.ru': r'\b(?:озон|ozon)\b',
+              'wildberries.ru': r'\b(?:вб|wb|wildberries|вайлдберриз)\b', 'citilink.ru': r'\b(?:ситилинк|citilink)\b',
+              'market.yandex.ru': r'яндекс.?маркет|market\.yandex\.ru'}
+    return [domain for domain, pattern in stores.items() if re.search(pattern, task, re.I)]
 
 
 def page_failure_reason(body, title=''):
@@ -236,6 +253,10 @@ async def assess_offers(task, results, user_id=None):
         "Модель по памяти не доказывает комплект конкретного предложения. Цена вне бюджета — reject; "
         "подходящий тип без подтверждённой цены, продавца или запрошенных параметров — unknown. "
         "Для топа по отзывам/качеству нужны рейтинг и число отзывов, не только цена. "
+        "Сравни компромиссы: соответствие задаче важнее низкой цены; много оценок не заменяют "
+        "содержание отзывов. Выдели повторяющиеся жалобы и достоинства из максимум 20 доступных текстов. "
+        "Отзывы другого варианта и устаревшие отзывы помечай отдельно. Не делай вывод о надёжности "
+        "по одному числу рейтинга; если тексты не получены, прямо укажи ограничение выбора. "
         "Верни {\"offers\":[{\"id\":id,\"fit\":\"suitable|reject|unknown\",\"reason\":строка,"
         "\"evidence\":{\"type\":дословная цитата,\"price\":цитата,\"seller\":цитата,\"rating\":цитата,"
         "\"review_count\":цитата,\"kit\":цитата,\"availability\":цитата,\"delivery\":цитата,\"reviews\":цитата}}]}. "
@@ -247,14 +268,27 @@ async def assess_offers(task, results, user_id=None):
     for i,r in readable:
         item=decisions.get(i,{})
         evidence={k:v[:320] for k,v in (item.get("evidence") or {}).items() if k in {"type","price","seller","rating","review_count","kit","availability","delivery","reviews"} and evidence_present(v,r["result"])} if isinstance(item.get("evidence"),dict) else {}
+        # A label such as "Цена" or "Рейтинг" is not the value of that field.
+        for field in ('price', 'rating', 'review_count'):
+            if field in evidence and not re.search(r'\d', evidence[field]):
+                evidence.pop(field)
         fit=item.get("fit","unknown")
         if fit not in {"suitable","reject","unknown"}:fit="unknown"
         # A model's label without actual page evidence cannot qualify an offer.
-        if fit=="suitable" and not all(k in evidence for k in ("type","price","seller")):fit="unknown"
-        if fit=="suitable" and re.search(r"топ|лучш|отзыв|рейтинг",task,re.I) and not all(k in evidence for k in ("rating","review_count")):fit="unknown"
+        required = ['type', 'price', 'seller']
+        if re.search(r"топ|лучш|отзыв|рейтинг",task,re.I):required.extend(['rating', 'review_count'])
+        missing = [field for field in required if field not in evidence]
+        if fit=="suitable" and missing:fit="unknown"
         r["offer_fit"]=fit
         r["offer_evidence"]=evidence
+        r['offer_missing'] = missing
+        marker = re.search(r'ТЕКСТЫ ОТЗЫВОВ \((\d+)\)', r['result'])
+        texts = bool(marker and int(marker.group(1)) > 0)
+        r['review_basis'] = 'texts' if texts else 'counts_only' if 'review_count' in evidence else 'unknown'
         r["offer_reason"]=str(item.get("reason") or "Достаточные данные для выбора не подтверждены.")[:600]
+        if missing and fit == 'unknown':
+            labels = {'type':'тип товара', 'price':'цена', 'seller':'продавец', 'rating':'рейтинг', 'review_count':'число отзывов'}
+            r['offer_reason'] = 'Не подтверждены: ' + ', '.join(labels[field] for field in missing) + '. Предложение нельзя считать проверенным подходящим вариантом.'
         if fit=="suitable":suitable+=1
         log.info("marketplace_offer fit=%s url=%s reason=%s",fit,r['search'][0]['query'],r['offer_reason'])
     return suitable
@@ -273,7 +307,8 @@ async def replacement_search(task, queries, rejected, user_id=None):
         site=stores[i%len(stores)] if stores else None
         results=await kimi_search_pro(q,limit=10,sites=[site] if site else None,timeout_seconds=12,user_id=user_id)
         sources=to_ui_sources([r for r in results if is_ru_marketplace(r.get("url",""))])
-        if not sources:
+        from app.services.server_search import use_server_search
+        if not sources and not use_server_search():
             from search_engine import _search_openai_sources
             try:
                 fallback=await asyncio.wait_for(_search_openai_sources(q+(" site:"+site if site else ""),10),45)
@@ -297,13 +332,38 @@ async def verify_marketplace_cards(task, journal, user_id=None):
                 "search": [{"query": url, "summary": url, "reader": "home", "read_status": status, "checked_at": now}] if url else []}
     if not home_relay.online:
         return [entry("", "offline", "Домашний читатель офлайн. Карточки через него НЕ открывались. Данные поиска не проверены.")]
-    deadline = time.monotonic() + BUDGET_SECONDS
+    price_only = single_store_price_lookup(task)
+    deadline = time.monotonic() + (75 if price_only else BUDGET_SECONDS)
+    async def within_budget(operation, fallback, cap=None):
+        async def invoke():
+            return await operation()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:return fallback
+        try:
+            return await asyncio.wait_for(invoke(), min(remaining, cap) if cap else remaining)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning('marketplace_stage unavailable=%s', type(exc).__name__)
+            return fallback
+    first_batch = 1 if price_only else FIRST_BATCH
+    target_offers = 1 if price_only else TARGET_OFFERS
+    max_cards = 2 if price_only else MAX_CARDS
     explicit_cards,_=candidates(task,[])
     comparison=bool(explicit_cards and re.search(r"сравни|сравне|compare",task,re.I))
     if comparison:
         cards,listings,queries=explicit_cards[:MAX_CARDS],[],[]
     else:
-        cards, listings, queries = await rank_candidates(task, journal, user_id)
+        cards, listings, queries = await within_budget(lambda: rank_candidates(task, journal, user_id), ([], [], []), 15)
+        if not cards and not listings:
+            # Ranking is an optimization. Its timeout must not prevent reading
+            # direct links that we already have, or manufacture a guessed URL.
+            cards, listings = candidates(task, journal)
+    requested_domains = price_store_domains(task) if price_only else []
+    def relevant(url):
+        host = urlsplit(url).hostname or ''
+        return not requested_domains or any(host == d or host.endswith('.' + d) for d in requested_domains)
+    cards, listings = [u for u in cards if relevant(u)], [u for u in listings if relevant(u)]
     async def read(url):
         remaining = deadline - time.monotonic()
         if remaining <= 0: return None
@@ -321,12 +381,14 @@ async def verify_marketplace_cards(task, journal, user_id=None):
             log.info("marketplace_discovery url=%s status=%s",url,(result or {}).get("status","timeout"))
             if result and result.get("status")=="ok":extra.append({"result":result.get("text","")})
         return extra
-    if len(cards)<FIRST_BATCH and listings:
-        more,_,_=await rank_candidates(task,await discover(listings),user_id)
+    if len(cards)<first_batch and listings:
+        discovered = await within_budget(lambda: discover(listings), [])
+        more,_,_=await within_budget(lambda: rank_candidates(task,discovered,user_id), ([], [], []), 15)
         cards.extend(u for u in more if u not in cards)
     async def read_batch(urls, count):
         for url in [u for u in urls if u not in attempted][:count]:
             if time.monotonic()>=deadline:break
+            if not relevant(url): continue
             attempted.add(url)
             result=await read(url)
             body=str((result or {}).get("text") or "")
@@ -338,29 +400,37 @@ async def verify_marketplace_cards(task, journal, user_id=None):
             if status=="ok" and (len(body)<50 or _looks_like_bot_wall(body) or not actual or actual[0]!="card" or (not short and actual[1]!=url) or (short and not short_destination_allowed(url,str((result or {}).get("url") or "")))):status="invalid_content"
             log.info("marketplace_verify url=%s status=%s chars=%s",url,status,len(body))
             verified_url=actual[1] if status=="ok" else url
-            item=entry(verified_url,status,body[:10800] if status=="ok" else "Прочитать карточку не удалось. Цена, продавец, комплект и отзывы не подтверждены.")
+            item=entry(verified_url,status,body[:15000] if status=="ok" else "Прочитать карточку не удалось. Цена, продавец, комплект и отзывы не подтверждены.")
+            from app.services.run_protocol import current_run
+            if current_run.get():
+                observed = body[:15000] if status == 'ok' else '[Ошибка проверки карточки: ' + status + ']'
+                current_run.get().observe_page(f'URL: {verified_url}\n\n{observed}')
             item['requested_url']=url
             item['verified_url']=verified_url if status=='ok' else None
             item["result"]="Исходная ссылка покупателя: "+url+"\n"+item["result"]
             results.append(item)
-    await read_batch(cards,len(cards) if comparison else FIRST_BATCH)
-    suitable=await assess_offers(task,results,user_id)
-    if not comparison and suitable<TARGET_OFFERS and time.monotonic()+30<deadline:
+    await read_batch(cards,len(cards) if comparison else first_batch)
+    suitable=await within_budget(lambda: assess_offers(task,results,user_id), 0, 20)
+    if not comparison and suitable<target_offers and time.monotonic()+30<deadline:
         # Exhaust relevant unused candidates before spending time on new searches.
         unused=[u for u in cards if u not in attempted]
-        if unused:await read_batch(unused,MAX_CARDS-len(attempted))
+        if unused:await read_batch(unused,max_cards-len(attempted))
         else:
             try:
-                new_journal=await replacement_search(task,queries,results,user_id)
-                new_cards,new_lists,_=await rank_candidates(task,new_journal,user_id)
+                new_journal=await within_budget(lambda: replacement_search(task,queries,results,user_id), [])
+                new_cards,new_lists,_=await within_budget(lambda: rank_candidates(task,new_journal,user_id), ([], [], []), 15)
                 if not new_cards and new_lists:
-                    new_cards,_,_=await rank_candidates(task,await discover(new_lists),user_id)
-                await read_batch(new_cards,MAX_CARDS-len(attempted))
+                    discovered = await within_budget(lambda: discover(new_lists), [])
+                    new_cards,_,_=await within_budget(lambda: rank_candidates(task,discovered,user_id), ([], [], []), 15)
+                await read_batch(new_cards,max_cards-len(attempted))
             except Exception as exc:
                 log.warning("marketplace_replacement error=%s",type(exc).__name__)
-        await assess_offers(task,results,user_id)
+        await within_budget(lambda: assess_offers(task,results,user_id), 0, 20)
     for r in results:
         if r["status"]=="ok":
-            assessment=json.dumps({"fit":r.get("offer_fit","unknown"),"reason":r.get("offer_reason","Данные для выбора не подтверждены."),"evidence":r.get("offer_evidence",{})},ensure_ascii=False)
+            assessment=json.dumps({"fit":r.get("offer_fit","unknown"),"reason":r.get("offer_reason","Оценка предложения не завершена. Прочитанные данные доступны, соответствие запросу не подтверждено."),"evidence":r.get("offer_evidence",{}),"missing_fields":r.get('offer_missing',[]),"review_basis":r.get('review_basis','unknown')},ensure_ascii=False)
             r["result"]="Оценка соответствия запросу (suitable — подходит, unknown — не подтверждено, reject — исключить): " + assessment + "\n" + r["result"]
-    return results or [entry("", "no_cards", "В поиске не найдено подходящих конкретных карточек. Проверенных предложений нет; категории и сниппеты не заменяют карточки.")]
+    if results:return results
+    if time.monotonic() >= deadline:
+        return [entry('', 'timeout', 'Проверка карточек не завершена в отведённое время. Подтверждённых предложений нет; это не означает, что товар отсутствует в продаже.')]
+    return [entry("", "no_cards", "В поиске не найдено подходящих конкретных карточек. Проверенных предложений нет; категории и сниппеты не заменяют карточки.")]

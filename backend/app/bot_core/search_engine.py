@@ -23,10 +23,19 @@ def query_requires_web(query: str) -> bool:
     text = (query or "").lower().strip()
     if not text:
         return False
+    from app.services.request_intent import classify_request
+    intent = classify_request(query)
+    if intent.web_forbidden or intent.local:
+        return False
+    if intent.needs_web:
+        return True
     # «Без поиска в интернете» beats every pattern below. Forcing the search tool on
     # a request that forbids it made the model end the stream with no answer.
     if re.search(r"\bбез\s+(?:поиска|интернета|веба)\b|\bне\s+(?:ищи|используй\s+(?:интернет|поиск))\b", text):
         return False
+    from app.services.authoritative_catalogs import is_ai_overview
+    if is_ai_overview(text):
+        return True
     # Only unmistakable cases. «Сейчас», «последний пункт», «курсовая», «ценность»
     # used to send ordinary chat to the search hop, which sees neither the files
     # nor the memory of this chat. Everything else: the answer model has
@@ -37,6 +46,7 @@ def query_requires_web(query: str) -> bool:
         r"\b(?:web|internet)\s*search\b",
         r"\bновост\w*",
         r"\b(?:что|кто)\s+(?:сегодня|сейчас|вчера)\b",
+        r"\b(?:каки\w*|како\w*|кто|что)\s+(?:щас|сейчас|сегодня)\s+(?:лучш\w*|лидер\w*|топ\w*)\b",
         r"\b(?:последн|новейш|свеж|актуальн)\w*\s+(?:верси|релиз|обновлен|данн|курс|цен|расписан|результат)\w*",
         r"\b(?:на|в)\s+(?:данный|текущий)\s+момент\b",
         r"\b(?:at\s+the\s+moment|currently|right\s+now|as\s+of\s+now)\b",
@@ -222,6 +232,10 @@ async def search_web(query: str, max_results: int = 14) -> List[Dict[str, str]]:
     Приоритет: Kimi REST `/v1/tools/search`. Если Kimi не вернул как минимум два
     пригодных источника, автоматически используем OpenAI web search.
     """
+    from app.services.server_search import use_server_search, server_search
+    if use_server_search():
+        result = await server_search(query, limit=max_results)
+        return result['results']
     sources = await _search_kimi_sources(query, max_results)
     if _sources_look_useful(sources, query):
         return sources
@@ -250,7 +264,8 @@ async def build_grounded_web_context(query: str, max_results: int = 14, pages_to
     from status_feed import push_status
 
     await push_status("search", f"Ищу: {query[:90]}")
-    pro_results = await _search_kimi_pro(query, max_results)
+    from app.services.server_search import use_server_search
+    pro_results = await _search_kimi_pro(query, max_results) if not use_server_search() else []
     sources = to_engine_sources(pro_results)
     if not sources:
         logger.info(f"Kimi Pro empty for '{query[:60]}', falling back to search_web")
@@ -261,7 +276,9 @@ async def build_grounded_web_context(query: str, max_results: int = 14, pages_to
         return "", []
 
     await push_status("search", f"Нашёл {len(sources)} источников")
-    selected = sources[:pages_to_read]
+    # Fast default: no automatic crawl of ordinary search results. The model can
+    # explicitly browse a specific primary page when its content is necessary.
+    selected = sources[:pages_to_read] if not use_server_search() else []
     content_by_url = evidence_from_results(pro_results)
     to_scrape = [source for source in selected if not content_by_url.get(source.get("url", ""))]
     for source in selected:
@@ -284,17 +301,21 @@ async def build_grounded_web_context(query: str, max_results: int = 14, pages_to
     for index, source in enumerate(sources, 1):
         url = source.get("url", "")
         body = content_by_url.get(url) or source.get("snippet", "")
-        blocks.append(f"[{index}] {source.get('title', 'Источник')}\nURL: {url}\n{body}")
+        evidence = 'прочитан фрагмент страницы' if content_by_url.get(url) else 'поисковая выдача, страница не прочитана'
+        when = f"\nПолучено: {source['read_at']}" if source.get('read_at') else ''
+        cached = '\nПовторно использована сохранённая выдача' if source.get('cached') else ''
+        blocks.append(f"[{index}] {source.get('title', 'Источник')}\nURL: {url}\nПроисхождение: {evidence}{when}{cached}\n{body}")
 
     await push_status("think", "Сопоставляю факты из источников")
     ui_sources = [
         {
             "query": source.get("title", "Источник"),
             "summary": f"{source.get('url', '')}\n{source.get('snippet', '')}".strip(),
+            **({key: source[key] for key in ('evidence_state', 'read_at', 'cached') if key in source} if source.get('evidence_state') else {}),
         }
         for source in sources
     ]
-    return "\n\n".join(blocks), ui_sources
+    return "\n\n".join(blocks) + '\n\nПодкрепи существенные факты ссылками на конкретные URL рядом с утверждением. Поисковая выдача не подтверждает актуальную цену и наличие.', ui_sources
 
 
 async def smart_web_search(
@@ -331,8 +352,10 @@ async def smart_web_search(
             
             search_report.append(f"{i+1}. **{title}**\nURL: {href}\nСниппет: {body}\n")
             
-            # Добавляем лучшие ссылки в очередь на полный скрапинг (топ-8)
-            if i < 8:
+            from app.services.server_search import use_server_search
+            # Server search is snippets only. Marketplace cards are verified by
+            # the existing dedicated reader stage, not an automatic eight-page crawl.
+            if i < 8 and not use_server_search():
                 urls_to_scrape.append(href)
         
         # 3. Докачиваем контент (параллельно)

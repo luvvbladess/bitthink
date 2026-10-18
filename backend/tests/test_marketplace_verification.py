@@ -178,6 +178,18 @@ def test_quality_top_requires_rating_and_review_count(monkeypatch):
     assert results[0]["offer_fit"]=="unknown"
 
 
+def test_review_counts_are_not_treated_as_review_texts(monkeypatch):
+    async def buyer(*args, **kwargs):
+        return {'offers':[{'id':i,'fit':'suitable','evidence':{'type':'Наушники','price':'Цена 1500 ₽','seller':'Продавец Магазин','rating':'Рейтинг 4.8','review_count':'1273 отзыва'}} for i in range(2)]}
+    monkeypatch.setattr(mv, 'buyer_json', buyer)
+    body = 'Наушники. Цена 1500 ₽. Продавец Магазин. Рейтинг 4.8. 1273 отзыва.'
+    results = [{'status':'ok','result':body,'search':[{'query':CARD}]},
+        {'status':'ok','result':body+'\nТЕКСТЫ ОТЗЫВОВ (2):\n1. Удобные.\n2. Ломается дужка.','search':[{'query':CARD}]}]
+    asyncio.run(mv.assess_offers('топ наушников', results))
+    assert results[0]['review_basis'] == 'counts_only'
+    assert results[1]['review_basis'] == 'texts'
+
+
 def test_bad_offer_is_replaced_by_new_search_and_real_read(monkeypatch):
     replacement="https://www.ozon.ru/product/good-headphones-456/"
     monkeypatch.setattr(type(home_relay),"online",property(lambda _:True))
@@ -204,7 +216,94 @@ def test_failed_buyer_cannot_qualify_an_offer():
     assert results[0]["offer_fit"]=="unknown"
 
 
+def test_field_labels_without_numbers_do_not_qualify_offer(monkeypatch):
+    async def buyer(*args, **kwargs):
+        return {'offers': [{'id': 0, 'fit': 'suitable', 'reason': 'Подходит', 'evidence': {
+            'type': 'Наушники', 'price': 'Цена', 'seller': 'Магазин',
+            'rating': 'Рейтинг', 'review_count': 'Отзывы'}}]}
+    monkeypatch.setattr(mv, 'buyer_json', buyer)
+    rows = [{'status': 'ok', 'result': 'Наушники. Магазин. Цена Рейтинг Отзывы не загружены.', 'search': [{'query': CARD}]}]
+    assert asyncio.run(mv.assess_offers('топ наушников', rows)) == 0
+    assert rows[0]['offer_missing'] == ['price', 'rating', 'review_count']
+    assert rows[0]['offer_reason'].startswith('Не подтверждены: цена')
+    assert 'Подходит' not in rows[0]['offer_reason']
+
+
+def test_assessment_timeout_keeps_successfully_read_card(monkeypatch):
+    monkeypatch.setattr(type(home_relay), 'online', property(lambda _: True))
+    monkeypatch.setattr(mv, 'BUDGET_SECONDS', .04)
+    cancelled = []
+    async def fetch(url):
+        return {'status': 'ok', 'url': url, 'text': 'Наушники. Цена 4500 ₽. Продавец Магазин. Рейтинг 4.8. 1273 отзыва.'}
+    async def buyer(*args, **kwargs):
+        try: await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+    monkeypatch.setattr(home_relay, 'fetch', fetch)
+    monkeypatch.setattr(mv, 'buyer_json', buyer)
+    async def run():
+        rows = await asyncio.wait_for(mv.verify_marketplace_cards('Сравни ' + CARD, []), .5)
+        assert rows[0]['status'] == 'ok'
+        assert rows[0]['verified_url'] == CARD
+        assert '4500' in rows[0]['result']
+        assert 'Оценка предложения не завершена' in rows[0]['result']
+    asyncio.run(run())
+    assert cancelled == [True]
+
+
+def test_slow_card_does_not_discard_prior_success(monkeypatch):
+    monkeypatch.setattr(type(home_relay), 'online', property(lambda _: True))
+    monkeypatch.setattr(mv, 'BUDGET_SECONDS', .05)
+    other = 'https://www.ozon.ru/product/headphones-456/'
+    async def fetch(url):
+        if url == other: await asyncio.sleep(10)
+        return {'status': 'ok', 'url': url, 'text': 'Наушники. Цена 4500 ₽. Продавец Магазин. Рейтинг 4.8. 1273 отзыва.'}
+    monkeypatch.setattr(home_relay, 'fetch', fetch)
+    async def run():
+        rows = await asyncio.wait_for(mv.verify_marketplace_cards('Сравни ' + CARD + ' ' + other, []), .5)
+        assert [r['status'] for r in rows] == ['ok', 'error']
+        assert rows[0]['verified_url'] == CARD
+        assert rows[1]['verified_url'] is None
+    asyncio.run(run())
+
+
+def test_failed_ranking_still_reads_known_direct_link(monkeypatch):
+    monkeypatch.setattr(type(home_relay), 'online', property(lambda _: True))
+    seen = []
+    async def rank(*args, **kwargs): raise RuntimeError('ranking unavailable')
+    async def fetch(url):
+        seen.append(url)
+        return {'status': 'ok', 'url': url, 'text': 'Наушники. Цена 4500 ₽. Продавец Магазин. Рейтинг 4.8. 1273 отзыва.'}
+    monkeypatch.setattr(mv, 'rank_candidates', rank)
+    monkeypatch.setattr(home_relay, 'fetch', fetch)
+    rows = asyncio.run(mv.verify_marketplace_cards('наушники озон', [{'result': CARD}]))
+    assert seen == [CARD]
+    assert rows[0]['verified_url'] == CARD
+
+
+def test_user_cancellation_propagates(monkeypatch):
+    monkeypatch.setattr(type(home_relay), 'online', property(lambda _: True))
+    async def fetch(url): raise asyncio.CancelledError()
+    monkeypatch.setattr(home_relay, 'fetch', fetch)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(mv.verify_marketplace_cards('Сравни ' + CARD, []))
+
+
+def test_ranking_timeout_is_reported_as_timeout_not_missing_products(monkeypatch):
+    monkeypatch.setattr(type(home_relay), 'online', property(lambda _: True))
+    monkeypatch.setattr(mv, 'BUDGET_SECONDS', .03)
+    async def rank(*args, **kwargs): await asyncio.sleep(10)
+    monkeypatch.setattr(mv, 'rank_candidates', rank)
+    async def run():
+        rows = await asyncio.wait_for(mv.verify_marketplace_cards('наушники озон', [{'result': CARD}]), .5)
+        assert 'в отведённое время' in rows[0]['result']
+        assert 'не найдено' not in rows[0]['result']
+    asyncio.run(run())
+
+
 def test_replacement_search_survives_kimi_outage(monkeypatch):
+    monkeypatch.setenv('WEB_SEARCH_BACKEND', 'kimi')
     import kimi_web_search, search_engine
     calls=[]
     async def failed(*a,**k):return []

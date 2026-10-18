@@ -181,9 +181,14 @@ def search_hop_messages(
     if not tail and query:
         tail = [{"role": "user", "content": query[:8_000]}]
     note = attached_file_note(messages)
-    if note:
-        return [note, *tail]
-    return tail
+    from app.services.followup_evidence import EVIDENCE_MARKER
+    from app.services.authoritative_catalogs import CATALOG_MARKER
+    from app.services.request_intent import INTENT_MARKER
+    evidence_notes = [m for m in messages if m.get('role') == 'system'
+                      and str(m.get('content') or '').startswith((EVIDENCE_MARKER,CATALOG_MARKER,INTENT_MARKER))]
+    # Search-only views normally discard system messages. This bounded note
+    # carries source observations needed to resolve short follow-up questions.
+    return ([note] if note else []) + evidence_notes[-3:] + tail
 
 
 def estimate_tokens(text: str) -> int:

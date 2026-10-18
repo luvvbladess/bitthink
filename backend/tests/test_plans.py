@@ -82,17 +82,17 @@ def test_usage_view_and_debit():
     mgr.debit_plan_images(uid, 2)
     view = usage_view(mgr.get_subscription(uid))
     assert view["tier"] == "pro"
-    assert view["chat"]["used"] == 1_000_000
-    assert view["chat"]["remaining"] == 44_000_000
-    assert view["computer"]["used"] == 500_000
-    assert view["computer"]["remaining"] == 14_500_000
+    assert view["chat"]["used"] == 1_500_000
+    assert view["chat"]["remaining"] == 73_500_000
+    assert view["computer"]["used"] == 1_500_000
+    assert view["computer"]["remaining"] == 73_500_000
     assert view["images"]["used"] == 2
     assert view["images"]["remaining"] == 23
-    assert view["windows"]["chat"]["session"]["used"] == 1_000_000
-    assert view["windows"]["chat"]["session"]["remaining"] == 2_240_000
-    assert view["windows"]["chat"]["week"]["used"] == 1_000_000
-    assert view["windows"]["chat"]["week"]["remaining"] == 10_250_000
-    assert view["windows"]["computer"]["session"]["used"] == 500_000
+    assert view["windows"]["chat"]["session"]["used"] == 1_500_000
+    assert view["windows"]["chat"]["session"]["remaining"] == 7_130_000
+    assert view["windows"]["chat"]["week"]["used"] == 1_500_000
+    assert view["windows"]["chat"]["week"]["remaining"] == 28_500_000
+    assert view["windows"]["computer"]["session"]["used"] == 1_500_000
 
 
 def test_legacy_start_becomes_pro():
@@ -110,22 +110,22 @@ def test_session_and_week_block_before_month():
     mgr = DatabaseConversationManager()
     uid = 91003
     mgr.set_subscription_tier(uid, "pro", 30)
-    mgr.debit_plan_tokens(uid, "chat", 3_240_000)
+    mgr.debit_plan_tokens(uid, "chat", 8_630_000)
     view = usage_view(mgr.get_subscription(uid))
     assert view["windows"]["chat"]["session"]["remaining"] == 0
-    assert view["chat"]["remaining"] == 41_760_000
+    assert view["chat"]["remaining"] == 66_370_000
     try:
         assert_can_use(uid, "chat", "gpt-6-luna")
         raise AssertionError("session should block")
     except QuotaError as err:
-        assert "Пятичасовое" in str(err)
+        assert "пятичасовое" in str(err)
 
     uid = 91004
     mgr.set_subscription_tier(uid, "pro", 30)
     mgr.get_subscription(uid)
     with SyncSessionLocal() as session:
         sub = session.query(Subscription).filter_by(user_id=uid).first()
-        sub.week_chat_used = 11_250_000
+        sub.week_chat_used = 30_000_000
         session.commit()
     view = usage_view(mgr.get_subscription(uid))
     assert view["windows"]["chat"]["week"]["remaining"] == 0
@@ -133,7 +133,7 @@ def test_session_and_week_block_before_month():
         assert_can_use(uid, "chat", "gpt-6-luna")
         raise AssertionError("week should block")
     except QuotaError as err:
-        assert "Недельный" in str(err)
+        assert "недельный" in str(err)
 
 
 def test_expired_session_resets():
@@ -153,7 +153,7 @@ def test_expired_session_resets():
         session.commit()
     view = usage_view(mgr.get_subscription(uid))
     assert view["windows"]["chat"]["session"]["used"] == 0
-    assert view["windows"]["chat"]["session"]["remaining"] == 3_240_000
+    assert view["windows"]["chat"]["session"]["remaining"] == 8_630_000
     assert view["chat"]["used"] == 1_000_000
 
 

@@ -178,20 +178,26 @@ def _clean_html(html: str, page_url: str = '') -> str:
                      "form", "iframe", "noscript", "svg",
                      "button", "input", "select", "textarea",
                      "menu", "menuitem"]):
+        if tag.name == 'button' and tag.find_parent(['th', 'td']):
+            tag.unwrap()  # Sort controls often contain the only column label.
+            continue
         tag.decompose()
     
-    # Удаляем скрытые элементы и навигационные блоки
-    for tag in soup.find_all(class_=re.compile(
-        r"(nav|menu|breadcrumb|sidebar|cookie|banner|popup|modal|share|social|widget|advert|promo|footer|header)", 
-        re.I
-    )):
-        tag.decompose()
-    
-    for tag in soup.find_all(id=re.compile(
-        r"(nav|menu|breadcrumb|sidebar|cookie|banner|popup|modal|share|social|widget|advert|promo|footer|header)", 
-        re.I
-    )):
-        tag.decompose()
+    # Match actual control names, not substrings in layout containers. In
+    # particular touchnav-wrapper can wrap the whole Python.org article and
+    # header_margin-left contains CBR's currency table. Widgets/banners may be
+    # editorial content. Never discard a container carrying the primary body.
+    boilerplate = re.compile(
+        r"^(?:nav(?:igation|bar)?|menu|breadcrumbs?|sidebar|cookie(?:s)?|"
+        r"popup|modal|share|social|advert(?:isement|ising)?|footer)(?:$|[-_])", re.I
+    )
+    for attr in ("class", "id"):
+        for tag in soup.find_all(attrs={attr: boilerplate}):
+            if tag.attrs is None or tag.name in {"html", "body", "main", "article"}:
+                continue
+            if tag.get("role") == "main" or tag.find(["main", "article", "table"]) or tag.find(attrs={"role": "main"}):
+                continue
+            tag.decompose()
     
     # Расширенный поиск основного контента — пробуем множество селекторов
     candidates = [
@@ -229,6 +235,33 @@ def _clean_html(html: str, page_url: str = '') -> str:
     if not main_content:
         main_content = soup.body or soup
     
+    # Preserve names rendered only as image alt text (common in statistics tables).
+    for image in soup.find_all('img', alt=True):
+        alt = image.get('alt', '').strip()
+        if alt:
+            image.replace_with(alt[:160])
+    # Tables may be siblings of the article, or lower down than the text budget.
+    # Keep cell boundaries and column headings so numbers retain their meaning.
+    tables, table_chars = [], 0
+    for table in soup.find_all('table', limit=8):
+        rows = []
+        for row in table.find_all('tr', limit=60):
+            cells = [' '.join(cell.stripped_strings)[:240] for cell in row.find_all(['th', 'td'], recursive=False)[:16]]
+            if cells:
+                rows.append(' | '.join(cells))
+        while rows and table_chars + len('\n'.join(rows)) > 6500:
+            rows.pop()
+        block = '\n'.join(rows)
+        if block:
+            tables.append(block); table_chars += len(block)
+    table_text = 'Таблицы страницы (строки и столбцы):\n' + '\n\n'.join(tables) + '\n\n' if tables else ''
+    # Let the reader follow a relevant guide/detail link rather than search again.
+    for link in main_content.find_all('a', href=True, limit=64):
+        label = link.get_text(' ', strip=True)
+        target = urljoin(page_url, link['href'])
+        parsed = urlparse(target)
+        if label and len(target) <= 2048 and parsed.scheme in {'http', 'https'} and parsed.hostname and not parsed.username and not parsed.password:
+            link.replace_with(f'{label} ({target})')
     # Получаем текст
     text = main_content.get_text(separator="\n", strip=True)
     
@@ -239,13 +272,13 @@ def _clean_html(html: str, page_url: str = '') -> str:
         if not line:
             continue
         # Пропускаем строки-ссылки навигации (очень короткие одиночные слова без предложений)
-        if len(line) < 3:
+        if len(line) < 3 and not any(char.isalnum() for char in line):
             continue
         lines.append(line)
     text = "\n".join(lines)
     
     body = (product_facts + "\n\n" + text).strip() if product_facts else text
-    return candidate_links + body
+    return candidate_links + table_text + body
 
 
 async def _fetch_direct(session: aiohttp.ClientSession, url: str) -> Tuple[int, str]:
@@ -254,7 +287,7 @@ async def _fetch_direct(session: aiohttp.ClientSession, url: str) -> Tuple[int, 
         if resp.status != 200:
             return resp.status, ""
         content_type = resp.headers.get("Content-Type", "")
-        if "text/html" not in content_type and "text/plain" not in content_type:
+        if not any(kind in content_type for kind in ("text/html", "text/plain", "application/json", "+json")):
             return -1, f"[Невозможно прочитать: тип контента {content_type}]"
         html = await resp.text(errors="replace")
         return 200, html
@@ -414,8 +447,8 @@ async def _recover_from_search(url: str) -> str:
     return (
         f"[Сайт {host} закрыт от автоматического чтения с серверов (антибот-защита), саму страницу открыть "
         "не удалось. Ниже то, что поиск знает по этой ссылке: это может быть неполно и не заменяет сайт. "
-        "Скажи человеку об этом прямо, не пиши «нет соединения»; для точных данных предложи прислать текст "
-        "страницы или скриншот.]\n\nЗапрос: " + query + "\n" + "\n".join(lines)
+        "Не выдавай эти фрагменты за прочитанную страницу. Если нужных фактов нет, уточни поиск "
+        "по пробелу и открой альтернативный источник; сохрани полезную подтверждённую часть ответа.]\n\nЗапрос: " + query + "\n" + "\n".join(lines)
     )
 
 
@@ -448,7 +481,9 @@ async def _fetch_url_content_local(url: str) -> Tuple[str, str]:
     """
     try:
         timeout = aiohttp.ClientTimeout(total=FETCH_TIMEOUT)
-        async with aiohttp.ClientSession(headers=HEADERS, timeout=timeout) as session:
+        # Modern CSP headers routinely exceed aiohttp's historical 8 KiB field
+        # limit. Keep a bounded limit without mistaking a valid page for HTTP 400.
+        async with aiohttp.ClientSession(headers=HEADERS, timeout=timeout, max_field_size=32768, max_line_size=32768) as session:
             # Read Russian product pages from the RU IP on the first attempt.
             # Keep direct access as a fallback when the tunnel is unavailable.
             proxy_first = bool(RU_PROXY_URL) and is_ru_marketplace(url)
@@ -471,8 +506,8 @@ async def _fetch_url_content_local(url: str) -> Tuple[str, str]:
                 if recovered:
                     return url, recovered
                 return url, (
-                    "[Сайт защищён от автоматического чтения и не открылся. Скажи об этом прямо, "
-                    "не пиши «нет соединения»; предложи прислать текст страницы или скриншот.]"
+                    "[Сайт защищён от автоматического чтения и не открылся. Проверь другой "
+                    "источник по нужному факту; не выдумывай данные недоступной страницы.]"
                 )
 
             note = ""
@@ -505,6 +540,39 @@ async def _fetch_url_content_local(url: str) -> Tuple[str, str]:
 
 
 async def fetch_url_content(url: str, *, use_kimi_fallback: bool = True) -> Tuple[str, str]:
+    """Share identical reads within this turn only, including concurrent workers."""
+    from turn_scope import page_reads, reader_mode
+    reads = page_reads()
+    if reads is None:
+        return await _fetch_url_content_once(url, use_kimi_fallback=use_kimi_fallback)
+    key = (url.strip(), reader_mode(), bool(use_kimi_fallback))
+    task = reads.get(key)
+    if task is None:
+        # Do not retain unbounded page content on a very large specification.
+        if len(reads) >= 40:
+            return await _fetch_url_content_once(url, use_kimi_fallback=use_kimi_fallback)
+        task = asyncio.create_task(_fetch_url_content_once(url, use_kimi_fallback=use_kimi_fallback))
+        reads[key] = task
+    try:
+        result = await asyncio.shield(task)
+        if result[0] != url and len(reads) < 40:
+            reads.setdefault((result[0], reader_mode(), bool(use_kimi_fallback)), task)
+        return result
+    except Exception:
+        reads.pop(key, None)
+        raise
+
+
+async def _fetch_url_content_once(url: str, *, use_kimi_fallback: bool = True) -> Tuple[str, str]:
+    result = await _fetch_url_content_transport(url, use_kimi_fallback=use_kimi_fallback)
+    from app.services.run_protocol import current_run
+    record = current_run.get()
+    if record:
+        record.observe_page(f'URL: {result[0]}\n\n{result[1]}')
+    return result
+
+
+async def _fetch_url_content_transport(url: str, *, use_kimi_fallback: bool = True) -> Tuple[str, str]:
     """Read marketplace pages at home when connected, then use existing fallbacks."""
     if is_ru_marketplace(url):
         try:
@@ -516,12 +584,14 @@ async def fetch_url_content(url: str, *, use_kimi_fallback: bool = True) -> Tupl
                 if len(text) >= 50 and not _looks_like_bot_wall(text):
                     reviews = 'present' if 'ТЕКСТЫ ОТЗЫВОВ (' in text else 'not_extracted' if 'Тексты отзывов не извлечены:' in text else 'none' if 'На странице прямо указано отсутствие отзывов:' in text else 'unknown'
                     reader_audit.info('marketplace_read host=%s path=%s reader=home status=ok chars=%s review_texts=%s', urlparse(url).hostname, urlparse(url).path, len(text), reviews)
-                    return url, _mark_listing_page(url, text[:MAX_CONTENT_PER_URL])
+                    resolved = result.get('url') or url
+                    return resolved, _mark_listing_page(resolved, text[:MAX_CONTENT_PER_URL])
             reader_audit.info('marketplace_read host=%s path=%s reader=home status=%s fallback=server', urlparse(url).hostname, urlparse(url).path, (result or {}).get('status', 'unavailable'))
         except Exception as exc:
             logger.info("Home reader unavailable (%s), using server fallback", type(exc).__name__)
     fetched_url, text = await _fetch_url_content_local(url)
-    if use_kimi_fallback and _is_fetch_failure(text):
+    from app.services.server_search import use_server_search
+    if use_kimi_fallback and not use_server_search() and _is_fetch_failure(text):
         recovered = await _recover_with_kimi_fetch(url)
         if recovered:
             return fetched_url or url, recovered

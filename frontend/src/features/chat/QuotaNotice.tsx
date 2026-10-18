@@ -54,7 +54,12 @@ function pickNotice(sub?: Subscription, isComputer?: boolean): Notice | null {
       text: `Потрачено ${pct}% дневной квоты ответов. Следующий сброс через ${formatResetIn(resetsAt)}.`,
     };
   }
-  const family = isComputer ? sub.windows?.computer : sub.windows?.chat;
+  const family = sub.shared_budget ? sub.windows?.shared : isComputer ? sub.windows?.computer : sub.windows?.chat;
+  if (sub.shared_budget) return (
+    windowNotice('shared.session', 'общего запаса на 5 часов', family?.session) ||
+    windowNotice('shared.week', 'общего недельного запаса', family?.week) ||
+    windowNotice('shared.month', 'общего месячного запаса', family?.month)
+  );
   return (
     windowNotice(`${isComputer ? 'computer' : 'chat'}.session`, isComputer ? 'пятичасовой квоты Оркестратора' : 'пятичасовой квоты', family?.session) ||
     windowNotice(`${isComputer ? 'computer' : 'chat'}.week`, isComputer ? 'недельной квоты Оркестратора' : 'недельной квоты', family?.week) ||

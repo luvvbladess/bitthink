@@ -65,6 +65,25 @@ function shortDestinationAllowed(source, destination) {
   return b==='ozon.ru' || b.endsWith('.ozon.ru');
 }
 
+function sameProduct(source,destination) {
+  try {
+    const a=new URL(source),b=new URL(destination);
+    if(a.hostname.replace(/^www\./,'')!==b.hostname.replace(/^www\./,'') || !productUrl(destination))return false;
+    if(/chipdip\.ru$/.test(a.hostname) && /^\/product\/[^/]+\/?$/.test(a.pathname)) {
+      const original=a.pathname.replace(/\/$/,'');
+      if(b.pathname.replace(/\/$/,'').startsWith(original+'-'))return true;
+    }
+    const identity=u=>{
+      if(/ozon\.ru$/.test(u.hostname))return u.pathname.match(/^\/product\/(?:.*-)?(\d+)\/?/)?.[1] || u.pathname.split('/')[2];
+      if(/wildberries\.ru$|wb\.ru$/.test(u.hostname))return u.pathname.match(/^\/catalog\/(\d+)\//)?.[1];
+      if(u.hostname==='market.yandex.ru')return u.pathname.replace(/\/reviews\/?$/,'').split('/').filter(Boolean).at(-1);
+      if(/dns-shop\.ru$/.test(u.hostname))return u.pathname.match(/^\/product\/(?:(?:opinion|characteristics)\/)?([^/]+)/)?.[1];
+      return u.pathname.replace(/\/(reviews|opinion|otzyvy)\/?$/,'').replace(/\/$/,'');
+    };
+    return identity(a)===identity(b);
+  } catch {return false;}
+}
+
 function readerProfile(raw) {
   const u=new URL(raw), h=u.hostname.toLowerCase(), domain=d=>h===d || h.endsWith('.'+d);
   const common={name:'магазин', reviewPaths:[], reviewQueryKeys:['tab'],
@@ -75,7 +94,7 @@ function readerProfile(raw) {
   let path=u.pathname.replace(/\/$/,'');
   const add=(name,cards,containers,rating,controls='')=>Object.assign(common,{name,cards:common.cards+', '+cards,containers:common.containers+', '+containers,rating:common.rating+', '+rating,controls});
   if(domain('ozon.ru')) {
-    add('Ozon','[data-widget="webReview"]','[data-widget="webListReviews"], [data-widget="webSingleProductReview"]','[data-widget*="ReviewProductScore"]','[data-widget="webReviewProductScore"]');
+    add('Ozon','[data-widget="webReview"], [id^="state-webReview-"]','[data-widget="webListReviews"], [data-widget="webSingleProductReview"], [data-widget="webReviews"], [data-widget="pinnedReview"], [id^="state-webListReviews-"], [id^="state-webSingleProductReview-"]','[data-widget*="ReviewProductScore"]','[data-widget="webReviewProductScore"], [data-widget="pinnedReview"], [data-widget="webReviewProductScore"] span, a[href*="tab=reviews"], a[href*="#section-reviews"], a[href*="/reviews/"]');
     common.reviewPaths=[path.replace(/\/reviews$/,''),path.replace(/\/reviews$/,'')+'/reviews'];
   } else if(domain('wildberries.ru') || domain('wb.ru')) {
     add('Wildberries','.feedback__text, .feedback__item, .comments__item, [data-feedback-id]','.feedbacks, .comments__list, .product-feedbacks','.product-review__rating, .product-review__count-review, .product-page__rating, .product-page__rating-count','a.product-review__count-review, .product-review__rating');
@@ -90,7 +109,8 @@ function readerProfile(raw) {
     common.reviewPaths=[path];
   } else if(domain('dns-shop.ru')) {
     add('DNS','.ow-opinion-item, .opinion-item','.ow-opinions, .opinions-list','.product-card-top__rating, .product-card-top__reviews, .rating__value','a[href*="/opinion/"]');
-    common.reviewPaths=[path.replace(/\/opinion$/,'')+'/opinion'];
+    const card=path.replace(/^\/product\/(?:opinion|characteristics)\//,'/product/').replace(/\/opinion$/,'');
+    common.reviewPaths=[card+'/opinion',card.replace('/product/','/product/opinion/')];
   } else if(domain('citilink.ru')) {
     add('Ситилинк','[data-meta-name="Review"], .review-item','.reviews-list, [data-meta-name="Reviews"]','[data-meta-name="Rating"], [data-meta-name="ReviewsCount"]');
     common.reviewPaths=[path.replace(/\/otzyvy$/,'')+'/otzyvy'];
@@ -143,14 +163,35 @@ function browseUrl(raw) {
 
 // Executed only in a tab created by this extension. No form values or cookies.
 function readProduct(expectedUrl, section = 'overview', profile = {}) {
+  const recommendationSelector='[data-zone-name="Recommendations"], [data-zone-name="snippet"], [data-zone-name="productSnippet"], [data-auto="product-snippet"], [data-auto="product-card"], .recommendations, .product-card, [data-testid="recommendations"], [data-widget*="Reco"], [data-widget="webSimilarProducts"]';
+  const heading=document.querySelector('h1, [role="heading"][aria-level="1"]');
+  const isRecommendation=el=>{
+    const block=el.closest?.(recommendationSelector);
+    return Boolean(block && !block.contains?.(heading));
+  };
+  const buyerText=raw=>{
+    let s=String(raw || '').trim();
+    s=s.split(/\n\s*(?:Ответ продавца|Ответ магазина)\s*\n/i)[0];
+    let lines=s.split('\n').map(v=>v.trim()).filter(Boolean);
+    const variants=lines.filter(v=>/^(?:Цвет товара|Версия|Разъем штекера):/i.test(v) || /·.*\d+\s*(?:мл|л|см|мм|гб|gb|шт)(?:\s|$)/i.test(v)).slice(0,3).map(v=>v.slice(0,100));
+    const date=lines.findIndex(v=>/^(?:\d{1,2} [а-я]+(?: \d{4})?|Вчера|Сегодня)(?:[, ·].*)?$/i.test(v));
+    if(date>=0) lines=lines.slice(date+1);
+    const useful=lines.filter(v=>!(/^(?:Ответить|Показать(?: \d+)? ответ[а-я]*|Показать ещ[её]|ещ[её]|Выкупили|Отказались|Имя скрыто|Покупатель|Первоначальный отзыв|\d+|(?:Цвет товара|Версия|Разъем штекера):.*)$/i.test(v) || /^(?:\d{1,2} [а-я]+|Вчера|Сегодня)(?:[, ·].*)?$/i.test(v)));
+    // A named/date-only card or a variant selector is not buyer feedback.
+    const body=useful.join('\n');
+    if(body.length<5 || !/[а-яa-z]{3}/i.test(body)) return '';
+    const metadata=variants.length ? '\nВариант: '+variants.join('; ') : '';
+    const limit=600-metadata.length;
+    return (body.length>limit ? body.slice(0,limit-13)+' [сокращено]' : body)+metadata;
+  };
   let sampleSource='dom';
   const reviewCards=profile.cards || '[itemprop="review"], [data-review-id], [data-review-uuid], [data-widget="webReview"], [data-testid="review"], [class*="review-text"], [class*="reviewText"]';
   const reviewContainers=profile.containers || '[data-widget="webListReviews"], [data-widget="webSingleProductReview"], #section-reviews, #reviews';
 function reviewSample() {
   const nodes=[...document.querySelectorAll(reviewCards)].filter(el=>
-    (!el.getClientRects || el.getClientRects().length) && !el.closest?.('[data-zone-name="Recommendations"], .recommendations, [data-testid="recommendations"]'));
+    (!el.getClientRects || el.getClientRects().length) && !isRecommendation(el));
   // A body and its containing review card may both match. Keep one per review.
-  const samples=nodes.filter(el=>!nodes.some(other=>other!==el && other.contains?.(el))).map(el=>(el.innerText || '').trim()).filter(Boolean);
+  const samples=nodes.filter(el=>!nodes.some(other=>other!==el && other.contains?.(el))).map(el=>buyerText(el.innerText)).filter(Boolean);
   if (!samples.length) {
     // Ozon uses generated class names. Keep buyer text within its review widget,
     // rather than mistaking the score/count in the card header for reviews.
@@ -188,7 +229,7 @@ function reviewSample() {
           const visit=(node,depth=0)=>{
             if(!node || typeof node!=='object' || visited++>500 || depth>8 || samples.length>=20) return;
             const content=node.content;
-            const parts=[node.reviewBody,content?.positive?('Достоинства: '+content.positive):'',content?.negative?('Недостатки: '+content.negative):'',content?.comment?('Комментарий: '+content.comment):''].filter(v=>typeof v==='string' && v.trim());
+            const parts=[node.reviewBody,(content?.positive || node.positive)?('Достоинства: '+(content?.positive || node.positive)):'',(content?.negative || node.negative)?('Недостатки: '+(content?.negative || node.negative)):'',(content?.comment || node.comment)?('Комментарий: '+(content?.comment || node.comment)):''].filter(v=>typeof v==='string' && v.trim());
             if(parts.length) {samples.push(parts.join('\n'));return;}
             for(const child of (Array.isArray(node)?node.slice(0,20):Object.values(node))) visit(child,depth+1);
           };
@@ -197,13 +238,18 @@ function reviewSample() {
       }
     }
   }
-  return [...new Set(samples)].slice(0,20).map(s => s.slice(0,1000));
+  return [...new Set(samples.map(buyerText).filter(Boolean))].slice(0,20);
 }
 
   if (expectedUrl && location.href !== expectedUrl) return {status:'error',url:location.href,text:'',title:''};
   const root = document.querySelector('main, [role="main"]') || document.body;
   const extra = [...document.querySelectorAll('[role="dialog"], [role="tabpanel"]')].filter(el => !root?.contains(el)).map(el => el.innerText || '').join('\n');
   let text = (root?.innerText || '') + '\n' + extra;
+  for(const block of document.querySelectorAll(recommendationSelector)) {
+    if(!block.contains?.(heading) && block.innerText) text=text.split(block.innerText).join('');
+  }
+  // Sold-out Yandex cards can be followed entirely by unrelated offers.
+  if(profile.name==='Яндекс Маркет' && /Товар распродан|Нет в продаже/i.test(text)) text=text.split(/Ещ[её] может подойти|Похожие товары|Рекомендуем также/)[0];
   // Keep generated review lists out of the generic full-page snapshot. Their
   // bounded sample is extracted separately, including widgets outside <main>.
   for (const container of document.querySelectorAll(reviewContainers)) {
@@ -216,8 +262,13 @@ function reviewSample() {
   const pageHeading=(document.querySelector('h1, [role="heading"][aria-level="1"]')?.innerText || '').replace(/\s+/g,' ').trim();
   const missing=/^(?:404(?:\s*[-–:|]\s*.*)?|страница не найдена|страница удалена|товар не найден|такого товара нет|page not found)$/i;
   if(missing.test(title.trim()) || missing.test(pageHeading)) return {status:'error',url:location.href,title,text:'#PAGE_NOT_FOUND# Страница или товар не найдены.'};
+  if(/^(?:по вашему запросу ничего не найдено|ничего не нашлось|товар не найден|такого товара нет)\s*$/im.test(text)) return {status:'error',url:location.href,title,text:'#PAGE_NOT_FOUND# Магазин сообщает, что товар или страница не найдены.'};
   if(/^(?:500|502|503|504|service unavailable|bad gateway|internal server error)$/i.test(title.trim()) || /^(?:внутренняя ошибка сервера|service unavailable|bad gateway|internal server error)$/i.test(pageHeading)) return {status:'error',url:location.href,title,text:'#PAGE_UNAVAILABLE# Ошибка сервера магазина.'};
-  const wall = text.length < 3000 && /похоже, нет соединения|вы не робот|проверяем браузер|подозрительная активность|доступ ограничен|доступ к.{0,40}сервису временно запрещ[её]н|captcha|access denied|verify you are human/i.test(text.replace(/\s+/g, ' '));
+  // DNS can return only its Qrator script, without a heading or visible text.
+  // Keep that owned tab for the browser's normal challenge instead of closing
+  // and restarting the challenge on every attempt.
+  const scriptChallenge = text.trim().length < 800 && [...document.querySelectorAll('script[src]')].some(s => /\/__qrator\/|\/cdn-cgi\/challenge-platform\//i.test(s.getAttribute?.('src') || ''));
+  const wall = scriptChallenge || text.length < 3000 && /похоже, нет соединения|вы не робот|проверяем браузер|подозрительная активность|доступ ограничен|доступ к.{0,40}сервису временно запрещ[её]н|captcha|access denied|verify you are human/i.test(text.replace(/\s+/g, ' '));
   const facts = [];
   const visit = item => {
     if (Array.isArray(item)) return item.forEach(visit);
@@ -228,7 +279,9 @@ function reviewSample() {
       for (const key of ['name','description','sku','brand','offers','aggregateRating','review']) {
         if (key in item) product[key] = key === 'review' && Array.isArray(item[key]) ? item[key].slice(0,20) : item[key];
       }
-      facts.push(JSON.stringify(product));
+      // JSON-LD may also describe recommendation cards. Match the main title.
+      const normalize=s=>String(s || '').toLowerCase().replace(/[^а-яa-z0-9]/g,'');
+      if(!pageHeading || normalize(item.name)===normalize(pageHeading)) facts.push(JSON.stringify(product));
     }
     Object.values(item).forEach(visit);
   };
@@ -236,6 +289,8 @@ function reviewSample() {
     try { visit(JSON.parse(script.textContent.slice(0, 80000))); } catch {}
   }
   const body = (facts.length ? 'Данные товара (JSON-LD):\n' + facts.join('\n') + '\n\n' : '') + text.trim();
+  const reviewPage=/\/(reviews|feedbacks|opinion|otzyvy)\/?$/.test(location.pathname || new URL(location.href).pathname) || /\/product\/opinion\//.test(location.href) || new URL(location.href).searchParams.get('tab')==='reviews';
+  if(!wall && profile.name && ['Ozon','Wildberries','Яндекс Маркет','DNS'].includes(profile.name) && !facts.length && !pageHeading && !reviewPage) return {status:'error',url:location.href,title,text:'#PRODUCT_NOT_CONFIRMED# Карточка нужного товара не найдена или ещё не загрузилась. Подборка не подтверждает цену и наличие.',error_code:'product_not_confirmed'};
   if (section === 'отзывы' && !wall) {
     const samples = reviewSample();
     let source=samples.length?sampleSource:'none';
@@ -244,17 +299,25 @@ function reviewSample() {
       try {
         const p = JSON.parse(raw);
         for (const review of [].concat(p.review || []).slice(0,20)) {
-          if (review.reviewBody || review.description) {samples.push(String(review.reviewBody || review.description).slice(0,1000));source='jsonld';}
+          const value=buyerText(review.reviewBody || review.description);
+          if (value) {samples.push(value);source='jsonld';}
         }
       } catch {}
     }
-    if (samples.length) return {status:'ok',url:location.href,title,review_diagnostics:{source,count:Math.min(20,samples.length),dom_nodes:document.querySelectorAll(reviewCards).length,containers:document.querySelectorAll(reviewContainers).length},
-      text:'ТЕКСТЫ ОТЗЫВОВ (не более 20; только видимая выборка; '+(profile.scope || 'товар')+'):\n'+samples.slice(0,20).map((s,i)=>`${i+1}. ${s}`).join('\n\n').slice(0,7500)};
+    if (samples.length) {
+      const selected=[];let used=0;
+      for(const s of samples.slice(0,20)) {if(used+s.length+10>7200)break;selected.push(s);used+=s.length+10;}
+      return {status:'ok',url:location.href,title,review_diagnostics:{source,count:selected.length,dom_nodes:document.querySelectorAll(reviewCards).length,containers:document.querySelectorAll(reviewContainers).length},
+        text:'ТЕКСТЫ ОТЗЫВОВ (не более 20; только видимая выборка; '+(profile.scope || 'товар')+'):\n'+selected.map((s,i)=>`${i+1}. ${s}`).join('\n\n')};
+    }
     const emptyText=(text+'\n'+[...document.querySelectorAll(reviewContainers)].map(el=>el.innerText || '').join('\n')).replace(/\s+/g,' ');
     const noReviews=emptyText.match(/(?:отзывов (?:пока |ещ[её] )?нет|пока нет отзывов|нет отзывов|no reviews yet)/i);
     if(noReviews) return {status:'ok',url:location.href,title,review_diagnostics:{source:'none',count:0,stage:'empty'},text:'На странице прямо указано отсутствие отзывов: «'+noReviews[0]+'». Это не ошибка загрузки.'};
     return {status: body.length >= 50 ? 'ok' : 'error',url:location.href,title,
-      review_diagnostics:{source:'none',count:0,stage:'not_extracted',containers:document.querySelectorAll(reviewContainers).length,dom_nodes:document.querySelectorAll(reviewCards).length},
+      review_diagnostics:{source:'none',count:0,stage:'not_extracted',containers:document.querySelectorAll(reviewContainers).length,dom_nodes:document.querySelectorAll(reviewCards).length,
+        widgets:[...document.querySelectorAll('[data-widget]')].map(el=>el.getAttribute('data-widget')).filter(v=>/review|opinion/i.test(v)).slice(0,12).join(',').slice(0,400),
+        controls_seen:[...document.querySelectorAll('a,button,[role="button"], [data-widget="webReviewProductScore"], [data-widget="pinnedReview"]')].map(el=>(el.innerText || '').replace(/\s+/g,' ').trim()).filter(v=>/отзыв/i.test(v) && v.length<160).slice(0,8).join(' | ').slice(0,600),
+        path:new URL(location.href).pathname.slice(0,300)},
       text:'Тексты отзывов не извлечены: раздел не загрузился либо его разметка не распознана. Рейтинг и число оценок не заменяют чтение отзывов.'};
   }
   // Preserve stock and lead-time passages before long descriptions are clipped.
@@ -282,11 +345,14 @@ function reviewSample() {
   // Preserve explicit rating/count widgets before price/seller/description
   // snippets, including semantic content attributes outside <main>.
   for (const el of [...document.querySelectorAll(profile.rating || '[itemprop="ratingValue"], [itemprop="reviewCount"]')].slice(0,12)) {
-    if(el.closest?.('[data-zone-name="Recommendations"], .recommendations, [data-testid="recommendations"]')) continue;
+    if(isRecommendation(el)) continue;
+    if(profile.name==='Яндекс Маркет' && /Товар распродан|Нет в продаже/i.test(text)) continue;
     const value=(el.innerText || el.getAttribute('content') || el.getAttribute('aria-label') || '').replace(/\s+/g,' ').trim();
     if(value) widgets.push('Рейтинг/число оценок ('+(profile.scope || 'товар')+'): '+value.slice(0,500));
   }
   for(const el of [...document.querySelectorAll(selector)].slice(0,20)) {
+    if(isRecommendation(el)) continue;
+    if(profile.name==='Яндекс Маркет' && /Товар распродан|Нет в продаже/i.test(text)) continue;
     const value=(el.innerText || el.getAttribute('content') || '').replace(/\s+/g,' ').trim();
     if(value) widgets.push(((el.getAttribute('itemprop') || 'Виджет карточки')+': '+value).slice(0,1200));
   }
@@ -305,13 +371,21 @@ function reviewSample() {
       if(u.protocol!=='https:' || u.username || u.password || u.origin!==current.origin) continue;
       if(!/^\/(product0?\/|card\/|product--[^/]+\/|catalog\/\d+\/detail\.aspx)/.test(u.pathname)) continue;
       u.hash='';
+      for(const key of [...u.searchParams.keys()]) if(/^(?:cpc|ogV|cc|sponsored|show-?uid|showUid|from-show-uid|utm_.+|track|sh|short|perehod|from|from_share|from_global|share_id|tracking)$/i.test(key)) u.searchParams.delete(key);
       const label=(a.innerText || a.getAttribute('aria-label') || '').replace(/\s+/g,' ').trim().slice(0,180);
       if(!cards.has(u.href)) cards.set(u.href,label || 'Карточка товара');
       if(cards.size>=24) break;
     } catch {}
   }
-  const candidates=[...cards].map(([url,label])=>label+' — '+url).join('\n');
+  const candidateLines=[];let candidateSize=0;
+  for(const [url,label] of cards) {
+    const line=label+' — '+url;
+    if(candidateSize+line.length+1>1800)continue;
+    candidateLines.push(line);candidateSize+=line.length+1;
+  }
+  const candidates=candidateLines.join('\n');
   return {status: wall ? 'blocked' : body.length >= 50 ? 'ok' : 'error', url: location.href,
+    ...(wall ? {error_code:'browser_challenge'} : {}),
     title, text: wall ? '' : (title + '\n\nФакты карточки (JSON-LD):\n'+schemaSummary+'\n\nДанные раздела '+section+' (фрагменты, не полная выборка):\n'+signals+(stock ? '\n\nУсловия продажи (фрагменты страницы):\n'+stock : '')+(candidates ? '\n\nСсылки на отдельные карточки из страницы (ещё не проверены):\n'+candidates : '')+'\n\n'+(section === 'отзывы' ? 'Выборка: не более 20 доступных отзывов; полная лента не обходилась.' : body)).slice(0,80000)};
 }
 
@@ -332,7 +406,7 @@ async function revealSections(expectedUrl, section, profile = {}) {
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const labels = {описание:/^(?:описание(?: товара)?|о товаре|description)$/i, характеристики:/^(?:все )?характеристики(?: товара)?$|^specifications$/i, отзывы:/^(?:все |читать все |смотреть все |показать все )?(?:отзывы(?: покупателей| о товаре| и вопросы)?|оценки и отзывы|customer reviews|reviews|feedbacks?)(?:\s*[\d\s.,()]+)?$|^[\d\s.,()]+\s*отзыв[а-я]*$/i};
   const startX = scrollX, startY = scrollY;
-  let clicked='none';
+  let clicked='none', clickCaption='';
   const currentPage=new URL(location.href);
   const alreadyReviews=section==='отзывы' && (/\/(reviews|feedbacks|opinion|otzyvy)\/?$/.test(currentPage.pathname) || currentPage.searchParams.get('tab')==='reviews');
   for (const label of (alreadyReviews?[]:[labels[section]]).filter(Boolean)) {
@@ -340,8 +414,9 @@ async function revealSections(expectedUrl, section, profile = {}) {
     const candidates = [...document.querySelectorAll('button, [role="tab"], [role="button"], a'+(profile.controls ? ', '+profile.controls : ', [data-widget="webReviewProductScore"]'))];
     const control = candidates.find(el => {
       const caption=(el.innerText || el.getAttribute('aria-label') || el.getAttribute('title') || '').replace(/\s+/g,' ').trim();
-      const knownControl=section==='отзывы' && profile.controls && el.matches(profile.controls);
-      if ((!label.test(caption) && !knownControl) || !el.getClientRects().length) return false;
+      const knownControl=section==='отзывы' && profile.controls && el.matches(profile.controls) && /отзыв/i.test(caption);
+      const childVisible=knownControl && [...el.querySelectorAll('a,button,span')].some(child=>child.getClientRects().length && /отзыв/i.test(child.innerText || ''));
+      if ((!label.test(caption) && !knownControl) || (!el.getClientRects().length && !childVisible)) return false;
       if (el.tagName === 'A') {
         const u = new URL(el.href, location.href), current = new URL(location.href);
         const sameDocument = u.pathname === current.pathname && u.search === current.search;
@@ -355,9 +430,13 @@ async function revealSections(expectedUrl, section, profile = {}) {
       return true;
     });
     if (control) {
-      const child=[...control.querySelectorAll('a, button, [role="button"], span')].find(el=>label.test((el.innerText || '').replace(/\s+/g,' ').trim()) && el.getClientRects().length);
-      const target=child && child.tagName!=='A'?child:control;
-      target.scrollIntoView({block:'center'}); target.click();clicked=target.tagName.toLowerCase();await wait(1000);
+      const child=[...control.querySelectorAll('a, button, [role="button"], span')].find(el=>(label.test((el.innerText || '').replace(/\s+/g,' ').trim()) || section==='отзывы' && /отзыв/i.test(el.innerText || '')) && el.getClientRects().length);
+      let target=child || control;
+      if(target.tagName==='A') {
+        const dest=new URL(target.href,location.href),current=new URL(location.href);
+        if(dest.origin!==current.origin || (dest.pathname!==current.pathname && !(profile.reviewPaths || []).includes(dest.pathname.replace(/\/$/,'')))) target=control;
+      }
+      target.scrollIntoView({block:'center'});clickCaption=(target.innerText || '').replace(/\s+/g,' ').slice(0,100); target.click();clicked=target.tagName.toLowerCase();await wait(1000);
     }
   }
   if (section === 'отзывы') {
@@ -376,14 +455,35 @@ async function revealSections(expectedUrl, section, profile = {}) {
     await wait(350);
   }
   scrollTo(startX, startY);
-  return {control:clicked,dom_nodes:document.querySelectorAll(profile.cards || '[itemprop="review"], [data-review-id]').length};
+  return {control:clicked,click_caption:clickCaption,dom_nodes:document.querySelectorAll(profile.cards || '[itemprop="review"], [data-review-id]').length};
 }
 
 async function readJob(job) {
-  const empty = {status:'error', url:job.url, text:'', title:''};
+  const version = chrome.runtime.getManifest?.().version || '1.9.4';
+  const empty = {status:'error', url:job.url, text:'', title:'',reader_version:version,reader_source:'owned_tab',error_code:'empty_page'};
   if (!browseUrl(job.url)) return empty;
+  // A DNS card already open in this browser is a better source than another
+  // background tab. Read only that exact public card; never navigate, scroll,
+  // click its sections, take ownership of it or close it.
+  if (productUrl(job.url) && /(^|\.)dns-shop\.ru$/.test(new URL(job.url).hostname) && chrome.tabs.query) {
+    const {owned=[]}=await chrome.storage.session.get('owned');
+    const wanted=new URL(job.url);
+    const tabs=await chrome.tabs.query({url:'https://*.dns-shop.ru/*'});
+    const matches=tabs.filter(tab=>{
+      if(owned.some(item=>item.id===tab.id) || !tab.url || !productUrl(tab.url)) return false;
+      const u=new URL(tab.url);
+      return u.origin===wanted.origin && u.pathname.replace(/\/$/,'')===wanted.pathname.replace(/\/$/,'') && u.search===wanted.search;
+    }).sort((a,b)=>Number(Boolean(b.active))-Number(Boolean(a.active)));
+    for(const tab of matches.slice(0,2)) try {
+      const [read]=await chrome.scripting.executeScript({target:{tabId:tab.id},func:readProduct,args:[tab.url,'overview',readerProfile(tab.url)]});
+      const observed=read?.result?.url ? new URL(read.result.url) : null;
+      if(read?.result?.status==='ok' && productUrl(read.result.url) && observed.origin===wanted.origin && observed.search===wanted.search && observed.pathname.replace(/\/$/,'')===wanted.pathname.replace(/\/$/,'')) {
+        return {...read.result,reader_version:version,reader_source:'existing_tab',review_diagnostics:{stage:'not_extracted',source:'none',count:0},text:read.result.text.slice(0,10800)+'\n\nПрочитана уже открытая публичная карточка. Вкладка не изменялась. Тексты отзывов отдельно не открывались.'};
+      }
+    } catch {}
+  }
   const {retained = []} = await chrome.storage.session.get('retained');
-  let tab, keep = false;
+  let tab, keep = false, restoreActiveId = null;
   const match = retained.find(item => item.url === job.url);
   if (match) { try { tab = await chrome.tabs.get(match.id); } catch {} }
   if (!tab) tab = await chrome.tabs.create({url: job.url, active: false});
@@ -395,6 +495,7 @@ async function readJob(job) {
       await pause(1000);
       tab = await chrome.tabs.get(tab.id);
       if (!browseUrl(tab.url)) continue;
+      if(productUrl(job.url) && !sameProduct(job.url,tab.url)) return {...empty,error_code:'product_not_confirmed',text:'#PRODUCT_NOT_CONFIRMED# Ссылка перенаправила на другой товар или подборку.'};
       if (tab.status !== 'complete') continue;
       if (shortUrl(job.url)) {
         if (shortUrl(tab.url)) continue;
@@ -403,12 +504,24 @@ async function readJob(job) {
       const [injected] = await chrome.scripting.executeScript({target:{tabId:tab.id}, func:readProduct, args:[tab.url,'overview',readerProfile(tab.url)]});
       const result = injected?.result;
       if (!result || !browseUrl(result.url)) continue;
-      if(result.status==='error' && /^#PAGE_(NOT_FOUND|UNAVAILABLE)#/.test(result.text || '')) return result;
-      if (result.status === 'ok' && attempt >= 2) {
+      if(result.status==='error' && /^#PAGE_(NOT_FOUND|UNAVAILABLE)#/.test(result.text || '')) return {...result,reader_version:version,reader_source:'owned_tab'};
+      if (result.status === 'ok' && (attempt >= 2 || job.mode==='overview')) {
         if(!productUrl(result.url)) return {...result,text:('Это подборка/поиск, не отдельное предложение. Не рекомендуй этот URL как товар. Открой найденные карточки и сравни их.\n\n'+result.text).slice(0,80000)};
+        if(job.mode==='overview') return {...result,reader_version:version,reader_source:'owned_tab',review_diagnostics:{stage:'not_requested',source:'none',count:0},text:result.text.slice(0,5000)};
+        // Ozon's public interactive review controls can remain unrendered in
+        // a background tab. Activate only our own tab, then restore the former
+        // active tab if the user has not switched to another tab meanwhile.
+        if(/(^|\.)ozon\.ru$/.test(new URL(tab.url).hostname) && chrome.tabs.query && chrome.tabs.update && tab.windowId != null) try {
+          const active=await chrome.tabs.query({active:true,windowId:tab.windowId});
+          if(active[0] && active[0].id!==tab.id) {
+            restoreActiveId=active[0].id;
+            await chrome.tabs.update(tab.id,{active:true});await pause(500);
+            tab=await chrome.tabs.get(tab.id);
+          }
+        } catch {}
         // Keep the initial description when a section replaces the main panel.
         const chunks = [result.text.slice(0,2800)];
-        let reviews={stage:'not_extracted',source:'none',count:0};
+        let reviews={stage:'not_extracted',source:'none',count:0,foreground_read:Boolean(restoreActiveId)};
         for (const section of ['описание','характеристики','отзывы']) {
           try {
           const before=tab.url;
@@ -432,7 +545,7 @@ async function readJob(job) {
           if (!productUrl(tab.url)) break;
           const [more] = await chrome.scripting.executeScript({target:{tabId:tab.id}, func:readProduct, args:[tab.url,section,readerProfile(tab.url)]});
           if(section==='отзывы' && more?.result?.review_diagnostics) Object.assign(reviews,more.result.review_diagnostics);
-          if (more?.result?.status === 'ok' && productUrl(more.result.url)) chunks.push(section.toUpperCase() + '\n' + more.result.text.slice(0, section === 'отзывы' ? 3800 : 1950));
+          if (more?.result?.status === 'ok' && productUrl(more.result.url)) chunks.push(section.toUpperCase() + '\n' + (section === 'отзывы' ? more.result.text : more.result.text.slice(0,1950)));
           } catch (err) { console.warn('Reader section unavailable:', section, String(err)); break; }
         }
         if(!reviews.count && reviews.stage!=='empty') {
@@ -456,7 +569,7 @@ async function readJob(job) {
                     Object.assign(reviews,opened?.result || {},sample.result.review_diagnostics || {},{retry:true});
                     if(reviews.count)reviews.stage='read';
                     const old=chunks.findIndex(chunk=>chunk.startsWith('ОТЗЫВЫ\n'));
-                    const value='ОТЗЫВЫ\n'+sample.result.text.slice(0,3800);
+                    const value='ОТЗЫВЫ\n'+sample.result.text;
                     if(old>=0)chunks[old]=value;else chunks.push(value);
                   }
                 }
@@ -465,8 +578,10 @@ async function readJob(job) {
           }
         }
         if(!chunks.some(chunk=>chunk.startsWith('ОТЗЫВЫ\n'))) chunks.push('ОТЗЫВЫ\nТексты отзывов не извлечены: раздел не удалось открыть или прочитать. Рейтинг и число оценок не заменяют тексты покупателей.');
-        return {...result, reader_version:chrome.runtime.getManifest?.().version || '1.8.0',review_diagnostics:reviews,text:[...new Set(chunks)].join('\n\n').slice(0,10800)};
+        if(reviews.count) reviews.stage='read';
+        return {...result, reader_version:version,reader_source:'owned_tab',review_diagnostics:reviews,text:[...new Set(chunks)].join('\n\n')};
       }
+      if(attempt>=10 && result.error_code==='product_not_confirmed') return {...result,reader_version:version,reader_source:'owned_tab'};
       if (attempt >= 10 && result.status === 'blocked') {
         keep = true;
         const current = (await chrome.storage.session.get('retained')).retained || [];
@@ -477,11 +592,15 @@ async function readJob(job) {
         }
         current.push({id:tab.id, url:job.url});
         await chrome.storage.session.set({retained:current});
-        return {...result, url:job.url, text:''};
+        return {...result,reader_version:version,reader_source:'owned_tab',error_code:'browser_challenge',url:job.url,text:''};
       }
     }
-    return empty;
+    return {...empty,error_code:'navigation_timeout'};
   } finally {
+    if(restoreActiveId!==null) try {
+      const current=await chrome.tabs.get(tab.id);
+      if(current.active) await chrome.tabs.update(restoreActiveId,{active:true});
+    } catch {}
     if (!keep) { try { await chrome.tabs.remove(tab.id); } catch {} await forgetTab(tab.id); }
   }
 }
@@ -498,7 +617,7 @@ async function pump() {
       if (job) {
         if (!(await chrome.storage.local.get('enabled')).enabled) break;
         let result;
-        try { result = await readJob(job); } catch { result = {status:'error', url:job.url, text:'', title:''}; }
+        try { result = await readJob(job); } catch { result = {status:'error', url:job.url, text:'', title:'',reader_version:chrome.runtime.getManifest?.().version || '1.9.1',reader_source:'owned_tab',error_code:'script_error'}; }
         await api('/jobs/' + encodeURIComponent(job.id), 'POST', result);
         await chrome.storage.local.set({state: result.status === 'ok' ? 'Карточка прочитана.' : 'Страница не прочитана. Проверь вкладку товара.'});
       }

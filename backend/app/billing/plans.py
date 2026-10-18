@@ -79,8 +79,8 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "images": 3,
         "models": ["auto", "kimi-k2.6", "gpt-5-nano", "gpt-6-luna"],
         "daily_replies": 30,
-        "daily_searches": 5,
-        "features": ["30 ответов в день", "5 поисков в день", "3 картинки в месяц", "без Оркестратора, Студии и Исследования"],
+        "daily_searches": 15,
+        "features": ["30 ответов в день, из них до 15 с поиском", "3 картинки в месяц", "без Оркестратора, Студии и Исследования"],
     },
     "trial": {
         "id": "trial",
@@ -112,7 +112,7 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "computer_session": 1_075_000,
         "images": 25,
         "models": list(PRO_MODELS),
-        "features": ["окно 5 часов и неделя", "45 млн единиц на чат", "15 млн на Оркестратор", "GPT-6.1 Sol и Исследование", "Студия", "25 изображений в месяц"],
+        "features": ["GPT-6.1 Sol и Исследование", "Студия"],
     },
     "proplus": {
         "id": "proplus",
@@ -128,7 +128,7 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "computer_session": 3_570_000,
         "images": 40,
         "models": list(PROPLUS_MODELS),
-        "features": ["окно 5 часов и неделя", "81 млн единиц на чат", "50 млн на Оркестратор", "всё из Pro", "GPT-6 Astra", "40 изображений в месяц"],
+        "features": ["всё из Pro", "GPT-6 Astra"],
     },
     "ultra": {
         "id": "ultra",
@@ -144,7 +144,7 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "computer_session": 9_630_000,
         "images": 80,
         "models": list(ULTRA_MODELS),
-        "features": ["окно 5 часов и неделя", "270 млн единиц на чат", "135 млн на Оркестратор", "всё из Pro+", "80 изображений в месяц"],
+        "features": ["всё из Pro+"],
     },
     "creator": {
         "id": "creator",
@@ -164,6 +164,26 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
 NANO_CUSHION_PER_DAY = 40
 SESSION_SECONDS = 5 * 60 * 60
 PUBLIC_PLAN_IDS = ("pro", "proplus", "ultra")
+
+# Keep the original allocations for compatibility and accounting history.
+# Enforcement and current clients use one shared budget. Existing per-mode
+# counters are added, so no migration resets usage or invalidates reservations.
+# Increased monthly/weekly allowances, approved 2026-10-16. Trial follows Pro+.
+SHARED_LIMITS = {
+    "pro": (75_000_000, 30_000_000),
+    "proplus": (165_000_000, 65_500_000),
+    "ultra": (510_000_000, 202_500_000),
+    "trial": (165_000_000, 65_500_000),
+}
+for _tier in ("trial", "pro", "proplus", "ultra"):
+    _plan = PLAN_CATALOG[_tier]
+    _plan["shared_budget"] = True
+    _plan["total_tokens"], _plan["weekly_tokens"] = SHARED_LIMITS[_tier]
+    _plan["session_tokens"] = 2 * (_plan["chat_session"] + _plan["computer_session"])
+    if _tier != "trial":
+        _plan["features"] = [f'{_plan["total_tokens"] // 1_000_000} млн общих единиц в месяц',
+            'Единый запас для чата, Оркестратора и Студии', 'Увеличенное окно на 5 часов',
+            'Поиск в пределах общего запаса', *_plan['features'], f'{_plan["images"]} изображений в месяц']
 
 
 def canonical_tier(tier: str | None) -> str:

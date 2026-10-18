@@ -7,7 +7,7 @@ from typing import Any
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 MAX_SKILLS = 20
-MAX_BODY = 4000
+MAX_BODY = 64000
 MAX_DESC = 180
 MAX_TITLE = 80
 MAX_TRIGGERS = 400

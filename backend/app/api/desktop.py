@@ -25,8 +25,8 @@ LOCAL_TOOLS = frozenset({
     "pip_install", "desktop_run_command", "desktop_changed_files",
     "desktop_skill_read", "desktop_skill_list",
     "desktop_browser_inspect", "desktop_browser_action",
-    "desktop_image_read", "desktop_apps", "desktop_inspect", "desktop_control", "desktop_cad_inspect",
-    "desktop_solidworks", "desktop_kompas", "desktop_cad_action", "desktop_presentation", "desktop_save_artifact", "desktop_ocr",
+    "desktop_image_read", "desktop_apps", "desktop_inspect", "desktop_capture", "desktop_pointer", "desktop_cad_saved_file", "desktop_control", "desktop_cad_inspect",
+    "desktop_solidworks", "desktop_kompas", "desktop_cad_action", "desktop_presentation", "desktop_save_artifact", "desktop_ocr", "desktop_pdf_to_text",
 })
 _active_users: set[str] = set()
 
@@ -35,7 +35,7 @@ _active_users: set[str] = set()
 async def desktop_status(user_id: str = Depends(get_current_user)):
     from app.billing.plans import allowed_models
     subscription = await subscription_payload(user_id)
-    models = allowed_models(subscription.get("tier")) & {"auto", "gpt-6-sol", "studio"}
+    models = allowed_models(subscription.get("tier")) & {"auto", "gpt-6-sol", "gpt-6-astra", "director", "studio", "kimi-k2.6", "docgen"}
     return {"protocol": PROTOCOL, "mode": "director", "modes": ["director", "chat"], "local_history": True, "work_context": True, "context_compaction": True, "context_policy": context_policy(), "chat_models": sorted(models), "subscription": subscription}
 
 
@@ -64,7 +64,12 @@ async def desktop_socket(ws: WebSocket):
         future = asyncio.get_running_loop().create_future()
         pending[call_id] = future
         try:
-            await send("tool_call", id=call_id, name=name, arguments=args)
+            # BitClient per-agent local read evidence
+            from app.services.desktop_swarm import active_agent, active_swarm
+            owner = active_agent.get()
+            board = active_swarm.get()
+            role = board.agents.get(owner, {}).get('role', '') if board else ''
+            await send("tool_call", id=call_id, name=name, arguments=args, agent_id=owner, agent_role=role)
             result = await asyncio.wait_for(future, timeout=600)
             return str(result.get("output") or "")[:1_100_000 if name == "desktop_image_read" else 80_000]
         except asyncio.TimeoutError:
@@ -201,8 +206,21 @@ async def desktop_socket(ws: WebSocket):
                     continue
                 _active_users.add(user_id)
                 task = asyncio.create_task(run(payload))
-    except (WebSocketDisconnect, WebSocketException, ValueError):
+    # BitClient explicit connection failure
+    except WebSocketException:
+        try:
+            await send("error", code="auth", message="Сессия Bit-Think истекла или доступ к аккаунту ограничен. Войдите заново.")
+            await ws.close(code=1008)
+        except Exception:
+            pass
+    except WebSocketDisconnect:
         pass
+    except ValueError:
+        try:
+            await send("error", code="protocol", message="Некорректное сообщение BitClient. Обновите приложение.")
+            await ws.close(code=1003)
+        except Exception:
+            pass
     finally:
         if task and not task.done():
             task.cancel()

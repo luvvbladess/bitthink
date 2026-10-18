@@ -15,12 +15,15 @@ import {
   DialogContentText,
   DialogActions,
   Button,
+  Collapse,
+  Alert,
 } from '@mui/material';
-import { Plus, Trash, PencilSimple, Check, X, MagnifyingGlass, FolderSimple, DotsThree } from '@phosphor-icons/react';
+import { Plus, Trash, PencilSimple, Check, X, MagnifyingGlass, FolderSimple, DotsThree, CaretRight } from '@phosphor-icons/react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { BrandLink } from '@/components/BrandMark';
 import { AccountMenu } from '@/components/AccountMenu';
 import { headerIconBtnSx } from '@/theme/effects';
+import { ProjectActions, type ProjectDeleted } from './ProjectActions';
 
 export interface ConversationItem {
   id: string;
@@ -56,6 +59,13 @@ interface Props {
   onClose?: () => void;
   onLibrary?: () => void;
   generatingIds?: string[];
+  projects?: { id: string; name: string; chat_ids?: string[] }[];
+  onMoveChat?: (id: string, projectId: string | null) => Promise<void>;
+  activeProjectId?: string | null;
+  onProject?: (id: string) => void;
+  onCreateProject?: () => void;
+  onCreateInProject?: (pid: string) => Promise<void>;
+  onProjectDeleted?: ProjectDeleted;
 }
 
 const SIDEBAR_W = { xs: '100%', md: 280 };
@@ -68,8 +78,31 @@ const actionBtnSx = {
   '&:hover': { color: 'text.primary', bgcolor: 'var(--bt-overlay)' },
 } as const;
 
-export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDelete, onRename, onClose, onLibrary, generatingIds = [] }: Props) {
+export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDelete, onRename, onClose, onLibrary, generatingIds = [], projects = [], activeProjectId, onProject, onCreateProject, onMoveChat, onCreateInProject, onProjectDeleted }: Props) {
   const reduce = useReducedMotion();
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [dragTarget, setDragTarget] = useState<string | null>(null);
+  const [moveError, setMoveError] = useState('');
+  const [moveBusy, setMoveBusy] = useState(false);
+  const [moveMenu, setMoveMenu] = useState(false);
+  const membership = new Map(projects.flatMap(p => (p.chat_ids || []).map(id => [id, p.id] as const)));
+  const move = async (id: string, pid: string | null) => {
+    if (!onMoveChat || moveBusy || conversations.find(c => c.id === id)?.shared) return;
+    setMoveBusy(true); setMoveError('');
+    try { await onMoveChat(id, pid); if (pid) setExpanded(v => ({ ...v, [pid]: true })); }
+    catch { setMoveError('Не удалось перенести беседу. Попробуйте ещё раз через меню беседы.'); }
+    finally { setMoveBusy(false); }
+  };
+  const dragProps = (conv: ConversationItem) => ({
+    draggable: Boolean(onMoveChat && !conv.shared && !moveBusy && editingId !== conv.id),
+    onDragStart: (e: React.DragEvent) => { e.dataTransfer.setData('application/x-bitthink-chat', conv.id); e.dataTransfer.effectAllowed = 'move'; },
+    onDragEnd: () => setDragTarget(null),
+  });
+  const dropProps = (pid: string | null) => ({
+    onDragOver: (e: React.DragEvent) => { if (e.dataTransfer.types.includes('application/x-bitthink-chat') && !moveBusy) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragTarget(pid || 'unassigned'); } },
+    onDragLeave: (e: React.DragEvent) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragTarget(null); },
+    onDrop: (e: React.DragEvent) => { e.preventDefault(); setDragTarget(null); const id = e.dataTransfer.getData('application/x-bitthink-chat'); if (conversations.some(c => c.id === id && !c.shared)) void move(id, pid); },
+  });
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
   const [confirmDelete, setConfirmDelete] = useState<ConversationItem | null>(null);
@@ -78,7 +111,7 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
   const [rowMenu, setRowMenu] = useState<{ el: HTMLElement; conv: ConversationItem } | null>(null);
   const filteredConversations = search.trim()
     ? conversations.filter((c) => c.title.toLowerCase().includes(search.trim().toLowerCase()))
-    : conversations;
+    : conversations.filter(c => !membership.has(c.id));
   // Newest first. Keep the server order when it sent no dates.
   const ordered = filteredConversations.every((c) => c.updated_at)
     ? [...filteredConversations].sort((a, b) => Date.parse(b.updated_at!) - Date.parse(a.updated_at!))
@@ -175,6 +208,33 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
         )}
       </Box>
 
+      {onProject && <Box sx={{ px: 1.25, pb: 1.5, flexShrink: 0, maxHeight: '42%', overflowY: 'auto' }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 1, mb: .5 }}><Typography sx={{ fontSize: 12, color: 'text.secondary', fontWeight: 600 }}>Проекты</Typography><IconButton size="small" aria-label="Создать проект" onClick={onCreateProject}><Plus size={16} /></IconButton></Box>
+        {projects.map(project => {
+          const chats = conversations.filter(c => !c.shared && membership.get(c.id) === project.id);
+          const open = expanded[project.id] ?? (activeProjectId === project.id);
+          return <Box key={project.id} {...dropProps(project.id)} sx={{ borderRadius: 2, bgcolor: dragTarget === project.id ? 'var(--bt-overlay-strong)' : 'transparent', outline: dragTarget === project.id ? '1px solid var(--bt-accent, #21A0CE)' : 'none' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center' }}>
+              <IconButton size="small" aria-label={`${open ? 'Свернуть' : 'Показать'} беседы проекта ${project.name}`} aria-expanded={open} onClick={() => setExpanded(v => ({ ...v, [project.id]: !open }))}><CaretRight size={14} style={{ transform: open ? 'rotate(90deg)' : undefined, transition: reduce ? 'none' : 'transform 180ms ease-out' }} /></IconButton>
+              <Button fullWidth startIcon={<FolderSimple size={16} />} onClick={() => { setExpanded(v => ({ ...v, [project.id]: true })); onProject(project.id); }} aria-pressed={activeProjectId === project.id} sx={{ minWidth: 0, justifyContent: 'flex-start', color: activeProjectId === project.id ? 'primary.light' : 'text.secondary', px: .5, py: .9, fontSize: 13, borderRadius: 2, textAlign: 'left' }}><Box component="span" sx={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{project.name}</Box><Typography component="span" sx={{ ml: .5, fontSize: 12, color: 'text.secondary' }}>{chats.length}</Typography></Button><ProjectActions project={project} onDeleted={onProjectDeleted} />
+            </Box>
+            <Collapse in={open} timeout={reduce ? 0 : 180}>
+              <Box sx={{ ml: 2, pl: .5, borderLeft: '1px solid var(--bt-hairline)', pb: .5 }}>
+                {chats.map(conv => <Box key={conv.id} {...dragProps(conv)} sx={{ display: 'flex', alignItems: 'center', borderRadius: 2, bgcolor: conv.id === activeId ? 'var(--bt-overlay)' : 'transparent' }}>
+                  {editingId === conv.id ? <TextField size="small" fullWidth autoFocus value={editTitle} onChange={e => setEditTitle(e.target.value)} inputProps={{ 'aria-label': 'Название беседы' }} onKeyDown={e => { if (e.key === 'Enter') saveEdit(); if (e.key === 'Escape') setEditingId(null); }} InputProps={{ endAdornment: <IconButton size="small" aria-label="Сохранить название" onClick={saveEdit}><Check size={14} /></IconButton> }} /> : <Button onClick={() => onSelect(conv.id)} sx={{ flex: 1, minWidth: 0, justifyContent: 'flex-start', color: conv.id === activeId ? 'text.primary' : 'text.secondary', px: 1, py: .75, fontSize: 13 }}><Box component="span" sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{generatingIds.includes(conv.id) ? 'В работе · ' : ''}{conv.title}</Box></Button>}
+                  <IconButton size="small" aria-label={`Действия с беседой ${conv.title}`} onClick={e => { setMoveMenu(false); setRowMenu({ el: e.currentTarget, conv }); }}><DotsThree size={18} /></IconButton>
+                </Box>)}
+                {onCreateInProject && <Button size="small" startIcon={<Plus size={14} />} onClick={() => { void onCreateInProject(project.id).catch(() => setMoveError('Не удалось создать беседу в проекте. Попробуйте ещё раз.')); }} sx={{ justifyContent: 'flex-start', px: 1, fontSize: 12, color: 'text.secondary' }}>Новая беседа в проекте</Button>}
+                {!chats.length && <Typography sx={{ px: 1, py: .75, fontSize: 12, color: 'text.secondary' }}>Перетащите беседу сюда или выберите проект в её меню «…».</Typography>}
+              </Box>
+            </Collapse>
+          </Box>;
+        })}
+        {!projects.length && <Button fullWidth onClick={onCreateProject} size="small" sx={{ justifyContent: 'flex-start', color: 'text.secondary', px: 1 }}>Объединить работу в проект</Button>}
+        {projects.length > 0 && <Typography sx={{ px: 1, pt: .75, fontSize: 12, color: 'text.secondary' }}>Перенос беседы: перетащите её в проект или нажмите «…».</Typography>}
+      </Box>}
+      {moveError && <Alert severity="error" onClose={() => setMoveError('')} sx={{ mx: 1, mb: 1 }} role="alert">{moveError}</Alert>}
+      <Box {...dropProps(null)} sx={{ px: 2.25, py: .75, bgcolor: dragTarget === 'unassigned' ? 'var(--bt-overlay-strong)' : 'transparent' }}><Typography sx={{ fontSize: 12, color: 'text.secondary', fontWeight: 600 }}>{search.trim() ? 'Результаты поиска' : 'Беседы вне проектов'}</Typography></Box>
       {conversations.length > 5 && (
         <Box sx={{ px: 1.25, pb: 1.25, flexShrink: 0 }}>
           <TextField
@@ -261,6 +321,7 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
                 transition={{ delay: reduce ? 0 : Math.min(i, 8) * 0.03, duration: 0.22, ease: [0.23, 1, 0.32, 1] }}
               >
                 <ListItemButton
+                  {...dragProps(conv)}
                   selected={active}
                   onClick={() => onSelect(conv.id)}
                   sx={{
@@ -360,15 +421,15 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
                     <>
                     <IconButton
                       size="small"
-                      onClick={(e) => { e.stopPropagation(); setRowMenu({ el: e.currentTarget, conv }); }}
+                      onClick={(e) => { e.stopPropagation(); setMoveMenu(false); setRowMenu({ el: e.currentTarget, conv }); }}
                       aria-label="Действия с беседой"
-                      sx={{ ...actionBtnSx, width: 36, height: 36, display: { xs: 'inline-flex', md: 'none' } }}
+                      sx={{ ...actionBtnSx, width: 36, height: 36, display: 'inline-flex' }}
                     >
                       <DotsThree size={20} weight="bold" />
                     </IconButton>
                     <Box
                       sx={{
-                        display: { xs: 'none', md: 'flex' },
+                        display: 'none',
                         gap: 0.15,
                         opacity: { xs: 1, md: 0 },
                         '.MuiListItemButton-root:hover &, .MuiListItemButton-root:focus-within &': { opacity: 1 },
@@ -407,6 +468,9 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
         onClose={() => setRowMenu(null)}
         slotProps={{ paper: { sx: { minWidth: 200, borderRadius: '14px' } } }}
       >
+        {!rowMenu?.conv.shared && onMoveChat && !moveMenu && <MenuItem disabled={moveBusy || !projects.length} onClick={() => setMoveMenu(true)}><ListItemIcon><FolderSimple size={18} /></ListItemIcon>Переместить в проект…</MenuItem>}
+        {moveMenu && projects.map(p => <MenuItem key={p.id} selected={membership.get(rowMenu?.conv.id || '') === p.id} disabled={moveBusy} onClick={() => { const id = rowMenu?.conv.id; setRowMenu(null); setMoveMenu(false); if (id) void move(id, p.id); }}><ListItemIcon><FolderSimple size={18} /></ListItemIcon>{p.name}</MenuItem>)}
+        {!rowMenu?.conv.shared && membership.has(rowMenu?.conv.id || '') && <MenuItem disabled={moveBusy} onClick={() => { const id = rowMenu?.conv.id; setRowMenu(null); setMoveMenu(false); if (id) void move(id, null); }}>Убрать из проекта</MenuItem>}
         <MenuItem
           sx={{ minHeight: 48 }}
           onClick={() => {

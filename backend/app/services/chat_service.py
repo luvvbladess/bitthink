@@ -167,10 +167,28 @@ async def _generate_and_send(
             attachment["files"] = metas
         await repo.add_message(web_user_id, "assistant", text, conv_id=conversation_id, attachment=attachment)
 
-    with turn_conversation(conversation_id), delivery(post_now):
-        response_text, generated_files, reasoning_text, search_results = await get_smart_response(
-            bot_user_id, prompt_content, api_messages, status_msg, on_reasoning_delta=None
-        )
+    from marketplace_verification import single_store_price_lookup
+    reader_detail = "overview" if single_store_price_lookup(prompt_content) else "full"
+    with turn_conversation(conversation_id, reader_detail=reader_detail), delivery(post_now):
+        from app.services.project_memory import project_context, context as project_context_for
+        project_note = await asyncio.to_thread(project_context_for, bot_user_id, conversation_id, prompt_content)
+        project_token = project_context.set(project_note)
+        from app.services.project_results import turn_results, capture_answer
+        saved_project_results=[]
+        results_token=turn_results.set(saved_project_results)
+        try:
+            # Initial messages also carry the note for providers that do not use
+            # with_runtime_context; employee calls inherit the scoped ContextVar.
+            if project_note:
+                api_messages = [dict(item) for item in api_messages]
+                index = 1 if api_messages and api_messages[0].get('role') == 'system' else 0
+                api_messages.insert(index, {'role': 'system', 'content': project_note})
+            response_text, generated_files, reasoning_text, search_results = await get_smart_response(
+                bot_user_id, prompt_content, api_messages, status_msg, on_reasoning_delta=None
+            )
+        finally:
+            project_context.reset(project_token)
+            turn_results.reset(results_token)
         try:
             from app.services.sandbox_client import collect_workspace_files
 
@@ -240,6 +258,15 @@ async def _generate_and_send(
     clear_quota_charge()
     await asyncio.to_thread(chat_access.scrub_recent, bot_user_id, conversation_id)
     schedule_memory_refresh(bot_user_id)
+    # Only explicit requirements from the user's current message are proposed.
+    # Suggestions remain outside retrieval until accepted; this never calls a model.
+    try:
+        from app.services.project_memory import suggest_from_turn
+        await asyncio.to_thread(suggest_from_turn, bot_user_id, conversation_id, prompt_content)
+        if not saved_project_results:
+            await asyncio.to_thread(capture_answer,bot_user_id,conversation_id,prompt_content,response_text)
+    except Exception:
+        logger.exception('Project memory suggestion could not be saved')
 
     if send_extras and (reasoning_text or search_results):
         await best_effort(send_extras, reasoning_text, search_results)

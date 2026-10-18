@@ -1,0 +1,246 @@
+from types import SimpleNamespace as NS
+from app.config import get_settings  # noqa: F401
+from app.services.followup_evidence import followup_evidence, previous_source_rows, EVIDENCE_MARKER
+from app.services.source_quality import evidence_issues
+from app.services.source_quality import resolve_numbered_citations
+from model_context import search_hop_messages
+from kimi_client import kimi_result_is_grounded
+import asyncio
+from uuid import uuid4
+
+
+def source(state='read', url='https://example.com/announcement'):
+    return dict(query='Official announcement', summary=url+'\nNew Model and New Model Full were released.',
+                evidence_state=state, read_at='2026-10-12T12:00:00Z')
+
+
+def history(*rows):
+    return [NS(role='user',content='Что за новая модель?',search=None),
+            NS(role='assistant',content='Описание модели',search=list(rows))]
+
+
+def test_numeric_model_followup_restores_observations_and_requires_web():
+    note, fresh = followup_evidence('а скажи именно версии моделей, циферные',history(source()))
+    assert fresh and 'New Model Full' in note and '2026-10-12T12:00:00Z' in note
+    assert 'Описание модели' not in note
+    prior=previous_source_rows(note)
+    assert prior[0]['cached'] and prior[0]['origin']=='history'
+    assert prior[0]['read_at']=='2026-10-12T12:00:00Z'
+    messages=[{'role':'system','content':note},{'role':'user','content':'а версии?'}]
+    assert any(EVIDENCE_MARKER in m['content'] for m in search_hop_messages(messages,'а версии?'))
+
+
+def test_new_topic_greeting_and_formatting_do_not_force_web():
+    for query in ['привет','спасибо','Напиши код сортировки на Python','новая тема: а какие у неё версии?']:
+        assert followup_evidence(query,history(source()))==('',False)
+    note,fresh=followup_evidence('перефразируй это короче',history(source()))
+    assert note and not fresh
+
+
+def test_failed_sources_and_assistant_prose_are_not_evidence():
+    assert followup_evidence('а версии моделей?',history(source('failed')))==('',False)
+    assert followup_evidence('а версии моделей?',history())==('',False)
+    note,_=followup_evidence('а её цена?',history(source('retrieved')))
+    assert '"evidence_state": "retrieved"' in note
+    assert followup_evidence('а её цена?',history(source(url='https://example.com/?token=secret')))==('',False)
+
+
+def test_evidence_is_bounded_and_comes_from_immediately_previous_answer():
+    rows=[source(url=f'https://example.com/{i}') for i in range(30)]
+    for row in rows:row['summary']+='x'*20000
+    note,_=followup_evidence('а её точная версия?',history(*rows))
+    assert len(note)<8000 and len(previous_source_rows(note))<=4
+    turns=history(source())+[NS(role='assistant',content='Другой ответ без источников',search=None)]
+    assert followup_evidence('а её версия?',turns)==('',False)
+    turns[-1].content='Похоже, предыдущие ответы были выдуманными.'
+    note,fresh=followup_evidence('а её версия?',turns)
+    assert fresh and 'New Model Full' in note
+
+
+def test_source_quantity_cannot_replace_citation_provenance():
+    rows=[source()]*10
+    assert not kimi_result_is_grounded('Уверенное утверждение без ссылок. '*10,rows)
+    assert not kimi_result_is_grounded('[Версия](https://invented.example/fake)',rows)
+    assert kimi_result_is_grounded('Версия 2. [Источник](https://example.com/announcement)',rows[:1],minimum_sources=4)
+    assert not kimi_result_is_grounded('❌ Ошибка API',rows)
+
+
+def test_version_comparison_requires_coverage_for_each_statement_and_page_read():
+    rows=[source()]
+    assert 'precise_claim_without_inline_source' in evidence_issues(
+        'Model 4.7 is current.\nOther details [source](https://example.com/announcement)',rows)
+    assert 'precise_claim_needs_page_read' in evidence_issues(
+        'Version 4.7 [source](https://example.com/announcement)',[source('retrieved')])
+    assert not evidence_issues('Version 4.7 [source](https://example.com/announcement)',rows)
+
+
+def test_kimi_passes_domain_filter_and_parallel_reads_keep_result_ids(monkeypatch):
+    import kimi_client, kimi_web_search
+    captured=[]
+    async def search(query,**kwargs):
+        captured.append(kwargs)
+        return []
+    monkeypatch.setattr(kimi_web_search,'kimi_search_pro',search)
+    asyncio.run(kimi_client._execute_kimi_tool('web_search',{'query':'current models','sites':['official.example']}))
+    assert captured[0]['sites']==['official.example']
+    active=peak=0
+    async def read(name,args,**kwargs):
+        nonlocal active,peak
+        active+=1;peak=max(peak,active)
+        await asyncio.sleep(.01)
+        active-=1
+        return args['url'],[]
+    monkeypatch.setattr(kimi_client,'_execute_kimi_tool',read)
+    calls=[NS(id=f'call{i}',function=NS(name='browse_page',arguments='{"url":"https://example.com/%d"}'%i)) for i in range(4)]
+    messages=[]
+    asyncio.run(kimi_client._append_tool_results(messages,calls))
+    assert peak==3
+    assert [m['tool_call_id'] for m in messages]==[f'call{i}' for i in range(4)]
+    assert [m['content'] for m in messages]==[f'https://example.com/{i}' for i in range(4)]
+
+
+def test_false_retraction_is_flagged_without_declaring_semantic_truth():
+    issues=evidence_issues('Предыдущие ответы были выдуманными. Модель не существует.',[source()],has_previous_evidence=True)
+    assert {'missing_inline_evidence','retraction_needs_source_check'}<=set(issues)
+    # A link is structurally valid; this helper does not prove the numeric claim.
+    assert not evidence_issues('Число 999. [Источник](https://example.com/announcement)',[source()])
+
+
+def test_numbered_links_resolve_only_with_explicit_observed_url_mapping():
+    text='Модель выпущена [7].\n\n[7] Анонс — https://example.com/announcement'
+    assert 'выпущена [источник](https://example.com/announcement)' in resolve_numbered_citations(text,[source()])
+    assert resolve_numbered_citations('Модель выпущена [1].',[source()])=='Модель выпущена [1].'
+    fake='Утверждение [1].\n[1] https://invented.example/fake'
+    assert resolve_numbered_citations(fake,[source()])==fake
+
+
+def _mock_auto_turn(monkeypatch):
+    import handlers.core as core
+    import kimi_client, studio_router, model_context
+    user=820_000_000+uuid4().int%10_000_000
+    core.conversation_manager.set_subscription_tier(user,'creator',30,from_today=True)
+    monkeypatch.setattr(core.conversation_manager,'get_user_model',lambda uid:'auto')
+    monkeypatch.setattr(core.conversation_manager,'conversation_for_turn',lambda uid:NS(messages=history(source())))
+    async def passthrough(messages,*args,**kwargs):return messages
+    async def no_image(*args,**kwargs):return None
+    monkeypatch.setattr(core,'reduce_heavy_context',passthrough)
+    monkeypatch.setattr(model_context,'fit_for_mode',passthrough)
+    monkeypatch.setattr(studio_router,'get_image_response',no_image)
+    return core,kimi_client,user
+
+
+def test_auto_followup_searches_with_prior_page_not_offline_memory(monkeypatch):
+    core,kimi,user=_mock_auto_turn(monkeypatch)
+    seen=[]
+    async def search(messages,**kwargs):
+        seen.extend(messages)
+        return 'Версии конкурентов проверены. [Источник](https://example.com/announcement)',[],'',[source()]
+    async def forbidden(*args,**kwargs):raise AssertionError('No offline or recovery call expected')
+    monkeypatch.setattr(kimi,'get_kimi_chat_response',search)
+    monkeypatch.setattr(core,'get_chat_response',forbidden)
+    query='а скажи именно версии моделей, циферные'
+    result=asyncio.run(core.get_smart_response(user,query,[{'role':'user','content':query}],None))
+    assert 'Версии конкурентов' in result[0]
+    assert any(EVIDENCE_MARKER in m['content'] for m in seen)
+    assert any('New Model Full' in m['content'] for m in seen)
+
+
+def test_false_retraction_has_one_bounded_read_only_recovery(monkeypatch):
+    core,kimi,user=_mock_auto_turn(monkeypatch)
+    requests=[]
+    async def empty(*args,**kwargs):return 'Не нашёл',[],'',[]
+    async def answer(messages,**kwargs):
+        requests.append(kwargs)
+        if len(requests)==1:return 'Предыдущие ответы были выдуманными. Модель не существует.',[],'',[]
+        return 'Модель выпущена. [Анонс](https://example.com/announcement). Версии конкурентов нужно проверить отдельно.',[],'',[source()]
+    monkeypatch.setattr(kimi,'get_kimi_chat_response',empty)
+    monkeypatch.setattr(core,'get_chat_response',answer)
+    query='а скажи именно версии моделей, циферные'
+    result=asyncio.run(core.get_smart_response(user,query,[{'role':'user','content':query}],None))
+    assert 'Модель выпущена' in result[0] and 'выдуман' not in result[0]
+    assert len(requests)==2
+    assert requests[-1]['model']=='gpt-6-sol'
+    assert requests[-1]['max_tool_loops']==4
+    assert requests[-1]['allowed_tools']=={'web_search','server_search','browse_page'}
+
+
+def test_kimi_keeps_verified_numbered_links_before_cleanup(monkeypatch):
+    import kimi_client
+    calls=[]
+    async def model(client,request,**kwargs):
+        calls.append(request)
+        if len(calls)==1:
+            message=NS(content='',tool_calls=[NS(id='s1',type='function',function=NS(name='web_search',arguments='{"query":"model"}'))])
+        else:
+            message=NS(content='Version 4.7 is listed [7].\n\n[7] Official — https://example.com/announcement',tool_calls=[])
+        return NS(usage=None,choices=[NS(message=message)])
+    async def append(messages,tool_calls,**kwargs):
+        messages.append(dict(role='tool',tool_call_id='s1',content='Version 4.7'))
+        return [source()]
+    monkeypatch.setattr(kimi_client,'client',NS())
+    monkeypatch.setattr(kimi_client,'model_call',model)
+    monkeypatch.setattr(kimi_client,'_append_tool_results',append)
+    result=asyncio.run(kimi_client.get_kimi_chat_response([dict(role='user',content='model versions')]))
+    assert '[источник](https://example.com/announcement)' in result[0]
+    assert '\n[7]' not in result[0]
+
+
+def test_failed_recovery_cannot_keep_an_unobserved_link_or_unread_number():
+    from app.services.source_quality import supported_partial
+    answer=('Valid [source](https://example.com/announcement).\n\n'
+            'Model 9.9 [invented](https://invented.example/no).')
+    partial=supported_partial(answer,[source()])
+    assert 'Valid' in partial and 'invented.example' not in partial and '9.9' not in partial
+    assert 'выдуман' not in supported_partial('Предыдущие ответы выдуманы.',[source()])
+
+
+def test_verified_catalog_entrypoints_are_selective_and_do_not_embed_versions(monkeypatch):
+    from app.services.authoritative_catalogs import catalog_urls,read_catalogs,CATALOG_MARKER
+    assert len(catalog_urls('а версии моделей?','Claude, GPT и Gemini'))==3
+    assert catalog_urls('как работает список Python','Claude GPT Gemini')==[]
+    assert len(catalog_urls('актуальные модели GPT',''))==1
+    import computer_tools
+    seen=[]
+    async def read(name,args,user_id):
+        seen.append((name,args['url']))
+        return 'URL: '+args['url']+'\n\nCurrent release from the actual page'
+    monkeypatch.setattr(computer_tools,'run_computer_tool',read)
+    note,rows=asyncio.run(read_catalogs('версии моделей','Claude GPT Gemini',1))
+    assert note.startswith(CATALOG_MARKER) and len(rows)==3
+    assert all(name=='browse_page' for name,url in seen)
+    assert all('evidence_state' not in row for row in rows) # ledger supplies real status
+
+
+def test_general_ai_ranking_gets_benchmarks_without_needing_vendor_names():
+    from app.services.authoritative_catalogs import catalog_urls,is_ai_overview,MODEL_BENCHMARK
+    from search_engine import query_requires_web
+    for query in ['какие щас лучшие модели нейронок в мире?', 'топ нейросетей',
+                  'Какая сейчас самая сильная языковая модель?', 'best AI models']:
+        assert is_ai_overview(query) and query_requires_web(query)
+        urls=catalog_urls(query,'')
+        assert len(urls)==4 and urls[0]==MODEL_BENCHMARK
+    for query in ['как устроена нейросеть','лучшая модель линейной регрессии','лучшие автомобили','лучшая модель нейронов мозга']:
+        assert not is_ai_overview(query)
+    assert not query_requires_web('без поиска какие лучшие нейросети?')
+    assert catalog_urls('без поиска какие лучшие нейросети?','')==[]
+
+
+def test_empty_search_refusal_is_a_failure_even_with_no_sources():
+    assert 'incomplete_answer_needs_recovery' in evidence_issues(
+        'Я не могу надёжно назвать мировой топ: поиск не вернул свежих рейтингов.',[])
+    assert not evidence_issues('Общий принцип работы нейросетей — обучение на примерах.',[])
+
+
+def test_cited_table_caption_covers_table_and_survives_partial_filter():
+    from app.services.source_quality import supported_partial
+    table='| Модель | Балл |\n|---|---|\n| Model 5.5 | 58 |\n| Model 4.1 | 56 |'
+    answer=table+'\n\n[Таблица рейтинга](https://example.com/announcement) — источник баллов.'
+    assert not evidence_issues(answer,[source()])
+    assert '| Model 5.5 |' in supported_partial(answer,[source()])
+    assert 'precise_claim_without_inline_source' in evidence_issues(table+'\n\nПосторонний текст.',[source()])
+    assert 'precise_claim_without_inline_source' in evidence_issues(answer,[source('retrieved')])
+
+
+def test_one_list_item_citation_does_not_cover_other_items():
+    text='- Model 4.7 [source](https://example.com/announcement)\n\n- Model 9.9'
+    assert 'precise_claim_without_inline_source' in evidence_issues(text,[source()])
