@@ -249,7 +249,7 @@ def test_docgen_writer_applies_saved_skill_service_calls_do_not():
         conversation_manager.delete_user_skill(uid, "doc_tone")
 
 
-def test_studio_compose_includes_saved_skill_without_tool_loop():
+def test_studio_compose_keeps_saved_skill_with_explicit_research():
     import studio_router
 
     uid = 96205
@@ -266,8 +266,9 @@ def test_studio_compose_includes_saved_skill_without_tool_loop():
         for fn in (studio_router._compose_spec, studio_router._compose_html):
             source = inspect.getsource(fn)
             assert "user_skill_preamble" in source
-            assert "use_skills=False" in source
-            assert "use_tools=False" in source
+            assert "compose_with_web" in source
+        from studio.research import compose_with_web
+        assert "use_skills=False" in inspect.getsource(compose_with_web)
     finally:
         conversation_manager.delete_user_skill(uid, "slide_tone")
 

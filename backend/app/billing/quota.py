@@ -180,29 +180,16 @@ def apply_token_debit(sub: dict[str, Any], pool: str, amount: int, already: int 
         sub["session_chat_used"] = 0
         sub["session_computer_used"] = 0
     delta = max(0, int(amount) - int(already or 0))
-    if pool == "computer":
-        month_key, session_key, week_key = (
-            "computer_tokens_used",
-            "session_computer_used",
-            "week_computer_used",
-        )
-        month_limit = int(plan.get("computer_tokens") or 0)
-        session_limit = int(plan.get("computer_session") or 0)
-        week_limit = int(plan.get("computer_week") or 0)
-    else:
-        month_key, session_key, week_key = "chat_tokens_used", "session_chat_used", "week_chat_used"
-        month_limit = int(plan.get("chat_tokens") or 0)
-        session_limit = int(plan.get("chat_session") or 0)
-        week_limit = int(plan.get("chat_week") or 0)
-    used = int(sub.get(month_key) or 0)
-    if month_limit and used >= month_limit:
-        return sub
-    new_used = _capped_add(used, delta, month_limit)
-    added = new_used - used
-    sub[month_key] = new_used
-    sub[session_key] = _capped_add(int(sub.get(session_key) or 0), added, session_limit)
-    sub[week_key] = _capped_add(int(sub.get(week_key) or 0), added, week_limit)
+    month_key = f"{pool}_tokens_used" if pool == 'computer' else 'chat_tokens_used'
+    session_key = 'session_computer_used' if pool == 'computer' else 'session_chat_used'
+    week_key = 'week_computer_used' if pool == 'computer' else 'week_chat_used'
+    view = usage_view(sub)
+    available = int(view['shared']['remaining'] or 0)
+    added = min(delta, max(0, available))
+    for key in (month_key, session_key, week_key):
+        sub[key] = int(sub.get(key) or 0) + added
     return sub
+
 
 
 def _window(
@@ -279,7 +266,12 @@ def usage_view(sub: dict[str, Any]) -> dict[str, Any]:
     computer_month = _window(
         computer_used, computer_limit, month_reset, unlimited=unlimited, active=paid
     )
-    free_replies = int(sub.get("daily_gpt54") or 0)
+    shared_month = _window(chat_used + computer_used, int(plan.get('total_tokens') or 0), month_reset, unlimited=unlimited, active=paid)
+    shared_week = _window(int(sub.get('week_chat_used') or 0) + int(sub.get('week_computer_used') or 0), int(plan.get('weekly_tokens') or 0), week_reset, unlimited=unlimited, active=paid)
+    shared_session = _window((int(sub.get('session_chat_used') or 0) + int(sub.get('session_computer_used') or 0)) if session_active else 0, int(plan.get('session_tokens') or 0), session_reset, unlimited=unlimited, active=session_active and paid)
+    shared_family = {'session': shared_session, 'week': shared_week, 'month': shared_month}
+    shared = {key: shared_month[key] for key in ('used','limit','remaining')}
+    free_replies = int(sub.get("daily_gpt54") or 0) + int(sub.get("daily_nano_mini") or 0)
     free_replies_limit = int(plan.get("daily_replies") or 0)
     free_searches = int(sub.get("daily_nano_mini") or 0)
     free_searches_limit = int(plan.get("daily_searches") or 0)
@@ -292,23 +284,23 @@ def usage_view(sub: dict[str, Any]) -> dict[str, Any]:
         "period": sub.get("period_start") or "",
         "unlimited": unlimited,
         "chat": {
-            "used": chat_used,
-            "limit": chat_limit,
-            "remaining": None if unlimited else max(0, chat_limit - chat_used),
+            **(shared if paid else {"used": chat_used, "limit": chat_limit, "remaining": None if unlimited else max(0, chat_limit - chat_used)}),
         },
         "computer": {
-            "used": computer_used,
-            "limit": computer_limit,
-            "remaining": None if unlimited else max(0, computer_limit - computer_used),
+            **(shared if paid else {"used": computer_used, "limit": computer_limit, "remaining": None if unlimited else max(0, computer_limit - computer_used)}),
         },
+        "shared_budget": bool(plan.get('shared_budget')),
+        "shared": shared,
+        "breakdown": {"chat": chat_used, "computer": computer_used},
         "images": {
             "used": images_used,
             "limit": image_limit,
             "remaining": None if unlimited else max(0, image_limit - images_used),
         },
         "windows": {
-            "chat": {"session": chat_session, "week": chat_week, "month": chat_month},
-            "computer": {
+            "shared": shared_family,
+            "chat": shared_family if paid else {"session": chat_session, "week": chat_week, "month": chat_month},
+            "computer": shared_family if paid else {
                 "session": computer_session,
                 "week": computer_week,
                 "month": computer_month,
@@ -354,38 +346,23 @@ def raise_if_blocked(sub: dict[str, Any], pool: PoolName, model: str) -> bool:
     if view["tier"] == "free":
         if pool == "computer":
             raise QuotaError("Оркестратор недоступен на базовом тарифе. Нужен Pro.", "plan")
-        if model == "kimi-k2.6":
-            used = view["free_daily"]["searches"]
-            cap = view["free_daily"]["searches_limit"]
-            if cap and used >= cap:
-                raise QuotaError("На сегодня поиски закончились. Завтра снова 5, либо оформите Pro.", "quota")
-            return False
+        if model == "kimi-k2.6" and view['free_daily']['searches'] >= view['free_daily']['searches_limit']:
+            raise QuotaError(f"На сегодня поисковые ответы закончились. Завтра снова {view['free_daily']['searches_limit']}, либо оформите Pro.", "quota")
         used = view["free_daily"]["replies"]
         cap = view["free_daily"]["replies_limit"]
         if cap and used >= cap:
             raise QuotaError("На сегодня 30 ответов закончились. Завтра снова, либо оформите Pro.", "quota")
         return False
 
-    family = view["windows"]["computer" if pool == "computer" else "chat"]
-    if pool == "computer":
-        _block_window(family["session"], "Пятичасовое окно Оркестратора закончилось.")
-        _block_window(family["week"], "Недельный лимит Оркестратора закончился.")
-        remaining = view["computer"]["remaining"]
-        if remaining is not None and remaining <= 0:
-            raise QuotaError("Токены Оркестратора на этот месяц закончились. Чат при этом продолжает работать.", "quota")
-        return True
-
-    _block_window(family["session"], "Пятичасовое окно чата закончилось.")
-    _block_window(family["week"], "Недельный лимит чата закончился.")
-    remaining = view["chat"]["remaining"]
-    if remaining is not None and remaining <= 0:
-        if model == "gpt-5-nano" and view["nano_cushion"]["used"] < view["nano_cushion"]["limit"]:
+    family = view['windows']['shared']
+    _block_window(family['session'], 'Общий запас на пятичасовое окно закончился.')
+    _block_window(family['week'], 'Общий недельный запас закончился.')
+    if (view['shared']['remaining'] or 0) <= 0:
+        if pool == 'chat' and model == 'gpt-5-nano' and view['nano_cushion']['used'] < view['nano_cushion']['limit']:
             return False
-        raise QuotaError(
-            "Токены чата на этот месяц закончились. Ещё доступны быстрые ответы Nano, либо тариф выше.",
-            "quota",
-        )
+        raise QuotaError('Общий запас чата и Оркестратора на этот месяц закончился. Ещё доступны быстрые ответы Nano, либо тариф выше.', 'quota')
     return True
+
 
 
 @dataclass
@@ -466,12 +443,42 @@ def images_remaining(user_id: int) -> int | None:
     return int(remaining or 0)
 
 
-_pending_charge: ContextVar[tuple[int, str] | None] = ContextVar("pending_quota_charge", default=None)
+@dataclass
+class _DailyCharge:
+    user_id: int
+    field: str | None
+    day: str
+    refunded: bool = False
+    lock: Any = field(default_factory=threading.Lock)
+
+
+_pending_charge: ContextVar[_DailyCharge | None] = ContextVar("pending_quota_charge", default=None)
 
 
 def note_quota_charge(user_id: int, field: str) -> None:
     """Remember a free-tier counter this turn already consumed, so a failed reply can give it back."""
-    _pending_charge.set((int(user_id), field))
+    _pending_charge.set(_DailyCharge(int(user_id), field, msk_now().date().isoformat()))
+
+
+async def assert_search_allowed() -> None:
+    """Count a searched reply, not every engine, query, cache hit or child task."""
+    import asyncio
+    user_id = billing_user.get()
+    if not user_id: return
+    sub = await asyncio.to_thread(_manager().get_subscription, int(user_id))
+    if effective_tier(sub) != 'free': return
+    pending = _pending_charge.get()
+    today = msk_now().date().isoformat()
+    if pending is None or pending.user_id != int(user_id) or pending.day != today:
+        pending = _DailyCharge(int(user_id), None, today)
+        _pending_charge.set(pending)
+    def charge():
+        with pending.lock:
+            if pending.refunded or pending.field == 'daily_nano_mini': return
+            reserved = pending.field == 'daily_gpt54'
+            _manager().mark_free_reply_search(int(user_id), reserved)
+            pending.field = 'daily_nano_mini'
+    await asyncio.to_thread(charge)
 
 
 def clear_quota_charge() -> None:
@@ -484,8 +491,11 @@ def refund_quota_charge() -> None:
     _pending_charge.set(None)
     if not pending:
         return
-    user_id, field = pending
-    _manager().refund_daily_counter(user_id, field)
+    with pending.lock:
+        if pending.refunded or not pending.field: return
+        pending.refunded = True
+        if pending.day == msk_now().date().isoformat():
+            _manager().refund_daily_counter(pending.user_id, pending.field)
 
 
 def assert_can_generate_image(user_id: int) -> None:

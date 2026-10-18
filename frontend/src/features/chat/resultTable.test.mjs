@@ -1,0 +1,40 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import ts from 'typescript';
+const compile = async name => {
+  const source = fs.readFileSync(new URL(name, import.meta.url), 'utf8');
+  const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 } }).outputText;
+  return import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'));
+};
+const { tableOrder, tableDelimited, nextTableSort } = await compile('./tableOperations.ts');
+const rows = [['Модель А', '4 282 ₽', '4,9'], ['Модель Б', '950 ₽', '4,7'], ['Модель В', 'н/д', 'н/д'], ['Модель Г', '950 ₽', '4,8']];
+const before = structuredClone(rows);
+assert.deepEqual(tableOrder(rows, '', { column: 1, direction: 'asc' }), [1, 3, 0, 2]);
+assert.deepEqual(tableOrder(rows, '', { column: 1, direction: 'desc' }), [0, 1, 3, 2]);
+assert.deepEqual(tableOrder(rows, '', { column: 2, direction: 'desc' }), [0, 3, 1, 2]);
+assert.deepEqual(tableOrder(rows, 'МОДЕЛЬ 950', null), [1, 3]);
+assert.deepEqual(tableOrder(rows, 'неизвестная', null), []);
+assert.deepEqual(tableOrder([], '', null), []);
+assert.deepEqual(tableOrder(rows, '', null), [0, 1, 2, 3]);
+assert.deepEqual(rows, before);
+assert.deepEqual(nextTableSort(null, 1), { column: 1, direction: 'asc' });
+assert.deepEqual(nextTableSort({ column: 1, direction: 'asc' }, 1), { column: 1, direction: 'desc' });
+assert.equal(nextTableSort({ column: 1, direction: 'desc' }, 1), null);
+const csv = tableDelimited([['a;"b', 'много\nстрок', ' =HYPERLINK("x")', '\t+cmd', 'https://example.com']], ';');
+assert.equal(csv, '"a;""b";"много\nстрок";"\' =HYPERLINK(""x"")";"\'\t+cmd";"https://example.com"');
+assert.equal(tableDelimited([['строка\nдва', '=1+1']], '\t'), "строка два\t'=1+1");
+const { followUpChips } = await compile('./followUps.ts');
+const answer = 'Проверенная информация о товаре и его доступных характеристиках.';
+for (const mode of ['auto', 'computer', 'search']) {
+  const chips = followUpChips('Сравни рации https://ozon.ru/t/example', answer, mode);
+  assert.equal(chips[0].label, 'Обновить цены и наличие');
+  assert.ok(chips[1].text.includes('не больше 20'));
+  assert.ok(chips[2].text.includes('сначала уточни'));
+}
+assert.deepEqual(followUpChips('задача', answer, 'docgen'), []);
+assert.deepEqual(followUpChips('задача', 'коротко', 'auto'), []);
+assert.deepEqual(followUpChips('задача', answer, 'computer'), []);
+assert.equal(followUpChips('таблица', answer, 'studio', true)[0].label, 'Проверить читаемость');
+assert.notEqual(followUpChips('Как написать компонент React', answer, 'auto')[0]?.label, 'Обновить цены и наличие');
+assert.notEqual(followUpChips('Как провести операцию', answer, 'auto')[0]?.label, 'Обновить цены и наличие');
+console.log('PASS: numeric sorting, unknown values, stable order, filtering, immutable input, CSV/TSV safety, contextual actions');

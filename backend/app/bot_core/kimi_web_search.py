@@ -146,6 +146,7 @@ def to_ui_sources(results: List[Dict[str, Any]]) -> List[Dict[str, str]]:
             {
                 "query": item.get("title") or "Источник",
                 "summary": f"{url}\n{snippet}".strip(),
+                **({key: item[key] for key in ('evidence_state', 'read_at', 'cached') if key in item} if item.get('evidence_state') else {}),
             }
         )
     return cards
@@ -169,11 +170,17 @@ def format_results_for_model(results: List[Dict[str, Any]]) -> str:
             meta.append(item["date"])
         if item.get("authority"):
             meta.append(f"authority={item['authority']}")
+        if item.get('evidence_state') == 'retrieved':
+            meta.append('поисковая выдача, страница не прочитана')
+        if item.get('read_at'):
+            meta.append(f"получено={item['read_at']}")
+        if item.get('cached'):
+            meta.append('повторно использована сохранённая выдача')
         header = f"[{index}] {item.get('title') or 'Источник'}"
         if meta:
             header += f" ({', '.join(meta)})"
         blocks.append(f"{header}\nURL: {item.get('url')}\n{body}".strip())
-    return "\n\n".join(blocks)
+    return "\n\n".join(blocks) + "\n\nПодкрепляй факты ссылками на URL рядом с утверждением. Сниппет не подтверждает текущую цену и наличие."
 
 
 def evidence_from_results(results: List[Dict[str, Any]], max_chars: int = 6000) -> Dict[str, str]:
@@ -205,6 +212,9 @@ async def kimi_search(
     text = (query or "").strip()
     if not text:
         return []
+    from app.services.server_search import use_server_search, server_search
+    if use_server_search():
+        return (await server_search(text, limit=_clamp_limit(limit)))['results']
     payload: Dict[str, Any] = {
         "text_query": text,
         "limit": _clamp_limit(limit),
@@ -230,6 +240,12 @@ async def kimi_search_pro(
     text = (query or "").strip()
     if not text:
         return []
+    from app.services.server_search import use_server_search, server_search
+    if use_server_search():
+        # Public search is not Search Pro: no fabricated full passages/chunks.
+        if time_window:
+            text += ' ' + ' '.join(str(value) for value in time_window.values() if value)
+        return (await server_search(text, limit=_clamp_limit(limit), sites=sites))['results']
     payload: Dict[str, Any] = {
         "text_query": text,
         "limit": _clamp_limit(limit, default=8),

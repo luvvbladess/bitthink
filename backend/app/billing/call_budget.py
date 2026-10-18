@@ -17,7 +17,7 @@ from typing import Any
 from app.billing.plans import LONG_CONTEXT_INPUT, MODEL_MULTIPLIER, our_tokens, plan_for
 from app.billing.quota import (
     QuotaError, _manager, billing_pool, billing_user, effective_tier,
-    raise_if_blocked, refresh_windows, release_paid_hold,
+    raise_if_blocked, refresh_windows, release_paid_hold, usage_view,
 )
 
 logger = logging.getLogger(__name__)
@@ -101,8 +101,8 @@ def reserve(user_id: int, pool: str, model: str, input_tokens: int, output_cap: 
         if not data.get("session_started_at"):
             data["session_started_at"] = now
         keys = (f"{pool}_tokens_used", f"week_{pool}_used", f"session_{pool}_used")
-        limits = (plan[f"{pool}_tokens"], plan[f"{pool}_week"], plan[f"{pool}_session"])
-        remaining = min(int(limit) - int(data.get(key) or 0) for key, limit in zip(keys, limits))
+        family = usage_view(data)['windows']['shared']
+        remaining = min(int(family[kind]['remaining'] or 0) for kind in ('month', 'week', 'session'))
         # Assume all input is a cache write: real fresh/cache-hit usage refunds the difference.
         input_units = our_tokens(model, input_tokens, cache_write_tokens=input_tokens)
         factor = MODEL_MULTIPLIER.get(model, 1) * (2 if input_tokens > LONG_CONTEXT_INPUT else 1)

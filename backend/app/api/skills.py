@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+import asyncio
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi.responses import Response
 
 from app.auth import get_current_user
 from app.config import get_settings  # noqa: F401 — adds bot_core to sys.path
@@ -8,6 +10,55 @@ from computer_skills.loader import builtin_catalog
 from computer_skills.store import MAX_SKILLS, public_skill
 
 router = APIRouter()
+
+
+@router.get('/templates')
+async def skill_templates(user_id: str = Depends(get_current_user)):
+    from computer_skills.adaptations import templates
+    return {'items': templates()}
+
+
+@router.post('/templates/{name}', response_model=SkillOut)
+async def add_template(name: str, user_id: str = Depends(get_current_user)):
+    from computer_skills.adaptations import install_template
+    try:
+        row = await asyncio.to_thread(install_template, await repo.ensure_user(user_id), name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return _custom_out(row)
+
+
+@router.post("/import")
+async def import_skill(file: UploadFile = File(...), user_id: str = Depends(get_current_user)):
+    from app.services.skill_packages import import_package, MAX_PACKAGE
+    data = await file.read(MAX_PACKAGE + 1)
+    try:
+        return await asyncio.to_thread(import_package, await repo.ensure_user(user_id), data, file.filename or "")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/{name}/export")
+async def export_skill(name: str, user_id: str = Depends(get_current_user)):
+    from app.services.skill_packages import export_package
+    from computer_skills.store import normalize_name
+    name = normalize_name(name)
+    data = await asyncio.to_thread(export_package, await repo.ensure_user(user_id), name)
+    if data is None:
+        raise HTTPException(404, "Скил не найден.")
+    return Response(data, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{name}.zip"'})
+
+
+@router.get("/{name}/resources/{path:path}")
+async def skill_resource(name: str, path: str, user_id: str = Depends(get_current_user)):
+    from app.services.skill_packages import read_resource
+    try:
+        data = await asyncio.to_thread(read_resource, await repo.ensure_user(user_id), name, path)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if data is None:
+        raise HTTPException(404, "Ресурс не найден.")
+    return Response(data, media_type="application/octet-stream")
 
 
 def _custom_out(row: dict) -> SkillOut:

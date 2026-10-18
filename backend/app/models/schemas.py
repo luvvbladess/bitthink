@@ -156,7 +156,7 @@ class WSMessage(BaseModel):
 
 
 class ConnectorCreate(BaseModel):
-    type: str = Field(pattern="^(gmail|ssh|http|web)$")
+    type: str = Field(pattern="^(gmail|ssh|http|web|mcp)$")
     name: str = Field(min_length=1, max_length=80)
     payload: dict = Field(default_factory=dict)
 
@@ -202,13 +202,13 @@ class SkillCreate(BaseModel):
     name: str = Field(min_length=1, max_length=32)
     title: Optional[str] = Field(default="", max_length=80)
     description: str = Field(min_length=1, max_length=180)
-    body: str = Field(min_length=12, max_length=4000)
+    body: str = Field(min_length=12, max_length=64000)
     triggers: Optional[str] = Field(default="", max_length=400)
 
 
 class SkillUpdate(BaseModel):
     title: Optional[str] = Field(default=None, max_length=80)
     description: Optional[str] = Field(default=None, max_length=180)
-    body: Optional[str] = Field(default=None, max_length=4000)
+    body: Optional[str] = Field(default=None, max_length=64000)
     triggers: Optional[str] = Field(default=None, max_length=400)
     enabled: Optional[bool] = None

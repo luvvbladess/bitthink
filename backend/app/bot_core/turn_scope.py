@@ -11,6 +11,16 @@ from contextvars import ContextVar
 from typing import Awaitable, Callable, Iterator
 
 _reader_snapshots: ContextVar[dict | None] = ContextVar("reader_snapshots", default=None)
+_reader_mode: ContextVar[str] = ContextVar("reader_mode", default="full")
+_page_reads: ContextVar[dict | None] = ContextVar("page_reads", default=None)
+
+
+def page_reads() -> dict | None:
+    return _page_reads.get()
+
+
+def reader_mode() -> str:
+    return _reader_mode.get()
 
 
 def reader_snapshots() -> dict | None:
@@ -25,14 +35,21 @@ def turn_conversation_id() -> str | None:
 
 
 @contextmanager
-def turn_conversation(conv_id: str | None) -> Iterator[None]:
+def turn_conversation(conv_id: str | None, *, reader_detail: str = "full") -> Iterator[None]:
     token = _turn_conversation_id.set(conv_id or None)
     snapshots_token = _reader_snapshots.set({})
+    mode_token = _reader_mode.set("overview" if reader_detail == "overview" else "full")
+    pages_token = _page_reads.set({})
     try:
         yield
     finally:
+        for task in (_page_reads.get() or {}).values():
+            if not task.done():
+                task.cancel()
         _turn_conversation_id.reset(token)
         _reader_snapshots.reset(snapshots_token)
+        _reader_mode.reset(mode_token)
+        _page_reads.reset(pages_token)
 
 
 # Files the reply decided to hand over. None: no decision, everything the

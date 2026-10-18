@@ -18,6 +18,7 @@ import { SourcesCountButton } from './SourcesPanel';
 import { ReasoningTrace, SearchItem } from './ReasoningTrace';
 import { normalizeMarkdown } from './markdownText';
 import { isReplyText, useReplySnapshot, useRevealShown } from './replyReveal';
+import { MarkdownResultTable } from './ResultTable';
 import '@/theme/highlight.css';
 
 /** Module-level on purpose: a component created inside render is a new type on every
@@ -33,21 +34,6 @@ function keepNumbersTogether(node: ReactNode): ReactNode {
 
 function MarkdownCell({ children, style }: { children?: ReactNode; style?: CSSProperties }) {
   return <td style={style}>{keepNumbersTogether(children)}</td>;
-}
-
-function MarkdownTable({ children }: { children?: ReactNode }) {
-  return (
-    <Box
-      sx={{
-        my: 1.5,
-        overflowX: 'auto',
-        border: '1px solid var(--bt-hairline)',
-        borderRadius: '12px',
-      }}
-    >
-      <table>{children}</table>
-    </Box>
-  );
 }
 
 interface Props {
@@ -277,7 +263,7 @@ const ChatMessageView = memo(function ChatMessageView({
     () =>
       ({
         pre: CodeBlock,
-        table: MarkdownTable,
+        table: MarkdownResultTable,
         td: MarkdownCell,
         img: ({ src, alt }: { src?: string | Blob; alt?: string }) =>
           typeof src === 'string' && src ? (

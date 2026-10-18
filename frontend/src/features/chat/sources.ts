@@ -8,6 +8,13 @@ export interface ParsedSource {
   title: string;
   snippet: string;
   favicon: string;
+  evidenceState?: SearchItem['evidence_state'];
+  reviewsState?: SearchItem['reviews_state'];
+  readAt?: string;
+  cached?: boolean;
+  origin?: SearchItem['origin'];
+  answerExcerpt?: string;
+  answerContext?: string;
 }
 
 export function sourceUrl(summary: string): string {
@@ -56,6 +63,13 @@ export function parseSources(items?: SearchItem[] | null): ParsedSource[] {
       title: (item.query || domain || 'Источник').trim(),
       snippet,
       favicon: domain ? `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=32` : '',
+      evidenceState: item.evidence_state,
+      reviewsState: item.reviews_state,
+      readAt: item.read_at,
+      cached: item.cached,
+      origin: item.origin,
+      answerExcerpt: item.answer_excerpt,
+      answerContext: item.answer_context,
     });
   }
   return result;

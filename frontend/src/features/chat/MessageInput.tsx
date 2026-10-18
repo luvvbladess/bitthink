@@ -5,6 +5,7 @@ import { apiFormData } from '@/api/client';
 import { ReasoningEffortSelector, SearchModeSelector, useIsComputer, useSelectedModel } from '@/components/ModelSelector';
 import { composerIconBtnSx, composerShellSx } from '@/theme/effects';
 import { DOCGEN_LABEL, PILOT_LABEL } from '@/constants/modes';
+import { OrchestratorTools } from './OrchestratorTools';
 
 interface Props {
   onSend: (text: string, files?: File[], mode?: 'chat' | 'image') => Promise<boolean | void> | boolean | void;
@@ -14,6 +15,8 @@ interface Props {
   editSourceUrl?: string | null;
   onClearEditSource?: () => void;
   imageModeRequest?: number;
+  conversationId?: string | null;
+  onOpenProjects?: () => void;
 }
 
 type VoiceState = 'idle' | 'recording' | 'transcribing' | 'error';
@@ -85,6 +88,8 @@ export function MessageInput({
   editSourceUrl,
   onClearEditSource,
   imageModeRequest = 0,
+  conversationId,
+  onOpenProjects,
 }: Props) {
   const [text, setText] = useState('');
   const [dragOver, setDragOver] = useState(false);
@@ -496,7 +501,7 @@ export function MessageInput({
       <Box
         className="bt-key-hint"
         sx={{
-          display: isComputer || isStudio || isDocgen || imageMode ? 'block' : { xs: 'none', sm: 'block' },
+          display: isComputer ? 'none' : isStudio || isDocgen || imageMode ? 'block' : { xs: 'none', sm: 'block' },
           // The plain Enter/Shift+Enter reminder shows while typing; the mode explanations stay.
           opacity: isComputer || isStudio || isDocgen || imageMode || editingImage ? 1 : 0,
           transition: 'opacity 0.2s cubic-bezier(0.23, 1, 0.32, 1)',
@@ -518,6 +523,7 @@ export function MessageInput({
             ? `${PILOT_LABEL}: раздаёт должности подходящим ИИ-агентам в песочнице и собирает ответ`
             : 'Enter отправит · Shift+Enter новая строка'}
       </Box>
+      {isComputer && <OrchestratorTools draft={text} hasFiles={pendingFiles.length > 0} conversationId={conversationId} onOpenProjects={onOpenProjects} />}
     </Box>
   );
 }

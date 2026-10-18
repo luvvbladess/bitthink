@@ -9,8 +9,10 @@
 import json
 import logging
 import re
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
+from app.services.run_protocol import WORKFLOW_RULES
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +129,11 @@ def _clamped_planner_model(user_id: int, first_round: bool = True, complex_task:
 
 
 def _task_warrants_astra(task: str, document_context: str = "") -> bool:
-    """Astra costs about 5× Sol. Only a dense contract/audit brief is worth that."""
+    """Premium reasoning for local CAD or a dense contract/audit brief."""
+    from app.services.desktop_context import desktop_executor
+    from app.services.desktop_cad_completion import required_cad_extensions
+    if desktop_executor.get() is not None and required_cad_extensions(task):
+        return True
     blob = f"{task or ''}\n{document_context or ''}".lower()
     if not any(marker in blob for marker in ASTRA_HIRE_MARKERS):
         return False
@@ -153,7 +159,11 @@ PACKAGE_EMPLOYEE_TOOL_LOOPS = 16
 
 
 def _is_document_package_task(text: str) -> bool:
-    return bool(_DOC_PACKAGE_RE.search(text or ""))
+    if not _DOC_PACKAGE_RE.search(text or ""):
+        return False
+    from computer_skills.loader import match_skills
+    # Engineering sheets belong to one geometric project, not Word employees.
+    return 'eng_reverse' not in match_skills(text,sandbox=True)
 
 
 # «Сделай аннотационный отчёт», «оформи в Word», «собери таблицу в xlsx».
@@ -168,6 +178,8 @@ _FILE_REQUEST_RE = re.compile(
 
 def _wants_file(text: str) -> bool:
     value=text or ""
+    if re.search(r"(?i)начерт\w*|(?:сдела|созда|восстанов|разработ|собер)\w*.{0,80}(?:черт[её]ж|комплект\s+КД|конструкторск\w*\s+документац)",value):
+        return True
     fixed_comparison=bool(re.search(r"сравни|сравне|compare",value,re.I) and len(re.findall(r"https?://",value))>=2)
     explicit_format=bool(re.search(r"файл|документ|\b(?:docx|xlsx|csv|pdf|pptx|word|excel)\b|ворд|эксел",value,re.I))
     if fixed_comparison and not explicit_format:
@@ -200,6 +212,20 @@ async def _new_file_names(user_id: int, since: float) -> List[str] | None:
 
 
 def _file_builder_employee(user_text: str) -> Dict[str, str]:
+    from computer_skills.loader import match_skills
+    from app.services.desktop_context import desktop_executor
+    if desktop_executor.get() is None and 'eng_reverse' in match_skills(user_text,sandbox=True):
+        return {
+            'role':'Выпуск чертежей',
+            'task':('load_skill eng_reverse. Пользователь просил чертежи, но готового комплекта пока нет. '
+                    f'Запрос: «{(user_text or "")[:600]}». '
+                    'Используй реальные материалы и факты коллег. Прочитай references/schema.md, '
+                    'запиши project.json через workspace_write и вызови engineering_build. '
+                    'Нужен векторный PDF с геометрией и архив DXF/SVG, затем визуальная проверка. '
+                    'Не заменяй чертёж текстовым отчётом. Неизвестные размеры оставь unknown, '
+                    'не утверждай полноту при недостающих данных.'),
+            'model':FALLBACK_EMPLOYEE_MODEL,
+        }
     return {
         "role": "Сборка файла",
         "task": (
@@ -228,21 +254,39 @@ def _clamp_employee_plan(
     journal: List[Dict[str, Any]] | None = None,
 ) -> Dict[str, Any]:
     allowed = _employee_models(user_id)
+    # BitClient CAD Astra routing
+    from app.services.desktop_context import desktop_executor
+    from app.services.desktop_cad_completion import required_cad_extensions
+    cad_astra = desktop_executor.get() is not None and bool(required_cad_extensions(original_task))
     allow_astra = "gpt-6-astra" in allowed and _task_warrants_astra(original_task, document_context)
     already = any(entry.get("model") == "gpt-6-astra" for entry in (journal or []))
     strong = _needs_strong_model(original_task, document_context, False, user_id)
+    from app.services.desktop_context import desktop_executor
+    from app.services.desktop_cad_completion import required_cad_extensions
+    strong = strong or (desktop_executor.get() is not None and bool(required_cad_extensions(original_task)))
     employees = []
     astra_used = already
     for item in plan.get("new_employees") or []:
         model = item.get("model")
         extra: Dict[str, Any] = {}
+        # BitClient staged CAD specialists
+        from app.services.desktop_cad_completion import cad_employee_phase, cad_phase_model, CAD_SPECIALIST_SCOPE
+        phase = cad_employee_phase(item) if cad_astra else None
+        stage_model = cad_phase_model(phase, allowed)
+        if stage_model is not None:
+            model = stage_model
+            extra["cad_phase"] = phase
+        elif cad_astra and model == "gpt-6-astra":
+            model = _astra_fallback(allowed)
+        if cad_astra and model == "gpt-6-astra":
+            extra["task"] = CAD_SPECIALIST_SCOPE + str(item.get("task", ""))
         if model == "kimi-k2.6":
-            # Web research runs on Luna's hosted search: ~5 s against ~30 s on Kimi's loop, 9x cheaper
-            # in plan tokens, and it returns more cited sources.
+            # The research worker uses the shared search/read tools. The selected
+            # backend controls whether web_search is our metasearch or hosted.
             model, extra = FALLBACK_EMPLOYEE_MODEL, {"web": True}
         elif model in ("gpt-6-sol", "deepseek-v4-pro") and not strong:
             model = FALLBACK_EMPLOYEE_MODEL
-        if model == "gpt-6-astra" and (not allow_astra or astra_used):
+        if model == "gpt-6-astra" and (not allow_astra or (astra_used and not cad_astra) or (cad_astra and any(e.get("model") == "gpt-6-astra" for e in employees))):
             model = _astra_fallback(allowed)
         elif model not in allowed:
             model = FALLBACK_EMPLOYEE_MODEL if FALLBACK_EMPLOYEE_MODEL in allowed else (allowed[0] if allowed else FALLBACK_EMPLOYEE_MODEL)
@@ -328,6 +372,8 @@ _RESEARCH_MARKERS = PHOTO_RESEARCH_MARKERS + (
     "где ", "кто ", "когда", "актуаль", "сейчас", "на данный",
     "сравни", "обзор", "проверь", "источник", "рейтинг", "мета",
     "новост", "цен", "стоим", "адрес",
+    "винрейт", "winrate", "win rate", "патч", "тариф", "подписк", "бюджет",
+    "посоветуй", "порекомендуй", "лучше взять", "что лучше", "какой инструмент",
 )
 _SMALLTALK_RE = re.compile(
     r"^(?:привет|здравствуй(?:те)?|добр(?:ый|ое)\s+(?:день|утро|вечер)|хай|ку|йоу|"
@@ -416,8 +462,7 @@ def _web_research_employees(user_text: str) -> List[Dict[str, str]]:
 
 
 def _light_research_employee(user_text: str) -> Dict[str, Any]:
-    """One lean searcher for a short factual question: the hosted search already cites its pages,
-    so no forced page-by-page reading (that was minutes of tool hops for one price)."""
+    """One lean researcher with both search and selective page reading."""
     return {
         "role": "Поиск",
         "task": (
@@ -441,16 +486,34 @@ def _has_sources(journal: List[Dict[str, Any]], minimum: int = 2) -> bool:
     return len(links) >= minimum
 
 
-def _verify_employee(user_text: str) -> Dict[str, str]:
+def _research_needs_retry(journal: List[Dict[str, Any]]) -> bool:
+    """A source list alone cannot turn a failed first attempt into completion."""
+    if not journal or not _has_sources(journal, minimum=1):
+        return True
+    latest = journal[-1]
+    if latest.get('status') == 'error':
+        return True
+    lead = str(latest.get('result') or '').strip().lstrip('*# ').lower()[:400]
+    return not lead or bool(re.match(
+        r'(?:к сожалению[,:]?\s*|честно[,:]?\s*)?(?:(?:сейчас|пока)\s+)?(?:'
+        r'не (?:смог|смогла|удалось|могу|получилось)|'
+        r'нет (?:достоверных|подтверждённых|актуальных) данных|'
+        r'(?:i (?:could not|couldn.t|cannot|can.t)|unable to))', lead))
+
+
+def _verify_employee(user_text: str) -> Dict[str, Any]:
     return {
         "role": "Сверка",
         "task": (
-            "load_skill verify. По заметкам коллег открой 2-4 конкретных URL через browse_page "
+            "load_skill verify. Сначала проверь, относятся ли заметки и ссылки к нужному объекту и теме. "
+            "При нерелевантной выдаче уточни запрос по исходному вопросу, сохрани название игры/продукта, "
+            "используй оригинальное написание. Затем открой 1-2 подходящих URL через browse_page "
             "и подтверди или опровергни вывод. Не добавляй факты из памяти. "
             "Если был image_search – открой страницы из его выдачи.\n"
             f"Вопрос: {(user_text or '')[:1200]}"
         ),
         "model": "gpt-6-luna",
+        "web": True,
     }
 
 
@@ -554,7 +617,9 @@ def _parse_director_plan(response_text: str) -> Dict[str, Any]:
             model = e.get("model")
             if model not in MODEL_POOL:
                 model = FALLBACK_EMPLOYEE_MODEL
-            valid_employees.append({"role": role, "task": task, "model": model})
+            from app.services.desktop_cad_completion import CAD_PHASES
+            phase = e.get("cad_phase")
+            valid_employees.append({"role": role, "task": task, "model": model, **({"cad_phase": phase} if isinstance(phase, str) and phase in CAD_PHASES else {})})
 
         if status == "clarify":
             from clarify import normalize_questions
@@ -734,7 +799,7 @@ async def _execute_employee(
 
     context_lines = []
     for entry in journal:
-        if entry["status"] == "ok":
+        if entry["status"] == "ok" or entry.get("cad_errors"):
             context_lines.append(f"### {entry['role']} (раунд {entry['round']})\n{_clamp_result(entry['result'])}")
     context_block = "\n\n".join(context_lines)
 
@@ -750,9 +815,9 @@ async def _execute_employee(
     prefs_note = f"\n\n{preferences_block}" if preferences_block else ""
 
     base_prompt = (
-        f"{date_note}{history_block}{doc_block}{skills_block}{prefs_note}\n\n"
+        f"{date_note}{history_block}{doc_block}{skills_block}{prefs_note}\n\n{WORKFLOW_RULES}\n\n"
         f"Твоя роль: {role}.\nТвоя задача: {task}\n\n"
-        "Ты сотрудник режима Computer. Делай только свою задачу. "
+        "Ты сотрудник Оркестратора. Делай только свою задачу. "
         "Если выше есть память или правило «как отвечать» – соблюдай язык, тон и формат "
         "буквально, это важнее твоих привычек. "
         "Коллеги в этом раунде работают параллельно и не ждут тебя: не дублируй их работу "
@@ -760,7 +825,7 @@ async def _execute_employee(
         "Ответь по существу, без отчёта, оглавления и нумерации разделов. "
         "Не рассказывай вслух, какой инструмент выберешь. Сначала вызови его. "
         "Если нужно зайти на сайт – browse_page или site_login с логином из чата. "
-        "Почта, VPS и API: данные из сообщения пользователя, не из настроек. "
+        "Почта, VPS и API: сначала сохранённые подключения владельца; уже переданные доступы используй только по поручению. "
         "Перед кодом, файлом, таблицей, презентацией, письмом или входом на сайт – первым вызовом load_skill с точным именем из каталога. "
         "Не грузи все скилы. Если скил уже вложен ниже – не вызывай load_skill повторно. Если ни один не подходит, работай без скила. "
         "Песочница с pip и Python – чтобы экономить токены: сам решай, запускать скрипт или нет, пользователя не спрашивай. "
@@ -819,6 +884,18 @@ async def _execute_employee(
         except Exception:
             logger.debug("Director employee image attach skipped", exc_info=True)
 
+    # BitClient CAD compiler evidence
+    from app.services.desktop_context import desktop_executor, desktop_cwd
+    from app.services.desktop_cad_completion import CadToolEvidence
+    cad_evidence = CadToolEvidence(desktop_cwd.get())
+    cad_original_executor = desktop_executor.get()
+    cad_executor_token = None
+    if cad_original_executor is not None:
+        async def cad_observed_executor(name, args):
+            result = await cad_original_executor(name, args)
+            cad_evidence.record(name, args, result)
+            return result
+        cad_executor_token = desktop_executor.set(cad_observed_executor)
     reasoning = ""
     search: List[Dict[str, str]] = []
     try:
@@ -840,22 +917,33 @@ async def _execute_employee(
         else:
             from openai_client import get_chat_response
             builds_file = _is_document_package_task(task) or _wants_file(task) or "docx" in (task or "").lower()
-            loops = PACKAGE_EMPLOYEE_TOOL_LOOPS if builds_file else None
+            from app.services.desktop_context import desktop_executor
+            from app.services.desktop_cad_completion import required_cad_extensions
+            cad_build = desktop_executor.get() is not None and bool(required_cad_extensions(task))
+            from app.services.desktop_cad_completion import cad_employee_phase
+            loops = (60 if cad_employee_phase(employee)=="gui_geometry" else 30) if cad_build else PACKAGE_EMPLOYEE_TOOL_LOOPS if builds_file else None
+            if employee.get('web') and not cad_build and not builds_file:
+                loops = 6  # Search, skill, selective read/retry, then synthesis.
             answer, _, reasoning, search = await get_chat_response(
                 employee_messages, model=model, user_id=user_id, use_tools=True, max_tool_loops=loops,
                 force_web_search=bool(employee.get("web")),
+                reasoning_effort="high" if cad_build and model == "gpt-6-astra" else None,
             )
 
         return {
-            "round": round_num, "role": role, "task": task, "model": model, "status": "ok", "result": answer,
+            "round": round_num, "role": role, "task": task, "model": model, "cad_phase": employee.get("cad_phase"), "cad_errors": cad_evidence.errors, "cad_resolved": sorted(cad_evidence.resolved), "status": "error" if cad_evidence.errors else "ok", "result": answer + ("\nCAD compiler diagnostics:\n" + "\n".join(cad_evidence.errors) if cad_evidence.errors else ""),
             "reasoning": reasoning, "search": search,
         }
     except Exception as e:
         logger.error(f"Director employee '{role}' ({model}) failed: {e}")
         return {
-            "round": round_num, "role": role, "task": task, "model": model, "status": "error",
+            "round": round_num, "role": role, "task": task, "model": model, "cad_phase": employee.get("cad_phase"), "cad_errors": cad_evidence.errors, "cad_resolved": sorted(cad_evidence.resolved), "status": "error",
             "result": f"[Ошибка при выполнении: {str(e)[:200]}]", "reasoning": "", "search": [],
         }
+
+    finally:
+        if cad_executor_token is not None:
+            desktop_executor.reset(cad_executor_token)
 
 
 def _format_journal_for_prompt(journal: List[Dict[str, Any]]) -> str:
@@ -911,8 +999,8 @@ def _pool_description(user_id: int, original_task: str = "", document_context: s
         ("gpt-6-sol", "дорогая, сложный код и анализ, только если Luna заметно недостаточно"),
         (
             "gpt-6-astra",
-            "самая дорогая. Не больше одного сотрудника, только разбор договора или аудита "
-            "по тексту документа, когда Sol недостаточно. Не для поиска, почты и сайтов",
+            "самая дорогая. Только сложная геометрия/сопряжения и трудные ошибки SDK. "
+            "Типовые детали — Sol; чтение файлов и стандартные проверки — Luna. Не вся CAD-задача.",
         ),
     ]
     allowed = set(_employee_models(user_id))
@@ -955,15 +1043,19 @@ async def _plan_round(
 
     prompt = (
         f"{_current_date_note()}\n\n"
-        "Ты Computer: оркестратор, который выполняет задачу пользователя руками сотрудников. "
-        "Сотрудники сами открывают сайты, входят по логину из чата, читают почту и ходят по SSH. "
-        "Не проси пользователя открыть настройки или сделать это вручную. "
+        "Ты Оркестратор, который выполняет задачу пользователя руками сотрудников. "
+        "Сотрудники используют реальные сайты, файлы и подключения владельца. "
+        "Если нужного подключения нет, сначала сделай доступную часть работы, затем укажи конкретный недостающий доступ. "
         "В задачи сотрудникам не копируй пароли: доступы уже в хранилище или в исходном сообщении.\n\n"
         f"Исходная задача пользователя:\n{original_task}\n"
         f"{history_block}"
         f"{doc_block}\n"
         f"{image_block}"
-        f"{skills_block}\n\n"
+        f"{skills_block}\n\n{WORKFLOW_RULES}\n\n"
+        "Если пользователь поручил работу позже или по расписанию, назначь ОДНОГО сотрудника с load_skill wf_automations. "
+        "Он создаёт задачу через task_create и проверяет ответ. Не выдавай одно расписание нескольким сотрудникам. "
+        "Обычную текущую задачу не превращай в фоновую без просьбы.\n"
+        "Для обычной задачи не больше одного дорогого экспертного исполнителя; в BitClient CAD допускаются отдельные последовательные стадии по действующей политике.\n"
         f"{connectors_block}\n\n"
         + (f"{preferences_block}\n\n" if preferences_block else "")
         + "Учитывай память и правило «как отвечать» выше при найме: если там задан язык, тон, "
@@ -992,8 +1084,15 @@ async def _plan_round(
         "для актуальных фактов и поиска - kimi-k2.6; для сложного кода и рассуждений - deepseek-v4-pro. "
         "gpt-6-sol только если Luna заметно недостаточно.\n"
         + (
-            "gpt-6-astra - не больше одного сотрудника и только на разбор договора или аудита по документу; "
-            "не нанимай её на поиск, почту, сайты и сборку ответа.\n"
+            "В локальной CAD-задаче разделяй работу на конкретные этапы с cad_phase: "
+            "inspect (файлы, фото, SDK) — Luna; simple_geometry (типовые детали, выдавливания, "
+            "цилиндры и обычные размерные правки) — Sol; complex_geometry (криволинейная "
+            "геометрия, сложные сопряжения, топология) и sdk_repair (трудная ошибка SDK) — Astra; "
+            "verify (проверки, сохранение, перечень результата) — Luna. Не отдавай Астре всё изделие "
+            "одним заданием. Независимый анализ можно параллельно; изменения одного CAD-документа "
+            "делай последовательно. Применяй уже готовые результаты коллег и передавай им "
+            "конкретные пути/параметры. Астра — один сложный этап в раунде, не поиск и не финальный ответ. "
+            "В остальных задачах сохраняется один сложный договор/аудит.\n"
             if "gpt-6-astra" in pool_description
             else ""
         ) +
@@ -1050,6 +1149,9 @@ async def _plan_round(
         "Поле model - строго один из id моделей выше. questions: 1-3 штуки, у каждого 2-6 коротких options."
     )
 
+    from app.services.run_protocol import current_run
+    if current_run.get():
+        prompt += current_run.get().evidence_prompt()
     messages = [
         {"role": "system", "content": "Ты Computer - оркестратор команды моделей. Отвечаешь только валидным JSON."},
         {"role": "user", "content": prompt + _desktop_work_instructions()},
@@ -1169,6 +1271,11 @@ async def _compose_answer(
         "Не превращай ответ в анкету с вариантами. Не пиши «выберите 1/2/3». "
         "Не больше одного уточнения, и только если без него нельзя закончить.\n"
         "Ошибку сотрудников признай коротко и скажи, чего не хватает. Не выдумывай.\n"
+        "Сначала дай найденный ответ на главный вопрос: число, объяснение или действие. "
+        "Отсутствие заданного ранга/региона не причина скрывать найденную статистику: "
+        "назови доступную выборку и период рядом с числом. Если соответствие текущему патчу "
+        "не установлено, явно отдели этот пробел от полученного значения. "
+        "Источники про одноимённые магазины вместо нужной игры не являются данными по вопросу.\n"
         "Если сотрудники собрали xlsx/csv/docx/pdf в песочнице, не ставь markdown-ссылку «скачать». "
         "Напиши, что файл придёт кнопкой скачивания в чате. "
         "Если собран комплект документов – дай реестр: какие документы переработаны, какие разработаны заново, "
@@ -1182,6 +1289,9 @@ async def _compose_answer(
         "Убери повторы. Если каких-то данных нет из-за ошибки — скажи об этом коротко, не выдумывай."
     )
 
+    from app.services.run_protocol import current_run
+    if current_run.get():
+        prompt += current_run.get().evidence_prompt()
     messages = [
         {
             "role": "system",
@@ -1232,16 +1342,16 @@ async def _answer_directly(
 
     system = (
         f"{_current_date_note()}\n"
-        "Ты Computer в этом чате: отвечай как обычный ассистент. "
+        "Ты Оркестратор в этом чате: отвечай как обычный ассистент. "
         "Если нужно зайти на сайт – browse_page или site_login с логином из чата. "
-        "Почта, VPS и API берутся из сообщения, не из настроек. "
+        "Почта, VPS и API используют подключения владельца или уже переданный им доступ. "
         "Файлы этого чата – list_chat_files и read_chat_document. Прошлые чаты – search_chats. "
         "Фото – image_search в Яндексе, Google и Bing, затем browse_page по совпадениям. Не угадывай место по виду кадра. "
         "Под задачу вызови load_skill по каталогу. Не пиши отчёт и не нумеруй разделы. "
         "Не задавай пользователю вопросы с вариантами и не пиши «выберите 1/2/3». "
         "Если без выбора нельзя начать, это должен был сделать оркестратор через status=clarify. "
         "Действуй по уже сказанному.\n"
-        f"{_OUTPUT_RULES}"
+        f"{_OUTPUT_RULES}\n{WORKFLOW_RULES}"
     )
     chat = [{"role": "system", "content": system + _desktop_work_instructions()}, *messages]
     answer, _, reasoning, search = await get_chat_response(
@@ -1417,11 +1527,21 @@ async def get_director_response(
 ) -> "Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]":
     """Основная управляющая функция режима Computer."""
     from app.billing.quota import billing_pool
+    from app.services.run_protocol import current_run, RunRecord
 
     token = billing_pool.set("computer")
+    record_token = current_run.set(RunRecord(requires_sources=_is_shopping_task(user_text, user_id)))
     try:
-        return await _run_director(messages, user_text, user_id, status_msg)
+        answer, files, reasoning, sources = await _run_director(messages, user_text, user_id, status_msg)
+        from app.services.engineering_io import guard_completion
+        answer=guard_completion(answer,current_run.get())
+        current_run.get().link_excerpts(answer)
+        logger.info('Run completed: elapsed_ms=%s reads=%s',
+                    round((time.monotonic()-current_run.get().started)*1000),
+                    current_run.get().timings)
+        return answer, files, reasoning, current_run.get().enrich_sources(sources or [])
     finally:
+        current_run.reset(record_token)
         billing_pool.reset(token)
 
 
@@ -1435,6 +1555,9 @@ async def _run_director(
     import time
 
     started = time.time()
+    # BitClient explicit CAD intent and build opportunity
+    from app.services.desktop_cad_completion import cad_task_from_history
+    cad_user_task = cad_task_from_history(user_text, messages)
     from app.services.desktop_context import desktop_executor, desktop_cwd, local_skills_instructions
 
     if desktop_executor.get() is not None:
@@ -1451,6 +1574,11 @@ async def _run_director(
     if desktop_executor.get() is not None:
         user_text += local_skills_instructions()
     forced_build = False
+    # BitClient native CAD completion guard
+    from app.services.desktop_cad_completion import required_cad_extensions, has_cad_deliverable, cad_builder_employee
+    from app.services.desktop_context import desktop_capabilities, local_tool
+    cad_extensions = required_cad_extensions(cad_user_task) if desktop_executor.get() is not None and "cad_native_results_v1" in desktop_capabilities.get() else ()
+    cad_repairs = 0
     document_context = _extract_document_context(messages)
     history_text = _format_chat_history(messages)
     try:
@@ -1462,11 +1590,17 @@ async def _run_director(
 
     await _update_status(status_msg, "Исследую задачу")
 
-    journal: List[Dict[str, Any]] = []
+    from app.services.task_checkpoints import resumed_journal, save as save_checkpoint
+    journal: List[Dict[str, Any]] = list(resumed_journal.get() or [])
     round_num = 0
     turn_images = packed_has_images(messages) or _turn_has_images(user_id)
     has_images = wants_photo_research(user_text, turn_images)
-    light = _is_light_task(user_text, document_context, turn_images, user_id)
+    light = not cad_extensions and _is_light_task(user_text, document_context, turn_images, user_id)
+    from marketplace_verification import single_store_price_lookup
+    price_lookup = not cad_extensions and not wants_file and single_store_price_lookup(user_text)
+    light = light or price_lookup
+    if _is_shopping_task(user_text, user_id):
+        journal = []  # Fresh card/review/availability checks on each resumed shopping run.
 
     if _is_document_package_task(user_text):
         await _update_status(status_msg, "Составляю список документов")
@@ -1484,14 +1618,24 @@ async def _run_director(
             plan = {"status": "continue", "new_employees": [_light_research_employee(user_text)]} if searching else {
                 "status": "done", "new_employees": [],
             }
-        elif light and _has_sources(journal):
-            # Already searched and cited: another planner call and a verification round add cost, not facts.
-            break
+        elif light and journal:
+            if price_lookup or round_num >= 3 or not _research_needs_retry(journal):
+                break
+            # One bounded recovery pass, without another expensive planner call.
+            plan = {"status": "continue", "new_employees": [_verify_employee(user_text)]}
         else:
             plan = await _plan_round(user_text, journal, user_id, document_context, history_text)
         plan = _enforce_caps(round_num, len(journal), plan)
         plan = _ensure_research_plan(round_num, plan, user_text, journal, has_images)
         plan = _enforce_caps(round_num, len(journal), plan)
+        # BitClient CAD GUI execution
+        from app.services.desktop_cad_completion import cad_gui_plan
+        plan = cad_gui_plan(plan, cad_user_task)
+        # BitClient reserved CAD build budget
+        # Keep one employee slot for a native result check/build on the final round.
+        if cad_extensions and round_num < MAX_ROUNDS:
+            remaining_before_reserve = max(0, MAX_EMPLOYEES - len(journal) - 1)
+            plan = {**plan, "new_employees": plan["new_employees"][:remaining_before_reserve]}
 
         if plan.get("status") == "clarify" and plan.get("questions"):
             from clarify import pack_search
@@ -1500,6 +1644,35 @@ async def _run_director(
             questions = plan["questions"]
             return questions[0]["prompt"], [], "", pack_search(questions)
 
+        # Reserve the final opportunity for building instead of more probes/read-only work.
+        from app.services.desktop_cad_completion import cad_employee_phase, unresolved_cad_errors
+        cad_read_only_plan = bool(plan["new_employees"]) and all(
+            cad_employee_phase(employee) in {"inspect", "verify"} for employee in plan["new_employees"]
+        )
+        if cad_extensions and (
+            plan["status"] == "done" or not plan["new_employees"]
+            or (unresolved_cad_errors(journal) and not any(
+                cad_employee_phase(employee) in {"sdk_repair", "gui_geometry"} for employee in plan["new_employees"]
+            ))
+            or (cad_read_only_plan and (
+                round_num >= 2 or round_num >= MAX_ROUNDS
+                or len(journal) + len(plan["new_employees"]) >= MAX_EMPLOYEES
+            ))
+            or (round_num >= MAX_ROUNDS and not any(
+                cad_employee_phase(employee) in {"simple_geometry", "complex_geometry", "sdk_repair", "gui_geometry"}
+                for employee in plan["new_employees"]
+            ))
+        ):
+            try:
+                cad_files = json.loads(await local_tool("desktop_changed_files", {"native_cad_only": True}) or "[]")
+            except (TypeError, ValueError):
+                cad_files = None
+            if not has_cad_deliverable(cad_files, cad_extensions) and cad_repairs < 2 and len(journal) < MAX_EMPLOYEES:
+                cad_repairs += 1
+                plan = _clamp_employee_plan(
+                    {"status": "continue", "new_employees": [cad_builder_employee(cad_user_task, cad_extensions, journal=journal)]},
+                    user_id, original_task=cad_user_task, journal=journal,
+                )
         if plan["status"] == "done" or not plan["new_employees"]:
             # Просили файл, а в песочнице пусто: планировщик закрывал задачу на
             # «текст и параметры оформления готовы». Один раз досылаем сборщика.
@@ -1519,11 +1692,11 @@ async def _run_director(
             roles = ", ".join(item["role"] for item in hired)
             await _update_status(status_msg, f"Запускаю {len(hired)} сотрудников параллельно: {roles}")
 
-        jobs = [
-            _execute_employee(e, round_num, journal, user_id, document_context, history_text, has_images)
-            for e in hired
-        ]
-        results = await asyncio.gather(*jobs, return_exceptions=True)
+        # BitClient live swarm collaboration
+        from app.services.desktop_swarm import execute_swarm_batch
+        results = await execute_swarm_batch(
+            hired, round_num, journal, user_id, document_context, history_text, has_images, _execute_employee,
+        )
 
         for employee, res in zip(plan["new_employees"], results):
             if isinstance(res, Exception):
@@ -1534,9 +1707,12 @@ async def _run_director(
                 })
             else:
                 journal.append(res)
+        await asyncio.to_thread(save_checkpoint, journal, user_id)
 
     if not journal:
-        await _update_status(status_msg, "Пишу ответ")
+        # This call can still search and browse. Writing belongs to the final,
+        # tool-free synthesis after the observations have actually been collected.
+        await _update_status(status_msg, "Проверяю запрос")
         try:
             answer, reasoning, search = await _answer_directly(messages, user_id)
         except Exception as e:
@@ -1551,9 +1727,9 @@ async def _run_director(
         from marketplace_verification import verify_marketplace_cards
         journal.extend(await verify_marketplace_cards(user_text, journal, user_id=user_id))
 
-    await _update_status(status_msg, "Пишу ответ")
     # Всегда, а не только когда просили файл: сотрудник мог собрать его по ходу дела.
     built_files = await _new_file_names(user_id, started)
+    await _update_status(status_msg, "Пишу ответ")
     answer, compose_reasoning = await _compose_answer(
         user_text, journal, user_id, history_text, document_context, built_files=built_files
     )

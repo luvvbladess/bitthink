@@ -279,3 +279,57 @@ class Connector(Base):
     hint: Mapped[str | None] = mapped_column(String(120), nullable=True)
     payload_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ComputerTask(Base):
+    __tablename__ = "computer_tasks"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    user_email: Mapped[str] = mapped_column(String(320), index=True, nullable=False)
+    title: Mapped[str] = mapped_column(String(160), nullable=False)
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="queued", index=True)
+    conversation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    interval_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    next_run_at: Mapped[int] = mapped_column(BigInteger, index=True)
+    lease_until: Mapped[int] = mapped_column(BigInteger, default=0)
+    run_number: Mapped[int] = mapped_column(Integer, default=0)
+    resume_history: Mapped[bool] = mapped_column(Boolean, default=False)
+    progress: Mapped[str] = mapped_column(Text, default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[int] = mapped_column(BigInteger)
+    updated_at: Mapped[int] = mapped_column(BigInteger)
+
+
+class ComputerEvent(Base):
+    __tablename__ = "computer_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(32), index=True)
+    run_number: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(32))
+    detail: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[int] = mapped_column(BigInteger)
+
+
+class ComputerHook(Base):
+    __tablename__ = "computer_hooks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    name: Mapped[str] = mapped_column(String(80))
+    event: Mapped[str] = mapped_column(String(32))
+    action: Mapped[str] = mapped_column(String(24))
+    value: Mapped[str] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class SkillResource(Base):
+    __tablename__ = "skill_resources"
+    __table_args__ = (UniqueConstraint("user_id", "skill_name", "path", name="uq_skill_resource"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    skill_name: Mapped[str] = mapped_column(String(32))
+    path: Mapped[str] = mapped_column(String(240))
+    content: Mapped[bytes] = mapped_column(LargeBinary)

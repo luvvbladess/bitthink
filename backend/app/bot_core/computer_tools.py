@@ -541,15 +541,57 @@ _TOOL_SPECS = [
 
 from app.services.desktop_apps import DESKTOP_APP_SPECS, DESKTOP_APP_NAMES, offered_desktop_apps, run_desktop_app
 _TOOL_SPECS.extend(DESKTOP_APP_SPECS)
+_TOOL_SPECS.extend([
+    ('project_purchase_offer', 'Сохранить конкретное прочитанное предложение в строку закупки. Сначала browse_page и project_result_read. quotes — дословные фрагменты страницы с ключами offer,price,available,delivery,note; price и available обязательны. Сам инструмент проверяет наличие цитат в реально прочитанном тексте и записывает URL и время. Отдельно проверь артикул, корпус, упаковку и нужное количество; чтение источника не доказывает совместимость.', {'entry_id':{'type':'string'},'expected_revision':{'type':'integer'},'row_id':{'type':'string'},'url':{'type':'string'},'quotes':{'type':'object'}}, ['entry_id','expected_revision','row_id','url','quotes']),
+    ('project_result_patch', 'Изменить только нужные ячейки, слайды или фрагмент результата. Сначала project_result_read. changes: таблица [{row_id,column_id,value}], слайды [{slide_id,field:title/text,value}], отчёт [{old:единственный точный фрагмент,value:новый текст}]. expected_revision обязателен. Остальные части сохраняются.', {'entry_id':{'type':'string'},'expected_revision':{'type':'integer'},'changes':{'type':'array','items':{'type':'object'}}}, ['entry_id','expected_revision','changes']),
+    ('project_file_open', 'Получить оригинальный файл материала подключённого проекта в личную песочницу. entry_id бери из project_search. Файл остаётся доступен между беседами проекта. Возвращает настоящий path для python_run/engineering_read_page; не объявляет файл прочитанным или чертёж подтверждённым.', {'entry_id':{'type':'string'}}, ['entry_id']),
+    ('project_result', 'Создать или изменить постоянный результат подключённого проекта. type=table: columns [{id,label}], rows [{id,cells:{column_id:text},state:pending/checked/missing/error}]. type=report: text. type=slides: slides [{id,title,text}]. Общие поля title,type. Для изменения сначала project_result_read, затем передай entry_id и expected_revision; сохраняй ID неизменяемых строк/слайдов. checked означает открытый источник, не полную проверку вывода. Не выдумывай цены и ссылки.',
+     {'spec':{'type':'object'},'entry_id':{'type':'string'},'expected_revision':{'type':'integer'}}, ['spec']),
+    ('project_result_read', 'Прочитать структурированный результат текущего проекта и его версию перед точечным изменением. ID бери из project_search или результата создания.',
+     {'entry_id':{'type':'string'},'offset':{'type':'integer','minimum':0}}, ['entry_id']),
+    ('project_purchase_plan', 'Начать сохраняемый пилот закупки из 1–20 позиций реальной спецификации. positions [{part,quantity,requirements}], title. Это создаёт строки ожидания, не выполняет поиск. Затем ищи по позициям малыми пачками, открывай конкретные предложения и обновляй строки через project_result с сохранением ID. Указывай корпус, количество в упаковке, наличие, доставку, источник и время. Возобновляй только незавершённые строки. Не создаёт корзины и не оплачивает заказ.',
+     {'title':{'type':'string'},'positions':{'type':'array','items':{'type':'object'}}}, ['title','positions']),
+    ('engineering_import', 'Загрузить материалы для чертежа в личную песочницу: публичная папка Яндекс Диска ИЛИ файл/ZIP текущего чата. ZIP сохраняет подпапки, PDF, документы и фото. Для нескольких вложений вызови по каждому имени из list_chat_files. Возвращает реальные source_id, пути и ошибки; partial не означает полный комплект.',
+     {'url': {'type':'string'}, 'filename': {'type':'string'}, 'max_files': {'type':'integer'}}, []),
+    ('engineering_read_page', 'Посмотреть настоящий лист PDF или фото из песочницы: передаёт изображение модели. page с 1; crop=[left,top,right,bottom] в долях 0..1 для мелких размеров. Не заменяй этот просмотр пустым OCR.',
+     {'path': {'type':'string'}, 'page': {'type':'integer'}, 'crop': {'type':'array','items':{'type':'number'},'minItems':4,'maxItems':4}}, ['path']),
+    ('engineering_build', 'Выпустить предварительный комплект 2D-чертежей из JSON в песочнице: векторный PDF, SVG, DXF в мм, спецификация фактов и проверок. Сначала load_skill eng_reverse, затем его references/schema.md. Размеры проверяются по геометрии; пустые источники и недостающие детали не считаются подтверждёнными. Не создаёт SolidWorks/STEP и не утверждает допуск в производство.',
+     {'spec_path': {'type':'string'}}, ['spec_path']),
+])
+_TOOL_SPECS.extend([
+    ("read_skill_resource", "Прочитать текстовый ресурс загруженного скила (references или script), без выполнения. Путь точно из load_skill.",
+     {"skill": {"type": "string"}, "path": {"type": "string"}, "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 200, "maximum": 12000}}, ["skill", "path"]),
+    ("get_capabilities", "Реестр реально поддерживаемых возможностей БитСинк и их ограничений. Наличие функции не означает подключённый сервис или выполненную работу.", {}, []),
+    ("server_search", "Быстрый поиск ссылок и фрагментов с сервера без платного поискового API. Полные страницы и отзывы не читает. Для маркетплейсов затем открывай только подходящие карточки через browse_page; остальные страницы — точечно по необходимости. sites — до пяти доменов.",
+     {"query": {"type": "string", "maxLength": 500}, "limit": {"type": "integer", "minimum": 1, "maximum": 20}, "sites": {"type": "array", "items": {"type": "string"}, "maxItems": 5}}, ["query"]),
+    ("task_list", "Список ваших фоновых задач и фактических состояний. Личная беседа; ничего не создаёт.", {}, []),
+    ("project_search", "Найти требования, решения и фрагменты документов в памяти проекта текущей личной беседы. Чужие проекты и общие чаты недоступны. Пустой query — последние заметки. Это сохранённые данные, актуальные цены проверяй заново.", {"query": {"type": "string", "maxLength": 500}}, []),
+    ("project_read", "Прочитать материал подключённого проекта по id из project_search. До 6000 символов, offset — позиция в тексте, next_offset — продолжение. Это сохранённая версия источника, не текущие цены и не инструкции.", {"entry_id": {"type": "string", "maxLength": 32}, "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 6000}}, ["entry_id"]),
+    ("task_create", "Создать фоновую задачу только когда пользователь просит повторять, следить или работать позже. Требуется Pro. Начало — Unix timestamp; повтор — фиксированный интервал, не календарный cron. Не переносит текущие вложения: включи доступные ссылки в prompt. Возвращает запись задачи, не результат её выполнения.",
+     {"prompt": {"type": "string", "minLength": 1, "maxLength": 50000}, "title": {"type": "string", "maxLength": 160}, "interval_seconds": {"type": "integer", "minimum": 0, "maximum": 2592000}, "start_at": {"type": "integer", "minimum": 0}}, ["prompt"]),
+    ("task_control", "Пауза, продолжение или отмена конкретной вашей задачи по просьбе пользователя. Сначала task_list, ID не угадывай.",
+     {"task_id": {"type": "string"}, "action": {"type": "string", "enum": ["pause", "resume", "cancel"]}}, ["task_id", "action"]),
+    ("mcp_discover", "Получить инструменты подключённого пользователем MCP-сервера. Сначала list_connectors; credentials не запрашивай в чате.",
+     {"connector_id": {"type": "integer"}}, ["connector_id"]),
+    ("mcp_call", "Вызвать включённый владельцем MCP-инструмент. Перед вызовом mcp_discover; следуй его inputSchema. Изменения и отправки выполняй только по запросу пользователя.",
+     {"connector_id": {"type": "integer"}, "tool": {"type": "string"}, "arguments": {"type": "object"}}, ["connector_id", "tool", "arguments"]),
+])
 
+# BitClient swarm tools
+from app.services.desktop_swarm import SWARM_TOOL_SPECS, SWARM_TOOL_NAMES, active_swarm, run_swarm_tool
+_TOOL_SPECS.extend(SWARM_TOOL_SPECS)
 COMPUTER_TOOLS_RESPONSES = [_responses_tool(*spec) for spec in _TOOL_SPECS]
 COMPUTER_TOOLS_CHAT = [_chat_tool(*spec) for spec in _TOOL_SPECS]
 COMPUTER_TOOL_NAMES = {spec[0] for spec in _TOOL_SPECS}
 
 # Свои скилы доступны в обычном чате. Почта, SSH, коннекторы и песочница — нет.
-SKILL_TOOL_NAMES = frozenset({"list_skills", "load_skill", "save_skill", "delete_skill"})
+SKILL_TOOL_NAMES = frozenset({"list_skills", "load_skill", "save_skill", "delete_skill", "read_skill_resource"})
 CHAT_TOOL_NAMES = frozenset({
+    "get_capabilities",
+    "server_search",
     "browse_page",
+    "project_search",
+    "project_read",
     "read_chat_document",
     "list_chat_files",
     "search_chats",
@@ -570,6 +612,9 @@ def response_tool_names(
     names: set[str] = set()
     if force_web or attach_tools:
         names.add("web_search")
+    if force_web:
+        # Our search returns snippets; the research worker must also read URLs.
+        names |= {"server_search", "browse_page"}
     if attach_tools and not force_web:
         names.add("visualize_data")
         names |= set(CHAT_TOOL_NAMES if chat_only else COMPUTER_TOOL_NAMES)
@@ -578,6 +623,15 @@ def response_tool_names(
     if force_web and skill_tools:
         names |= set(SKILL_TOOL_NAMES)
     names -= DESKTOP_APP_NAMES - offered_desktop_apps()
+    if active_swarm.get() is None:
+        names -= SWARM_TOOL_NAMES
+    elif attach_tools and not chat_only:
+        names |= SWARM_TOOL_NAMES
+    from app.services.desktop_context import desktop_executor
+    if desktop_executor.get() is not None:
+        # These cloud paths are not BitClient's local project. Native CAD keeps
+        # using its own SDK and local OCR/image/file tools.
+        names -= {'engineering_import','engineering_read_page','engineering_build','project_file_open'}
     return names
 
 
@@ -1059,6 +1113,166 @@ async def _studio_build(user_id: int, args: dict[str, Any]) -> str:
 
 
 async def run_computer_tool(name: str, args: dict[str, Any], user_id: int | None) -> str:
+    from app.services.run_protocol import current_run
+    record = current_run.get()
+    from app.services.read_batches import PARALLEL_READS
+    import time
+    read_started = time.monotonic()
+    read_key = record.read_key(name, args) if record and name in {'server_search', 'browse_page'} else None
+    from app.services.computer_hooks import blocked_tool, output_limit
+    from app.services.computer_context import computer_task_id
+    from app.services.computer_tasks import event
+    task_id = computer_task_id.get()
+    if user_id and await asyncio.to_thread(blocked_tool, user_id, name):
+        if task_id:
+            await asyncio.to_thread(event, task_id, "tool_blocked", name)
+        result = "Инструмент запрещён вашим правилом рабочего процесса: " + name
+        if record:
+            record.observe(name, result)
+        return result
+    if task_id:
+        # Arguments may contain credentials or private documents; journal only tool identity.
+        await asyncio.to_thread(event, task_id, "before_tool", name)
+    if read_key and record.read_failures.get(read_key, 0) >= 2:
+        return 'Ошибка: этот источник уже дважды не ответил в текущем запросе. Повтор остановлен; используй другие источники или укажи пробел.'
+    if record and name not in PARALLEL_READS and name not in {'load_skill', 'read_skill_resource', 'list_skills'}:
+        record.read_failures.clear()
+    try:
+        from app.services import task_checkpoints
+        action_key = None
+        if task_id and task_checkpoints.external_action(name, args):
+            action_key, previous = await asyncio.to_thread(task_checkpoints.reserve, name, args)
+            if previous is not None:
+                if record: record.observe(name, previous)
+                return previous
+        result = await _run_computer_tool(name, args, user_id)
+        if action_key:
+            await asyncio.to_thread(task_checkpoints.complete, action_key, name, result, user_id)
+        if record:
+            record.observe(name, result)
+            if read_key:
+                record.finish_read(name, read_key, str(result), time.monotonic() - read_started)
+        if task_id:
+            await asyncio.to_thread(event, task_id, "after_tool", name)
+        if user_id and not result.startswith("data:"):
+            limit = await asyncio.to_thread(output_limit, user_id)
+            if limit < 12000:
+                clipped = _clamp(result, limit)
+                from app.services.engineering_io import EngineeringResult
+                result = EngineeringResult(clipped,image_data_url=result.image_data_url,files=result.files) if isinstance(result,EngineeringResult) else clipped
+        return result
+    except BaseException as exc:
+        if record:
+            record.observe(name, 'Ошибка выполнения инструмента.')
+            if read_key and not isinstance(exc, asyncio.CancelledError):
+                record.finish_read(name, read_key, 'Ошибка выполнения инструмента.', time.monotonic() - read_started)
+        if task_id:
+            await asyncio.to_thread(event, task_id, "tool_error", name)
+        raise
+
+
+async def _run_computer_tool(name: str, args: dict[str, Any], user_id: int | None) -> str:
+    if name in {'project_result','project_result_read','project_result_patch','project_purchase_plan','project_purchase_offer','project_file_open'}:
+        from app.services import project_results, project_memory
+        from turn_scope import turn_conversation_id
+        if not user_id or not turn_conversation_id(): return 'Проект не подключён.'
+        try:
+            pid=(await asyncio.to_thread(project_memory.attached,user_id,turn_conversation_id()))['project_id']
+            if not pid: return 'Выберите проект в боковом списке. Результаты проекта доступны только в личной беседе.'
+            if name=='project_file_open':
+                from app.services import project_assets
+                return json.dumps(await asyncio.to_thread(project_assets.stage,user_id,pid,str(args.get('entry_id') or '')),ensure_ascii=False)
+            if name=='project_result_read':
+                data=await asyncio.to_thread(project_results.tool_read,user_id,pid,str(args.get('entry_id') or ''),args.get('offset',0))
+                return json.dumps(data,ensure_ascii=False)
+            if name=='project_result_patch':
+                return json.dumps(await asyncio.to_thread(project_results.patch,user_id,pid,str(args.get('entry_id') or ''),args.get('expected_revision'),args.get('changes'),model=True),ensure_ascii=False)
+            if name=='project_purchase_offer':
+                return json.dumps(await asyncio.to_thread(project_results.purchase_offer,user_id,pid,str(args.get('entry_id') or ''),args.get('expected_revision'),str(args.get('row_id') or ''),str(args.get('url') or ''),args.get('quotes')),ensure_ascii=False)
+            spec=project_results.purchase_spec(str(args.get('title') or ''),args.get('positions')) if name=='project_purchase_plan' else args.get('spec')
+            eid=args.get('entry_id'); revision=args.get('expected_revision')
+            if eid and revision is None: return 'Для изменения нужна expected_revision из project_result_read.'
+            data=await asyncio.to_thread(project_results.save,user_id,pid,spec,eid,revision,model=True)
+            return json.dumps({**data,'location':'Материалы проекта → Результаты','next':'Прочитай project_result_read перед правками. Создание плана не подтверждает наличие товара.'},ensure_ascii=False)
+        except (ValueError,TypeError) as exc: return 'Ошибка результата проекта: '+str(exc)[:250]
+    if name in {'engineering_import','engineering_read_page','engineering_build'}:
+        if not user_id:
+            return 'Нет пользователя для доступа.'
+        from app.services.engineering_io import import_yandex,import_chat_file,inspect_page,build_project
+        try:
+            if name=='engineering_import':
+                if bool(args.get('url'))==bool(args.get('filename')):
+                    return 'Укажи один источник: url публичного Яндекс Диска или filename из list_chat_files.'
+                result=await import_yandex(int(user_id),str(args['url']),args.get('max_files',20)) if args.get('url') else await asyncio.to_thread(import_chat_file,int(user_id),str(args['filename']),args.get('max_files',200))
+                return json.dumps(result,ensure_ascii=False)
+            if name=='engineering_read_page':
+                return await asyncio.to_thread(inspect_page,int(user_id),str(args['path']),args.get('page',1),args.get('crop'))
+            return await asyncio.to_thread(build_project,int(user_id),str(args['spec_path']))
+        except Exception as exc:
+            return 'Ошибка инженерного инструмента: '+str(exc)[:300]
+    if name == 'server_search':
+        from app.services.server_search import server_search
+        return json.dumps(await server_search(str(args.get('query') or ''), limit=args.get('limit', 10), sites=args.get('sites')), ensure_ascii=False)
+    if name == 'get_capabilities':
+        from app.services.capabilities import capability_catalog
+        return json.dumps(capability_catalog(), ensure_ascii=False)
+    if name in {'project_search', 'project_read'}:
+        from app.services import project_memory
+        from turn_scope import turn_conversation_id
+        if not user_id or not turn_conversation_id(): return 'Проект не подключён к этой беседе.'
+        try:
+            pid = await asyncio.to_thread(project_memory.attached, user_id, turn_conversation_id())
+            if not pid['project_id']: return 'Подключите проект через «Задачи и инструменты → Память проекта».'
+            if name == 'project_read':
+                result = await asyncio.to_thread(project_memory.read, user_id, pid['project_id'], str(args.get('entry_id') or '')[:32], args.get('offset', 0), args.get('limit', 6000))
+            else:
+                result = await asyncio.to_thread(project_memory.search, user_id, pid['project_id'], str(args.get('query') or '')[:500], 3)
+                for item in result: item['body'] = item['body'][:1400]
+            return _clamp(json.dumps(result, ensure_ascii=False))
+        except ValueError:
+            return 'Память проекта доступна только в вашей личной беседе.'
+    if name in {'task_list', 'task_create', 'task_control'}:
+        from app.services.task_tools import run_task_tool
+        return await run_task_tool(name, args, user_id)
+    if name == "read_skill_resource":
+        try:
+            from computer_skills.loader import turn_is_shared, builtin_names, catalog
+            from computer_skills.adaptations import canonical_name, read_builtin_resource
+            raw_skill = str(args.get('skill') or '')
+            normalized = raw_skill.strip().lower().replace('-', '_')
+            personal = {row['name'] for row in catalog(user_id) if row['origin'] == 'custom'}
+            skill = normalized if normalized in personal else canonical_name(raw_skill)
+            path = str(args.get('path') or '')
+            if skill in builtin_names():
+                data = await asyncio.to_thread(read_builtin_resource, skill, path, user_id)
+            else:
+                if not user_id or turn_is_shared(user_id):
+                    return "Личные ресурсы доступны только в вашей личной беседе."
+                from app.services.skill_packages import read_resource
+                data = await asyncio.to_thread(read_resource, user_id, skill, path)
+            if data is None:
+                return "Ресурс не найден или скил выключен."
+            text = data.decode('utf-8-sig')
+            offset = max(0, int(args.get('offset') or 0))
+            limit = max(200, min(12000, int(args.get('limit') or 12000)))
+            page = text[offset:offset + limit]
+            return f'Ресурс {skill}/{path}: символы {offset}–{offset + len(page)} из {len(text)}.\n' + page
+        except UnicodeDecodeError:
+            return "Это бинарный ресурс. Он сохранён в пакете; текстовым инструментом его прочитать нельзя."
+        except (ValueError, TypeError) as exc:
+            return str(exc)
+    if name in {"mcp_discover", "mcp_call"}:
+        if not user_id:
+            return "Для MCP нужен аккаунт."
+        from app.services.mcp_client import discover, call
+        try:
+            if name == "mcp_discover":
+                return json.dumps(await discover(user_id, int(args["connector_id"])), ensure_ascii=False)[:24000]
+            return await call(user_id, int(args["connector_id"]), str(args.get("tool") or ""), args.get("arguments") or {})
+        except ValueError as exc:
+            return str(exc)
+        except Exception:
+            return "MCP-сервер не ответил. Проверьте подключение в настройках."
     if name in DESKTOP_APP_NAMES:
         return await run_desktop_app(name, args, user_id)
     if name in {"desktop_run_command", "desktop_skill_read", "desktop_skill_list"}:
@@ -1204,7 +1418,7 @@ async def run_computer_tool(name: str, args: dict[str, Any], user_id: int | None
         if name == "list_connectors":
             items = list_public(user_id)
             if not items:
-                return "Сохранённых доступов пока нет. Возьми логин и пароль из сообщения пользователя и вызови site_login / gmail_* / ssh_exec."
+                return "Сохранённых доступов пока нет. Предложи добавить нужное подключение в Настройках. Если пользователь уже передал доступ и поручил действие, используй штатный инструмент; не копируй доступы в задачи и навыки."
             return json.dumps(items, ensure_ascii=False)
 
         if name == "forget_access":
@@ -1217,6 +1431,9 @@ async def run_computer_tool(name: str, args: dict[str, Any], user_id: int | None
             return "Такой доступ не найден."
 
         from app.services.sandbox_client import TOOL_OPS, run_workspace_tool
+
+        if name in SWARM_TOOL_NAMES:
+            return await run_swarm_tool(name, args)
 
         if name == "studio_build":
             return await _studio_build(user_id, args)

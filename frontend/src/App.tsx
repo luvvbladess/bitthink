@@ -126,6 +126,7 @@ export default function App() {
               </PrivateRoute>
             }
           />
+          <Route path="/computer" element={<Navigate to="/chat" replace />} />
           <Route
             path="/billing"
             element={

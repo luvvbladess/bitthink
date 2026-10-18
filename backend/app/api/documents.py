@@ -90,6 +90,18 @@ async def _save_chat_image(contents: bytes, filename: str, user_id: str) -> tupl
     return f"/uploads/chat/{user_key}/{stored_name}", mime_type, len(normalized)
 
 
+async def _save_chat_original(contents: bytes, filename: str, user_id: str) -> str:
+    """Keep original pages and archive members available to authenticated tools."""
+    settings = get_settings()
+    user_key = hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:16]
+    folder = settings.UPLOAD_DIR / "chat" / user_key
+    folder.mkdir(parents=True, exist_ok=True)
+    stored_name = uuid.uuid4().hex + Path(filename).suffix.lower()
+    target = folder / stored_name
+    await asyncio.to_thread(target.write_bytes, contents)
+    return f"/uploads/chat/{user_key}/{stored_name}"
+
+
 @router.get("")
 async def list_documents(conversation_id: Optional[str] = None, user_id: str = Depends(get_current_user)):
     return await repo.get_documents(user_id, conv_id=conversation_id)
@@ -144,6 +156,7 @@ async def upload_document(
                 raise HTTPException(status_code=400, detail="В архиве не найдено файлов, которые можно прочитать")
             for doc_name, text in documents:
                 await repo.add_document(user_id, doc_name, text, conv_id=conversation_id)
+            original_url = await _save_chat_original(contents, filename, user_id)
             msg = await repo.add_message(
                 user_id,
                 "user",
@@ -154,6 +167,7 @@ async def upload_document(
                     "size": len(contents),
                     "status": "done",
                     "type": "document",
+                    "url": original_url,
                     "note": f"{len(documents)} файлов",
                 },
             )
@@ -223,12 +237,13 @@ async def upload_document(
         # Оригинал .docx нужен режиму «Документы» как основа оформления: из базы
         # доступен только извлечённый текст, по нему стили не восстановить.
         await asyncio.to_thread(store_source_docx, bot_user_id, filename, contents)
+        original_url = await _save_chat_original(contents, filename, user_id)
         msg = await repo.add_message(
             user_id,
             "user",
             filename,
             conv_id=conversation_id,
-            attachment={"name": filename, "size": len(contents), "status": "done", "type": "document"},
+            attachment={"name": filename, "size": len(contents), "status": "done", "type": "document", "url": original_url},
         )
         return {"ok": True, "kind": "document", "filename": filename, "length": len(text), "message": msg}
 

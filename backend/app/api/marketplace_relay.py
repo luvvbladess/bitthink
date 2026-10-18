@@ -24,11 +24,14 @@ class Result(BaseModel):
     text: str = Field(default="", max_length=MAX_CONTENT)
     title: str = Field(default="", max_length=500)
     reader_version: str | None = Field(default=None,max_length=24)
+    reader_source: Literal['existing_tab', 'owned_tab'] | None = None
+    error_code: Literal['browser_challenge', 'navigation_timeout', 'script_error', 'empty_page', 'product_not_confirmed'] | None = None
     review_diagnostics: dict[str,str | int | bool] | None = Field(default=None,max_length=16)
 
 
 class InspectRequest(BaseModel):
     url: str = Field(max_length=4096)
+    mode: Literal['overview', 'full'] = 'full'
 
 
 @router.post('/inspect', dependencies=[Depends(agent_auth)])
@@ -39,7 +42,7 @@ async def inspect_card(data: InspectRequest):
     found=public_shop_url(data.url)
     if not found or found[0] not in {'card','short'}:
         raise HTTPException(422,'Only public product cards can be inspected')
-    return {'reader_version':home_relay.reader_version,'result':await home_relay.fetch(found[1])}
+    return {'reader_version':home_relay.reader_version,'result':await home_relay.fetch(found[1], mode=data.mode)}
 
 
 @router.get('/diagnostics', dependencies=[Depends(agent_auth)])

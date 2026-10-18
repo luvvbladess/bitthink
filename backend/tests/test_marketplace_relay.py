@@ -13,6 +13,27 @@ URL = 'https://www.ozon.ru/product/123456789/'
 TOKEN = 'test-only-home-reader-token-' + 'x' * 32
 
 
+def test_overview_mode_is_scoped_and_does_not_cache_incomplete_full_reads(relay):
+    from turn_scope import turn_conversation, reader_mode
+    async def run():
+        relay.heartbeat()
+        with turn_conversation('price-chat', reader_detail='overview'):
+            assert reader_mode() == 'overview'
+            task = asyncio.create_task(relay.fetch(URL))
+            job = await relay.pull(wait=.1)
+            assert job['mode'] == 'overview'
+            relay.complete(job['id'], {'status':'ok','url':URL,'text':'Цена 1000 ₽'})
+            await task
+            assert (await relay.fetch(URL))['text'] == 'Цена 1000 ₽'
+            full = asyncio.create_task(relay.fetch(URL, mode='full'))
+            job = await relay.pull(wait=.1)
+            assert job['mode'] == 'full'
+            relay.complete(job['id'], {'status':'ok','url':URL,'text':'Отзывы покупателей'})
+            assert (await full)['text'] == 'Отзывы покупателей'
+        assert reader_mode() == 'full'
+    asyncio.run(run())
+
+
 @pytest.fixture
 def relay(monkeypatch):
     instance = service.HomeRelay()

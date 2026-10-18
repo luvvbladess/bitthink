@@ -1206,12 +1206,38 @@ class DatabaseConversationManager:
                 sub = self._lock_subscription(session, user_id)
                 self._reset_daily_if_needed(sub)
                 current = int(getattr(sub, field) or 0)
-                if limit and current >= limit:
+                used = current
+                if field == 'daily_gpt54':
+                    # Search replies are a subset of the same daily total.
+                    used += int(sub.daily_nano_mini or 0)
+                if limit and used >= limit:
                     session.commit()
                     return False
                 setattr(sub, field, current + 1)
                 session.commit()
                 return True
+
+    def mark_free_reply_search(self, user_id: int, reserved_reply: bool) -> None:
+        """Atomically move the reserved reply into the search subset, once per turn."""
+        from app.billing.plans import plan_for
+        from app.billing.quota import QuotaError, effective_tier
+        with self._quota_lock, SyncSessionLocal() as session:
+            sub = self._lock_subscription(session, user_id)
+            self._reset_daily_if_needed(sub)
+            if effective_tier(_subscription_payload(sub)) != 'free':
+                return
+            plan = plan_for('free')
+            searches = int(sub.daily_nano_mini or 0)
+            ordinary = int(sub.daily_gpt54 or 0)
+            if searches >= int(plan['daily_searches']):
+                raise QuotaError(f"На сегодня поисковые ответы закончились. Завтра снова {plan['daily_searches']}, либо оформите Pro.")
+            if not reserved_reply and ordinary + searches >= int(plan['daily_replies']):
+                raise QuotaError('На сегодня ответы закончились. Завтра снова, либо оформите Pro.')
+            if reserved_reply and ordinary <= 0:
+                raise QuotaError('Не удалось подтвердить резерв ответа. Повторите запрос.')
+            sub.daily_nano_mini = searches + 1
+            if reserved_reply: sub.daily_gpt54 = ordinary - 1
+            session.commit()
 
     def refund_daily_counter(self, user_id: int, field: str) -> None:
         if field not in self._DAILY_COUNTERS:
@@ -1567,6 +1593,8 @@ class DatabaseConversationManager:
             if not row:
                 return False
             session.delete(row)
+            from app.db.models import SkillResource
+            session.query(SkillResource).filter_by(user_id=user_id, skill_name=slug).delete()
             session.commit()
             return True
 
@@ -2277,7 +2305,18 @@ class DatabaseConversationManager:
     def list_chat_files(self, user_id: int) -> str:
         docs = self.get_documents(user_id)
         images = self.list_chat_image_files(user_id)
-        if not docs and not images:
+        originals = []
+        conv = self.conversation_for_turn(user_id)
+        seen = set()
+        for message in getattr(conv, 'messages', []) if conv else []:
+            if getattr(message, 'role', 'user') != 'user':
+                continue
+            att = getattr(message, 'attachment', None) or {}
+            for entry in [att, *(att.get('files') or [])]:
+                name = entry.get('name') or entry.get('filename')
+                if name and entry.get('url') and name not in seen:
+                    originals.append(str(name)); seen.add(name)
+        if not docs and not images and not originals:
             return "В этом чате нет загруженных файлов."
         lines = [
             "Файлы этого чата. Документ читай read_chat_document, фото ищи image_search. Имя бери точное:"
@@ -2288,6 +2327,9 @@ class DatabaseConversationManager:
             lines.append(f"- {name} ({size} символов текста)")
         for item in images:
             lines.append(f"- {item['name']} (изображение, image_search)")
+        if originals:
+            lines.append('Оригиналы вложений: для чертежей engineering_import(filename=точное имя). ZIP раскрывается с подпапками:')
+            lines.extend('- ' + name for name in originals)
         return "\n".join(lines)
 
     def search_user_chats(self, user_id: int, query: str, limit: int = 5) -> str:

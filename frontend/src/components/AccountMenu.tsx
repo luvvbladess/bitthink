@@ -47,7 +47,7 @@ export function AccountMenu({ variant = 'icon' }: { variant?: 'icon' | 'row' }) 
     : sub?.tier === 'free'
       ? `${Math.max(0, (sub.free_daily?.replies_limit || 30) - (sub.free_daily?.replies || 0))} из ${sub.free_daily?.replies_limit || 30} ответов осталось сегодня`
       : sessionLeft != null
-        ? `ещё ${formatTokens(sessionLeft)} на 5 часов`
+        ? `общий запас: ${formatTokens(sessionLeft)} на 5 часов`
         : sub?.chat?.remaining != null
           ? `ещё ${formatTokens(sub.chat.remaining)}`
           : null;

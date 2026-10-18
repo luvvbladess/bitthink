@@ -1,4 +1,5 @@
 import app.db.models  # noqa: F401 — register tables
+import app.db.project_models  # noqa: F401 — chats now consult project bindings
 from sqlalchemy import inspect, text
 
 from app.db.base import Base

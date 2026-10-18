@@ -79,7 +79,15 @@ def with_runtime_context(
     Matched skills differ from turn to turn: they go before the last user message,
     otherwise every change shifts the whole history and the prompt cache restarts.
     """
+    from app.services.source_quality import SOURCE_RULES
     extras: List[str] = [current_date_note()]
+    # Internal JSON planning/summarization calls disable skills and may have no
+    # web tools. Do not turn their boilerplate into a new research assignment.
+    if use_skills and not any(SOURCE_RULES in str(m.get('content') or '') for m in messages):
+        extras.append(SOURCE_RULES)
+    from app.services.project_memory import project_context
+    if project_context.get() and not any(m.get('content') == project_context.get() for m in messages):
+        extras.append(project_context.get())
     skills_block = ""
     if use_skills and not _already_has_preloaded_skills(messages):
         try:

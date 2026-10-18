@@ -11,7 +11,7 @@ from app.core.crypto import decrypt_json, encrypt_json
 from app.db.engine import SyncSessionLocal
 from app.db.models import Connector
 
-CONNECTOR_TYPES = ("gmail", "ssh", "http", "web", "google")
+CONNECTOR_TYPES = ("gmail", "ssh", "http", "web", "google", "mcp")
 MAX_CONNECTORS_PER_USER = 20
 
 _REQUIRED_FIELDS = {
@@ -20,6 +20,7 @@ _REQUIRED_FIELDS = {
     "http": ("base_url",),
     "web": ("login_url", "username", "password"),
     "google": ("email", "refresh_token"),
+    "mcp": ("url",),
 }
 
 
@@ -46,6 +47,15 @@ def _validate_payload(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
     if kind == "ssh" and not str(payload.get("password") or "").strip() and not str(payload.get("private_key") or "").strip():
         raise ValueError("Для SSH укажите пароль или приватный ключ")
 
+    if kind == "mcp":
+        from app.services.mcp_client import validate_endpoint
+        validate_endpoint(str(payload["url"]).strip())
+        allowed = payload.get("allowed_tools", [])
+        if not isinstance(allowed, list) or len(allowed) > 100 or any(not isinstance(n, str) or len(n) > 128 for n in allowed):
+            raise ValueError("Укажите список разрешённых MCP-инструментов.")
+        return {"url": str(payload["url"]).strip(), "token": str(payload.get("token") or "").strip()[:4096],
+                "allowed_tools": list(dict.fromkeys(allowed))}
+
     cleaned: dict[str, Any] = {}
     for key, value in payload.items():
         if value is None:
@@ -59,6 +69,9 @@ def _validate_payload(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _hint_for(kind: str, payload: dict[str, Any]) -> str:
+    if kind == "mcp":
+        from urllib.parse import urlsplit
+        return (urlsplit(payload["url"]).hostname or "")[:120]
     if kind in ("gmail", "google"):
         return str(payload.get("email", ""))[:120]
     if kind == "ssh":
@@ -82,6 +95,8 @@ def list_public(account_uid: int) -> list[dict[str, Any]]:
 
 
 def _match_key(kind: str, payload: dict[str, Any]) -> str:
+    if kind == "mcp":
+        return str(payload.get("url") or "").strip()
     if kind in ("gmail", "google"):
         return str(payload.get("email") or "").strip().lower()
     if kind == "ssh":

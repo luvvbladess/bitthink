@@ -1,0 +1,14 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "design-system-font",
+        "value": "sfmono-regular",
+        "createdAt": "2026-10-17T23:55:48.470Z",
+        "reason": "Codex: existing code blocks use a monospace fallback, explicitly allowed by DESIGN.md code typography; prose continues using Inter."
+      }
+    ]
+  }
+}

@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
-import { Box, keyframes } from '@mui/material';
+import { useEffect, useId, useState } from 'react';
+import { Box, Button, keyframes } from '@mui/material';
 import {
   ChartLineUp,
+  CaretDown,
   Check,
   EnvelopeSimple,
   Globe,
@@ -33,7 +34,6 @@ const KIND_ICON: Record<Kind, Icon> = {
 
 const EASE = 'cubic-bezier(0.23, 1, 0.32, 1)';
 const NODE = 22;
-const VISIBLE_STEPS = 5;
 const CLOCK_AFTER_S = 4;
 
 const spin = keyframes`
@@ -222,27 +222,30 @@ function DoneNode() {
   );
 }
 
-export function ActivityFeed({ statusText }: { statusText?: string }) {
+export function ActivityFeed({ statusText, onStop }: { statusText?: string; onStop?: () => void }) {
+  const [expanded, setExpanded] = useState(false);
+  const historyId = useId();
   const steps = parseActivitySteps(statusText || '');
   const rows = (steps.length ? steps : [{ kind: 'think' as const, text: statusText || 'Думаю' }]).map(describe);
   const elapsed = useElapsed(steps[steps.length - 1]?.text || statusText || "");
-  const shown = rows.slice(-VISIBLE_STEPS);
-  const earlier = rows.length - shown.length;
+  const shown = expanded ? rows : rows.slice(-1);
   const last = shown.length - 1;
 
   return (
-    <Box role="status" aria-live="polite" sx={{ width: '100%', maxWidth: 560, py: 0.25 }}>
-      {earlier > 0 && (
-        <Box sx={{ pl: `${NODE + 12}px`, pb: 0.75, fontSize: '0.75rem', color: 'text.muted' }}>
-          Ранее: {earlier} {plural(earlier)}
-        </Box>
-      )}
+    <Box sx={{ width: '100%', maxWidth: 560, py: 0.25 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1, mb: .75 }}>
+        {rows.length > 1 && <Button size="small" color="inherit" aria-expanded={expanded} aria-controls={historyId} onClick={() => setExpanded(value => !value)} endIcon={<CaretDown size={13} style={{ transform: expanded ? 'rotate(180deg)' : undefined }} />} sx={{ color: 'text.secondary', fontWeight: 400, px: 0 }}>
+          {expanded ? 'Свернуть шаги' : `Показать ${rows.length} ${plural(rows.length)}`}
+        </Button>}
+        {onStop && <Button size="small" color="inherit" onClick={onStop} sx={{ ml: 'auto', color: 'text.secondary' }}>Остановить</Button>}
+      </Box>
+      <Box id={historyId}>
       {shown.map((row, index) => {
         const active = index === last;
         const Glyph = KIND_ICON[row.kind];
         return (
           <Box
-            key={`${row.kind}|${row.title}|${row.detail || ''}`}
+            key={`${index}|${row.kind}|${row.title}|${row.detail || ''}`}
             sx={{
               position: 'relative',
               display: 'grid',
@@ -266,6 +269,7 @@ export function ActivityFeed({ statusText }: { statusText?: string }) {
             {active ? <ActiveNode Glyph={Glyph} /> : <DoneNode />}
             <Box sx={{ minWidth: 0, pt: '1px' }}>
               <Box
+                role={active ? 'status' : undefined}
                 sx={{
                   fontSize: '0.875rem',
                   lineHeight: 1.5,
@@ -305,6 +309,7 @@ export function ActivityFeed({ statusText }: { statusText?: string }) {
           </Box>
         );
       })}
+      </Box>
     </Box>
   );
 }

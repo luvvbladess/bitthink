@@ -25,8 +25,12 @@ export type Subscription = {
   unlimited?: boolean;
   chat?: Pool;
   computer?: Pool;
+  shared_budget?: boolean;
+  shared?: Pool;
+  breakdown?: { chat: number; computer: number };
   images?: Pool;
   windows?: {
+    shared?: { session?: UsageWindow; week?: UsageWindow; month?: UsageWindow };
     chat?: { session?: UsageWindow; week?: UsageWindow; month?: UsageWindow };
     computer?: { session?: UsageWindow; week?: UsageWindow; month?: UsageWindow };
   };
@@ -59,6 +63,10 @@ export type Plan = {
   chat_session?: number;
   computer_week?: number;
   computer_session?: number;
+  shared_budget?: boolean;
+  total_tokens?: number;
+  weekly_tokens?: number;
+  session_tokens?: number;
   images: number;
 };
 

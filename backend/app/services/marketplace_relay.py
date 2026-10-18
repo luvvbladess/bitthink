@@ -23,6 +23,7 @@ class Job:
     deadline: float
     future: asyncio.Future
     claimed: bool = False
+    mode: str = "full"
 
 
 class HomeRelay:
@@ -48,12 +49,17 @@ class HomeRelay:
         while not self.queue.empty():
             self.queue.get_nowait()
 
-    async def fetch(self, url: str) -> dict | None:
+    async def fetch(self, url: str, *, mode: str | None = None) -> dict | None:
         from web_scraper import is_ru_marketplace
 
-        from turn_scope import reader_snapshots
+        from turn_scope import reader_snapshots, reader_mode
+
+        mode = mode or reader_mode()
+        if mode not in {"overview", "full"}:
+            raise ValueError("Unknown reader mode")
+        cache_key = url if mode == "full" else "overview:" + url
         snapshots = reader_snapshots()
-        cached = snapshots.get(url) if snapshots is not None else None
+        cached = snapshots.get(cache_key) if snapshots is not None else None
         if cached and time.monotonic() - cached[0] < 180:
             return dict(cached[1])
         parsed = urlparse(url)
@@ -62,6 +68,7 @@ class HomeRelay:
             return None
         loop = asyncio.get_running_loop()
         job = Job(secrets.token_urlsafe(24), url, time.monotonic() + JOB_TIMEOUT, loop.create_future())
+        job.mode = mode
         try:
             self.queue.put_nowait(job)
         except asyncio.QueueFull:
@@ -70,9 +77,10 @@ class HomeRelay:
         try:
             result = await asyncio.wait_for(job.future, JOB_TIMEOUT)
             if snapshots is not None and result and result.get("status") == "ok" and len(snapshots) < 32:
-                snapshots[url] = (time.monotonic(),dict(result))
+                snapshots[cache_key] = (time.monotonic(),dict(result))
                 if result.get("url"):
-                    snapshots[result["url"]] = snapshots[url]
+                    resolved_key = result["url"] if mode == "full" else "overview:" + result["url"]
+                    snapshots[resolved_key] = snapshots[cache_key]
             return result
         except asyncio.TimeoutError:
             return None
@@ -90,7 +98,7 @@ class HomeRelay:
                 return None
             if job.id in self.jobs and not job.future.done() and job.deadline > time.monotonic():
                 job.claimed = True
-                return {"id": job.id, "url": job.url}
+                return {"id": job.id, "url": job.url, "mode": job.mode}
             if time.monotonic() >= until:
                 return None
 
@@ -100,7 +108,8 @@ class HomeRelay:
         if not job or not job.claimed or job.future.done() or time.monotonic() >= job.deadline:
             return False
         self.recent_reads.append({'path':urlparse(result.get('url',job.url)).path,'status':result.get('status'),
-            'reader_version':result.get('reader_version'), 'reviews':result.get('review_diagnostics')})
+            'reader_version':result.get('reader_version'), 'reader_source':result.get('reader_source'),
+            'error_code':result.get('error_code'), 'reviews':result.get('review_diagnostics')})
         self.recent_reads=self.recent_reads[-12:]
         job.future.set_result(result)
         return True

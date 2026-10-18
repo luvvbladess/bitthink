@@ -28,7 +28,7 @@ def user():
 
 
 def leave_session(uid, remaining=10_000, pool="chat"):
-    limit = plan_for("pro")[f"{pool}_session"]
+    limit = plan_for("pro")["session_tokens"]
     manager.debit_plan_tokens(uid, pool, limit - remaining)
     return limit
 
@@ -145,7 +145,7 @@ def test_old_hold_does_not_refund_new_session_or_reissued_subscription(user):
     assert manager.get_subscription(user)["chat_tokens_used"] == 999
 
 
-def test_computer_budget_is_independent_and_missing_usage_does_not_reopen_wallet(user):
+def test_computer_keeps_attribution_and_missing_usage_does_not_reopen_shared_wallet(user):
     limit = leave_session(user, pool="computer")
     token = billing_pool.set("computer")
     async def create(**kwargs):

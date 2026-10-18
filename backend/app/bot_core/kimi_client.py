@@ -29,8 +29,9 @@ WEB_SEARCH_TOOL_KIMI = {
         "description": (
             "Search the live web. Use for news, prices, dates, people, versions, "
             "and anything that may have changed. Write a specific query with an "
-            "entity, the current year, and a qualifier. One information need per call. "
-            "Do not retry with synonym rewrites of the same query."
+        "entity and a qualifier. Add a year only when it helps discover the requested period. "
+        "Live statistics/pricing pages often have no year in the title. One information need per call. "
+        "Do not repeat a successful query. If empty, one simpler entity query or original-language alias is allowed."
         ),
         "parameters": {
             "type": "object",
@@ -42,6 +43,10 @@ WEB_SEARCH_TOOL_KIMI = {
                 "limit": {
                     "type": "integer",
                     "description": "Maximum results, 1-20. Default 8.",
+                },
+                "sites": {
+                    "type": "array", "items": {"type": "string"}, "maxItems": 5,
+                    "description": "Optional allowed domains, e.g. official product documentation. No URL scheme.",
                 },
             },
             "required": ["query"],
@@ -81,14 +86,16 @@ KIMI_WEB_SEARCH_SYSTEM_PROMPT = (
     "Не спрашивай разрешения и не объявляй вслух, что сейчас ищешь. "
     "Вечные определения можно без поиска. "
     "Запросы короткие и разные: один факт – один запрос, не склеивай пять тем. "
-    "В запросах указывай текущий год, не прошлый. "
-    "Обычный факт – 1–2 поиска; сравнение или обзор – 4–8; глубокая тема – больше, пока каждый кусок ответа на чём-то стоит. "
+    "Год добавляй, если он помогает найти нужный период; текущие таблицы статистики и тарифов часто не содержат года в названии. "
+    "Обычный факт – 1–2 поиска; сравнение или обзор – до 3 независимых запросов; глубокая тема – до 5. Не повторяй успешные запросы синонимами. При пустой выдаче допустим один короткий запрос с именем объекта без лишних временных уточнений или с оригинальным написанием имени. Дату и период всё равно проверяй на странице. "
+    "Обычные найденные ссылки не открывай массово: используй фрагменты выдачи с честным обозначением. Карточки российских магазинов проверяй домашним читателем; другие страницы — точечно по необходимости. "
     "Сниппет – не доказательство спорной цифры: открой страницу через browse_page. "
     "После поиска отвечай на русском, с конкретными фактами и датами. "
     "Закрой задачу: как применить, ограничение, что проверить. Не обрывай тизером «могу подробнее». "
-    "Маркеры цитат [1], [2] оставляй для списка источников. Ссылки на товары и ссылки, которые просит человек, давай кликабельным Markdown прямо в ответе. "
+    "Каждый существенный свежий факт и точное число сопровождай кликабельной Markdown-ссылкой рядом или в строке таблицы. "
+    "Общий источник таблицы/списка укажи явно рядом с блоком. Панель источников не заменяет эти ссылки. "
     "Не делай вид, что отсутствие в первой выдаче значит «этого нет». "
-    "В конце ответа обязательно приведи список использованных источников в строгом формате:\n"
+    "Если используешь числовые маркеры [1], [2] в тексте, в конце дай их точное соответствие URL:\n"
     "[1] Название источника — https://example.com/page1\n"
     "[2] Название источника — https://example.com/page2\n"
     "Не выдумывай URL. Если факт не удалось проверить, напиши об этом."
@@ -143,38 +150,19 @@ async def _execute_kimi_tool(
         results = await kimi_search_pro(
             query,
             limit=limit,
+            sites=arguments.get('sites'),
             timeout_seconds=12,
             user_id=user_id,
         )
         return format_results_for_model(results), to_ui_sources(results)
 
     if name == "browse_page":
-        url = str(arguments.get("url") or "").strip()
-        from web_scraper import fetch_url_content, is_ru_marketplace, _looks_like_bot_wall
-
-        # All agents share the home-browser route for Russian shop cards.
-        # Kimi's nonempty block/index page must not bypass the home reader.
-        if is_ru_marketplace(url):
-            try:
-                fetched_url, text = await fetch_url_content(url)
-            except Exception as exc:
-                return f"Не удалось открыть страницу: {type(exc).__name__}", []
-            source = {"query": fetched_url or url, "summary": fetched_url or url}
-            return f"URL: {fetched_url}\n\n{text}", [source]
-        fetched = await kimi_fetch(url, user_id=user_id)
-        if fetched and fetched.get("markdown") and not _looks_like_bot_wall(fetched["markdown"]):
-            title = fetched.get("title") or url
-            markdown = fetched["markdown"][:12000]
-            source = {"query": title, "summary": fetched.get("url") or url}
-            return f"{title}\nURL: {fetched.get('url') or url}\n\n{markdown}", [source]
-        try:
-            from web_scraper import fetch_url_content
-
-            fetched_url, text = await fetch_url_content(url, use_kimi_fallback=False)
-        except Exception as exc:
-            return f"Не удалось открыть страницу: {exc}", []
-        source = {"query": fetched_url or url, "summary": fetched_url or url}
-        return f"URL: {fetched_url}\n\n{text}", [source]
+        from computer_tools import run_computer_tool
+        url = str(arguments.get('url') or '').strip()
+        result = await run_computer_tool('browse_page', {'url': url, 'query': arguments.get('query', '')}, user_id)
+        match = re.search(r'^URL:\s*(https?://\S+)', result, re.M)
+        sources = [{'query': match.group(1), 'summary': match.group(1)}] if match else []
+        return result, sources
 
     return f"Неизвестный инструмент: {name}", []
 
@@ -215,7 +203,7 @@ async def _append_tool_results(
     research: bool = False,
 ) -> List[Dict[str, str]]:
     collected: List[Dict[str, str]] = []
-    for tc in tool_calls:
+    async def execute(tc):
         parsed = _parse_tool_args(getattr(tc.function, "arguments", "") or "")
         try:
             from status_feed import announce_tool
@@ -223,12 +211,23 @@ async def _append_tool_results(
             await announce_tool(tc.function.name, parsed)
         except Exception:
             pass
-        content, ui_sources = await _execute_kimi_tool(
+        return await _execute_kimi_tool(
             tc.function.name,
             parsed,
             user_id=user_id,
             research=research,
         )
+    from types import SimpleNamespace
+    from app.services.read_batches import read_batch
+    calls = [SimpleNamespace(name='server_search' if tc.function.name in {'web_search', '$web_search'} else tc.function.name,
+                             arguments=tc.function.arguments, original=tc) for tc in tool_calls]
+    async def execute_call(call):
+        return await execute(call.original)
+    results = await read_batch(calls, {'server_search', 'browse_page'}, execute_call)
+    if results is None:
+        results = [await execute(tc) for tc in tool_calls]
+    for tc, result in zip(tool_calls, results):
+        content, ui_sources = result if isinstance(result, tuple) else (str(result), [])
         collected.extend(ui_sources)
         current_messages.append(
             {
@@ -255,8 +254,14 @@ async def get_kimi_search_brief(messages: List[Dict[str, Any]], user_text: str, 
             "role": "system",
             "content": (
                 "Ты research desk. Ищи только внешние проверяемые факты по запросу. "
-                "Сделай несколько поисковых запросов. Верни краткую выжимку: факты, даты, цифры, "
-                "а в конце не менее пяти источников в формате [N] Название — URL. "
+                "Сохраняй в запросе объект и контекст: имя без названия игры/продукта часто даёт чужую тему. "
+                "Если выдача про одноимённые компании или другие объекты, она нерелевантна: "
+                "уточни название, используй оригинальное написание/английский запрос и кавычки для названия. "
+                "Прочитай 1-2 подходящих источника через browse_page по недостающему факту. "
+                "Верни краткую выжимку: факты, даты, цифры и 1-3 нужных источника в формате [N] Название — URL. "
+                "Не набирай количество источников и не считай нерелевантную выдачу выполненной работой. "
+                "Если текущий патч не указан источником, дай доступную свежую статистику с её периодом "
+                "и выборкой, отдельно отметив, что соответствие патчу не установлено. "
                 "Не пиши финальный материал, не украшай стиль."
             ),
         },
@@ -331,7 +336,18 @@ async def get_kimi_search_brief(messages: List[Dict[str, Any]], user_text: str, 
         })
         await _append_tool_results(current_messages, tool_calls, user_id=user_id)
 
-    return last_text or "Kimi web search не завершился за лимит шагов."
+    # The final allowed tool call may have just supplied the needed page.
+    # Returning last_text here loses that page and can repeat an earlier refusal.
+    current_messages.append({'role': 'user', 'content': 'Лимит поиска достигнут. Дай краткий итог из уже полученных результатов инструментов, включая последний. Новые поиски не нужны. Укажи ответ, выборку/период и ссылки; оставшиеся пробелы назови отдельно.'})
+    try:
+        response = await asyncio.wait_for(model_call(client, {
+            'model': KIMI_MODEL, 'messages': current_messages,
+            'extra_body': {'thinking': {'type': 'disabled'}}, 'max_tokens': 1800,
+        }, model=KIMI_MODEL, user_id=user_id), timeout=30)
+        return response.choices[0].message.content or last_text or 'Данных для ответа не получено.'
+    except Exception:
+        logger.warning('Final search brief synthesis did not complete')
+        return last_text or 'Поиск завершился без итоговой выжимки.'
 
 
 def _extract_urls(text: str) -> List[str]:
@@ -431,10 +447,18 @@ _SOURCE_LIST_RE = re.compile(
 )
 
 
+def _inline_evidence_caption(line: str) -> bool:
+    # A table/list caption is part of its evidence, not a redundant bibliography.
+    return bool(re.match(r'^\s*(?:\*{1,2})?источник(?:и)?\s+(?:таблиц|списк|рейтинг|сравнени)', line, re.I)
+                and re.search(r'\]\(https?://', line))
+
+
 def _is_source_line(line: str) -> bool:
     stripped = line.strip()
     if not stripped:
         return True
+    if _inline_evidence_caption(line):
+        return False
     return bool(
         _SOURCE_HEADING_RE.match(stripped)
         or _SOURCE_ITEM_RE.match(stripped)
@@ -449,7 +473,7 @@ def _cut_trailing_source_block(lines: List[str]) -> List[str]:
         stripped = line.strip()
         if not stripped:
             continue
-        if _SOURCE_HEADING_RE.match(stripped) or _SOURCE_ITEM_RE.match(stripped):
+        if not _inline_evidence_caption(line) and (_SOURCE_HEADING_RE.match(stripped) or _SOURCE_ITEM_RE.match(stripped)):
             rest = lines[index:]
             if all(_is_source_line(item) for item in rest):
                 start = index
@@ -471,12 +495,12 @@ def strip_source_links(text: str) -> str:
         stripped = line.strip()
         if re.match(r"^\s*\[\d+\]\s+.*(?:https?://\S+|\([\w.-]+\.[a-z]{2,}\))\s*$", line, re.I):
             continue
-        if _SOURCE_HEADING_RE.match(stripped) or _SOURCE_ITEM_RE.match(stripped):
+        if not _inline_evidence_caption(line) and (_SOURCE_HEADING_RE.match(stripped) or _SOURCE_ITEM_RE.match(stripped)):
             continue
         cleaned_lines.append(line)
     cleaned_lines = _cut_trailing_source_block(cleaned_lines)
     cleaned = "\n".join(cleaned_lines)
-    cleaned = re.sub(r"\s*\[\d+\]", "", cleaned)
+    cleaned = re.sub(r"\s*\[\d+\](?!\()", "", cleaned)
     # Hosted search models sometimes render citation annotations as a bare
     # domain in parentheses, e.g. "(casio.com)" or a punycode ".рф" host.
     # The clickable source lives in the UI panel, so this duplicate is removed.
@@ -511,12 +535,10 @@ def extract_domain_sources(text: str) -> List[Dict[str, str]]:
 
 def kimi_result_is_grounded(answer: str, sources: List[Dict[str, str]], minimum_sources: int = 2) -> bool:
     """Строгая проверка перед тем, как доверить пользователю результат Kimi."""
-    return bool(
-        answer
-        and not answer.lstrip().startswith("❌")
-        and len(answer.strip()) >= 120
-        and len(sources) >= minimum_sources
-    )
+    from app.services.source_quality import evidence_issues, source_urls
+    # minimum_sources is retained for caller compatibility. Quantity cannot
+    # establish grounding: a direct primary page can be sufficient by itself.
+    return bool(source_urls(sources) and not evidence_issues(answer, sources))
 
 
 @billing_scope
@@ -541,11 +563,13 @@ async def get_kimi_chat_response(
 
     current_messages = _clean_messages(messages)
     # Ensure the system prompt for native web search/citations is present.
-    search_prompt = KIMI_WEB_SEARCH_SYSTEM_PROMPT + _search_today_note()
+    from app.services.source_quality import SOURCE_RULES
+    search_prompt = KIMI_WEB_SEARCH_SYSTEM_PROMPT + _search_today_note() + '\n' + SOURCE_RULES
     if research:
         search_prompt += (
             "\nЭто углублённое исследование: разбей вопрос на подвопросы, выполни несколько отдельных "
-            "поисковых проходов, проверь противоречия и постарайся использовать 14–24 содержательных источника."
+            "поисковых проходов только по существенным пробелам, проверь противоречия. "
+            "Достаточность определяй подтверждением фактов, не числом источников."
         )
     if not current_messages or current_messages[0].get("role") != "system":
         current_messages.insert(0, {"role": "system", "content": search_prompt})
@@ -560,21 +584,30 @@ async def get_kimi_chat_response(
     total_cached_tokens = 0
 
     def _final_sources(text: str) -> List[Dict[str, str]]:
-        return _merge_ui_sources(collected_sources, _build_search_results_from_text(text or ""))
+        # A URL generated by the model is not evidence of a retrieval.
+        return _merge_ui_sources(collected_sources)
 
-    for _ in range(10):
+    deadline = asyncio.get_running_loop().time() + (120 if research else 75)
+    precise_comparison = any(re.search(r'верс\w*|цифр\w*', str(m.get('content') or ''), re.I)
+                             for m in current_messages[-1:] if m.get('role') == 'user')
+    steps = 5 if research or precise_comparison else 3
+    for step in range(steps):
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            break
         try:
             response = await asyncio.wait_for(
                 model_call(client, {
-                    "model": KIMI_MODEL, "messages": current_messages, "tools": KIMI_SEARCH_TOOLS,
+                    "model": KIMI_MODEL, "messages": current_messages,
+                    **({'tools': KIMI_SEARCH_TOOLS} if step < steps - 1 else {}),
                     "extra_body": {"thinking": {"type": "disabled"}},
                     "max_tokens": max_output_tokens(KIMI_MODEL),
                 }, model=KIMI_MODEL, user_id=user_id),
-                timeout=420,
+                timeout=min(45 if research else 30, remaining),
             )
         except asyncio.TimeoutError:
-            logger.error("Kimi chat API call timed out after 420s")
-            return "❌ Модель Kimi не ответила за 420 секунд (таймаут)", [], "", _final_sources(last_text)
+            logger.warning("Search answer deadline reached")
+            return last_text or "Поиск не успел завершиться. Ниже доступны найденные источники; итоговые факты пока не проверены.", [], "", _final_sources(last_text)
         except Exception as e:
             logger.error(f"Kimi chat API call failed: {e}", exc_info=True)
             return f"❌ Ошибка API Kimi: {str(e)}", [], "", _final_sources(last_text)
@@ -605,7 +638,10 @@ async def get_kimi_chat_response(
 
         if not tool_calls:
             search_results = _final_sources(message.content or "")
-            answer = strip_source_links(message.content or "")
+            from app.services.source_quality import resolve_numbered_citations
+            # Resolve before cleanup: otherwise numeric references and their
+            # footnote map disappear before the caller can validate them.
+            answer = strip_source_links(resolve_numbered_citations(message.content or "", search_results))
             return answer or "Нет ответа от модели", generated_files, "", search_results
 
         collected_sources.extend(

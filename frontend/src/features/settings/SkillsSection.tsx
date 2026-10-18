@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Alert, Box, Button, Collapse, Stack, TextField, Typography } from '@mui/material';
 import { CaretDown, Plus } from '@phosphor-icons/react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from '@/api/client';
+import { apiFetch, apiFormData, apiBlob, downloadBlob } from '@/api/client';
 import { GlowSwitch } from '@/components/GlowSwitch';
 import { HOVER_FINE } from '@/theme/effects';
 
@@ -54,6 +54,11 @@ export function SkillsSection() {
   const [openName, setOpenName] = useState<string | null>(null);
   const [catalogOpen, setCatalogOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const upload = useMutation({
+    mutationFn: (file: File) => { const data = new FormData(); data.append('file', file); return apiFormData('/skills/import', data); },
+    onSuccess: () => { setError(''); queryClient.invalidateQueries({ queryKey: ['skills'] }); },
+    onError: (err: Error) => setError(err.message),
+  });
 
   const { data, isLoading } = useQuery<SkillsPayload>({
     queryKey: ['skills'],
@@ -114,13 +119,16 @@ export function SkillsSection() {
       );
     });
   }, [builtin, query]);
-  const busy = save.isPending || patch.isPending || remove.isPending;
+  const busy = save.isPending || patch.isPending || remove.isPending || upload.isPending;
   const customLimit = data?.custom_limit ?? 20;
   const atLimit = (data?.custom_count ?? 0) >= customLimit;
 
   return (
     <Stack spacing={2}>
       <Box>
+        <Button component="label" disabled={busy || atLimit} sx={{ mb: 1 }}>Импортировать SKILL.md или ZIP
+          <input hidden type="file" accept=".md,.zip" onChange={e => { const file = e.target.files?.[0]; if (file) upload.mutate(file); e.target.value = ''; }} />
+        </Button>
         <Stack
           direction="row"
           alignItems="center"
@@ -456,6 +464,7 @@ function CustomSkillRow({
           <Button onClick={onEdit} disabled={busy} sx={{ minHeight: 44, minWidth: 44, color: 'primary.light' }}>
             Изменить
           </Button>
+          <Button disabled={busy} onClick={() => apiBlob(`/skills/${encodeURIComponent(skill.name)}/export`).then(blob => downloadBlob(blob, `${skill.name}.zip`)).catch((e: Error) => window.alert(e.message))}>Экспорт</Button>
           <Button onClick={onDelete} disabled={busy} color="error" sx={{ minHeight: 44, minWidth: 44 }}>
             Удалить
           </Button>

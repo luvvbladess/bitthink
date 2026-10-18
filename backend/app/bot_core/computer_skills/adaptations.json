@@ -1,0 +1,750 @@
+[
+  {
+    "name": "wf_usage_analytics",
+    "source_name": "perplexity-computer-analytics",
+    "title": "Аналитика использования",
+    "scope": "sandbox",
+    "capabilities": [
+      "data",
+      "connections"
+    ],
+    "triggers": [
+      "аналитика использования",
+      "активные пользователи",
+      "dau",
+      "mau"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "5bf12f5ac7143adac6911cf443a641910875d926d31a441e59b0e50d6345ab40"
+  },
+  {
+    "name": "wf_memory",
+    "source_name": "explore-memory",
+    "title": "Контекст прошлых бесед",
+    "scope": "chat",
+    "capabilities": [
+      "history"
+    ],
+    "triggers": [
+      "что мы обсуждали",
+      "найди в прошлых беседах",
+      "вспомни наш проект"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "c6c4802586b1763611f9d04b3e8c4574380362b48148a52bf09b1d311e38e37d"
+  },
+  {
+    "name": "wf_sales",
+    "source_name": "sales",
+    "title": "Продажи и подготовка встреч",
+    "scope": "sandbox",
+    "capabilities": [
+      "web",
+      "connections",
+      "files"
+    ],
+    "triggers": [
+      "подготовка продажи",
+      "подготовь встречу с клиентом",
+      "коммерческое предложение"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "dcaea31d02c130adefdc196b7fec201cdaeea99bdef1d4f17ae0fd2f53ed39e1"
+  },
+  {
+    "name": "wf_artifacts",
+    "source_name": "perplexity-artifact-management",
+    "title": "Файлы и результаты работы",
+    "scope": "sandbox",
+    "capabilities": [
+      "files"
+    ],
+    "triggers": [
+      "обнови созданный файл",
+      "найди результат задачи",
+      "библиотека артефактов"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "5821cb13155039ffa52652562dffb4bea10e457913fa1a4df10e9a862eb88b56"
+  },
+  {
+    "name": "wf_product",
+    "source_name": "pm",
+    "title": "Продуктовые исследования и планы",
+    "scope": "sandbox",
+    "capabilities": [
+      "web",
+      "data",
+      "files"
+    ],
+    "triggers": [
+      "product requirements",
+      "prd",
+      "rice",
+      "ice",
+      "продуктовая стратегия",
+      "дорожная карта продукта"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "3eecb1e39f6c9a4535c5a41ad9bcd23bd46da13be09e244d8895a38fb32e078a"
+  },
+  {
+    "name": "wf_device",
+    "source_name": "personal-computer",
+    "title": "Работа на устройстве через BitClient",
+    "scope": "sandbox",
+    "capabilities": [
+      "device"
+    ],
+    "triggers": [
+      "на моём компьютере",
+      "в bitclient",
+      "локальное приложение"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "7c7b85404236f63b947b78fd8bd6a1ef4a037b58cad0d7d38547dcb967fa51ff"
+  },
+  {
+    "name": "wf_marketing",
+    "source_name": "marketing",
+    "title": "Маркетинговые исследования и материалы",
+    "scope": "sandbox",
+    "capabilities": [
+      "web",
+      "data",
+      "files"
+    ],
+    "triggers": [
+      "маркетинговая кампания",
+      "стратегия продвижения",
+      "brand voice",
+      "контент-план"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "89a73e68f22eebd38319f55f506ca47a4e9cb54b1fe3941bda0badfac6a23c5a"
+  },
+  {
+    "name": "wf_projects",
+    "source_name": "perplexity-project-management",
+    "title": "Контекст и материалы проекта",
+    "scope": "sandbox",
+    "capabilities": [
+      "history",
+      "files"
+    ],
+    "triggers": [
+      "материалы проекта",
+      "журнал проекта",
+      "знания проекта"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "5445e09783b2f4e6a3fe8d772a8bc5025828c5fd4f1ccd06cfb62e7fa1921898"
+  },
+  {
+    "name": "wf_tool_workflows",
+    "source_name": "programmatic-tool-calling",
+    "title": "Пакетная обработка инструментами",
+    "scope": "sandbox",
+    "capabilities": [
+      "data",
+      "connections"
+    ],
+    "triggers": [
+      "пакетная обработка api",
+      "обработай все страницы api",
+      "объединить выгрузки"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "c33e593e80e98b4e3420f092bf0b51cb2decc5afe8ca88f89beeac35cddb0c80"
+  },
+  {
+    "name": "wf_warehouses",
+    "source_name": "data-warehouses",
+    "title": "Анализ баз и хранилищ",
+    "scope": "sandbox",
+    "capabilities": [
+      "data",
+      "connections"
+    ],
+    "triggers": [
+      "хранилище данных",
+      "warehouse",
+      "аналитический sql",
+      "partition"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "5a75011f7d5b2d9bfbfff38ccb1ba8503dd38a9dd7781839c6ffdb283fa792a2"
+  },
+  {
+    "name": "wf_websites",
+    "source_name": "website-building",
+    "title": "Создание сайтов и приложений",
+    "scope": "sandbox",
+    "capabilities": [
+      "studio",
+      "files"
+    ],
+    "triggers": [
+      "создай лендинг",
+      "сделай веб-приложение",
+      "обнови сайт"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "6934f14d20564730f0aaed8d2bd351c15f903c27f68811ced17833a7a76e9118"
+  },
+  {
+    "name": "wf_calls",
+    "source_name": "phone-call",
+    "title": "Подготовка телефонного разговора",
+    "scope": "chat",
+    "capabilities": [
+      "voice"
+    ],
+    "triggers": [
+      "позвони клиенту",
+      "телефонный звонок",
+      "сценарий звонка"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "dbadbc6ceebf7e9922a807f76b4d307db066115e008a4616169ca57487d36fb0"
+  },
+  {
+    "name": "wf_accounting",
+    "source_name": "accounting",
+    "title": "Сверка и учётные отчёты",
+    "scope": "sandbox",
+    "capabilities": [
+      "data",
+      "files",
+      "connections"
+    ],
+    "triggers": [
+      "бухгалтерская сверка",
+      "закрытие периода",
+      "бухгалтерский отчёт",
+      "оборотно-сальдовая"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "032a069f605ea83c67ce58229e2e6bdb648f0501a1eb4a34c6fa48a416de0dcd"
+  },
+  {
+    "name": "wf_media",
+    "source_name": "media",
+    "title": "Создание медиа",
+    "scope": "sandbox",
+    "capabilities": [
+      "media",
+      "files"
+    ],
+    "triggers": [
+      "сгенерируй видео",
+      "создай аудио",
+      "медиаролик"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "997f9e3a8dd679c8b0a12cd4e938faf32435dac0e870f91db297000c677fe083"
+  },
+  {
+    "name": "wf_skill_authoring",
+    "source_name": "create-skill",
+    "title": "Создание и улучшение навыков",
+    "scope": "sandbox",
+    "capabilities": [
+      "skills"
+    ],
+    "triggers": [
+      "создай навык",
+      "создай скил",
+      "улучши скил",
+      "правила как навык"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "bf15d40b25253e039583cf34238725f4a37161f98a5d849ba6586657ed2d21bc"
+  },
+  {
+    "name": "wf_sessions",
+    "source_name": "perplexity-session-management",
+    "title": "Поиск бесед и история",
+    "scope": "chat",
+    "capabilities": [
+      "history"
+    ],
+    "triggers": [
+      "найди беседу",
+      "история разговоров",
+      "экспорт нашей беседы"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "409c24ac2ab5707ed790d283b7b12b27ae58a71c6bcc7911aa8ae60b40592a14"
+  },
+  {
+    "name": "wf_routing",
+    "source_name": "model-catalog",
+    "title": "Автоматический выбор исполнителей",
+    "scope": "chat",
+    "capabilities": [],
+    "triggers": [
+      "какую модель ты выбираешь",
+      "как выбирается исполнитель"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "090e5ec2601cc40e0ee5fad15edbd8d1d0008745d4965ac4d6b0a79d4ce31773"
+  },
+  {
+    "name": "wf_access",
+    "source_name": "custom-credentials",
+    "title": "Подключения и доступы",
+    "scope": "sandbox",
+    "capabilities": [
+      "connections"
+    ],
+    "triggers": [
+      "подключить api",
+      "доступ к сервису",
+      "управление доступами"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "f62242d3eee4375d2b5bf49d74ed011856ffcf080453d90ea0c30f724cb27757"
+  },
+  {
+    "name": "wf_visualize",
+    "source_name": "visualize",
+    "title": "Наглядные объяснения",
+    "scope": "sandbox",
+    "capabilities": [
+      "studio",
+      "data"
+    ],
+    "triggers": [
+      "интерактивная визуализация",
+      "визуализируй процесс",
+      "наглядная модель"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "e50612735014a228310162faa6f0a1b77c5448922d7d1204503f7cb3575420fd"
+  },
+  {
+    "name": "wf_health",
+    "source_name": "personal-health",
+    "title": "Работа с данными здоровья",
+    "scope": "chat",
+    "capabilities": [
+      "health"
+    ],
+    "triggers": [
+      "данные здоровья",
+      "healthkit",
+      "данные фитнес-браслета"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "1fdf7c688fa7af595d020cf6e4fb15c66560b5b9e1e4733fd9b36689517ebe4c"
+  },
+  {
+    "name": "wf_ads",
+    "source_name": "static-ad-generation",
+    "title": "Рекламные концепции",
+    "scope": "sandbox",
+    "capabilities": [
+      "studio",
+      "media",
+      "files"
+    ],
+    "triggers": [
+      "рекламные креативы",
+      "рекламный баннер",
+      "статичная реклама"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "2e4f6f6499df120d9013572b09061e95579b091afa28e0dd251da6e703ff4372"
+  },
+  {
+    "name": "wf_local_import",
+    "source_name": "import-local-context",
+    "title": "Импорт локальных правил",
+    "scope": "sandbox",
+    "capabilities": [
+      "device",
+      "skills"
+    ],
+    "triggers": [
+      "импорт локальных навыков",
+      "перенеси правила из codex",
+      "импорт из claude"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "9837c2ddc889330eb2dbedf7ea29323b00a9b1c9bee9ab4cca98fd24017615af"
+  },
+  {
+    "name": "wf_finance",
+    "source_name": "finance",
+    "title": "Финансовый анализ",
+    "scope": "sandbox",
+    "capabilities": [
+      "web",
+      "data",
+      "connections"
+    ],
+    "triggers": [
+      "финансовый анализ",
+      "инвестиционное исследование",
+      "анализ рынка акций"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "bd445de9fdc9df71f7722c40f6d93a969d53406e0a3d679c08398e33b193edc6"
+  },
+  {
+    "name": "wf_search",
+    "source_name": "search",
+    "title": "Поиск с проверкой источников",
+    "scope": "chat",
+    "capabilities": [
+      "web"
+    ],
+    "triggers": [
+      "найди первоисточник",
+      "проверь источники",
+      "исследуй вопрос"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "bab7aa5a1a2426f432f21a00b139aac4964e1d75590964000d77743272146a6a"
+  },
+  {
+    "name": "wf_onboarding",
+    "source_name": "onboarding",
+    "title": "Помощь с первой задачей",
+    "scope": "chat",
+    "capabilities": [],
+    "triggers": [
+      "как начать пользоваться",
+      "помоги с первой задачей"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "1c0bef89f3d6623c47e8cada9e338203dfeb6d1addd176e62ea6166c8a7a9263"
+  },
+  {
+    "name": "wf_document_review",
+    "source_name": "document-review",
+    "title": "Проверка документов по утверждениям",
+    "scope": "sandbox",
+    "capabilities": [
+      "files",
+      "web"
+    ],
+    "triggers": [
+      "рецензия документа",
+      "проверь утверждения документа",
+      "разметь замечания"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "47828103c0460397cace622fbd516e3b343dfe3e901c4d18b1cb615ddbd99f0e"
+  },
+  {
+    "name": "wf_automations",
+    "source_name": "automations",
+    "title": "Фоновые задачи и расписания",
+    "scope": "sandbox",
+    "capabilities": [
+      "tasks"
+    ],
+    "triggers": [
+      "каждый день",
+      "каждую неделю",
+      "следи за ценой",
+      "завтра напомни",
+      "по расписанию"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "409e12b26dd3c415d865716b4766c5167ccb6fb02d21c35a25f8d7143f440a5d"
+  },
+  {
+    "name": "wf_browser_workflow",
+    "source_name": "browser-use",
+    "title": "Чтение сайтов и действия в браузере",
+    "scope": "sandbox",
+    "capabilities": [
+      "web",
+      "device",
+      "connections"
+    ],
+    "triggers": [
+      "прочитай сайт",
+      "проверь страницу",
+      "действия в браузере"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "6a3c0d41489f45bdab8eda73d966ce0acc130372d76a135f3eb4e1d4a9786bda"
+  },
+  {
+    "name": "wf_support",
+    "source_name": "cx",
+    "title": "Работа службы поддержки",
+    "scope": "sandbox",
+    "capabilities": [
+      "connections",
+      "files"
+    ],
+    "triggers": [
+      "ответ клиенту поддержки",
+      "разбор обращений клиентов",
+      "эскалация клиента"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "21aea6371a7e1b95e16a30b8cdb094db04686af454a9b938f46fa66feee44e6f"
+  },
+  {
+    "name": "wf_capabilities",
+    "source_name": "about-computer",
+    "title": "Возможности БитСинк",
+    "scope": "chat",
+    "capabilities": [],
+    "triggers": [
+      "что умеет битсинк",
+      "возможности оркестратора",
+      "что ты умеешь"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "a2cae55caf543a54f9583703e78166ac19f0aaa6f6289bd5fdaf9103510e46c6"
+  },
+  {
+    "name": "wf_notifications",
+    "source_name": "custom-notifications",
+    "title": "Политика уведомлений",
+    "scope": "sandbox",
+    "capabilities": [
+      "tasks"
+    ],
+    "triggers": [
+      "уведомляй только об изменениях",
+      "не уведомляй без изменений",
+      "настрой уведомления"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "e34a32dfbccee1045720ba74338b7435ff874953bbe818fa9cf8269273ff9bec"
+  },
+  {
+    "name": "wf_office",
+    "source_name": "office",
+    "title": "Редактируемые офисные материалы",
+    "scope": "sandbox",
+    "capabilities": [
+      "files",
+      "data"
+    ],
+    "triggers": [
+      "офисные документы",
+      "комплект офисных файлов",
+      "редактируемый отчёт"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "6cafbdb133c75fee9e7375d665a24ae613e72c584fd335b426c04b0c746dbf78"
+  },
+  {
+    "name": "wf_image_direction",
+    "source_name": "image-output-director",
+    "title": "Изображение по замыслу пользователя",
+    "scope": "sandbox",
+    "capabilities": [
+      "studio",
+      "media"
+    ],
+    "triggers": [
+      "арт-дирекшн",
+      "направление изображения",
+      "промпт изображения"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "9e0432aab3091c2b7fffe682c8a27ebd510c4fdcf53b65ea995224544671e7f1"
+  },
+  {
+    "name": "wf_legal_workflow",
+    "source_name": "legal",
+    "title": "Проверка договоров и юридических рисков",
+    "scope": "sandbox",
+    "capabilities": [
+      "web",
+      "files"
+    ],
+    "triggers": [
+      "юридический playbook",
+      "проверка nda",
+      "матрица юридических рисков"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "2f45cd0d17532175dc2eb89fdde41bc106db0ceaa30d64cd7960545541e8f29e"
+  },
+  {
+    "name": "wf_databricks",
+    "source_name": "databricks-cli",
+    "title": "Работа с подключённым Databricks",
+    "scope": "sandbox",
+    "capabilities": [
+      "databricks",
+      "connections"
+    ],
+    "triggers": [
+      "databricks"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "e81bb8869cd8edb0c6d57af4466ec436281c962bd478ae533a2b922c6251e8e3"
+  },
+  {
+    "name": "wf_data_analysis",
+    "source_name": "data",
+    "title": "Статистический анализ и графики",
+    "scope": "sandbox",
+    "capabilities": [
+      "data",
+      "files"
+    ],
+    "triggers": [
+      "статистический анализ",
+      "построить график",
+      "проверка гипотез"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "b56b3551fd05293e2c7b1b68a57c2b7c6a4b29688d81cf1274aafc5318a5553b"
+  },
+  {
+    "name": "wf_council",
+    "source_name": "model-council",
+    "title": "Независимая проверка сложного решения",
+    "scope": "sandbox",
+    "capabilities": [],
+    "triggers": [
+      "независимые мнения",
+      "совет экспертов",
+      "сравни подходы независимо"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "2433b56154f92bf1954d3761229593f75c7625d3f96cb03adcd01245c73584ad"
+  },
+  {
+    "name": "wf_design",
+    "source_name": "design-foundations",
+    "title": "Визуальная иерархия и доступность",
+    "scope": "sandbox",
+    "capabilities": [
+      "studio",
+      "files"
+    ],
+    "triggers": [
+      "дизайн-система",
+      "визуальная иерархия",
+      "доступность интерфейса"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "f65e687434dd202e79e1087f241313310c6535608c48df533b1353368677671f"
+  },
+  {
+    "name": "profile_gost_profile",
+    "source_name": "gost-document-formatting",
+    "title": "Профиль оформления документов",
+    "scope": "chat",
+    "capabilities": [],
+    "triggers": [
+      "оформление по гост",
+      "оформление документа"
+    ],
+    "adaptation": "template",
+    "description": "Профиль оформления документов — применяется только после добавления в личные навыки.",
+    "source_sha256": "bee07b25b3afd46dd6f779c6c15001a4f657abf7f4844798331fc2c556fe59df"
+  },
+  {
+    "name": "profile_verify_result",
+    "source_name": "verify-and-check-first",
+    "title": "Проверка результата перед ответом",
+    "scope": "chat",
+    "capabilities": [],
+    "triggers": [
+      "проверь результат",
+      "контроль результата"
+    ],
+    "adaptation": "template",
+    "description": "Проверка результата перед ответом — применяется только после добавления в личные навыки.",
+    "source_sha256": "6d464910d75f78713741ff1cf878281f1ab0fb55439160001ba00f15f9c02a44"
+  },
+  {
+    "name": "profile_project_journal",
+    "source_name": "worklog-journal",
+    "title": "Журнал решений проекта",
+    "scope": "chat",
+    "capabilities": [],
+    "triggers": [
+      "журнал проекта",
+      "журнал решений"
+    ],
+    "adaptation": "template",
+    "description": "Журнал решений проекта — применяется только после добавления в личные навыки.",
+    "source_sha256": "ab34b5c7ae0b304f7b8c652115d1539cc9b847f19e2c22a96847d2d62560446a"
+  },
+  {
+    "name": "profile_music_prompt",
+    "source_name": "suno-prompt-forge",
+    "title": "Промпт для музыкального сервиса",
+    "scope": "chat",
+    "capabilities": [],
+    "triggers": [
+      "промпт для suno",
+      "музыкальный промпт"
+    ],
+    "adaptation": "template",
+    "description": "Промпт для музыкального сервиса — применяется только после добавления в личные навыки.",
+    "source_sha256": "4b9837a27effe2d89dc5972a6ec48380d6aad5ee8b5dbf8adb87e91ef9bbd688"
+  },
+  {
+    "name": "profile_title_page",
+    "source_name": "professional-title-page",
+    "title": "Аккуратная титульная страница",
+    "scope": "chat",
+    "capabilities": [],
+    "triggers": [
+      "титульная страница",
+      "титульный лист"
+    ],
+    "adaptation": "template",
+    "description": "Аккуратная титульная страница — применяется только после добавления в личные навыки.",
+    "source_sha256": "8795c842f62d9693a5297d2c9a6177247c36ec560a68e67a3223ad3b3bc5c4fe"
+  },
+  {
+    "name": "profile_skill_postcontrol",
+    "source_name": "skill-postcontrol-optimizer",
+    "title": "Улучшение личного навыка по ошибкам",
+    "scope": "chat",
+    "capabilities": [],
+    "triggers": [
+      "улучши мой навык по ошибкам",
+      "постконтроль навыка"
+    ],
+    "adaptation": "template",
+    "description": "Улучшение личного навыка по ошибкам — применяется только после добавления в личные навыки.",
+    "source_sha256": "7b866ae25bacbed24cd79a66492a67b8955b116a64f3206a4fab047b199fd897"
+  },
+  {
+    "name": "profile_drawing_review",
+    "source_name": "normokontrol-cheretezhej",
+    "title": "Нормоконтроль комплекта чертежей",
+    "scope": "chat",
+    "capabilities": [],
+    "triggers": [
+      "нормоконтроль комплекта",
+      "разметка замечаний чертежа"
+    ],
+    "adaptation": "template",
+    "description": "Нормоконтроль комплекта чертежей — применяется только после добавления в личные навыки.",
+    "source_sha256": "d1b0c67e2282aba2eac565e64458ce6bb986a377d6343af050d3804fefc6fbf7"
+  },
+  {
+    "name": "profile_preserve_inputs",
+    "source_name": "preserve-user-uploads",
+    "title": "Сохранность исходных материалов",
+    "scope": "chat",
+    "capabilities": [],
+    "triggers": [
+      "сохрани исходники",
+      "сохрани вложения"
+    ],
+    "adaptation": "template",
+    "description": "Сохранность исходных материалов — применяется только после добавления в личные навыки.",
+    "source_sha256": "3a93d1ca6f9c2a90d874a04cf4ffdc8e84c397fc030432e0541c1ee579801357"
+  }
+]

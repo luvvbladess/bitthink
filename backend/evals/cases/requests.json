@@ -1,0 +1,1121 @@
+[
+  {
+    "id": "q001",
+    "query": "какие щас лучшие модели нейронок в мире?",
+    "expect": {
+      "task": "overview",
+      "web": true
+    },
+    "answer": {
+      "required": [
+        "Claude",
+        "GPT",
+        "Gemini"
+      ],
+      "min_citations": 2,
+      "min_read": 2
+    }
+  },
+  {
+    "id": "q002",
+    "query": "Дай топ 4 по винрейту в доте",
+    "expect": {
+      "task": "overview",
+      "web": true
+    }
+  },
+  {
+    "id": "q003",
+    "query": "Какие лучшие нейросети для работы?",
+    "expect": {
+      "task": "overview",
+      "web": true
+    }
+  },
+  {
+    "id": "q004",
+    "query": "Обзор актуальных ИИ для программирования",
+    "expect": {
+      "task": "overview",
+      "web": true
+    }
+  },
+  {
+    "id": "q005",
+    "query": "Кто сейчас лидер среди языковых моделей?",
+    "expect": {
+      "task": "overview",
+      "web": true
+    }
+  },
+  {
+    "id": "q006",
+    "query": "Топ-5 наушников до 5000 рублей на маркетплейсах",
+    "expect": {
+      "task": "overview",
+      "web": true
+    }
+  },
+  {
+    "id": "q007",
+    "query": "Рейтинг магазинов с быстрой доставкой",
+    "expect": {
+      "task": "overview",
+      "web": true
+    }
+  },
+  {
+    "id": "q008",
+    "query": "Какие нейросети самые мощные?",
+    "expect": {
+      "task": "overview",
+      "web": true
+    }
+  },
+  {
+    "id": "q009",
+    "query": "Лучшие герои в текущем патче MLBB",
+    "expect": {
+      "task": "overview",
+      "web": true
+    }
+  },
+  {
+    "id": "q010",
+    "query": "Какие сейчас лучшие предложения по цене?",
+    "expect": {
+      "task": "overview",
+      "web": true
+    }
+  },
+  {
+    "id": "q011",
+    "query": "Сравни цены на G435 в Ozon и DNS",
+    "expect": {
+      "task": "comparison",
+      "web": true
+    }
+  },
+  {
+    "id": "q012",
+    "query": "В чем разница тарифов Cursor и Copilot?",
+    "expect": {
+      "task": "comparison",
+      "web": true
+    }
+  },
+  {
+    "id": "q013",
+    "query": "Что лучше взять: Claude или Gemini?",
+    "expect": {
+      "task": "comparison",
+      "web": true
+    }
+  },
+  {
+    "id": "q014",
+    "query": "Сравни эти три рации https://ozon.ru/t/l1zlv1V",
+    "expect": {
+      "task": "comparison",
+      "web": true
+    }
+  },
+  {
+    "id": "q015",
+    "query": "Чем отличаются подписки Pro и Ultra?",
+    "expect": {
+      "task": "comparison",
+      "web": true
+    }
+  },
+  {
+    "id": "q016",
+    "query": "GPT vs Claude для кода",
+    "expect": {
+      "task": "comparison",
+      "web": true
+    }
+  },
+  {
+    "id": "q017",
+    "query": "Сравни доставку товара на Ozon и ВБ",
+    "expect": {
+      "task": "comparison",
+      "web": true
+    }
+  },
+  {
+    "id": "q018",
+    "query": "Какой из ноутбуков купить в бюджете 80 тысяч?",
+    "expect": {
+      "task": "comparison",
+      "web": true
+    }
+  },
+  {
+    "id": "q019",
+    "query": "Что лучше для работы: платный ИИ или бесплатный?",
+    "expect": {
+      "task": "comparison",
+      "web": true
+    }
+  },
+  {
+    "id": "q020",
+    "query": "Сравнение актуальных тарифов нейросетей",
+    "expect": {
+      "task": "comparison",
+      "web": true
+    }
+  },
+  {
+    "id": "q021",
+    "query": "Какой инструмент для ИИ кодинга лучше взять в бюджете 20$?",
+    "expect": {
+      "task": "recommendation",
+      "web": true
+    },
+    "answer": {
+      "required": [
+        "20|\\$|доллар",
+        "Copilot|Cursor|Codex|Windsurf|Claude"
+      ]
+    }
+  },
+  {
+    "id": "q022",
+    "query": "Посоветуй беспроводные наушники для ПК",
+    "expect": {
+      "task": "recommendation",
+      "web": true
+    }
+  },
+  {
+    "id": "q023",
+    "query": "Подбери рации для ребенка на маркетплейсах",
+    "expect": {
+      "task": "recommendation",
+      "web": true
+    }
+  },
+  {
+    "id": "q024",
+    "query": "Что купить для пайки начинающему?",
+    "expect": {
+      "task": "recommendation",
+      "web": true
+    }
+  },
+  {
+    "id": "q025",
+    "query": "Где купить STM32F103 в наличии?",
+    "expect": {
+      "task": "recommendation",
+      "web": true
+    }
+  },
+  {
+    "id": "q026",
+    "query": "Найди резистор 10 кОм в наличии",
+    "expect": {
+      "task": "recommendation",
+      "web": true
+    }
+  },
+  {
+    "id": "q027",
+    "query": "Порекомендуй тариф для программирования",
+    "expect": {
+      "task": "recommendation",
+      "web": true
+    }
+  },
+  {
+    "id": "q028",
+    "query": "Что выбрать из доступных ИИ для проекта?",
+    "expect": {
+      "task": "recommendation",
+      "web": true
+    }
+  },
+  {
+    "id": "q029",
+    "query": "Подбери ноутбук с доставкой завтра",
+    "expect": {
+      "task": "recommendation",
+      "web": true
+    }
+  },
+  {
+    "id": "q030",
+    "query": "Какую клавиатуру взять до 3000 рублей?",
+    "expect": {
+      "task": "recommendation",
+      "web": true
+    }
+  },
+  {
+    "id": "q031",
+    "query": "Какой винрейт у Мелиссы в млбб в этом патче?",
+    "expect": {
+      "task": "fact",
+      "web": true
+    }
+  },
+  {
+    "id": "q032",
+    "query": "Сколько стоит Logitech G435 в ДНС?",
+    "expect": {
+      "task": "fact",
+      "web": true
+    }
+  },
+  {
+    "id": "q033",
+    "query": "Цена STM32F103 в Чип и Дип",
+    "expect": {
+      "task": "fact",
+      "web": true
+    },
+    "answer": {
+      "required": [
+        "STM32",
+        "₽|руб|нет в наличии|недоступ"
+      ]
+    }
+  },
+  {
+    "id": "q034",
+    "query": "Какая сейчас версия Claude?",
+    "expect": {
+      "task": "fact",
+      "web": true
+    }
+  },
+  {
+    "id": "q035",
+    "query": "Погода в Казани завтра",
+    "expect": {
+      "task": "fact",
+      "web": true
+    }
+  },
+  {
+    "id": "q036",
+    "query": "Курс доллара сегодня",
+    "expect": {
+      "task": "fact",
+      "web": true
+    }
+  },
+  {
+    "id": "q037",
+    "query": "Есть ли этот компонент в наличии в Москве?",
+    "expect": {
+      "task": "fact",
+      "web": true
+    }
+  },
+  {
+    "id": "q038",
+    "query": "Последняя версия Python",
+    "expect": {
+      "task": "fact",
+      "web": true
+    }
+  },
+  {
+    "id": "q039",
+    "query": "Кто сегодня выиграл матч?",
+    "expect": {
+      "task": "fact",
+      "web": true
+    }
+  },
+  {
+    "id": "q040",
+    "query": "Новости искусственного интеллекта за неделю",
+    "expect": {
+      "task": "fact",
+      "web": true
+    }
+  },
+  {
+    "id": "q041",
+    "query": "Как работает трансформатор?",
+    "expect": {
+      "task": "explanation",
+      "web": false
+    }
+  },
+  {
+    "id": "q042",
+    "query": "Объясни градиентный спуск простыми словами",
+    "expect": {
+      "task": "explanation",
+      "web": false
+    }
+  },
+  {
+    "id": "q043",
+    "query": "Что такое винрейт?",
+    "expect": {
+      "task": "explanation",
+      "web": false
+    }
+  },
+  {
+    "id": "q044",
+    "query": "Почему небо голубое?",
+    "expect": {
+      "task": "explanation",
+      "web": false
+    }
+  },
+  {
+    "id": "q045",
+    "query": "Как настроить git rebase?",
+    "expect": {
+      "task": "explanation",
+      "web": false
+    }
+  },
+  {
+    "id": "q046",
+    "query": "Расскажи про закон Ома",
+    "expect": {
+      "task": "explanation",
+      "web": false
+    }
+  },
+  {
+    "id": "q047",
+    "query": "а как играть на Хиаре? сложно научиться?",
+    "expect": {
+      "task": "explanation",
+      "web": true,
+      "followup": true
+    },
+    "history": [
+      {
+        "role": "user",
+        "content": "Какой винрейт у Мелиссы в Mobile Legends (MLBB)?"
+      },
+      {
+        "role": "assistant",
+        "content": "Обсуждаем героев Mobile Legends."
+      }
+    ],
+    "answer": {
+      "required": [
+        "навык|умени|комбинац|пассив|ульт"
+      ]
+    }
+  },
+  {
+    "id": "q048",
+    "query": "Как пользоваться мультиметром?",
+    "expect": {
+      "task": "explanation",
+      "web": false
+    }
+  },
+  {
+    "id": "q049",
+    "query": "Что такое цена деления прибора?",
+    "expect": {
+      "task": "explanation",
+      "web": false
+    }
+  },
+  {
+    "id": "q050",
+    "query": "Почему у батарейки есть внутреннее сопротивление?",
+    "expect": {
+      "task": "explanation",
+      "web": false
+    }
+  },
+  {
+    "id": "q051",
+    "query": "Сравни переменный и постоянный ток",
+    "expect": {
+      "task": "comparison",
+      "web": false
+    }
+  },
+  {
+    "id": "q052",
+    "query": "В чем разница между list и tuple?",
+    "expect": {
+      "task": "comparison",
+      "web": false
+    }
+  },
+  {
+    "id": "q053",
+    "query": "Чем отличаются HTTP и TCP?",
+    "expect": {
+      "task": "comparison",
+      "web": false
+    }
+  },
+  {
+    "id": "q054",
+    "query": "Сравни медь и алюминий по проводимости",
+    "expect": {
+      "task": "comparison",
+      "web": false
+    }
+  },
+  {
+    "id": "q055",
+    "query": "Что лучше для сортировки массива: quicksort или bubblesort?",
+    "expect": {
+      "task": "comparison",
+      "web": false
+    }
+  },
+  {
+    "id": "q056",
+    "query": "Сравни последовательное и параллельное соединение",
+    "expect": {
+      "task": "comparison",
+      "web": false
+    }
+  },
+  {
+    "id": "q057",
+    "query": "Какая разница между частотой и периодом?",
+    "expect": {
+      "task": "comparison",
+      "web": false
+    }
+  },
+  {
+    "id": "q058",
+    "query": "Сравни past simple и present perfect",
+    "expect": {
+      "task": "comparison",
+      "web": false
+    }
+  },
+  {
+    "id": "q059",
+    "query": "Чем отличается масса от веса?",
+    "expect": {
+      "task": "comparison",
+      "web": false
+    }
+  },
+  {
+    "id": "q060",
+    "query": "Что лучше для хранения уникальных чисел: set или list?",
+    "expect": {
+      "task": "comparison",
+      "web": false
+    }
+  },
+  {
+    "id": "q061",
+    "query": "Напиши код сортировки на Python",
+    "expect": {
+      "task": "creation",
+      "web": false
+    }
+  },
+  {
+    "id": "q062",
+    "query": "Сочини стихотворение про осень",
+    "expect": {
+      "task": "creation",
+      "web": false
+    }
+  },
+  {
+    "id": "q063",
+    "query": "Создай план урока по физике",
+    "expect": {
+      "task": "creation",
+      "web": false
+    }
+  },
+  {
+    "id": "q064",
+    "query": "Придумай названия для кафе",
+    "expect": {
+      "task": "creation",
+      "web": false
+    }
+  },
+  {
+    "id": "q065",
+    "query": "Нарисуй схему подключения резистора",
+    "expect": {
+      "task": "creation",
+      "web": false
+    }
+  },
+  {
+    "id": "q066",
+    "query": "Напиши SQL запрос для поиска дубликатов",
+    "expect": {
+      "task": "creation",
+      "web": false
+    }
+  },
+  {
+    "id": "q067",
+    "query": "Сделай шаблон письма поставщику",
+    "expect": {
+      "task": "creation",
+      "web": false
+    }
+  },
+  {
+    "id": "q068",
+    "query": "Создай список вопросов для интервью",
+    "expect": {
+      "task": "creation",
+      "web": false
+    }
+  },
+  {
+    "id": "q069",
+    "query": "Напиши поздравление коллеге",
+    "expect": {
+      "task": "creation",
+      "web": false
+    }
+  },
+  {
+    "id": "q070",
+    "query": "Придумай структуру презентации о космосе",
+    "expect": {
+      "task": "creation",
+      "web": false
+    }
+  },
+  {
+    "id": "q071",
+    "query": "Переведи: The price is 20 dollars",
+    "expect": {
+      "task": "transformation",
+      "web": false
+    }
+  },
+  {
+    "id": "q072",
+    "query": "Сократи этот текст: последние новости ИИ",
+    "expect": {
+      "task": "transformation",
+      "web": false
+    }
+  },
+  {
+    "id": "q073",
+    "query": "Оформи список покупок в таблицу",
+    "expect": {
+      "task": "transformation",
+      "web": false
+    }
+  },
+  {
+    "id": "q074",
+    "query": "Перефразируй это предложение про Ozon",
+    "expect": {
+      "task": "transformation",
+      "web": false
+    }
+  },
+  {
+    "id": "q075",
+    "query": "Отредактируй: какая щас цена наушников",
+    "expect": {
+      "task": "transformation",
+      "web": false
+    }
+  },
+  {
+    "id": "q076",
+    "query": "Исправь опечатки в письме",
+    "expect": {
+      "task": "transformation",
+      "web": false
+    }
+  },
+  {
+    "id": "q077",
+    "query": "Переведи https://example.com/news",
+    "expect": {
+      "task": "transformation",
+      "web": false
+    }
+  },
+  {
+    "id": "q078",
+    "query": "Сделай короче: актуальный курс валют",
+    "expect": {
+      "task": "transformation",
+      "web": false
+    }
+  },
+  {
+    "id": "q079",
+    "query": "Сделай таблицу из данных ниже",
+    "expect": {
+      "task": "transformation",
+      "web": false
+    }
+  },
+  {
+    "id": "q080",
+    "query": "Сократи описание тарифа Claude",
+    "expect": {
+      "task": "transformation",
+      "web": false
+    }
+  },
+  {
+    "id": "q081",
+    "query": "привет",
+    "expect": {
+      "task": "conversation",
+      "web": false
+    }
+  },
+  {
+    "id": "q082",
+    "query": "спасибо",
+    "expect": {
+      "task": "conversation",
+      "web": false
+    }
+  },
+  {
+    "id": "q083",
+    "query": "Ок",
+    "expect": {
+      "task": "conversation",
+      "web": false
+    }
+  },
+  {
+    "id": "q084",
+    "query": "понятно",
+    "expect": {
+      "task": "conversation",
+      "web": false
+    }
+  },
+  {
+    "id": "q085",
+    "query": "Здравствуй!",
+    "expect": {
+      "task": "conversation",
+      "web": false
+    }
+  },
+  {
+    "id": "q086",
+    "query": "hello",
+    "expect": {
+      "task": "conversation",
+      "web": false
+    }
+  },
+  {
+    "id": "q087",
+    "query": "thanks",
+    "expect": {
+      "task": "conversation",
+      "web": false
+    }
+  },
+  {
+    "id": "q088",
+    "query": "Привет!",
+    "expect": {
+      "task": "conversation",
+      "web": false
+    }
+  },
+  {
+    "id": "q089",
+    "query": "Спасибо!",
+    "expect": {
+      "task": "conversation",
+      "web": false
+    }
+  },
+  {
+    "id": "q090",
+    "query": "ок!",
+    "expect": {
+      "task": "conversation",
+      "web": false
+    }
+  },
+  {
+    "id": "q091",
+    "query": "Столица Франции?",
+    "expect": {
+      "task": "fact",
+      "web": false
+    },
+    "answer": {
+      "facts": [
+        "Париж"
+      ]
+    }
+  },
+  {
+    "id": "q092",
+    "query": "Сколько будет 2 + 2?",
+    "expect": {
+      "task": "fact",
+      "web": false
+    },
+    "answer": {
+      "facts": [
+        "\\b4\\b"
+      ]
+    }
+  },
+  {
+    "id": "q093",
+    "query": "Кто написал Войну и мир?",
+    "expect": {
+      "task": "fact",
+      "web": false
+    }
+  },
+  {
+    "id": "q094",
+    "query": "Год рождения Пушкина?",
+    "expect": {
+      "task": "fact",
+      "web": false
+    }
+  },
+  {
+    "id": "q095",
+    "query": "Химический символ золота?",
+    "expect": {
+      "task": "fact",
+      "web": false
+    }
+  },
+  {
+    "id": "q096",
+    "query": "Площадь круга радиуса 3?",
+    "expect": {
+      "task": "fact",
+      "web": false
+    }
+  },
+  {
+    "id": "q097",
+    "query": "Чему равна скорость света в вакууме?",
+    "expect": {
+      "task": "fact",
+      "web": false
+    }
+  },
+  {
+    "id": "q098",
+    "query": "Сколько сторон у шестиугольника?",
+    "expect": {
+      "task": "fact",
+      "web": false
+    }
+  },
+  {
+    "id": "q099",
+    "query": "Формула воды?",
+    "expect": {
+      "task": "fact",
+      "web": false
+    }
+  },
+  {
+    "id": "q100",
+    "query": "Когда началась Вторая мировая война?",
+    "expect": {
+      "task": "fact",
+      "web": false
+    }
+  },
+  {
+    "id": "q101",
+    "query": "а ее цена?",
+    "history": [
+      {
+        "role": "user",
+        "content": "Подбери рацию на Ozon"
+      },
+      {
+        "role": "assistant",
+        "content": "Предыдущий ответ"
+      }
+    ],
+    "expect": {
+      "task": "fact",
+      "web": true,
+      "followup": true
+    }
+  },
+  {
+    "id": "q102",
+    "query": "а версии?",
+    "history": [
+      {
+        "role": "user",
+        "content": "Какие нейросети сейчас лучшие?"
+      },
+      {
+        "role": "assistant",
+        "content": "Предыдущий ответ"
+      }
+    ],
+    "expect": {
+      "task": "fact",
+      "web": true,
+      "followup": true
+    }
+  },
+  {
+    "id": "q103",
+    "query": "а цифрами?",
+    "history": [
+      {
+        "role": "user",
+        "content": "Сравни Claude и GPT"
+      },
+      {
+        "role": "assistant",
+        "content": "Предыдущий ответ"
+      }
+    ],
+    "expect": {
+      "task": "fact",
+      "web": true,
+      "followup": true
+    }
+  },
+  {
+    "id": "q104",
+    "query": "а отзывы?",
+    "history": [
+      {
+        "role": "user",
+        "content": "Подбери наушники для ПК"
+      },
+      {
+        "role": "assistant",
+        "content": "Предыдущий ответ"
+      }
+    ],
+    "expect": {
+      "task": "fact",
+      "web": true,
+      "followup": true
+    }
+  },
+  {
+    "id": "q105",
+    "query": "а ссылки?",
+    "history": [
+      {
+        "role": "user",
+        "content": "Подбери рации на Ozon"
+      },
+      {
+        "role": "assistant",
+        "content": "Предыдущий ответ"
+      }
+    ],
+    "expect": {
+      "task": "fact",
+      "web": true,
+      "followup": true
+    }
+  },
+  {
+    "id": "q106",
+    "query": "сделай короче",
+    "history": [
+      {
+        "role": "user",
+        "content": "Какая цена G435?"
+      },
+      {
+        "role": "assistant",
+        "content": "Предыдущий ответ"
+      }
+    ],
+    "expect": {
+      "task": "transformation",
+      "web": false,
+      "followup": true
+    }
+  },
+  {
+    "id": "q107",
+    "query": "переведи это",
+    "history": [
+      {
+        "role": "user",
+        "content": "Сравни тарифы ИИ"
+      },
+      {
+        "role": "assistant",
+        "content": "Предыдущий ответ"
+      }
+    ],
+    "expect": {
+      "task": "transformation",
+      "web": false,
+      "followup": true
+    }
+  },
+  {
+    "id": "q108",
+    "query": "новая тема: столица Италии?",
+    "history": [
+      {
+        "role": "user",
+        "content": "Какие лучшие нейросети?"
+      },
+      {
+        "role": "assistant",
+        "content": "Предыдущий ответ"
+      }
+    ],
+    "expect": {
+      "task": "fact",
+      "web": false,
+      "followup": false
+    }
+  },
+  {
+    "id": "q109",
+    "query": "Объясни закон Ома без поиска",
+    "history": [],
+    "expect": {
+      "task": "explanation",
+      "web": false,
+      "followup": false
+    }
+  },
+  {
+    "id": "q110",
+    "query": "Без интернета: сравни Claude и GPT",
+    "history": [],
+    "expect": {
+      "task": "comparison",
+      "web": false,
+      "followup": false
+    }
+  },
+  {
+    "id": "q111",
+    "query": "Не ищи в интернете, какая цена G435?",
+    "history": [],
+    "expect": {
+      "task": "fact",
+      "web": false,
+      "followup": false
+    }
+  },
+  {
+    "id": "q112",
+    "query": "Не гугли: какие лучшие нейросети?",
+    "history": [],
+    "expect": {
+      "task": "overview",
+      "web": false,
+      "followup": false
+    }
+  },
+  {
+    "id": "q113",
+    "query": "Только по файлам: сравни эти три товара",
+    "history": [],
+    "expect": {
+      "task": "comparison",
+      "web": false,
+      "followup": false
+    }
+  },
+  {
+    "id": "q114",
+    "query": "Исключительно по вложению: цена из сметы?",
+    "history": [],
+    "expect": {
+      "task": "fact",
+      "web": false,
+      "followup": false
+    }
+  },
+  {
+    "id": "q115",
+    "query": "Объясни цену деления прибора",
+    "history": [],
+    "expect": {
+      "task": "explanation",
+      "web": false,
+      "followup": false
+    }
+  },
+  {
+    "id": "q116",
+    "query": "Как сейчас настроить последнюю версию Python?",
+    "history": [],
+    "expect": {
+      "task": "explanation",
+      "web": true,
+      "followup": false
+    }
+  },
+  {
+    "id": "q117",
+    "query": "Поищи как играть на Хиаре в новом патче",
+    "history": [],
+    "expect": {
+      "task": "explanation",
+      "web": true,
+      "followup": false
+    }
+  },
+  {
+    "id": "q118",
+    "query": "Напиши обзор актуальных моделей ИИ",
+    "history": [],
+    "expect": {
+      "task": "overview",
+      "web": true,
+      "followup": false
+    }
+  },
+  {
+    "id": "q119",
+    "query": "Сделай сравнение тарифов подписки",
+    "history": [],
+    "expect": {
+      "task": "comparison",
+      "web": true,
+      "followup": false
+    }
+  },
+  {
+    "id": "q120",
+    "query": "Что такое нейрон клетки?",
+    "history": [],
+    "expect": {
+      "task": "explanation",
+      "web": false,
+      "followup": false
+    }
+  }
+]

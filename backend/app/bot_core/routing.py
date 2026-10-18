@@ -92,6 +92,9 @@ def turn_requires_web(
     """
     from search_engine import query_requires_web
 
+    from app.services.request_intent import forbids_web
+    if forbids_web((user_text or '').split('\n', 1)[0]):
+        return False
     if model == "kimi-k2.6" or research_mode or model == "director":
         return True
     return query_requires_web(user_text)
@@ -147,7 +150,9 @@ def route_for_turn(user_text: str, previous_user_text: str, has_deepseek: bool) 
     """Auto route. «А почему?» после разбора архитектуры – та же тема: короткое
     уточнение остаётся на сильной модели ветки, а не падает на самую дешёвую."""
     route, deep = best_route(user_text, "none", has_deepseek)
-    if previous_user_text and len(user_text or "") < 200:
+    from app.services.request_intent import classify_request
+    related = classify_request(user_text, [{'role': 'user', 'content': previous_user_text}]).followup
+    if previous_user_text and related and len(user_text or "") < 200:
         thread_route, _ = best_route(previous_user_text, "none", has_deepseek)
         if thread_route in {"deepseek-v4-pro", "gpt-6-sol"}:
             route = thread_route

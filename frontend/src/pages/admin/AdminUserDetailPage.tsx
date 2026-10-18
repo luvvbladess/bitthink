@@ -184,14 +184,7 @@ export default function AdminUserDetailPage() {
               </>
             ) : (
               <>
-                <StatRow
-                  label="Чат"
-                  value={`${(sub.chat?.used ?? sub.chat_tokens_used ?? 0).toLocaleString('ru-RU')} / ${(sub.chat?.limit ?? 0).toLocaleString('ru-RU')}`}
-                />
-                <StatRow
-                  label="Оркестратор"
-                  value={`${(sub.computer?.used ?? sub.computer_tokens_used ?? 0).toLocaleString('ru-RU')} / ${(sub.computer?.limit ?? 0).toLocaleString('ru-RU')}`}
-                />
+                <StatRow label="Общий запас" value={`${(sub.chat?.used ?? 0).toLocaleString('ru-RU')} / ${(sub.chat?.limit ?? 0).toLocaleString('ru-RU')}`} />
                 <StatRow
                   label="Картинки"
                   value={`${sub.images?.used ?? sub.images_used ?? 0} / ${sub.images?.limit ?? 0}`}
@@ -204,11 +197,11 @@ export default function AdminUserDetailPage() {
             {!sub.unlimited && sub.windows?.chat && (
               <>
                 <StatRow
-                  label="Чат 5 ч"
+                  label="Общий запас на 5 ч"
                   value={`${(sub.windows.chat.session?.used ?? 0).toLocaleString('ru-RU')} / ${(sub.windows.chat.session?.limit ?? 0).toLocaleString('ru-RU')}`}
                 />
                 <StatRow
-                  label="Чат неделя"
+                  label="Общий запас на неделю"
                   value={`${(sub.windows.chat.week?.used ?? 0).toLocaleString('ru-RU')} / ${(sub.windows.chat.week?.limit ?? 0).toLocaleString('ru-RU')}`}
                 />
               </>

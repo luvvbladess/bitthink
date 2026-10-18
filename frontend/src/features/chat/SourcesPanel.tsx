@@ -4,6 +4,27 @@ import { ArrowSquareOut, MagnifyingGlass, X } from '@phosphor-icons/react';
 import type { ParsedSource } from './sources';
 import { groupSourcesByDomain, sourcesLabel, sourceTitle, type SourceGroup } from './sources';
 
+function SourceExcerpt({ source }: { source: ParsedSource }) {
+  if (!source.answerExcerpt || source.evidenceState !== 'read') return null;
+  return <Box component="details" sx={{ mt: 0.75, fontSize: '0.75rem', color: 'text.secondary', overflowWrap: 'anywhere' }}>
+    <Box component="summary" sx={{ cursor: 'pointer', minHeight: 32, py: 0.5, color: 'primary.light', '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 2 } }}>Фрагмент к ответу</Box>
+    {source.answerContext && <Box sx={{ mt: 0.5, lineHeight: 1.5 }}>В ответе: {source.answerContext}</Box>}
+    <Box component="blockquote" sx={{ mx: 0, my: 1, pl: 1.25, borderLeft: '1px solid var(--bt-hairline)', whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{source.answerExcerpt}</Box>
+    <Box sx={{ fontSize: '0.6875rem', lineHeight: 1.5 }}>Дословный фрагмент прочитанной страницы. Совпадение темы само по себе не подтверждает все выводы.</Box>
+  </Box>;
+}
+
+function EvidenceNote({ source }: { source: ParsedSource }) {
+  if (!source.evidenceState) return null;
+  const label = source.origin === 'archive' ? 'Архивная копия: данные могут устареть' : source.evidenceState === 'read'
+    ? source.reviewsState === 'read' ? 'Прочитан фрагмент и тексты отзывов' : 'Прочитан фрагмент страницы'
+    : source.evidenceState === 'retrieved' ? 'Данные из поиска'
+    : source.evidenceState === 'failed' ? 'Страница не прочитана' : 'Недостаточно данных страницы';
+  const date = source.readAt ? new Date(source.readAt) : null;
+  const when = date && Number.isFinite(date.getTime()) ? date.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+  return <Box sx={{ mt: 0.65, fontSize: 12, lineHeight: 1.4, color: source.evidenceState === 'read' ? 'primary.light' : 'text.secondary', overflowWrap: 'anywhere' }}>{label}{when && <Box component="span" sx={{ display: 'block', color: 'text.secondary' }}>Получено {when}{source.cached ? ' · сохранённая выдача' : ''}</Box>}</Box>;
+}
+
 function Favicon({ domain, src }: { domain: string; src: string }) {
   const [failed, setFailed] = useState(false);
   const letter = (domain || '?').slice(0, 1).toUpperCase();
@@ -64,6 +85,7 @@ function SourceCard({ source, compact }: { source: ParsedSource; compact?: boole
       >
         {source.title}
       </Box>
+      <EvidenceNote source={source} />
       {source.snippet && !compact && (
         <Box sx={{ mt: 0.5, color: 'text.secondary', fontSize: '0.75rem', lineHeight: 1.45, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
           {source.snippet}
@@ -74,11 +96,6 @@ function SourceCard({ source, compact }: { source: ParsedSource; compact?: boole
 
   return (
     <Box
-      component={source.url ? 'a' : 'div'}
-      href={source.url || undefined}
-      target={source.url ? '_blank' : undefined}
-      rel={source.url ? 'noreferrer' : undefined}
-      aria-label={source.title}
       sx={{
         display: 'block',
         minWidth: 0,
@@ -98,7 +115,8 @@ function SourceCard({ source, compact }: { source: ParsedSource; compact?: boole
         '&:active': { transform: 'scale(0.99)' },
       }}
     >
-      {inner}
+      <Box component={source.url ? 'a' : 'div'} href={source.url || undefined} target={source.url ? '_blank' : undefined} rel="noreferrer" aria-label={source.title} sx={{ display: 'block', color: 'inherit', textDecoration: 'none', '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main' } }}>{inner}</Box>
+      {!compact && <SourceExcerpt source={source} />}
     </Box>
   );
 }
@@ -158,10 +176,6 @@ function SourceGroupBlock({ group }: { group: SourceGroup }) {
       {visible.map((source) => (
         <Box
           key={`${source.url}-${source.title}`}
-          component={source.url ? 'a' : 'div'}
-          href={source.url || undefined}
-          target={source.url ? '_blank' : undefined}
-          rel={source.url ? 'noreferrer' : undefined}
           title={source.title}
           sx={{
             display: 'block',
@@ -180,9 +194,11 @@ function SourceGroupBlock({ group }: { group: SourceGroup }) {
           }}
         >
           {/* The clamp lives on the inner span: on a padded box the hidden third line peeks through the padding. */}
-          <Box component="span" sx={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+          <Box component="a" href={source.url} target="_blank" rel="noreferrer" sx={{ color: 'inherit', textDecoration: 'none', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main' } }}>
             {sourceTitle(source)}
           </Box>
+          <EvidenceNote source={source} />
+          <SourceExcerpt source={source} />
         </Box>
       ))}
       {group.items.length > GROUP_PREVIEW && (

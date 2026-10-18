@@ -38,8 +38,11 @@ def test_refresh_token_cannot_authenticate_desktop(account):
     email, _ = account
     with TestClient(app).websocket_connect("/desktop/ws") as ws:
         ws.send_json({"type": "auth", "payload": {"token": create_refresh_token({"sub": email})}})
-        with pytest.raises(WebSocketDisconnect):
+        error = ws.receive_json()
+        assert error["type"] == "error" and error["payload"]["code"] == "auth"
+        with pytest.raises(WebSocketDisconnect) as closed:
             ws.receive_json()
+        assert closed.value.code == 1008
 
 
 def test_desktop_tools_and_history_roundtrip(monkeypatch, account):
@@ -176,7 +179,7 @@ def test_local_skills_catalog_and_resource_roundtrip(monkeypatch, account):
     assert desktop_skills.get() == []
 
 
-@pytest.mark.parametrize("tier,models", [("free", {"auto"}), ("pro", {"auto", "studio", "gpt-6-sol"}), ("proplus", {"auto", "studio", "gpt-6-sol"})])
+@pytest.mark.parametrize("tier,models", [("free", {"auto"}), ("pro", {"auto", "studio", "gpt-6-sol", "director"}), ("proplus", {"auto", "studio", "gpt-6-sol", "director", "gpt-6-astra"})])
 def test_desktop_answer_modes_follow_site_plan(monkeypatch, account, tier, models):
     email, token = account
     async def subscription(user):

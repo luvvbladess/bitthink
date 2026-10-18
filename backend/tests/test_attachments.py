@@ -10,6 +10,16 @@ from PIL import Image
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 from app.api import documents
+
+
+def test_original_upload_keeps_exact_pdf_and_zip_bytes(tmp_path,monkeypatch):
+    monkeypatch.setattr(documents,'get_settings',lambda:SimpleNamespace(UPLOAD_DIR=tmp_path))
+    for name,data in [('drawing.pdf',b'%PDF-original-pages'),('materials.zip',b'PK-original-archive')]:
+        url=asyncio.run(documents._save_chat_original(data,name,'user-1'))
+        stored=tmp_path/url.removeprefix('/uploads/')
+        assert stored.read_bytes()==data and stored.suffix==os.path.splitext(name)[1]
+        other=asyncio.run(documents._save_chat_original(data,name,'user-2'))
+        assert other.split('/')[3]!=url.split('/')[3]
 from app.bot_core.document_parser import extract_text_from_file
 import config as bot_config
 
