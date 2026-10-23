@@ -48,7 +48,10 @@ export function ClarifyCard({ questions, onSubmit }: Props) {
     if (!current) return;
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+      // Global shortcuts must not replace the native action of a focused control.
+      if (event.defaultPrevented || event.isComposing || event.repeat || event.ctrlKey || event.altKey || event.metaKey
+        || (target && target !== document.body && target !== document.documentElement)
+        || document.querySelector('[role="dialog"][aria-modal="true"], [role="menu"]')) {
         return;
       }
       if (event.key === 'Enter' && !event.shiftKey) {

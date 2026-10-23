@@ -1,11 +1,12 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
-import { Box, Collapse, Drawer, Popover, Button, Typography, Tooltip, useMediaQuery } from '@mui/material';
-import { CaretDown, Check, Lightning, MagnifyingGlass, Books, Desktop, Presentation, Atom, FileText, Lock, Brain, Image as ImageIcon } from '@phosphor-icons/react';
+import { Box, Collapse, Drawer, Popover, Button, IconButton, Typography, Tooltip, useMediaQuery } from '@mui/material';
+import { CaretDown, Check, Lightning, MagnifyingGlass, Books, Desktop, Presentation, Atom, FileText, Lock, Brain, X, Image as ImageIcon } from '@phosphor-icons/react';
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/api/client';
 import { composerChipSelectedSx, composerChipSx } from '@/theme/effects';
 import { GlowSwitch } from '@/components/GlowSwitch';
 import { ASTRA_LABEL, DOCGEN_LABEL, EXPRESS_LABEL, PILOT_LABEL, STUDIO_LABEL } from '@/constants/modes';
+import { useVisualViewportHeight } from '@/features/chat/useVisualViewportHeight';
 
 interface Model {
   id: string;
@@ -39,7 +40,7 @@ const ANSWER_MODES = [
   { id: 'astra', label: ASTRA_LABEL, description: 'Сложные задачи: код, договоры, файлы', model: 'gpt-6-astra', icon: Atom },
   { id: 'studio', label: STUDIO_LABEL, description: 'Живой холст: картинки, слайды, лендинг', model: 'studio', icon: Presentation },
   { id: 'docgen', label: DOCGEN_LABEL, description: 'Большой .docx или комплект документов по Word, PDF, Excel и архивам', model: 'docgen', icon: FileText },
-  { id: 'computer', label: PILOT_LABEL, description: 'Раздаёт должности подходящим ИИ-агентам в песочнице', model: 'director', icon: Desktop },
+  { id: 'computer', label: PILOT_LABEL, description: 'Выполняет задачи с файлами, поиском и инструментами', model: 'director', icon: Desktop },
 ] as const;
 
 interface ModeItem {
@@ -107,6 +108,7 @@ export function useSelectedModel() {
 }
 
 export function SearchModeSelector() {
+  const viewportHeight = useVisualViewportHeight();
   const [anchor, setAnchor] = useState<null | HTMLElement>(null);
   const normalizationStarted = useRef(false);
   const { data } = useModelsQuery();
@@ -157,16 +159,18 @@ export function SearchModeSelector() {
     if (!anchor || isPhone) return;
     const place = () => {
       const rect = anchor.getBoundingClientRect();
-      const height = window.innerHeight;
-      const above = rect.top >= height - rect.bottom;
-      setMenuPosition({ above, edge: above ? height - rect.top + 8 : rect.bottom + 8,
-        maxHeight: Math.max(0, (above ? rect.top : height - rect.bottom) - 24) });
+      const top = window.visualViewport?.offsetTop || 0;
+      const bottom = top + viewportHeight;
+      const above = rect.top - top >= bottom - rect.bottom;
+      setMenuPosition({ above, edge: above ? window.innerHeight - rect.top + 8 : rect.bottom + 8,
+        maxHeight: Math.max(0, (above ? rect.top - top : bottom - rect.bottom) - 24) });
     };
     place();
     window.addEventListener('resize', place);
     window.addEventListener('scroll', place, true);
-    return () => { window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); };
-  }, [anchor, isPhone]);
+    window.visualViewport?.addEventListener('scroll', place);
+    return () => { window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); window.visualViewport?.removeEventListener('scroll', place); };
+  }, [anchor, isPhone, viewportHeight]);
 
   const renderMode = (mode: ModeItem) => {
             const Icon = mode.icon;
@@ -263,9 +267,9 @@ export function SearchModeSelector() {
 
   const menuContent = (
     <>
-        <Typography sx={{ px: 1, pt: 0.5, pb: 1, color: 'text.secondary', fontSize: '0.75rem', fontWeight: 600 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}><Typography sx={{ px: 1, pt: 0.5, pb: 1, color: 'text.secondary', fontSize: '0.75rem', fontWeight: 600 }}>
           Как отвечать
-        </Typography>
+        </Typography>{isPhone && <IconButton aria-label="Закрыть выбор режима" onClick={() => setAnchor(null)} sx={{ width: 44, height: 44 }}><X size={18} /></IconButton>}</Box>
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
           {primaryModes.map(renderMode)}
         </Box>
@@ -315,10 +319,14 @@ export function SearchModeSelector() {
           open={Boolean(anchor)}
           onClose={() => setAnchor(null)}
           PaperProps={{
+            role: 'dialog',
+            'aria-label': 'Выбор режима',
+            'aria-modal': true,
             sx: {
               p: 1.5,
               pb: 'max(16px, env(safe-area-inset-bottom))',
-              maxHeight: '86dvh',
+              maxHeight: Math.round(viewportHeight * .86),
+              bottom: Math.max(0, window.innerHeight - viewportHeight - (window.visualViewport?.offsetTop || 0)),
               bgcolor: 'surface.elevated',
               backgroundImage: 'none',
               border: '1px solid var(--bt-hairline)',

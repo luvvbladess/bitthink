@@ -4,7 +4,10 @@ import { Box, IconButton } from '@mui/material';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { ArrowsLeftRight, Bug, Newspaper, Paperclip, type Icon } from '@phosphor-icons/react';
 import { useAuthStore } from '@/stores/authStore';
+import { resultReferences, type ProjectResultRef } from './projectResultLinks';
+import { SelectionClarify } from './SelectionClarify';
 import { ChatMessage } from './ChatMessage';
+import type { ProjectCitation } from './EvidenceLink';
 import { ActivityFeed } from '@/components/ActivityFeed';
 import { AttachmentInfo } from './DocumentAttachment';
 import { ReasoningTrace, SearchItem } from './ReasoningTrace';
@@ -46,10 +49,13 @@ interface Props {
   onEditMessage?: (messageId: string, newContent: string) => void;
   onEditImage?: (url: string) => void;
   onSuggestion?: (text: string) => void;
+  onEditResult?: (result: ProjectResultRef, selection?: string) => void;
+  onClarifySelection?: (text: string) => void;
   hasCanvas?: boolean;
   people?: boolean;
   activeSourceId?: string;
   onOpenSources?: (messageId: string) => void;
+  onOpenProjectCitation?: (citation: ProjectCitation) => void;
   clarifyDocked?: boolean;
   jumpRef?: MutableRefObject<DialogueJumpFn | null>;
   splitPane?: boolean;
@@ -134,10 +140,13 @@ export function ChatWindow({
   onEditMessage,
   onEditImage,
   onSuggestion,
+  onClarifySelection,
+  onEditResult,
   hasCanvas = false,
   people = false,
   activeSourceId,
   onOpenSources,
+  onOpenProjectCitation,
   clarifyDocked = false,
   jumpRef,
   splitPane = false,
@@ -453,7 +462,7 @@ export function ChatWindow({
                   : isStudio
                     ? 'Прикрепите образец PPTX и ТЗ — повторит стиль и соберёт слайды. Или опишите картинку и макет.'
                     : isComputer
-                      ? 'Опишите задачу своими словами. Оркестратор в песочнице разделит её на должности, подберёт подходящих ИИ-агентов и соберёт итог.'
+                      ? 'Опишите нужный результат и прикрепите материалы, если они есть. Оркестратор выполнит работу с файлами, поиском и инструментами, а затем покажет итог.'
                       : ''}
               </Box>
               )}
@@ -523,7 +532,7 @@ export function ChatWindow({
                 <Box
                   component="button"
                   type="button"
-                  aria-label={`Включить ${PILOT_LABEL}: раздаёт должности подходящим ИИ-агентам в песочнице`}
+                  aria-label={`Включить ${PILOT_LABEL}: задачи с файлами и инструментами`}
                   onClick={() => selectModel.mutate('director')}
                   sx={{
                     display: 'flex',
@@ -573,7 +582,7 @@ export function ChatWindow({
                   <Box sx={{ minWidth: 0, flex: 1 }}>
                     <Box sx={{ fontWeight: 600, fontSize: '0.9375rem', letterSpacing: '-0.02em' }}>{PILOT_LABEL}</Box>
                     <Box sx={{ color: 'text.secondary', fontSize: '0.8125rem', lineHeight: 1.4, mt: 0.2 }}>
-                      Раздаёт должности подходящим ИИ-агентам в песочнице
+                      Выполняет задачи с файлами, поиском и инструментами
                     </Box>
                   </Box>
                   <Box
@@ -639,6 +648,8 @@ export function ChatWindow({
               isLastAssistant={!thinking && msg.role === 'assistant' && msg.id === lastAssistantId}
               sourcesActive={msg.id === activeSourceId}
               onOpenSources={() => onOpenSources?.(msg.id)}
+              onOpenProjectCitation={onOpenProjectCitation}
+              onEditResult={!thinking ? onEditResult : undefined}
               onRegenerate={onRegenerate}
               onEdit={msg.role === 'user' && !isClarifyReply(msg.content) ? (text) => { if (!thinkingRef.current) onEditMessage?.(msg.id, text); } : undefined}
               onEditImage={onEditImage}
@@ -709,6 +720,7 @@ export function ChatWindow({
             chipsHost,
           )}
         <div ref={bottomRef} />
+        {onClarifySelection && !thinking && <SelectionClarify rootRef={scrollerRef} onClarify={onClarifySelection} canEdit={pick => resultReferences(listMessages.find(msg => msg.id === pick.messageId)?.search).filter(ref => ref.type === 'report').length === 1} onEdit={onEditResult ? pick => { const ref = resultReferences(listMessages.find(msg => msg.id === pick.messageId)?.search).filter(ref => ref.type === 'report'); if (ref.length === 1) onEditResult(ref[0], pick.text); } : undefined} />}
       </Box>
     </Box>
     <DialogueRail scroller={scrollerNode} questions={questionTicks} onJump={jumpToQuestion} />

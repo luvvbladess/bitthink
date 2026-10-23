@@ -284,7 +284,7 @@ def test_save_stays_on_the_sender_not_the_other_person():
         conversation_manager.delete_user_skill(guest, "guest_only")
 
 
-def test_pilot_junk_search_items_do_not_hide_domain_sources(monkeypatch):
+def test_pilot_does_not_manufacture_sources_from_domains_in_prose(monkeypatch):
     from handlers import core as core_mod
     import director_router
 
@@ -305,7 +305,7 @@ def test_pilot_junk_search_items_do_not_hide_domain_sources(monkeypatch):
         session.query(Subscription).filter_by(user_id=uid).one().tier = "creator"
         session.commit()
     _answer, _files, _r, sources = asyncio.run(core_mod.get_smart_response(uid, "курс евро", [], None))
-    assert any(s["summary"].startswith("http") for s in sources), sources
+    assert not any(s["summary"].startswith("http") for s in sources), sources
 
 
 def test_pilot_kimi_employee_falls_back_to_cited_search_when_kimi_gives_no_links(monkeypatch):

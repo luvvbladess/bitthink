@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.12-slim-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc \
@@ -10,6 +10,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && useradd --create-home --uid 10001 sandbox \
     && mkdir -p /workspaces /opt/sandbox \
     && chown -R sandbox:sandbox /workspaces /opt/sandbox
+
+# Native offline draw.io exporter; pinned official release and checksum.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates xvfb xauth fonts-dejavu-core fonts-liberation \
+        libasound2 libgbm1 libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 libsecret-1-0 libuuid1 libatspi2.0-0 xdg-utils \
+    && curl -fL --retry 3 https://github.com/jgraph/drawio-desktop/releases/download/v32.5.5/drawio-amd64-32.5.5.deb -o /tmp/drawio.deb \
+    && echo "0ca81780c79d3e5b9f459390173823697f80048d0f7f1e26c3be5077f5c3f611  /tmp/drawio.deb" | sha256sum -c - \
+    && dpkg-deb -x /tmp/drawio.deb / \
+    && ln -sf /opt/drawio/drawio /usr/local/bin/drawio \
+    && rm /tmp/drawio.deb \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir \
         requests \
@@ -31,6 +42,7 @@ COPY sandbox/sitecustomize.py /usr/local/lib/python3.12/site-packages/sitecustom
 # python-docx вручную на каждый документ. Без python-docx в образе Пилот
 # делал один файл и сообщал, что создавать DOCX ему нечем.
 COPY backend/app/bot_core/docx_generator.py /usr/local/lib/python3.12/site-packages/bt_docx.py
+COPY backend/app/services/diagrams.py /usr/local/lib/python3.12/site-packages/bt_diagrams.py
 COPY backend/app/services/workspace_fs.py /opt/sandbox/workspace_fs.py
 
 ENV WORKSPACES_DIR=/workspaces \

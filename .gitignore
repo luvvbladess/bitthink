@@ -54,6 +54,7 @@ graphify-out/
 .tmp-pptx-slides/
 tmp/
 output/
+test-results/
 Stolzl (1).zip
 _staffing_*.jpg
 testov/

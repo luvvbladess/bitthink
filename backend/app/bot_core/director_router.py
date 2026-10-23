@@ -26,7 +26,6 @@ MODEL_POOL = [
     "gpt-5-nano",
     "gpt-6-luna",
     "deepseek-v4-pro",
-    "kimi-k2.6",
     "gpt-6-sol",
     "gpt-6-astra",
 ]
@@ -50,7 +49,7 @@ def _employee_models(user_id: int) -> list[str]:
         from conversations import conversation_manager
         from app.billing.plans import computer_models
 
-        return computer_models(conversation_manager.get_subscription(user_id).get("tier"))
+        return [model for model in computer_models(conversation_manager.get_subscription(user_id).get("tier")) if model in MODEL_POOL]
     except Exception:
         return list(MODEL_POOL)
 
@@ -159,6 +158,9 @@ PACKAGE_EMPLOYEE_TOOL_LOOPS = 16
 
 
 def _is_document_package_task(text: str) -> bool:
+    # Native diagram exports are formats of the same graph, not separate Word jobs.
+    if re.search(r"(?i)блок[ -]?схем\w*|схем\w*\s+(?:процесс|алгоритм)|diagrams\.net|draw\.?io|flowchart", text or ""):
+        return False
     if not _DOC_PACKAGE_RE.search(text or ""):
         return False
     from computer_skills.loader import match_skills
@@ -179,6 +181,8 @@ _FILE_REQUEST_RE = re.compile(
 def _wants_file(text: str) -> bool:
     value=text or ""
     if re.search(r"(?i)начерт\w*|(?:сдела|созда|восстанов|разработ|собер)\w*.{0,80}(?:черт[её]ж|комплект\s+КД|конструкторск\w*\s+документац)",value):
+        return True
+    if re.search(r"(?i)(?:нарис|начерт|сдела|созда|собер|сгенерир)\w*.{0,80}(?:блок[ -]?схем|схем\w*\s+(?:процесс|алгоритм)|diagrams\.net|draw\.?io|flowchart)", value):
         return True
     fixed_comparison=bool(re.search(r"сравни|сравне|compare",value,re.I) and len(re.findall(r"https?://",value))>=2)
     explicit_format=bool(re.search(r"файл|документ|\b(?:docx|xlsx|csv|pdf|pptx|word|excel)\b|ворд|эксел",value,re.I))
@@ -790,7 +794,9 @@ async def _execute_employee(
     """
     role = employee["role"]
     task = employee["task"]
-    model = employee["model"]
+    # Orchestrator without Kimi: also handle stale checkpoint employees.
+    legacy_search = employee["model"] == "kimi-k2.6"
+    model = FALLBACK_EMPLOYEE_MODEL if legacy_search else employee["model"]
     try:
         from status_feed import push_status
         await push_status("think", (task or role)[:120])
@@ -838,7 +844,7 @@ async def _execute_employee(
         "Прошлые разговоры – search_chats или recent_chats, не интернет. Не проси открыть другой чат. "
         "Код только в workspace_* / pip_install / python_run. Сначала workspace_grep или workspace_glob, не читай все файлы. "
         "Если просят архив кода или проект-бота – запиши файлы и собери project.zip в песочнице. "
-        "Схема процесса, блок-схема, swimlane – studio_build (infographic) или PNG шрифтом DejaVuSans. "
+        "Блок-схема, схема процесса, алгоритм, diagrams.net/draw.io – diagram_create: создай полный несжатый mxfile XML с фигурами, координатами и стрелками, сохрани новый .drawio и заказанные PDF/PNG/SVG (по умолчанию PDF и PNG). PDF содержит все страницы, PNG/SVG – выбранную с 1. Исходный .drawio всегда приложи для редактирования. Для схем не заменяй готовые файлы инструкцией или Mermaid-кодом. "
         "Запрещён PDF через reportlab/fpdf с Helvetica/WinAnsi: кириллица станет палками IIIII. "
         "Договор, ТЗ, смета, таблица, расчёт – это .docx/.xlsx/.pdf или текст в чате, НИКОГДА не .py скрипт. "
         "Расчёт, калькуляция, стоимость – пиши результат текстом прямо в сообщении или создай .xlsx таблицу. Не создавай .py файлы для простых вычислений. "
@@ -874,15 +880,14 @@ async def _execute_employee(
         {"role": "system", "content": _OUTPUT_RULES},
         {"role": "user", "content": prompt + _desktop_work_instructions()},
     ]
-    if model != "kimi-k2.6":
-        try:
-            from conversations import conversation_manager
+    try:
+        from conversations import conversation_manager
 
-            parts = conversation_manager.vision_parts_for_chat(int(user_id), task)
-            if parts:
-                conversation_manager._attach_images_to_last_user(employee_messages, parts)
-        except Exception:
-            logger.debug("Director employee image attach skipped", exc_info=True)
+        parts = conversation_manager.vision_parts_for_chat(int(user_id), task)
+        if parts:
+            conversation_manager._attach_images_to_last_user(employee_messages, parts)
+    except Exception:
+        logger.debug("Director employee image attach skipped", exc_info=True)
 
     # BitClient CAD compiler evidence
     from app.services.desktop_context import desktop_executor, desktop_cwd
@@ -902,18 +907,6 @@ async def _execute_employee(
         if model == "deepseek-v4-pro":
             from deepseek_client import get_deepseek_response
             answer, _, reasoning, search = await get_deepseek_response(employee_messages, model=model, user_id=user_id, use_tools=True)
-        elif model == "kimi-k2.6":
-            from kimi_client import get_kimi_search_brief
-            answer = await get_kimi_search_brief(employee_messages, task, user_id=user_id)
-            # Kimi builtin search hides raw sites, but we can at least surface the task and brief.
-            search = [{"query": task, "summary": answer[:600]}] if answer else []
-            if "http" not in (answer or ""):
-                # Kimi gave no links (it gives up after its step limit); OpenAI hosted search does cite.
-                from openai_client import get_chat_response
-                answer, _, reasoning, search = await get_chat_response(
-                    employee_messages, model="gpt-6-luna", user_id=user_id, use_tools=True,
-                    reasoning_effort="low", force_web_search=True,
-                )
         else:
             from openai_client import get_chat_response
             builds_file = _is_document_package_task(task) or _wants_file(task) or "docx" in (task or "").lower()
@@ -926,7 +919,7 @@ async def _execute_employee(
                 loops = 6  # Search, skill, selective read/retry, then synthesis.
             answer, _, reasoning, search = await get_chat_response(
                 employee_messages, model=model, user_id=user_id, use_tools=True, max_tool_loops=loops,
-                force_web_search=bool(employee.get("web")),
+                force_web_search=bool(employee.get("web", legacy_search)),
                 reasoning_effort="high" if cad_build and model == "gpt-6-astra" else None,
             )
 
@@ -994,7 +987,6 @@ def _pool_description(user_id: int, original_task: str = "", document_context: s
     lines = [
         ("gpt-5-nano", "самая дешёвая, тривиальные микро-задачи и форматирование"),
         ("gpt-6-luna", "дешёвая, простой анализ, черновики, короткие ответы"),
-        ("kimi-k2.6", "дешёвая, веб-поиск и актуальные факты"),
         ("deepseek-v4-pro", "средняя-выше, сложные рассуждения и код"),
         ("gpt-6-sol", "дорогая, сложный код и анализ, только если Luna заметно недостаточно"),
         (
@@ -1081,7 +1073,7 @@ async def _plan_round(
         "- Не заказывай финальный отчёт, оглавление или нумерованные разделы.\n"
         "- Не проси разрешение искать или открыть сайт: найми сотрудника сразу.\n"
         "Экономь токены без потери результата: по умолчанию gpt-6-luna; "
-        "для актуальных фактов и поиска - kimi-k2.6; для сложного кода и рассуждений - deepseek-v4-pro. "
+        "для актуальных фактов и поиска - gpt-6-luna с server_search и browse_page; для сложного кода и рассуждений - deepseek-v4-pro. "
         "gpt-6-sol только если Luna заметно недостаточно.\n"
         + (
             "В локальной CAD-задаче разделяй работу на конкретные этапы с cad_phase: "
@@ -1101,12 +1093,12 @@ async def _plan_round(
         "Каждому передай точные MPN, корпуса, количества, город и конкретный диапазон строк спецификации. Требуй открыть карточки browse_page: статус склада, доступное количество, MOQ, упаковка, цена для нужного количества и срок поставки отдельно от доставки. "
         "Большую спецификацию разбирай партиями с сохранением CSV/XLSX; не теряй непроверенные строки. Обобщение: покрытие каждой позиции, дефицит и план по магазинам. Аналоги отдельно, не подменяют MPN. Реальные корзины и регистрацию не обещай.\n"
         "При сравнении конкретных ссылок нанимай одного сотрудника: открыть именно присланные ссылки, максимум 20 отзывов на товар; внешняя сверка первых пяти сайтов по точной модели без глубокого обхода. Не ищи альтернативы и не создавай файлы без явной просьбы. "
-        "Для остальных задач найти товар, лучшее предложение или сравнить цены по магазинам – найми 3-4 поисковых сотрудников (model kimi-k2.6) ОДНОВРЕМЕННО, каждому первой строкой load_skill marketplaces и свою группу площадок: (Ozon, Wildberries), (Яндекс Маркет, Мегамаркет, DNS, Ситилинк), (отзывы и характеристики модели); для запроса «по миру» – ещё (Amazon, eBay, AliExpress). В task впиши товар, регион и цель человека. Второй раунд не нужен: таблицу соберёт сборщик ответа.\n"
-        "Если нужны свежие данные с сайта - найми kimi-k2.6 для поиска или gpt-6-luna "
+        "Для остальных задач найти товар, лучшее предложение или сравнить цены по магазинам – найми 3-4 поисковых сотрудников (model gpt-6-luna, поиск через server_search) ОДНОВРЕМЕННО, каждому первой строкой load_skill marketplaces и свою группу площадок: (Ozon, Wildberries), (Яндекс Маркет, Мегамаркет, DNS, Ситилинк), (отзывы и характеристики модели); для запроса «по миру» – ещё (Amazon, eBay, AliExpress). В task впиши товар, регион и цель человека. Второй раунд не нужен: таблицу соберёт сборщик ответа.\n"
+        "Если нужны свежие данные с сайта - найми gpt-6-luna с server_search "
         "с задачей явно открыть URL через browse_page или войти через site_login. "
         "Если вопрос про фото (где снято, что на кадре, источник снимка) – в первом раунде "
-        "обязательно gpt-6-luna с image_search по файлу из чата. kimi-k2.6 не умеет поиск по картинке: "
-        "его нанимай во втором раунде, уже по подписям и URL из image_search. "
+        "обязательно gpt-6-luna с image_search по файлу из чата; "
+        "по подписям и URL из image_search продолжай через server_search и browse_page. "
         "Не закрывай задачу после первого правдоподобного названия места: открой страницы-совпадения "
         "browse_page и сверь ориентиры на независимых сайтах. "
         "Не угадывай локацию по памяти модели. "
@@ -1140,7 +1132,7 @@ async def _plan_round(
         '{"status": "done"}\n'
         "или\n"
         '{"status": "continue", "new_employees": ['
-        '{"role": "Поиск A", "task": "...", "model": "kimi-k2.6"}, '
+        '{"role": "Поиск A", "task": "...", "model": "gpt-6-luna"}, '
         '{"role": "Поиск B", "task": "...", "model": "gpt-6-luna"}]}\n'
         "или, если без ответа пользователя нельзя начать работу:\n"
         '{"status": "clarify", "questions": ['
@@ -1213,6 +1205,8 @@ async def _compose_answer(
     built_files: List[str] | None = None,
 ) -> Tuple[str, str]:
     """Свести заметки сотрудников в обычный ответ чата — без отчёта и нумерации разделов."""
+    from app.services.task_checkpoints import consume_steering
+    original_task += await consume_steering()
     from openai_client import get_chat_response
 
     history_block = f"\n\nИстория диалога:\n{_tail(history_text, PLANNER_HISTORY_CHARS)}\n" if history_text else ""
@@ -1529,6 +1523,8 @@ async def get_director_response(
     from app.billing.quota import billing_pool
     from app.services.run_protocol import current_run, RunRecord
 
+    from app.services.server_search import orchestrator_search
+    search_token = orchestrator_search.set(True)
     token = billing_pool.set("computer")
     record_token = current_run.set(RunRecord(requires_sources=_is_shopping_task(user_text, user_id)))
     try:
@@ -1543,6 +1539,7 @@ async def get_director_response(
     finally:
         current_run.reset(record_token)
         billing_pool.reset(token)
+        orchestrator_search.reset(search_token)
 
 
 async def _run_director(
@@ -1611,6 +1608,8 @@ async def _run_director(
             )
 
     while round_num < MAX_ROUNDS and len(journal) < MAX_EMPLOYEES:
+        from app.services.task_checkpoints import consume_steering
+        user_text += await consume_steering()
         round_num += 1
         if light and round_num == 1:
             # A short question with no files or tools: skip the Sol planner and its round trip.

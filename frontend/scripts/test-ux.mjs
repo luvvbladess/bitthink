@@ -1,0 +1,869 @@
+import { chromium, expect as baseExpect } from '@playwright/test';
+import assert from 'node:assert/strict';
+import { mkdir, writeFile } from 'node:fs/promises';
+
+const base = process.env.BITTHINK_UI_BASE || 'http://127.0.0.1:5187';
+const expect = baseExpect.configure({ timeout: 15000 });
+const output = process.env.BITTHINK_UI_OUTPUT || 'test-results/ux';
+await mkdir(output, { recursive: true });
+const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL || 'chrome', headless: true });
+let passed = 0;
+const errors = [];
+
+async function fixture(options = {}) {
+  const context = await browser.newContext({ viewport: options.viewport || { width: 1440, height: 900 }, hasTouch: Boolean(options.touch) });
+  const page = await context.newPage();
+  const state = { auth: options.auth || 'ok', historyError: false, delay: {}, sends: [], uploads: [], created: [], historyLoads: [], failFile: '', ...options };
+  const profile = { id: 'audit-user', email: 'audit@example.com', first_name: 'Анна', role: options.admin ? 'admin' : 'user', subscription_tier: 'pro', selected_model: 'auto' };
+  const conversations = [
+    { id: 'chat-a', title: 'Первая беседа', is_active: true, message_count: 2 },
+    { id: 'chat-b', title: 'Вторая беседа', is_active: false, message_count: 2 },
+  ];
+  const history = {
+    'chat-a': [{ id: 'a1', role: 'user', content: 'Вопрос первой беседы' }, { id: 'a2', role: 'assistant', content: 'Ответ первой беседы. Здесь удобно читать и продолжать работу.' }],
+    'chat-b': [{ id: 'b1', role: 'user', content: 'Вопрос второй беседы' }, { id: 'b2', role: 'assistant', content: 'Ответ второй беседы.' }],
+  };
+  if (options.imageHistory) history['chat-a'].push({ id: 'image-original', role: 'assistant', content: '![Эскиз](/uploads/audit-source.png)' });
+  if (options.clarify) history['chat-a'].push({ id: 'clarify', role: 'assistant', content: 'Уточните задачу', search: [{ query: '__clarify__', summary: JSON.stringify({ questions: [{ prompt: 'Какой формат результата нужен?', options: ['Таблица', 'Отчёт'] }] }) }] });
+  await page.route('**/uploads/**', route => route.fulfill({ contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jvXkAAAAASUVORK5CYII=', 'base64') }));
+  page.on('pageerror', error => { errors.push(error.message); console.error('BROWSER', error.message); });
+  page.on('console', message => { if (message.type() === 'error') console.error('CONSOLE', message.text()); });
+  await page.addInitScript(({ profile, theme }) => {
+    localStorage.setItem('bit-think-color-mode', theme);
+    if (profile) localStorage.setItem('gpt-ultra-auth', JSON.stringify({ state: { accessToken: 'audit-access', refreshToken: 'audit-refresh', user: profile }, version: 0 }));
+  }, { profile: options.signedOut ? null : profile, theme: options.theme || 'dark' });
+  if (options.mockVoice) await page.addInitScript(() => {
+    window.auditStoppedTracks = 0;
+    Object.defineProperty(navigator.mediaDevices, 'getUserMedia', { value: async () => ({ getTracks: () => [{ stop: () => window.auditStoppedTracks++ }] }) });
+    window.MediaRecorder = class {
+      state = 'inactive'; mimeType = 'audio/webm';
+      start() { this.state = 'recording'; }
+      stop() { this.state = 'inactive'; this.onstop?.(); }
+    };
+  });
+  await page.route('**/api/**', async route => {
+    if (!new URL(route.request().url()).pathname.startsWith('/api/')) return route.continue();
+    const path = new URL(route.request().url()).pathname.slice(4);
+    const method = route.request().method();
+    if (options.handleRoute && await options.handleRoute({ path, method, route, state, profile, history })) return;
+    let data = {};
+    if (path === '/auth/me') {
+      if (state.auth === 'network') return route.abort('failed');
+      if (state.auth === '500') return route.fulfill({ status: 500, json: { detail: 'Temporary outage' } });
+      if (state.auth.startsWith('refresh')) return route.fulfill({ status: 401, json: {} });
+      data = profile;
+    } else if (path === '/auth/refresh') {
+      if (state.auth === 'refresh-network') return route.abort('failed');
+      return route.fulfill({ status: state.auth === 'refresh-invalid' ? 401 : 503, json: {} });
+    } else if (path === '/models') data = {
+      selected: options.model || 'auto', reasoningEffort: 'medium', computerAvailable: true, studioAvailable: true,
+      models: [{ id: 'auto', name: 'Экспресс', available: true }, { id: 'director', name: 'Оркестратор', available: true }, { id: 'studio', name: 'Студия', available: true }],
+    };
+    else if (path === '/conversations' && method === 'POST') {
+      state.createRequests = (state.createRequests || 0) + 1;
+      if (state.failCreate) return route.fulfill({ status: 503, json: { detail: 'Temporary outage' } });
+      if (state.createDelay) await new Promise(resolve => setTimeout(resolve, state.createDelay));
+      const id = `chat-new-${state.created.length + 1}`;
+      conversations.forEach(item => { item.is_active = false; });
+      data = { id, title: 'Новый чат', is_active: true, message_count: 0 };
+      history[id] = [];
+      conversations.unshift(data);
+      state.created.push(id);
+      state.activeId = id;
+    }
+    else if (path === '/conversations') data = conversations;
+    else if (path.endsWith('/activate')) {
+      const id = path.split('/')[2];
+      if (state.delay[id]) await new Promise(resolve => setTimeout(resolve, state.delay[id]));
+      conversations.forEach(item => { item.is_active = item.id === id; });
+      state.activeId = id;
+      data = { ok: true };
+    } else if (path.endsWith('/messages')) {
+      state.historyLoads.push(path.split('/')[2]);
+      if (state.historyError) return route.fulfill({ status: 503, json: { detail: 'Temporary outage' } });
+      data = history[path.split('/')[2]] || [];
+    } else if (path === '/chat/jobs') data = { jobs: [] };
+    else if (path === '/projects' || path === '/computer/tasks' || path === '/connectors') data = [];
+    else if (path.startsWith('/projects/chat/')) data = { project_id: null };
+    else if (path === '/billing/subscription') data = { tier: 'pro', name: 'Pro', chat: { used: 0, limit: 1000000 }, computer: { used: 0, limit: 1000000 }, windows: {} };
+    else if (path === '/documents' && method === 'POST') {
+      const body = route.request().postDataBuffer().toString();
+      const name = /filename="([^"]+)"/.exec(body)?.[1] || 'file';
+      state.uploads.push(name);
+      if (state.uploadDelay) await new Promise(resolve => setTimeout(resolve, state.uploadDelay));
+      if (name === state.failFile) return route.fulfill({ status: 503, json: { detail: 'Файл временно недоступен' } });
+      data = { message: { id: 'file-' + name, role: 'user', content: '', attachment: { name, status: 'done', type: 'document' } } };
+    }
+    await route.fulfill({ json: data });
+  });
+  await page.routeWebSocket(/\/chat\/ws$/, socket => {
+    socket.onMessage(raw => {
+      const event = JSON.parse(String(raw));
+      if (event.type === 'auth') socket.send(JSON.stringify({ type: 'jobs', payload: { jobs: [] } }));
+      if (event.type === 'ping') socket.send(JSON.stringify({ type: 'pong', payload: {} }));
+      if (event.type === 'message') {
+        state.sends.push(event.payload);
+        const id = event.payload.conversation_id;
+        if (state.holdAnswer && id === 'chat-a') {
+          history[id].push({ id: 'pending-' + state.sends.length, role: 'user', content: event.payload.content });
+          socket.send(JSON.stringify({ type: 'status', payload: { conversation_id: id, text: 'Готовлю ответ' } }));
+          return;
+        }
+        history[id].push({ id: 'sent-' + state.sends.length, role: 'user', content: event.payload.content }, { id: 'reply-' + state.sends.length, role: 'assistant', content: 'Проверенный новый ответ.' });
+        socket.send(JSON.stringify({ type: 'chunk', payload: { conversation_id: id, text: 'Проверенный новый ответ.' } }));
+        socket.send(JSON.stringify({ type: 'done', payload: { conversation_id: id } }));
+      }
+    });
+  });
+  await page.goto(base + (options.startPath || '/chat'));
+  const input = page.getByRole('textbox', { name: 'Сообщение', exact: true });
+  async function select(title) {
+    const menu = page.getByRole('button', { name: 'Открыть список бесед', exact: true });
+    if (await menu.isVisible()) await menu.click();
+    await page.getByRole('button', { name: `Открыть беседу ${title}`, exact: true }).click();
+  }
+  return { context, page, state, input, select };
+}
+
+async function test(name, run) {
+  if (process.env.BITTHINK_UI_FILTER && !name.includes(process.env.BITTHINK_UI_FILTER)) return;
+  try { await run(); passed++; console.log('PASS ' + name); }
+  catch (error) { console.error('FAIL ' + name); throw error; }
+}
+
+async function reachable(locator, page, label) {
+  await expect(locator).toBeVisible();
+  await locator.scrollIntoViewIfNeeded();
+  const box = await locator.boundingBox();
+  const viewport = page.viewportSize();
+  assert(box && box.x >= 0 && box.y >= 54 && box.x + box.width <= viewport.width + 1 && box.y + box.height <= viewport.height + 1, `${label} must remain below the header and inside the viewport: ${JSON.stringify(box)}`);
+  await expect.poll(() => locator.evaluate(element => {
+    const r = element.getBoundingClientRect();
+    const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+    return top === element || element.contains(top);
+  }), { message: `${label} must receive pointer input after transitions` }).toBe(true);
+}
+
+async function projectFixture(options = {}) {
+  const project = { id: 'demo', name: 'Презентация продукта', chat_ids: ['chat-a'] };
+  const spec = { type: 'table', title: 'Сравнение поставщиков', columns: [{ id: 'name', label: 'Поставщик' }, { id: 'price', label: 'Цена' }], rows: [{ id: 'r1', cells: { name: 'Первый поставщик', price: '1500' }, state: 'pending' }] };
+  const entry = { id: 'table', title: spec.title, kind: 'result', revision: 1, body: JSON.stringify(spec), current_revision: 1 };
+  const f = await fixture({ ...options, handleRoute: async ({ path, method, route, state }) => {
+    let data;
+    if (path === '/projects') data = [project];
+    else if (path === '/projects/chat/chat-a') data = { project_id: 'demo' };
+    else if (path === '/projects/demo/workspace') data = { project, entries: [entry], chats: [{ id: 'chat-a', title: 'Первая беседа' }] };
+    else if (path === '/projects/demo/suggestions') data = [];
+    else if (path === '/projects/demo/entries/table/history') data = [{ revision: entry.revision, title: entry.title }];
+    else if (path === '/projects/demo/entries/table') data = entry;
+    else if (path === '/projects/demo/results/table' && method === 'PUT') {
+      if (state.saveError) { await route.fulfill({ status: 409, json: { detail: 'Версия изменилась. Обновите результат.' } }); return true; }
+      const body = route.request().postDataJSON();
+      assert.equal(body.expected_revision, entry.revision);
+      state.savedSpec = body.spec;
+      entry.body = JSON.stringify(body.spec); entry.revision++; entry.current_revision++;
+      data = entry;
+    } else if (path === '/documents/upload') { state.wrongUpload = true; await route.fulfill({ status: 404, json: { detail: 'Not Found' } }); return true; }
+    else if (path === '/documents' && method === 'POST') {
+      state.projectUploads = (state.projectUploads || 0) + 1;
+      if (state.uploadError) { await route.fulfill({ status: 400, json: { detail: 'Не удалось прочитать документ' } }); return true; }
+      data = { ok: true, message: { id: 'file', role: 'user', content: '' } };
+    } else if (path === '/projects/chat/chat-a/documents') { state.lookupFilename = new URL(route.request().url()).searchParams.get('filename'); state.documentReads = (state.documentReads || 0) + 1; data = [{ id: 42, filename: 'brief.txt' }]; }
+    else if (path === '/projects/demo/documents') { state.boundDocument = route.request().postDataJSON().document_id; data = { id: 'file', title: 'brief.txt', kind: 'file', revision: 1 }; }
+    else if (path === '/projects/demo/entries/file') data = { id: 'file', title: 'brief.txt', kind: 'file', revision: 1, body: 'Материалы для презентации' };
+    else if (path === '/projects/demo/entries/file/history') data = [];
+    else if (path === '/projects/chat/chat-a/context') data = { project_id: 'demo', web: true, include_memory: true, entry_ids: null, last_used: [] };
+    else return false;
+    await route.fulfill({ json: data }); return true;
+  } });
+  await expect(f.input).toBeEnabled();
+  const menu = f.page.getByRole('button', { name: 'Открыть список бесед', exact: true });
+  if (await menu.isVisible()) await menu.click();
+  await f.page.getByRole('button', { name: /^Презентация продукта/ }).click();
+  f.workspace = f.page.getByRole('region', { name: 'Рабочая область проекта', exact: true });
+  await expect(f.workspace).toBeVisible();
+  return f;
+}
+
+try {
+  await test('journey: answer mode sheet stays above a simulated keyboard and can be closed', async () => {
+    const f = await fixture({ model: 'director', viewport: { width: 390, height: 844 }, touch: true });
+    try {
+      await expect(f.input).toBeEnabled(); await f.input.fill('Сохранить запрос при выборе режима');
+      await f.page.evaluate(() => {
+        Object.defineProperty(window.visualViewport, 'height', { configurable: true, get: () => 360 });
+        window.visualViewport.dispatchEvent(new Event('resize'));
+      });
+      await f.page.getByRole('button', { name: 'Режим ответа: Оркестратор', exact: true }).click();
+      const heading = f.page.getByText('Как отвечать', { exact: true });
+      await expect.poll(async () => { const b = await heading.boundingBox(); return b.y + b.height; }).toBeLessThanOrEqual(360);
+      await f.page.getByRole('button', { name: 'Закрыть выбор режима', exact: true }).click();
+      await expect(heading).toBeHidden();
+      await expect(f.input).toHaveValue('Сохранить запрос при выборе режима');
+    } finally { await f.context.close(); }
+  });
+  await test('journey: orchestrator skill import failure remains visible and Escape returns focus', async () => {
+    const f = await fixture({ model: 'director', viewport: { width: 390, height: 844 }, touch: true, handleRoute: async ({ path, route }) => {
+      if (path === '/skills') { await route.fulfill({ json: { items: [] } }); return true; }
+      if (path === '/skills/import') { await route.fulfill({ status: 400, json: { detail: 'В архиве нет SKILL.md' } }); return true; }
+    } });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.page.getByRole('button', { name: 'Задачи и инструменты Оркестратора', exact: true }).click();
+      const panel = f.page.getByRole('region', { name: 'Инструменты Оркестратора', exact: true });
+      await panel.getByRole('button', { name: /^Навыки/ }).click();
+      await panel.locator('input[type=file]').setInputFiles({ name: 'skill.zip', mimeType: 'application/zip', buffer: Buffer.from('invalid') });
+      await expect(panel.getByRole('alert')).toContainText('В архиве нет SKILL.md');
+      await panel.getByRole('button', { name: 'Закрыть инструменты', exact: true }).focus();
+      await f.page.keyboard.press('Escape');
+      await expect(panel).toBeHidden();
+      await expect(f.page.getByRole('button', { name: 'Задачи и инструменты Оркестратора', exact: true })).toBeFocused();
+    } finally { await f.context.close(); }
+  });
+  await test('journey: clarification shortcuts do not steal Enter from navigation buttons', async () => {
+    const f = await fixture({ clarify: true, handleRoute: async ({ path, route }) => {
+      if (path === '/conversations/chat-a/files') { await route.fulfill({ json: [] }); return true; }
+    } });
+    try {
+      await expect(f.page.getByText('Какой формат результата нужен?', { exact: true }).first()).toBeVisible();
+      const files = f.page.getByRole('button', { name: 'Файлы беседы', exact: true });
+      await files.focus(); await files.press('Enter');
+      await expect(f.page.getByRole('button', { name: 'Закрыть список файлов', exact: true })).toBeVisible();
+      assert.deepEqual(f.state.sends, [], 'Opening files must not skip and submit clarification');
+      await f.page.getByRole('button', { name: 'Закрыть список файлов', exact: true }).click();
+      await expect(f.page.getByText('Какой формат результата нужен?', { exact: true }).first()).toBeVisible();
+    } finally { await f.context.close(); }
+  });
+  await test('journey: visual viewport shrink keeps the composer above a simulated keyboard', async () => {
+    const f = await fixture({ model: 'director', viewport: { width: 390, height: 844 }, touch: true });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('Текст при открытой клавиатуре. '.repeat(30));
+      await f.page.evaluate(() => {
+        Object.defineProperty(window.visualViewport, 'height', { configurable: true, get: () => 360 });
+        window.visualViewport.dispatchEvent(new Event('resize'));
+      });
+      await expect.poll(async () => (await f.input.boundingBox())?.y).toBeGreaterThanOrEqual(54);
+      await f.page.getByRole('button', { name: 'Задачи и инструменты Оркестратора', exact: true }).click();
+      const send = f.page.getByRole('button', { name: 'Отправить сообщение', exact: true });
+      await expect.poll(async () => { const b = await send.boundingBox(); return b.y + b.height; }).toBeLessThanOrEqual(360);
+      const input = await f.input.boundingBox(); assert(input.y >= 54 && input.y + input.height <= 360);
+      await f.page.getByRole('button', { name: 'Закрыть инструменты', exact: true }).click();
+      await expect(f.input).toHaveValue('Текст при открытой клавиатуре. '.repeat(30));
+    } finally { await f.context.close(); }
+  });
+  await test('journey: quota notice, attachments and tools remain dismissible on a short phone', async () => {
+    const f = await fixture({ model: 'director', viewport: { width: 390, height: 360 }, touch: true, handleRoute: async ({ path, route }) => {
+      if (path !== '/billing/subscription') return false;
+      await route.fulfill({ json: { tier: 'pro', shared_budget: true, windows: { shared: { session: { ratio: .95, limit: 1000, resets_at: Math.floor(Date.now() / 1000) + 3600 } } } } }); return true;
+    } });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('Запрос с вложениями. '.repeat(25));
+      await f.page.locator('input[type=file][multiple]').setInputFiles([{ name: 'brief.txt', mimeType: 'text/plain', buffer: Buffer.from('brief') }, { name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('notes') }]);
+      await f.page.getByRole('button', { name: 'Задачи и инструменты Оркестратора', exact: true }).click();
+      await reachable(f.input, f.page, 'Input with quota and files');
+      await reachable(f.page.getByRole('button', { name: 'Отправить сообщение', exact: true }), f.page, 'Send with quota and files');
+      await reachable(f.page.getByRole('button', { name: 'Закрыть инструменты', exact: true }), f.page, 'Close tools with files');
+      await f.page.getByRole('button', { name: 'Закрыть инструменты', exact: true }).click();
+      await f.page.getByRole('button', { name: 'Убрать brief.txt', exact: true }).click();
+      await f.page.getByRole('button', { name: 'Убрать notes.txt', exact: true }).click();
+      await reachable(f.page.getByRole('button', { name: 'Скрыть уведомление', exact: true }), f.page, 'Dismiss quota');
+      await f.page.getByRole('button', { name: 'Скрыть уведомление', exact: true }).click();
+      await expect(f.page.getByText(/Потрачено 95%/)).toBeHidden();
+    } finally { await f.context.close(); }
+  });
+  await test('journey: share outage and denied clipboard have recovery and do not trap the user', async () => {
+    const f = await fixture({ viewport: { width: 390, height: 844 }, touch: true, shareFail: true, handleRoute: async ({ path, route, state }) => {
+      if (path !== '/conversations/chat-a/share') return false;
+      if (state.shareFail) await route.fulfill({ status: 503, json: { detail: 'Temporary outage' } });
+      else await route.fulfill({ json: { shared: true, token: 'demo-invite', role: 'owner', people: [] } });
+      return true;
+    } });
+    try {
+      await expect(f.input).toBeEnabled(); await f.input.fill('Сохранить мой черновик');
+      await f.page.getByRole('button', { name: 'Ещё действия', exact: true }).tap();
+      await f.page.getByRole('menuitem', { name: 'Поделиться диалогом', exact: true }).tap();
+      const dialog = f.page.getByRole('dialog');
+      await expect(dialog.getByRole('alert')).toContainText('Не удалось загрузить доступ');
+      await expect(dialog.getByRole('button', { name: 'Создать ссылку', exact: true })).toBeHidden();
+      f.state.shareFail = false;
+      await dialog.getByRole('button', { name: 'Повторить', exact: true }).tap();
+      await f.page.evaluate(() => { Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new DOMException('Denied', 'NotAllowedError'); } } }); });
+      await dialog.getByRole('button', { name: 'Скопировать ссылку', exact: true }).tap();
+      await expect(dialog.getByRole('alert')).toContainText('Не удалось скопировать');
+      await expect(dialog.getByRole('textbox', { name: 'Ссылка на диалог', exact: true })).toHaveValue(base + '/join/demo-invite');
+      await dialog.getByRole('button', { name: 'Закрыть', exact: true }).tap();
+      await reachable(f.input, f.page, 'Input after sharing');
+      await expect(f.input).toHaveValue('Сохранить мой черновик');
+    } finally { await f.context.close(); }
+  });
+  await test('journey: task settings do not submit the main conversation on Enter', async () => {
+    const f = await fixture({ model: 'director', viewport: { width: 390, height: 844 }, touch: true, handleRoute: async ({ path, method, route, state }) => {
+      if (path === '/computer/tasks' && method === 'POST') { state.enrollments = (state.enrollments || 0) + 1; await route.fulfill({ json: { id: 'unexpected', status: 'paused', conversation_id: 'chat-a', enabled: false, prompt: '', progress: '', error: '', run_number: 1 } }); return true; }
+    } });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('Этот запрос пока не отправлять');
+      await f.page.getByRole('button', { name: 'Задачи и инструменты Оркестратора', exact: true }).click();
+      const panel = f.page.getByRole('region', { name: 'Инструменты Оркестратора', exact: true });
+      await panel.getByRole('button', { name: /^Задачи/ }).click();
+      await panel.getByRole('button', { name: 'Новая задача', exact: true }).click();
+      await panel.getByLabel('Начать', { exact: true }).fill('2026-11-01T12:00');
+      await panel.getByLabel('Начать', { exact: true }).press('Enter');
+      await f.page.waitForTimeout(250);
+      assert.equal(f.state.enrollments, undefined, 'Changing a task date must not send the chat draft');
+      assert.deepEqual(f.state.sends, []);
+      await expect(f.input).toHaveValue('Этот запрос пока не отправлять');
+    } finally { await f.context.close(); }
+  });
+  await test('journey: file drawer and mobile action menu release the composer after closing', async () => {
+    const f = await fixture({ viewport: { width: 390, height: 844 }, touch: true, handleRoute: async ({ path, route }) => {
+      if (path === '/conversations/chat-a/files' || path === '/conversations/library') { await route.fulfill({ json: [] }); return true; }
+    } });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('Черновик не должен пропасть');
+      await f.page.getByRole('button', { name: 'Ещё действия', exact: true }).tap();
+      await f.page.getByRole('menuitem', { name: 'Файлы беседы', exact: true }).tap();
+      await f.page.getByRole('button', { name: 'Закрыть список файлов', exact: true }).tap();
+      await expect(f.page.getByRole('button', { name: 'Закрыть список файлов', exact: true })).toBeHidden();
+      await reachable(f.input, f.page, 'Input after file drawer');
+      await reachable(f.page.getByRole('button', { name: 'Отправить сообщение', exact: true }), f.page, 'Send after file drawer');
+      await expect(f.input).toHaveValue('Черновик не должен пропасть');
+    } finally { await f.context.close(); }
+  });
+  await test('journey: context controls remain reachable with a long mobile draft', async () => {
+    const f = await projectFixture({ viewport: { width: 320, height: 568 }, touch: true });
+    try {
+      await f.workspace.getByRole('button', { name: 'Вернуться к беседе', exact: true }).tap();
+      await f.input.fill('Подробный запрос. '.repeat(30));
+      await f.page.getByRole('button', { name: /^Контекст проекта/ }).tap();
+      await f.page.getByRole('checkbox', { name: 'Все материалы проекта', exact: true }).uncheck();
+      await reachable(f.input, f.page, 'Input with project settings');
+      await reachable(f.page.getByRole('button', { name: 'Сохранить', exact: true }), f.page, 'Save project settings');
+      await f.page.getByRole('button', { name: 'Отмена', exact: true }).tap();
+      await expect(f.page.getByRole('checkbox', { name: 'Все материалы проекта', exact: true })).toBeHidden();
+      await expect(f.input).toHaveValue('Подробный запрос. '.repeat(30));
+    } finally { await f.context.close(); }
+  });
+  for (const viewport of [{ width: 320, height: 568 }, { width: 390, height: 360 }, { width: 1440, height: 900 }]) await test(`journey: tools and long draft leave composer usable ${viewport.width}x${viewport.height}`, async () => {
+    const f = await fixture({ model: 'director', viewport, touch: viewport.width < 600 });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('Длинный запрос с требованиями к результату. '.repeat(20));
+      await f.page.getByRole('button', { name: 'Задачи и инструменты Оркестратора', exact: true }).click();
+      await expect(f.page.getByRole('region', { name: 'Инструменты Оркестратора', exact: true })).toBeVisible();
+      await f.page.screenshot({ path: `${output}/journey-tools-${viewport.width}x${viewport.height}.png`, animations: 'disabled' });
+      await reachable(f.input, f.page, 'Message input');
+      await reachable(f.page.getByRole('button', { name: 'Отправить сообщение', exact: true }), f.page, 'Send');
+      await reachable(f.page.getByRole('button', { name: 'Закрыть инструменты', exact: true }), f.page, 'Close tools');
+      await f.page.getByRole('button', { name: 'Закрыть инструменты', exact: true }).click();
+      await expect(f.input).toHaveValue('Длинный запрос с требованиями к результату. '.repeat(20));
+    } finally { await f.context.close(); }
+  });
+  for (const width of [320, 768]) await test(`presentation: project table at narrow and tablet width ${width}`, async () => {
+    const f = await projectFixture({ viewport: { width, height: width === 320 ? 568 : 1024 }, touch: true });
+    try {
+      await f.workspace.getByRole('tab', { name: 'Результаты', exact: true }).tap();
+      await f.workspace.getByRole('button', { name: /Сравнение поставщиков/ }).tap();
+      await expect(f.workspace.getByRole('region', { name: 'Сравнение поставщиков', exact: true })).toBeVisible();
+      assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      await f.workspace.getByRole('button', { name: 'Редактировать', exact: true }).tap();
+      await f.workspace.getByRole('textbox', { name: 'Цена, строка r1', exact: true }).fill('1800');
+      await f.workspace.getByRole('button', { name: 'Сохранить', exact: true }).tap();
+      await expect.poll(() => f.state.savedSpec?.rows[0].cells.price).toBe('1800');
+      await f.page.screenshot({ path: `${output}/project-${width}-touch.png`, animations: 'disabled' });
+    } finally { await f.context.close(); }
+  });
+  await test('presentation: nested admin routes navigate after router upgrade', async () => {
+    const f = await fixture({ admin: true, startPath: '/admin', handleRoute: async ({ path, route }) => {
+      if (path === '/admin/users') { await route.fulfill({ json: { total: 0, offset: 0, limit: 25, items: [] } }); return true; }
+      if (path === '/admin/stats') { await route.fulfill({ json: { total_users: 12, total_conversations: 34, total_messages: 56 } }); return true; }
+    } });
+    try {
+      await expect(f.page).toHaveURL(/\/admin\/users$/);
+      await expect(f.page.getByText('Админ-панель', { exact: true })).toBeVisible();
+      await f.page.getByRole('button', { name: 'Статистика', exact: true }).click();
+      await expect(f.page).toHaveURL(/\/admin\/stats$/);
+      await expect(f.page.getByText('56', { exact: true })).toBeVisible();
+      await f.page.goBack();
+      await expect(f.page).toHaveURL(/\/admin\/users$/);
+    } finally { await f.context.close(); }
+  });
+  await test('presentation: non-admin cannot render nested admin pages', async () => {
+    const f = await fixture({ startPath: '/admin/stats' });
+    try { await expect(f.page.getByText('Доступ запрещён', { exact: true })).toBeVisible(); }
+    finally { await f.context.close(); }
+  });
+  await test('presentation: registration preserves protected destination', async () => {
+    const f = await fixture({ signedOut: true, startPath: '/register?next=%2Fbilling', handleRoute: async ({ path, route }) => {
+      if (path === '/auth/register') { await route.fulfill({ json: { access_token: 'registered-access', refresh_token: 'registered-refresh' } }); return true; }
+      if (path === '/billing/plans') { await route.fulfill({ json: { plans: [] } }); return true; }
+    } });
+    try {
+      await f.page.getByRole('textbox', { name: /^Имя/ }).fill('Анна');
+      await f.page.getByRole('textbox', { name: /Email/ }).fill('new@example.com');
+      await f.page.getByLabel(/^Пароль/).fill('password123');
+      await f.page.locator('form').getByRole('button', { name: 'Зарегистрироваться', exact: true }).click();
+      await expect(f.page).toHaveURL(/\/billing$/);
+      await expect(f.page.getByText('Общий запас', { exact: true })).toBeVisible();
+    } finally { await f.context.close(); }
+  });
+  await test('presentation: settings memory outage blocks overwrite; skill import and prompt deletion failures stay visible', async () => {
+    const f = await fixture({ startPath: '/settings', memoryFail: true, skillFail: true, promptFail: true, handleRoute: async ({ path, method, route, state }) => {
+      let data;
+      if (path === '/memory') {
+        if (state.memoryFail) { await route.fulfill({ status: 503, json: { detail: 'Temporary outage' } }); return true; }
+        data = { notes: 'Предпочитаю краткие ответы', enabled: true, updated_at: 1 };
+      } else if (path === '/skills') data = { items: [], custom_count: 0, custom_limit: 20 };
+      else if (path === '/skills/import') {
+        state.skillImports = (state.skillImports || 0) + 1;
+        if (state.skillFail) { await route.fulfill({ status: 400, json: { detail: 'В архиве нет SKILL.md' } }); return true; }
+        data = { ok: true };
+      } else if (path === '/models/prompts') data = { prompts: state.promptDeleted ? [] : ['Показывать итог первым'], active: null };
+      else if (path === '/models/prompts/0' && method === 'DELETE') {
+        if (state.promptFail) { await route.fulfill({ status: 503, json: { detail: 'Не удалось удалить правило' } }); return true; }
+        state.promptDeleted = true; data = { ok: true };
+      } else return false;
+      await route.fulfill({ json: data }); return true;
+    } });
+    try {
+      const memory = f.page.getByRole('region', { name: 'Память аккаунта', exact: true });
+      await expect(memory.getByRole('alert')).toContainText('Не удалось загрузить память');
+      await expect(memory.getByRole('button', { name: 'Изменить', exact: true })).toBeDisabled();
+      await expect(memory.getByRole('switch')).toBeDisabled();
+      f.state.memoryFail = false;
+      await memory.getByRole('button', { name: 'Повторить', exact: true }).click();
+      await expect(memory.getByText('Предпочитаю краткие ответы', { exact: true })).toBeVisible();
+      const skills = f.page.getByRole('region', { name: 'Навыки аккаунта', exact: true });
+      const upload = skills.locator('input[type=file]');
+      const skill = { name: 'SKILL.md', mimeType: 'text/markdown', buffer: Buffer.from('invalid') };
+      await upload.setInputFiles(skill);
+      await expect(skills.getByRole('alert')).toContainText('В архиве нет SKILL.md');
+      f.state.skillFail = false;
+      await upload.setInputFiles(skill);
+      await expect(skills.getByRole('alert')).toBeHidden();
+      assert.equal(f.state.skillImports, 2);
+      await f.page.getByRole('button', { name: 'Удалить', exact: true }).click();
+      await expect(f.page.getByRole('alert')).toContainText('Не удалось удалить правило');
+      await expect(f.page.getByText('Показывать итог первым', { exact: true })).toBeVisible();
+      f.state.promptFail = false;
+      await f.page.getByRole('button', { name: 'Удалить', exact: true }).click();
+      await expect(f.page.getByText('Показывать итог первым', { exact: true })).toBeHidden();
+      await expect(f.page.getByRole('alert')).toBeHidden();
+    } finally { await f.context.close(); }
+  });
+  await test('presentation: orchestrator enrollment retry preserves draft and idempotency; pause and resume work on mobile', async () => {
+    const f = await fixture({ model: 'director', viewport: { width: 390, height: 844 }, touch: true, enrollmentFail: true, handleRoute: async ({ path, method, route, state }) => {
+      if (path === '/computer/tasks') {
+        if (method === 'POST') {
+          const payload = route.request().postDataJSON();
+          (state.taskRequests ||= []).push(payload);
+          if (state.enrollmentFail) { await route.fulfill({ status: 503, json: { detail: 'Временно недоступно' } }); return true; }
+          state.task = { id: 'task-demo', status: 'queued', enabled: true, conversation_id: payload.conversation_id, prompt: payload.prompt, progress: '', error: '', run_number: 1 };
+          await route.fulfill({ json: state.task });
+        } else await route.fulfill({ json: state.task ? [state.task] : [] });
+        return true;
+      }
+      if (path === '/computer/tasks/task-demo/pause' || path === '/computer/tasks/task-demo/resume') {
+        state.task.status = path.endsWith('/pause') ? 'paused' : 'running';
+        await route.fulfill({ json: state.task }); return true;
+      }
+    } });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('Подготовь отчёт из документов проекта');
+      await f.page.getByRole('button', { name: 'Отправить сообщение', exact: true }).tap();
+      await expect(f.input).toHaveValue('Подготовь отчёт из документов проекта');
+      await expect(f.page.getByText(/Не удалось отправить сообщение:/).first()).toBeVisible();
+      f.state.enrollmentFail = false;
+      await f.page.getByRole('button', { name: 'Отправить сообщение', exact: true }).tap();
+      const task = f.page.getByRole('region', { name: 'Фоновая задача', exact: true });
+      await expect(task).toBeVisible();
+      assert.equal(f.state.taskRequests[0].idempotency_key, f.state.taskRequests[1].idempotency_key);
+      await task.getByRole('button', { name: 'Приостановить', exact: true }).tap();
+      await expect(task.getByText('Задача на паузе', { exact: true })).toBeVisible();
+      await task.getByRole('button', { name: 'Продолжить задачу', exact: true }).tap();
+      await expect(task.getByText('Задача выполняется в фоне', { exact: true })).toBeVisible();
+    } finally { await f.context.close(); }
+  });
+  await test('presentation: image edit failure preserves prompt and retries the original image', async () => {
+    const f = await fixture({ imageHistory: true, imageFail: true, handleRoute: async ({ path, route, state, history }) => {
+      if (path !== '/media/images/generate') return false;
+      const payload = route.request().postDataJSON(); (state.imageRequests ||= []).push(payload);
+      if (state.imageFail) await route.fulfill({ status: 503, json: { detail: 'Рисование временно недоступно' } });
+      else {
+        history['chat-a'].push({ id: 'image-edited', role: 'assistant', content: '![Отредактированное изображение](/uploads/audit-edited.png)' });
+        await route.fulfill({ json: { kind: 'edit', url: '/uploads/audit-edited.png', message: { id: 'image-edited' } } });
+      }
+      return true;
+    } });
+    try {
+      await f.page.getByRole('button', { name: 'Изменить', exact: true }).click();
+      await f.input.fill('Сделай фон светлее');
+      await f.page.getByRole('button', { name: 'Отправить сообщение', exact: true }).click();
+      await expect(f.page.getByText(/Рисование временно недоступно/).first()).toBeVisible();
+      await expect(f.input).toHaveValue('Сделай фон светлее');
+      f.state.imageFail = false;
+      await f.page.getByRole('button', { name: 'Отправить сообщение', exact: true }).click();
+      await expect(f.page.getByRole('button', { name: 'Открыть изображение: Отредактированное изображение', exact: true })).toBeVisible();
+      assert.deepEqual(f.state.imageRequests.map(r => r.source_urls), [['/uploads/audit-source.png'], ['/uploads/audit-source.png']]);
+      assert(f.state.imageRequests.every(r => r.conversation_id === 'chat-a'));
+    } finally { await f.context.close(); }
+  });
+  for (const uploadError of [false, true]) await test(`presentation: project upload ${uploadError ? 'failure blocks binding' : 'uses working API and binds document'}`, async () => {
+    const f = await projectFixture({ uploadError });
+    try {
+      await f.workspace.locator('input[type=file]').setInputFiles({ name: 'brief.txt', mimeType: 'text/plain', buffer: Buffer.from('Материалы для презентации') });
+      if (uploadError) {
+        await expect(f.workspace.getByRole('alert')).toContainText('Не удалось прочитать документ');
+        assert.equal(f.state.documentReads, undefined); assert.equal(f.state.boundDocument, undefined);
+      } else {
+        await expect.poll(() => f.state.boundDocument).toBe(42);
+        assert.equal(f.state.lookupFilename, 'brief.txt');
+        await expect(f.workspace.getByText('Материалы для презентации', { exact: true })).toBeVisible();
+      }
+      assert.equal(f.state.wrongUpload, undefined);
+    } finally { await f.context.close(); }
+  });
+  await test('presentation: project table save conflict preserves edits and retry saves exact revision', async () => {
+    const f = await projectFixture({ saveError: true });
+    try {
+      await f.workspace.getByRole('tab', { name: 'Результаты', exact: true }).click();
+      await f.workspace.getByRole('button', { name: /Сравнение поставщиков/ }).click();
+      await f.workspace.getByRole('button', { name: 'Редактировать', exact: true }).click();
+      const price = f.workspace.getByRole('textbox', { name: 'Цена, строка r1', exact: true });
+      await price.fill('1700');
+      await f.workspace.getByRole('button', { name: 'Сохранить', exact: true }).click();
+      await expect(f.workspace.getByRole('alert')).toContainText('Версия изменилась');
+      await expect(price).toHaveValue('1700');
+      f.state.saveError = false;
+      await f.workspace.getByRole('button', { name: 'Сохранить', exact: true }).click();
+      await expect.poll(() => f.state.savedSpec?.rows[0].cells.price).toBe('1700');
+      await expect(price).toBeHidden();
+    } finally { await f.context.close(); }
+  });
+  await test('presentation: billing outage has retry instead of invented free limits', async () => {
+    const f = await fixture({ startPath: '/billing', handleRoute: async ({ path, route, state }) => {
+      if (path !== '/billing/subscription') return false;
+      if (!state.recovered) await route.fulfill({ status: 503, json: { detail: 'Temporary outage' } });
+      else await route.fulfill({ json: { tier: 'pro', name: 'Профи', unlimited: true } });
+      return true;
+    } });
+    try {
+      await expect(f.page.getByRole('alert')).toContainText('Не удалось загрузить тариф');
+      await expect(f.page.getByText('без срока', { exact: true })).toBeHidden();
+      f.state.recovered = true;
+      await f.page.getByRole('button', { name: 'Повторить', exact: true }).click();
+      await expect(f.page.getByText('Профи', { exact: true })).toBeVisible();
+      await expect(f.page.getByRole('alert')).toBeHidden();
+    } finally { await f.context.close(); }
+  });
+  await test('presentation: login preserves invite destination while profile is loading', async () => {
+    const f = await fixture({ signedOut: true, startPath: '/join/demo-invite', handleRoute: async ({ path, route, profile, state }) => {
+      if (path === '/auth/login') { await route.fulfill({ json: { access_token: 'new-access', refresh_token: 'new-refresh' } }); return true; }
+      if (path === '/auth/me') { await new Promise(resolve => setTimeout(resolve, 350)); await route.fulfill({ json: profile }); return true; }
+      if (path === '/share/demo-invite/join') { state.joined = true; await route.fulfill({ json: { id: 'chat-b' } }); return true; }
+    } });
+    try {
+      await f.page.getByRole('textbox', { name: /Email/ }).fill('audit@example.com');
+      await f.page.getByLabel(/^Пароль/).fill('password123');
+      await f.page.locator('form').getByRole('button', { name: 'Войти', exact: true }).click();
+      await expect.poll(() => f.state.joined).toBe(true);
+      await expect(f.page).toHaveURL(/\/chat(?:\?c=chat-b)?$/);
+      await expect(f.page.getByText('Вопрос второй беседы', { exact: true }).first()).toBeVisible();
+    } finally { await f.context.close(); }
+  });
+  await test('presentation: mobile public menu has a working login', async () => {
+    const f = await fixture({ signedOut: true, startPath: '/', viewport: { width: 390, height: 844 }, touch: true });
+    try {
+      await f.page.getByRole('button', { name: 'Меню', exact: true }).tap();
+      await f.page.getByRole('link', { name: 'Войти', exact: true }).tap();
+      await expect(f.page.getByRole('textbox', { name: /Email/ })).toBeVisible();
+      await expect(f.page.getByRole('button', { name: 'Закрыть меню', exact: true })).toBeHidden();
+    } finally { await f.context.close(); }
+  });
+  await test('new conversation creates a separate empty chat every time', async () => {
+    const f = await fixture();
+    try {
+      await expect(f.input).toBeEnabled();
+      const create = f.page.getByRole('button', { name: 'Новый вопрос', exact: true });
+      await create.click();
+      await expect.poll(() => f.state.created.length).toBe(1);
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('Черновик первого нового чата');
+      await create.click();
+      await expect.poll(() => f.state.created.length).toBe(2);
+      await expect(f.input).toBeEnabled();
+      await expect(f.input).toHaveValue('');
+      await expect(f.page.getByRole('button', { name: 'Открыть беседу Новый чат', exact: true })).toHaveCount(2);
+      await f.page.getByRole('button', { name: 'Открыть беседу Новый чат', exact: true }).last().click();
+      await expect(f.input).toHaveValue('Черновик первого нового чата');
+    } finally { await f.context.close(); }
+  });
+  await test('new conversation rapid clicks create distinct chats and keep latest active', async () => {
+    const f = await fixture({ createDelay: 180 });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.page.getByRole('button', { name: 'Новый вопрос', exact: true }).evaluate(button => { button.click(); button.click(); button.click(); });
+      await expect.poll(() => f.state.created.length).toBe(3);
+      await expect(f.input).toBeEnabled();
+      assert.equal(new Set(f.state.created).size, 3);
+      await expect.poll(() => f.state.historyLoads.at(-1)).toBe(f.state.created.at(-1));
+      assert.equal(f.state.activeId, f.state.created.at(-1));
+      await f.page.reload();
+      await expect(f.input).toBeEnabled();
+      await expect.poll(() => f.state.historyLoads.at(-1)).toBe(f.state.created.at(-1));
+    } finally { await f.context.close(); }
+  });
+  await test('new conversation works while another chat generates an answer', async () => {
+    const f = await fixture({ holdAnswer: true });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('Долгий вопрос в первой беседе');
+      await f.input.press('Enter');
+      await expect(f.page.getByRole('button', { name: 'Остановить генерацию', exact: true })).toBeVisible();
+      await f.page.getByRole('button', { name: 'Новый вопрос', exact: true }).click();
+      await expect.poll(() => f.state.created.length).toBe(1);
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('Независимый вопрос');
+      await f.input.press('Enter');
+      await expect.poll(() => f.state.sends.length).toBe(2);
+      assert.deepEqual(f.state.sends.map(item => item.conversation_id), ['chat-a', f.state.created[0]]);
+    } finally { await f.context.close(); }
+  });
+  await test('new conversation failure preserves current chat and allows retry', async () => {
+    const f = await fixture({ failCreate: true });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('Сохранить текущий черновик');
+      const create = f.page.getByRole('button', { name: 'Новый вопрос', exact: true });
+      await create.click();
+      await expect(f.page.getByText(/Не удалось создать беседу/)).toBeVisible();
+      await expect(f.input).toHaveValue('Сохранить текущий черновик');
+      f.state.failCreate = false;
+      await create.click();
+      await expect.poll(() => f.state.created.length).toBe(1);
+      await expect(f.input).toBeEnabled();
+    } finally { await f.context.close(); }
+  });
+  await test('new conversation creates separate chats from the mobile sidebar', async () => {
+    const f = await fixture({ viewport: { width: 390, height: 844 }, touch: true });
+    try {
+      await expect(f.input).toBeEnabled();
+      for (let count = 1; count <= 2; count++) {
+        await f.page.getByRole('button', { name: 'Открыть список бесед', exact: true }).click();
+        await f.page.getByRole('button', { name: 'Новый вопрос', exact: true }).click();
+        await expect.poll(() => f.state.created.length).toBe(count);
+        await expect.poll(() => f.state.historyLoads.at(-1)).toBe(f.state.created.at(-1));
+        await expect(f.input).toBeEnabled();
+        await expect(f.page.getByRole('button', { name: 'Закрыть меню', exact: true })).toBeHidden();
+      }
+      await f.page.getByRole('button', { name: 'Открыть список бесед', exact: true }).click();
+      await expect(f.page.getByRole('button', { name: 'Открыть беседу Новый чат', exact: true })).toHaveCount(2);
+    } finally { await f.context.close(); }
+  });
+  await test('new conversation finishing late preserves a later chat selection', async () => {
+    const f = await fixture({ createDelay: 500 });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.page.getByRole('button', { name: 'Новый вопрос', exact: true }).click();
+      await f.select('Вторая беседа');
+      await expect.poll(() => f.state.created.length).toBe(1);
+      await expect.poll(() => f.state.activeId).toBe('chat-b');
+      await expect(f.page.getByText('Вопрос второй беседы', { exact: true }).first()).toBeVisible();
+      await f.page.reload();
+      await expect(f.page.getByText('Вопрос второй беседы', { exact: true }).first()).toBeVisible();
+    } finally { await f.context.close(); }
+  });
+  await test('new conversation queued requests stop after logout', async () => {
+    const f = await fixture({ createDelay: 300 });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.page.getByRole('button', { name: 'Новый вопрос', exact: true }).evaluate(button => { button.click(); button.click(); button.click(); });
+      await expect.poll(() => f.state.createRequests).toBe(1);
+      await f.page.evaluate(async () => {
+        const { useAuthStore } = await import('/src/stores/authStore.ts');
+        useAuthStore.getState().logout();
+      });
+      await expect(f.page.locator('form').getByRole('button', { name: 'Войти', exact: true })).toBeVisible();
+      await f.page.waitForTimeout(800);
+      assert.equal(f.state.createRequests, 1);
+    } finally { await f.context.close(); }
+  });
+  for (const auth of ['network', '500', 'refresh-network', 'refresh-500']) await test('temporary auth failure keeps session: ' + auth, async () => {
+    const f = await fixture({ auth });
+    try {
+      try { await expect(f.input).toBeVisible(); }
+      catch (error) { console.error('PAGE', f.page.url(), await f.page.locator('body').innerText()); throw error; }
+      await expect(f.page).toHaveURL(/\/chat$/);
+      assert.equal(await f.page.evaluate(() => JSON.parse(localStorage.getItem('gpt-ultra-auth')).state.accessToken), 'audit-access');
+    } finally { await f.context.close(); }
+  });
+  await test('revoked refresh returns to login', async () => {
+    const f = await fixture({ auth: 'refresh-invalid' });
+    try { await expect(f.page.locator('form').getByRole('button', { name: 'Войти', exact: true })).toBeVisible(); }
+    finally { await f.context.close(); }
+  });
+  await test('drafts and files belong to their chat; text survives reload', async () => {
+    const f = await fixture();
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('Черновик первой беседы');
+      await f.page.locator('input[type=file]').setInputFiles({ name: 'draft.txt', mimeType: 'text/plain', buffer: Buffer.from('draft attachment') });
+      await f.select('Вторая беседа');
+      await expect(f.input).toHaveValue('');
+      await expect(f.page.getByRole('button', { name: 'Убрать draft.txt' })).toHaveCount(0);
+      await f.input.fill('Черновик второй беседы');
+      await f.select('Первая беседа');
+      await expect(f.input).toHaveValue('Черновик первой беседы');
+      await expect(f.page.getByRole('button', { name: 'Убрать draft.txt' })).toBeVisible();
+      await f.page.reload();
+      await expect(f.input).toHaveValue('Черновик первой беседы');
+    } finally { await f.context.close(); }
+  });
+  await test('IME confirmation does not send; Enter sends once and clears accepted draft', async () => {
+    const f = await fixture();
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('日本語');
+      await f.input.dispatchEvent('keydown', { key: 'Enter', code: 'Enter', isComposing: true });
+      assert.equal(f.state.sends.length, 0);
+      await expect(f.input).toHaveValue('日本語');
+      await f.input.press('Enter');
+      await expect.poll(() => f.state.sends.length).toBe(1);
+      await expect(f.input).toHaveValue('');
+    } finally { await f.context.close(); }
+  });
+  await test('history failure has explicit retry and preserves draft', async () => {
+    const f = await fixture();
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('Не потерять этот текст');
+      f.state.historyError = true;
+      await f.page.reload();
+      await expect(f.page.getByRole('button', { name: 'Повторить загрузку' })).toBeVisible();
+      await expect(f.input).toHaveValue('Не потерять этот текст');
+      f.state.historyError = false;
+      await f.page.getByRole('button', { name: 'Повторить загрузку' }).click();
+      await expect(f.input).toBeEnabled();
+    } finally { await f.context.close(); }
+  });
+  await test('late chat activation cannot override latest selection', async () => {
+    const f = await fixture();
+    try {
+      await expect(f.input).toBeEnabled();
+      f.state.delay['chat-b'] = 900;
+      await f.select('Вторая беседа');
+      await f.select('Первая беседа');
+      await f.page.waitForTimeout(1100);
+      await expect(f.page.getByText('Вопрос первой беседы', { exact: true }).first()).toBeVisible();
+      await expect(f.page.getByText('Вопрос второй беседы', { exact: true })).toHaveCount(0);
+    } finally { await f.context.close(); }
+  });
+  await test('partial attachment failure blocks send; retry only uploads failed file', async () => {
+    const f = await fixture({ failFile: 'failed.txt' });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('Прочитай оба файла');
+      await f.page.locator('input[type=file]').setInputFiles([
+        { name: 'ready.txt', mimeType: 'text/plain', buffer: Buffer.from('ready') },
+        { name: 'failed.txt', mimeType: 'text/plain', buffer: Buffer.from('failed') },
+      ]);
+      await f.page.getByRole('button', { name: 'Отправить сообщение', exact: true }).click();
+      await expect(f.input).toBeEnabled();
+      await expect(f.page.getByText(/Не загружено файлов: 1/).first()).toBeVisible();
+      assert.equal(f.state.sends.length, 0);
+      await expect(f.input).toHaveValue('Прочитай оба файла');
+      f.state.failFile = '';
+      await f.page.getByRole('button', { name: 'Отправить сообщение', exact: true }).click();
+      await expect.poll(() => f.state.sends.length).toBe(1);
+      assert.deepEqual(f.state.uploads.sort(), ['failed.txt', 'failed.txt', 'ready.txt']);
+    } finally { await f.context.close(); }
+  });
+  await test('microphone stops when conversation changes', async () => {
+    const f = await fixture({ mockVoice: true });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.page.getByRole('button', { name: 'Голосовой ввод', exact: true }).click();
+      await expect(f.page.getByRole('button', { name: 'Остановить запись', exact: true })).toBeVisible();
+      await f.select('Вторая беседа');
+      await expect.poll(() => f.page.evaluate(() => window.auditStoppedTracks)).toBe(1);
+      await expect(f.page.getByRole('button', { name: 'Голосовой ввод', exact: true })).toBeVisible();
+    } finally { await f.context.close(); }
+  });
+  await test('late upload error stays in its original conversation', async () => {
+    const f = await fixture({ failFile: 'failed.txt', uploadDelay: 700 });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('Черновик с неготовым файлом');
+      await f.page.locator('input[type=file]').setInputFiles({ name: 'failed.txt', mimeType: 'text/plain', buffer: Buffer.from('failed') });
+      await f.page.getByRole('button', { name: 'Отправить сообщение', exact: true }).click();
+      await f.select('Вторая беседа');
+      await expect(f.input).toBeEnabled();
+      await expect(f.input).toHaveValue('');
+      await expect(f.page.getByText(/Не загружено файлов:/)).toHaveCount(0);
+      await f.select('Первая беседа');
+      await expect(f.input).toHaveValue('Черновик с неготовым файлом');
+    } finally { await f.context.close(); }
+  });
+  await test('pre-cancelled document upload rejects without uploading', async () => {
+    const f = await fixture();
+    try {
+      await expect(f.input).toBeEnabled();
+      const result = await f.page.evaluate(async () => {
+        const { apiFormDataProgress } = await import('/src/api/client.ts');
+        const controller = new AbortController(); controller.abort();
+        try { await apiFormDataProgress('/documents', new FormData(), { signal: controller.signal }); return 'unexpected success'; }
+        catch (error) { return error.name; }
+      });
+      assert.equal(result, 'AbortError');
+      assert.deepEqual(f.state.uploads, []);
+    } finally { await f.context.close(); }
+  });
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }, { width: 320, height: 568 }]) {
+    for (const theme of ['dark', 'light']) await test(`layout ${viewport.width}x${viewport.height} ${theme}`, async () => {
+      const f = await fixture({ viewport, theme, touch: viewport.width < 600 });
+      try {
+        await expect(f.input).toBeEnabled();
+        await f.input.fill('Длинный вопрос с подробностями. '.repeat(16));
+        assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+        const bounds = await f.input.boundingBox();
+        assert(bounds.x >= 0 && bounds.x + bounds.width <= viewport.width + 1 && bounds.y >= 0 && bounds.y + bounds.height <= viewport.height);
+        const send = await f.page.getByRole('button', { name: 'Отправить сообщение', exact: true }).boundingBox();
+        assert(send.x >= 0 && send.x + send.width <= viewport.width && send.y + send.height <= viewport.height);
+        await f.page.screenshot({ path: `${output}/chat-${viewport.width}-${theme}.png`, animations: 'disabled' });
+      } finally { await f.context.close(); }
+    });
+  }
+  const accessibility = [];
+  for (const width of process.env.BITTHINK_UI_SKIP_SURFACES ? [] : [390, 1440]) for (const theme of ['light', 'dark']) for (const surface of ['login', 'landing', 'billing', 'settings', 'project']) {
+    await test(`presentation: surface ${surface} ${width} ${theme}`, async () => {
+      const options = { viewport: { width, height: width < 600 ? 844 : 900 }, touch: width < 600, theme };
+      const f = surface === 'project' ? await projectFixture(options) : await fixture({ ...options, startPath: { login: '/login', landing: '/', billing: '/billing', settings: '/settings' }[surface], signedOut: surface === 'login' || surface === 'landing', handleRoute: async ({ path, route }) => {
+        if (path === '/models/prompts') { await route.fulfill({ json: { prompts: [], active: null } }); return true; }
+        if (path === '/billing/plans') { await route.fulfill({ json: { plans: [] } }); return true; }
+      } });
+      try {
+        if (surface === 'project') {
+          await f.workspace.getByRole('tab', { name: 'Результаты', exact: true }).click();
+          await f.workspace.getByRole('button', { name: /Сравнение поставщиков/ }).click();
+          await expect(f.workspace.getByRole('region', { name: 'Сравнение поставщиков', exact: true })).toBeVisible();
+        } else await expect(f.page.locator('#main')).toContainText({ login: 'С возвращением', landing: 'Bit', billing: 'Общий запас', settings: 'Настройки' }[surface]);
+        await f.page.evaluate(() => document.fonts.ready);
+        assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `${surface} overflows at ${width}`);
+        await f.page.screenshot({ path: `${output}/${surface}-${width}-${theme}.png`, animations: 'disabled', fullPage: true });
+        if (process.env.BITTHINK_AXE_PATH) {
+          await f.page.addScriptTag({ path: process.env.BITTHINK_AXE_PATH });
+          const violations = await f.page.evaluate(async () => (await window.axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } })).violations.map(v => ({ id: v.id, impact: v.impact, description: v.description, nodes: v.nodes.map(n => ({ target: n.target, summary: n.failureSummary })) })));
+          accessibility.push({ surface, width, theme, violations });
+          console.log(`A11Y ${surface} ${width} ${theme}: ${violations.map(v => v.id + '(' + v.nodes.length + ')').join(', ') || 'no violations'}`);
+        }
+      } finally { await f.context.close(); }
+    });
+  }
+  if (accessibility.length) await writeFile(`${output}/accessibility.json`, JSON.stringify(accessibility, null, 2));
+  assert.deepEqual(errors, [], 'No uncaught browser exceptions');
+  console.log(`PASS ${passed} UX checks; no browser exceptions`);
+} finally { await browser.close(); }

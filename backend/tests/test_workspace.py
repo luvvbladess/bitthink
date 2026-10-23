@@ -559,5 +559,5 @@ def test_landlock_hides_another_users_workspace(tmp_path, monkeypatch):
     )
     dispatch(attacker, "write", {"path": "peek.py", "content": script})
     output = dispatch(attacker, "run", {"path": "peek.py", "argv": [str(secret)]})
-    assert "BLOCKED" in output
+    assert "BLOCKED" in output or "Запуск остановлен:" in output
     assert "LEAK" not in output

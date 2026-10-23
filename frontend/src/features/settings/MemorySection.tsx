@@ -15,7 +15,7 @@ export function MemorySection() {
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState('');
-  const { data, isLoading } = useQuery<Memory>({
+  const { data, isLoading, error: loadError, refetch } = useQuery<Memory>({
     queryKey: ['memory'],
     queryFn: () => apiFetch('/memory'),
   });
@@ -46,7 +46,8 @@ export function MemorySection() {
   const busy = save.isPending || clear.isPending;
 
   return (
-    <Box>
+    <Box component="section" aria-label="Память аккаунта">
+      {loadError && <Alert severity="error" action={<Button color="inherit" onClick={() => void refetch()}>Повторить</Button>}>Не удалось загрузить память. Сохранённые предпочтения не изменены.</Alert>}
       <Stack direction="row" alignItems="center" justifyContent="space-between" gap={1.5} sx={{ mb: 1.5 }}>
         <Box
           component="button"
@@ -54,7 +55,7 @@ export function MemorySection() {
           role="switch"
           aria-checked={enabled}
           aria-label={enabled ? 'Выключить память' : 'Включить память'}
-          disabled={busy || isLoading}
+          disabled={busy || isLoading || !data}
           onClick={() => save.mutate({ enabled: !enabled })}
           sx={{
             display: 'flex',
@@ -82,7 +83,7 @@ export function MemorySection() {
         </Box>
         <Button
           onClick={() => clear.mutate()}
-          disabled={busy || !notes}
+          disabled={busy || !data || !notes}
           sx={{ minHeight: 44, px: 0, color: 'text.secondary' }}
         >
           Очистить
@@ -92,6 +93,7 @@ export function MemorySection() {
       {editing ? (
         <Stack spacing={1.25}>
           <TextField
+            disabled={busy}
             value={notes}
             onChange={(e) => setDraft(e.target.value)}
             multiline
@@ -103,7 +105,7 @@ export function MemorySection() {
             <Button variant="contained" onClick={() => save.mutate({ notes })} disabled={busy} sx={{ minHeight: 44, borderRadius: '999px' }}>
               Сохранить
             </Button>
-            <Button onClick={() => setDraft(null)} sx={{ minHeight: 44 }}>
+            <Button onClick={() => setDraft(null)} disabled={busy} sx={{ minHeight: 44 }}>
               Отмена
             </Button>
           </Stack>
@@ -120,11 +122,11 @@ export function MemorySection() {
               opacity: enabled ? 1 : 0.7,
             }}
           >
-            {isLoading ? 'Загружаю…' : notes || 'Пока пусто. Сюда попадёт стиль и формат, если вы об этом скажете. Текущие задачи не запоминаются.'}
+            {isLoading ? 'Загружаю…' : loadError && !data ? 'Предпочтения временно недоступны.' : notes || 'Пока пусто. Сюда попадёт стиль и формат, если вы об этом скажете. Текущие задачи не запоминаются.'}
           </Typography>
           <Button
             onClick={() => setDraft(data?.notes || '')}
-            disabled={isLoading}
+            disabled={busy || isLoading || !data}
             sx={{ mt: 0.5, minHeight: 44, px: 0, color: 'primary.light' }}
           >
             Изменить

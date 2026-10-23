@@ -96,7 +96,7 @@ def test_nothing_found_says_so_without_the_old_excuse(monkeypatch, blocked):
     monkeypatch.setattr(search_engine, "search_web", nothing)
     _, text = asyncio.run(ws.fetch_url_content(OZON))
     assert text.startswith("[Сайт защищён")
-    assert "не пиши «нет соединения»" in text
+    assert "не открылся" in text
 
 
 def test_a_dead_proxy_costs_one_timeout_not_one_per_page(monkeypatch):

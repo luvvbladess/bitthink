@@ -12,6 +12,7 @@ import aiohttp
 
 DEFAULT_SANDBOX_URL = "http://sandbox:8090"
 TOOL_OPS = {
+    "diagram_create": "diagram",
     "workspace_ls": "ls",
     "workspace_read": "read",
     "workspace_write": "write",

@@ -169,7 +169,12 @@ async def _generate_and_send(
 
     from marketplace_verification import single_store_price_lookup
     reader_detail = "overview" if single_store_price_lookup(prompt_content) else "full"
-    with turn_conversation(conversation_id, reader_detail=reader_detail), delivery(post_now):
+    from app.services import project_policy
+    try:
+        policy = await asyncio.to_thread(project_policy.settings, bot_user_id, conversation_id) if conversation_id else None
+    except ValueError:
+        policy = None  # Shared rooms never inherit a private project's context.
+    with turn_conversation(conversation_id, reader_detail=reader_detail), delivery(post_now), project_policy.scope(policy):
         from app.services.project_memory import project_context, context as project_context_for
         project_note = await asyncio.to_thread(project_context_for, bot_user_id, conversation_id, prompt_content)
         project_token = project_context.set(project_note)
@@ -242,6 +247,20 @@ async def _generate_and_send(
     if attachment and len(outgoing) > 1:
         attachment = {**attachment, "files": [meta for _, _, meta in outgoing]}
 
+    # Bind edit affordances to real persisted results, never to guessed titles.
+    search_results = [item for item in (search_results or []) if item.get('query') != '__project_results__']
+    try:
+        from app.services.project_results import answer_references
+        if not saved_project_results:
+            captured = await asyncio.to_thread(capture_answer,bot_user_id,conversation_id,prompt_content,response_text)
+            if captured:saved_project_results.append(captured['id'])
+        refs = await asyncio.to_thread(answer_references,bot_user_id,conversation_id,saved_project_results)
+        if refs:
+            import json
+            search_results.append({'query':'__project_results__','summary':json.dumps(refs,ensure_ascii=False)})
+    except Exception:
+        logger.exception('Could not bind editable project results to answer')
+
     # Persistence is the commit point. UI delivery is best-effort and may be
     # resumed by polling/refetch after a WebSocket reconnect.
     await repo.add_message(
@@ -263,8 +282,6 @@ async def _generate_and_send(
     try:
         from app.services.project_memory import suggest_from_turn
         await asyncio.to_thread(suggest_from_turn, bot_user_id, conversation_id, prompt_content)
-        if not saved_project_results:
-            await asyncio.to_thread(capture_answer,bot_user_id,conversation_id,prompt_content,response_text)
     except Exception:
         logger.exception('Project memory suggestion could not be saved')
 

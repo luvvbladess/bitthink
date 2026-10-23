@@ -25,8 +25,13 @@ HEADERS = {'User-Agent': 'Mozilla/5.0 (compatible; BitThinkSearch/1.0)',
            'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.7'}
 
 
+from contextvars import ContextVar
+
+orchestrator_search = ContextVar("orchestrator_server_search", default=False)
+
+
 def use_server_search() -> bool:
-    return os.getenv('WEB_SEARCH_BACKEND', 'server').strip().lower() == 'server'
+    return orchestrator_search.get() or os.getenv('WEB_SEARCH_BACKEND', 'server').strip().lower() == 'server'
 
 
 def safe_result_url(value: str) -> str:

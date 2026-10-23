@@ -18,6 +18,15 @@ class ProjectChat(Base):
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
 
 
+class ProjectContextSettings(Base):
+    __tablename__ = 'project_context_settings'
+    conversation_id: Mapped[str] = mapped_column(ForeignKey('conversations.id', ondelete='CASCADE'), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey('projects.id', ondelete='CASCADE'), index=True)
+    policy: Mapped[str] = mapped_column(Text, default='{}')
+    last_used: Mapped[str] = mapped_column(Text, default='[]')
+    updated_at: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
 class ProjectEntry(Base):
     __tablename__ = "project_entries"
     id: Mapped[str] = mapped_column(String(32), primary_key=True)

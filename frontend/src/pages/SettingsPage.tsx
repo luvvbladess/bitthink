@@ -39,7 +39,7 @@ export default function SettingsPage() {
     if (!isEditingName) setNameInput(user?.first_name || '');
   }, [user?.first_name, isEditingName]);
 
-  const { data: prompts } = useQuery({ queryKey: ['prompts'], queryFn: () => apiFetch('/models/prompts') });
+  const { data: prompts, error: promptsError, refetch: reloadPrompts } = useQuery({ queryKey: ['prompts'], queryFn: () => apiFetch('/models/prompts') });
   const { data: sub } = useQuery<Subscription>({
     queryKey: ['subscription'],
     queryFn: () => apiFetch('/billing/subscription'),
@@ -58,12 +58,14 @@ export default function SettingsPage() {
 
   const deletePrompt = useMutation({
     mutationFn: (index: number) => apiFetch(`/models/prompts/${index}`, { method: 'DELETE' }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['prompts'] }),
+    onSuccess: () => { setError(''); queryClient.invalidateQueries({ queryKey: ['prompts'] }); },
+    onError: (err: Error) => setError(err.message || 'Не удалось удалить правило'),
   });
 
   const activatePrompt = useMutation({
     mutationFn: (index: number | null) => apiFetch(`/models/prompts/${index}/activate`, { method: 'POST' }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['prompts'] }),
+    onSuccess: () => { setError(''); queryClient.invalidateQueries({ queryKey: ['prompts'] }); },
+    onError: (err: Error) => setError(err.message || 'Не удалось включить правило'),
   });
 
   const updateProfile = useMutation({
@@ -96,6 +98,7 @@ export default function SettingsPage() {
   const removeAvatar = useMutation({
     mutationFn: () => apiFetch('/auth/avatar', { method: 'DELETE' }),
     onSuccess: (data) => useAuthStore.getState().updateUser({ avatar_url: data.avatar_url }),
+    onError: (err: Error) => setProfileError(err.message || 'Не удалось удалить фото'),
   });
 
   const startEditName = () => {
@@ -282,6 +285,7 @@ export default function SettingsPage() {
         hint="Эти правила добавляются ко всем новым ответам. Модель и глубину размышлений выбираете в чате."
       >
         <Stack spacing={1.25}>
+          {promptsError && <Alert severity="error" action={<Button color="inherit" onClick={() => void reloadPrompts()}>Повторить</Button>}>Не удалось загрузить правила ответа.</Alert>}
           {prompts?.prompts.map((p: string, i: number) => {
             const active = prompts.active === p;
             return (
@@ -302,12 +306,13 @@ export default function SettingsPage() {
                   <Button
                     size="small"
                     onClick={() => activatePrompt.mutate(i)}
+                    disabled={activatePrompt.isPending || deletePrompt.isPending}
                     variant={active ? 'contained' : 'outlined'}
                     sx={{ minHeight: 44, borderRadius: '999px', px: 1.75 }}
                   >
                     {active ? 'В работе' : 'Включить'}
                   </Button>
-                  <Button size="small" color="error" onClick={() => deletePrompt.mutate(i)} sx={{ minHeight: 44 }}>
+                  <Button size="small" color="error" disabled={activatePrompt.isPending || deletePrompt.isPending} onClick={() => deletePrompt.mutate(i)} sx={{ minHeight: 44 }}>
                     Удалить
                   </Button>
                 </Stack>
@@ -317,6 +322,7 @@ export default function SettingsPage() {
 
           <TextField
             label="Новое правило"
+            disabled={addPrompt.isPending}
             multiline
             rows={3}
             value={newPrompt}
@@ -326,7 +332,7 @@ export default function SettingsPage() {
           <Button
             variant="contained"
             onClick={() => addPrompt.mutate(newPrompt)}
-            disabled={!newPrompt.trim()}
+            disabled={!newPrompt.trim() || addPrompt.isPending}
             sx={{ minHeight: 44, borderRadius: '999px', alignSelf: { sm: 'flex-start' }, px: 2.25 }}
           >
             Добавить

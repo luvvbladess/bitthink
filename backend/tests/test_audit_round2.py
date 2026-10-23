@@ -181,11 +181,11 @@ def test_image_quota_is_atomic():
     assert manager.get_subscription(uid)["images_used"] == limit - 1
 
 
-def test_paid_window_hold_is_atomic_and_capped():
+def test_paid_window_hold_is_atomic_and_real_usage_is_preserved():
     manager = DatabaseConversationManager()
     uid = 976_200_003
     manager.set_subscription_tier(uid, "pro", 30)
-    session_limit = int(plan_for("pro")["chat_session"])
+    session_limit = int(plan_for("pro")["session_tokens"])
     manager.debit_plan_tokens(uid, "chat", session_limit - 1)
     won: list[str] = []
     lost: list[str] = []
@@ -204,7 +204,7 @@ def test_paid_window_hold_is_atomic_and_capped():
         thread.join()
     assert len(won) == 1
     assert len(lost) == 1
-    assert "Пятичасовое" in lost[0]
+    assert "пятичасовое" in lost[0].lower()
     stored = manager.get_subscription(uid)
     assert stored["session_chat_used"] == session_limit
     manager.release_paid_window(uid, "chat")
@@ -222,7 +222,7 @@ def test_paid_window_hold_is_atomic_and_capped():
         "last_reset_date": "2099-01-06",
     }
     apply_token_debit(sample, "chat", 100)
-    assert sample["session_chat_used"] == session_limit
+    assert sample["session_chat_used"] == session_limit + 90
     assert sample["chat_tokens_used"] == 100
 
 

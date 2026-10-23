@@ -32,6 +32,8 @@ _PILOT_ACTION = re.compile(
     r")"
 )
 
+_DIAGRAM = re.compile(r"(?i)блок[ -]?схем\w*|схем\w*\s+(?:процесс|алгоритм)|diagrams\.net|draw\.?io|flowchart")
+
 _DOCGEN = re.compile(
     r"(?i)(?:"
     r"(?:соберите|собери(?:те)?|сделай(?:те)?|подготовь(?:те)?|сгенерируй(?:те)?|создай(?:те)?)"
@@ -153,7 +155,9 @@ def suggest_mode_switch(
         pass
 
     target: Optional[str] = None
-    if _PILOT_ACTION.search(text) and model not in _PILOT_CAPABLE:
+    if _DIAGRAM.search(text) and _CREATE.search(text) and model not in _PILOT_CAPABLE:
+        target = "director"
+    elif _PILOT_ACTION.search(text) and model not in _PILOT_CAPABLE:
         target = "director"
     elif _DOCGEN.search(text) and model != "docgen":
         target = "docgen"
@@ -167,6 +171,8 @@ def suggest_mode_switch(
     if not target or target == model or not _allowed(target, allowed):
         return None
     spec = dict(_SPECS[target])
+    if target == "director" and _DIAGRAM.search(text):
+        spec["reason"] = "Блок-схемы diagrams.net с выдачей PDF, PNG и редактируемого .drawio создаёт Оркестратор."
     spec["text"] = spec["reason"]
     return spec
 

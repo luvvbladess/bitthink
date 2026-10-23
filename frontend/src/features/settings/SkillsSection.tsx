@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Alert, Box, Button, Collapse, Stack, TextField, Typography } from '@mui/material';
 import { CaretDown, Plus } from '@phosphor-icons/react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch, apiFormData, apiBlob, downloadBlob } from '@/api/client';
+import { apiFetch, apiFormDataProgress, apiBlob, downloadBlob } from '@/api/client';
 import { GlowSwitch } from '@/components/GlowSwitch';
 import { HOVER_FINE } from '@/theme/effects';
 
@@ -55,12 +55,12 @@ export function SkillsSection() {
   const [catalogOpen, setCatalogOpen] = useState(false);
   const [query, setQuery] = useState('');
   const upload = useMutation({
-    mutationFn: (file: File) => { const data = new FormData(); data.append('file', file); return apiFormData('/skills/import', data); },
+    mutationFn: (file: File) => { const data = new FormData(); data.append('file', file); return apiFormDataProgress('/skills/import', data, { timeoutMs: 60000 }); },
     onSuccess: () => { setError(''); queryClient.invalidateQueries({ queryKey: ['skills'] }); },
     onError: (err: Error) => setError(err.message),
   });
 
-  const { data, isLoading } = useQuery<SkillsPayload>({
+  const { data, isLoading, error: loadError, refetch } = useQuery<SkillsPayload>({
     queryKey: ['skills'],
     queryFn: () => apiFetch('/skills'),
   });
@@ -124,7 +124,8 @@ export function SkillsSection() {
   const atLimit = (data?.custom_count ?? 0) >= customLimit;
 
   return (
-    <Stack spacing={2}>
+    <Stack component="section" aria-label="Навыки аккаунта" spacing={2}>
+      {loadError && <Alert severity="error" action={<Button color="inherit" onClick={() => void refetch()}>Повторить</Button>}>Не удалось загрузить навыки.</Alert>}
       <Box>
         <Button component="label" disabled={busy || atLimit} sx={{ mb: 1 }}>Импортировать SKILL.md или ZIP
           <input hidden type="file" accept=".md,.zip" onChange={e => { const file = e.target.files?.[0]; if (file) upload.mutate(file); e.target.value = ''; }} />

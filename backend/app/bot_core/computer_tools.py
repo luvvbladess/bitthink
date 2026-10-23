@@ -268,7 +268,10 @@ _WS_GLOB_PROPS = {
     "path": {"type": "string", "description": "Относительная папка, по умолчанию корень"},
 }
 
+from app.services.diagrams import DIAGRAM_SPEC
+
 _TOOL_SPECS = [
+    DIAGRAM_SPEC,
     (
         "desktop_skill_read",
         "Только BitClient: прочитать SKILL.md или относительный текстовый ресурс локального скила. skill_id из локального каталога, path относительно папки скила. Путь каталога возвращает имена файлов. Не читает произвольные файлы компьютера.",
@@ -533,7 +536,7 @@ _TOOL_SPECS = [
     ),
     (
         "studio_build",
-        "Собрать PPTX или PNG по JSON-spec Студии. Схема процесса, блок-схема, swimlane – infographic, не PDF. Для слайдов сначала load_skill deck. Результат – кнопка скачивания, не выдуманная ссылка.",
+        "Собрать PPTX или PNG по JSON-spec Студии. Для инфографики используй infographic. Для блок-схем, diagrams.net и экспорта схем в PDF/PNG/SVG используй diagram_create. Для слайдов сначала load_skill deck. Результат – кнопка скачивания, не выдуманная ссылка.",
         _STUDIO_BUILD_PROPS,
         ["spec"],
     ),
@@ -631,6 +634,9 @@ def response_tool_names(
     if desktop_executor.get() is not None:
         # These cloud paths are not BitClient's local project. Native CAD keeps
         # using its own SDK and local OCR/image/file tools.
+        from app.services.desktop_context import desktop_capabilities
+        if 'diagram_create' not in desktop_capabilities.get():
+            names.discard('diagram_create')
         names -= {'engineering_import','engineering_read_page','engineering_build','project_file_open'}
     return names
 
@@ -1090,6 +1096,10 @@ async def _studio_build(user_id: int, args: dict[str, Any]) -> str:
         return f"Не удалось собрать файл: {str(exc)[:240]}"
     if not files:
         return "Рендер не вернул файлов."
+
+    from app.services.desktop_delivery import deliver_studio_files
+    if await deliver_studio_files(files):
+        return "Файлы Студии переданы в локальные результаты BitClient."
 
     written = []
     for item in files:

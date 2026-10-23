@@ -23,6 +23,29 @@ def owner():
     app.dependency_overrides.clear()
 
 
+def test_document_lookup_finds_new_upload_after_first_hundred_and_escapes_archive_name(owner):
+    from app.db.models import Document
+
+    _, uid, cid = owner
+    with SyncSessionLocal() as session:
+        session.add_all([Document(conversation_id=cid, filename=f'older-{i}.txt', content='old') for i in range(105)])
+        session.add_all([
+            Document(conversation_id=cid, filename='brief.txt', content='new'),
+            Document(conversation_id=cid, filename='bundle_%/part.txt', content='archive'),
+            Document(conversation_id=cid, filename='bundle_XX/other.txt', content='unrelated'),
+        ])
+        session.commit()
+    client = TestClient(app)
+    newest = client.get(f'/projects/chat/{cid}/documents', params={'filename': 'brief.txt'})
+    assert newest.status_code == 200
+    assert [item['filename'] for item in newest.json()] == ['brief.txt']
+    archive = client.get(f'/projects/chat/{cid}/documents', params={'filename': 'bundle_%'})
+    assert [item['filename'] for item in archive.json()] == ['bundle_%/part.txt']
+    assert memory.documents(uid, cid)[0]['filename'] == 'bundle_XX/other.txt'
+    with pytest.raises(ValueError):
+        memory.documents(uid + 1, cid, 'brief.txt')
+
+
 def test_project_knowledge_is_bound_and_private(owner):
     _, uid, cid = owner
     client = TestClient(app)

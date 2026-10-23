@@ -1,22 +1,23 @@
-import { useEffect } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { Box } from '@mui/material';
 import { AnimatePresence, motion } from 'framer-motion';
-import LoginPage from '@/pages/LoginPage';
-import LandingPage from '@/pages/LandingPage';
-import ChatPage from '@/pages/ChatPage';
-import JoinPage from '@/pages/JoinPage';
-import SettingsPage from '@/pages/SettingsPage';
-import BillingPage from '@/pages/BillingPage';
-import PrivacyPage from '@/pages/PrivacyPage';
-import AdminLayout from '@/pages/admin/AdminLayout';
-import AdminUsersPage from '@/pages/admin/AdminUsersPage';
-import AdminUserDetailPage from '@/pages/admin/AdminUserDetailPage';
-import AdminStatsPage from '@/pages/admin/AdminStatsPage';
+const LoginPage = lazy(() => import('@/pages/LoginPage'));
+const LandingPage = lazy(() => import('@/pages/LandingPage'));
+const ChatPage = lazy(() => import('@/pages/ChatPage'));
+const JoinPage = lazy(() => import('@/pages/JoinPage'));
+const SettingsPage = lazy(() => import('@/pages/SettingsPage'));
+const BillingPage = lazy(() => import('@/pages/BillingPage'));
+const PrivacyPage = lazy(() => import('@/pages/PrivacyPage'));
+const AdminLayout = lazy(() => import('@/pages/admin/AdminLayout'));
+const AdminUsersPage = lazy(() => import('@/pages/admin/AdminUsersPage'));
+const AdminUserDetailPage = lazy(() => import('@/pages/admin/AdminUserDetailPage'));
+const AdminStatsPage = lazy(() => import('@/pages/admin/AdminStatsPage'));
 import { useAuthStore } from '@/stores/authStore';
 import { FluidNav } from '@/components/FluidNav';
 import { PageAtmosphere } from '@/components/PageAtmosphere';
-import { apiFetch } from '@/api/client';
+import { apiFetch, ApiError } from '@/api/client';
+import { loginDestination } from '@/stores/loginDestination';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.accessToken);
@@ -44,7 +45,8 @@ function HomeRoute() {
 
 function PublicRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.accessToken);
-  return !token ? <>{children}</> : <Navigate to="/chat" replace />;
+  const location = useLocation();
+  return !token ? <>{children}</> : <Navigate to={loginDestination(location.search)} replace />;
 }
 
 export default function App() {
@@ -53,9 +55,15 @@ export default function App() {
 
   useEffect(() => {
     if (!token) return;
-    apiFetch('/auth/me')
-      .then(setUser)
-      .catch(() => useAuthStore.getState().logout());
+    let cancelled = false;
+    apiFetch('/auth/me', { timeoutMs: 15000 })
+      .then(user => { if (!cancelled) setUser(user); })
+      .catch(error => {
+        if (!cancelled && error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+          useAuthStore.getState().logout();
+        }
+      });
+    return () => { cancelled = true; };
   }, [token, setUser]);
 
   return (
@@ -75,6 +83,7 @@ export default function App() {
       <Box sx={{ position: 'relative', zIndex: 1 }}>
       <FluidNav />
       <Box component="main" id="main">
+      <Suspense fallback={<Box role="status" sx={{ minHeight: '100dvh', display: 'grid', placeItems: 'center', color: 'text.secondary' }}>Загружаем страницу…</Box>}>
       <AnimatePresence mode="wait">
         <Routes>
           <Route path="/" element={<HomeRoute />} />
@@ -147,6 +156,7 @@ export default function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AnimatePresence>
+      </Suspense>
       </Box>
       </Box>
     </Box>

@@ -1,6 +1,6 @@
 import { Children, isValidElement, useMemo, useState, type ReactNode } from 'react';
 import { Alert, Box, Button, IconButton, InputAdornment, TextField, Tooltip } from '@mui/material';
-import { ArrowDown, ArrowUp, ArrowsDownUp, Copy, DownloadSimple, MagnifyingGlass, PencilSimple, X } from '@phosphor-icons/react';
+import { ArrowDown, ArrowUp, ArrowsDownUp, Copy, DownloadSimple, MagnifyingGlass, PencilSimple, Sparkle, X } from '@phosphor-icons/react';
 import { downloadBlob } from '@/api/client';
 import { nextTableSort, tableDelimited, tableOrder, type TableSort } from './tableOperations';
 
@@ -15,9 +15,10 @@ export function nodeText(node: ReactNode): string {
   return '';
 }
 
-export function ResultTable({ headers, rows, title = 'Таблица', onEditRow, editable = false }: {
+export function ResultTable({ headers, rows, title = 'Таблица', onEditRow, onAiEditRow, editable = false }: {
   headers: ReactNode[]; rows: ResultTableRow[]; title?: string;
   onEditRow?: (id: string) => void; editable?: boolean;
+  onAiEditRow?: (id: string) => void;
 }) {
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<TableSort>(null);
@@ -49,7 +50,7 @@ export function ResultTable({ headers, rows, title = 'Таблица', onEditRow
         <thead><tr>{headers.map((header, column) => <th key={column} scope="col" aria-sort={sort?.column === column && !editable ? (sort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}>
           {editable ? header : <Box component="button" type="button" onClick={() => setSort(nextTableSort(sort, column))} aria-label={`Сортировать: ${nodeText(header)}`} sx={{ display: 'flex', gap: .75, alignItems: 'center', minHeight: 32, p: 0, border: 0, bgcolor: 'transparent', color: 'inherit', font: 'inherit', fontWeight: 'inherit', cursor: 'pointer', '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 3 } }}>{header}<Box component="span" sx={{ display: 'flex', flexShrink: 0, color: sort?.column === column ? 'primary.light' : 'text.secondary' }}>{sort?.column === column ? sort.direction === 'asc' ? <ArrowUp size={14} /> : <ArrowDown size={14} /> : <ArrowsDownUp size={14} />}</Box></Box>}
         </th>)}{onEditRow && !editable && <th scope="col"><Box component="span" sx={{ fontSize: 12, color: 'text.secondary' }}>Правка</Box></th>}</tr></thead>
-        <tbody>{order.map(index => <tr key={rows[index].id}>{rows[index].cells.map((cell, column) => <td key={column}>{cell}</td>)}{onEditRow && !editable && <td><Tooltip title="Изменить только эту строку"><IconButton aria-label={`Изменить строку ${index + 1}`} size="small" onClick={() => onEditRow(rows[index].id)}><PencilSimple size={16} /></IconButton></Tooltip></td>}</tr>)}</tbody>
+        <tbody>{order.map(index => <tr key={rows[index].id}>{rows[index].cells.map((cell, column) => <td key={column}>{cell}</td>)}{onEditRow && !editable && <td><Tooltip title="Изменить только эту строку"><IconButton aria-label={`Изменить строку ${index + 1}`} size="small" onClick={() => onEditRow(rows[index].id)}><PencilSimple size={16} /></IconButton></Tooltip>{onAiEditRow && <Tooltip title="Предложить правку с ИИ"><Button aria-label={`Правка ИИ, строка ${index + 1}`} size="small" startIcon={<Sparkle size={16} />} sx={{ whiteSpace: 'nowrap' }} onClick={() => onAiEditRow(rows[index].id)}>Изменить с ИИ</Button></Tooltip>}</td>}</tr>)}</tbody>
       </Box>
       {!order.length && <Box sx={{ p: 2, fontSize: 14, color: 'text.secondary' }}> {query ? 'Ничего не найдено. Попробуйте другой запрос.' : 'В таблице пока нет строк.'}{query && <Button size="small" onClick={() => setQuery('')}>Сбросить поиск</Button>}</Box>}
     </Box>

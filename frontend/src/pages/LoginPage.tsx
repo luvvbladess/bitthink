@@ -10,6 +10,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { apiFetch } from '@/api/client';
 import { BRAND_FONT, BRAND_NAME } from '@/brand';
 import { applyPageMeta } from '@/seo';
+import { loginDestination } from '@/stores/loginDestination';
 
 interface Props {
   mode: 'login' | 'register';
@@ -41,18 +42,18 @@ export default function LoginPage({ mode }: Props) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
     setError('');
     setLoading(true);
     try {
       const endpoint = mode === 'login' ? '/auth/login' : '/auth/register';
       const body: Record<string, string> = { email, password };
       if (mode === 'register') body.first_name = firstName;
-      const data = await apiFetch(endpoint, { method: 'POST', body: JSON.stringify(body) });
+      const data = await apiFetch(endpoint, { method: 'POST', body: JSON.stringify(body), timeoutMs: 30000 });
+      setUser(null);
       setTokens(data.access_token, data.refresh_token);
-      const me = await apiFetch('/auth/me');
-      setUser(me);
-      const next = searchParams.get('next') || '';
-      navigate(next.startsWith('/') && !next.startsWith('//') ? next : '/chat');
+      // App owns the bounded profile request; committing tokens can unmount this page.
+      navigate(loginDestination(searchParams.toString()), { replace: true });
     } catch (err: any) {
       setError(err.message || 'Ошибка входа');
     } finally {
@@ -86,7 +87,7 @@ export default function LoginPage({ mode }: Props) {
             <Typography variant="body2" sx={{ color: 'text.secondary', mb: 4 }}>
               {mode === 'login'
                 ? `Войдите, чтобы продолжить работу с ${BRAND_NAME}`
-                : 'Зарегистрируйтесь и получите доступ ко всем моделям'}
+                : 'Создайте аккаунт, чтобы начать беседу. Доступные режимы зависят от тарифа.'}
             </Typography>
 
             {error && (
@@ -100,6 +101,7 @@ export default function LoginPage({ mode }: Props) {
                 {mode === 'register' && (
                   <TextField
                     label="Имя"
+                    autoComplete="given-name"
                     value={firstName}
                     onChange={(e) => setFirstName(e.target.value)}
                     fullWidth
@@ -109,6 +111,7 @@ export default function LoginPage({ mode }: Props) {
                 <TextField
                   label="Email"
                   type="email"
+                  autoComplete="username"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   fullWidth
@@ -117,6 +120,7 @@ export default function LoginPage({ mode }: Props) {
                 <TextField
                   label="Пароль"
                   type={showPassword ? 'text' : 'password'}
+                  autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   fullWidth
