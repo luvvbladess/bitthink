@@ -81,6 +81,8 @@ export function createAppTheme(mode: 'light' | 'dark') {
     components: {
       MuiButton: {
         styleOverrides: {
+          textPrimary: { color: dark ? '#4DB3DC' : '#187896' },
+          outlinedPrimary: { color: dark ? '#4DB3DC' : '#187896' },
           root: {
             borderRadius: 10,
             padding: '0.5rem 1rem',

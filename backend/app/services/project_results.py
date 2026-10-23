@@ -73,13 +73,18 @@ def read(uid, pid, eid, revision=None):
     return {**item, 'spec': json.loads(item['body'])}
 
 
-def patch(uid,pid,eid,revision,changes,*,model=False):
-    if not isinstance(revision,int) or revision<1:raise ValueError('Нужна expected_revision из project_result_read.')
-    spec=read(uid,pid,eid)['spec']
+def changed_spec(spec, changes):
+    import copy
+    spec = copy.deepcopy(spec)
     if not isinstance(changes,list) or not 1<=len(changes)<=100:raise ValueError('Нужно 1–100 изменений.')
     for change in changes:
         if not isinstance(change,dict):raise ValueError('Изменение должно быть объектом.')
-        if change.get('field')=='title' and not change.get('slide_id'):
+        if spec['type'] == 'report' and 'start' in change:
+            start, end, old = change.get('start'), change.get('end'), change.get('old')
+            if type(start) is not int or type(end) is not int or not 0 <= start < end <= len(spec['text']) or spec['text'][start:end] != old:
+                raise ValueError('Выделенный фрагмент изменился. Выделите его заново.')
+            spec['text'] = spec['text'][:start] + str(change.get('value') or '') + spec['text'][end:]
+        elif change.get('field')=='title' and not change.get('slide_id'):
             spec['title']=str(change.get('value') or '')
         elif spec['type']=='table':
             row=next((row for row in spec['rows'] if row['id']==change.get('row_id')),None)
@@ -94,7 +99,15 @@ def patch(uid,pid,eid,revision,changes,*,model=False):
             old=str(change.get('old') or '')
             if not old or spec['text'].count(old)!=1:raise ValueError('Нужен единственный точный фрагмент отчёта для замены.')
             spec['text']=spec['text'].replace(old,str(change.get('value') or ''),1)
-    return save(uid,pid,spec,eid,revision,model=model)
+        else:raise ValueError('Недопустимая правка.')
+    return validate(spec)
+
+
+def patch(uid,pid,eid,revision,changes,*,model=False):
+    if not isinstance(revision,int) or revision<1:raise ValueError('Нужна expected_revision из project_result_read.')
+    spec=read(uid,pid,eid)['spec']
+    return save(uid,pid,changed_spec(spec, changes),eid,revision,model=model)
+
 
 
 def tool_read(uid,pid,eid,offset=0):
@@ -207,3 +220,18 @@ def capture_answer(uid,cid,prompt,answer):
     elif re.search(r'отч[её]т|доклад',prompt,re.I) and 200<=len(answer)<=40000:spec={'type':'report','title':'Отчёт · '+prompt.splitlines()[0][:100],'text':answer}
     else:return None
     return save(uid,pid,spec,model=False)
+
+
+def answer_references(uid, cid, entry_ids):
+    """Only reference actual owned results from this turn and the bound project."""
+    if not cid or not entry_ids:return []
+    pid = memory.attached(uid,cid)['project_id']
+    if not pid:return []
+    refs=[]
+    for eid in dict.fromkeys(entry_ids):
+        try:item=read(uid,pid,eid)
+        except ValueError:continue
+        refs.append({'project_id':pid,'entry_id':eid,'title':item['title'],
+            'type':item['spec']['type'],'revision':item['revision']})
+        if len(refs)>=10:break
+    return refs

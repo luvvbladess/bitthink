@@ -38,12 +38,12 @@ def get_task(user: str, task_id: str) -> dict | None:
         return public(row) if row and row.user_email == user else None
 
 
-def create_task(user: str, prompt: str, title: str = "", interval: int = 0, start_at: int = 0, idempotency_key: str | None = None) -> dict:
+def create_task(user: str, prompt: str, title: str = "", interval: int = 0, start_at: int = 0, idempotency_key: str | None = None, conversation_id: str | None = None) -> dict:
     now = int(time.time())
     with SyncSessionLocal() as session:
         # Serialize enrollment per account across workers, including retries.
-        session.scalar(select(User).where(User.email == user).with_for_update())
-        request_hash = hashlib.sha256(json.dumps([prompt, title, interval, start_at]).encode()).hexdigest()
+        owner = session.scalar(select(User).where(User.email == user).with_for_update())
+        request_hash = hashlib.sha256(json.dumps([prompt, title, interval, start_at] + ([conversation_id] if conversation_id else [])).encode()).hexdigest()
         key = hashlib.sha256((user + ':' + idempotency_key).encode()).hexdigest() if idempotency_key else None
         if key:
             previous = session.scalar(select(ComputerEvent).join(ComputerTask, ComputerTask.id == ComputerEvent.task_id).where(ComputerTask.user_email == user, ComputerEvent.kind == 'enrollment', ComputerEvent.detail.like('%"key": "' + key + '"%')).limit(1))
@@ -51,11 +51,19 @@ def create_task(user: str, prompt: str, title: str = "", interval: int = 0, star
                 if json.loads(previous.detail)['request'] != request_hash:
                     raise ValueError('Ключ запроса уже использован для другой задачи.')
                 return public(session.get(ComputerTask, previous.task_id))
+        if conversation_id:
+            from app.services.project_memory import _private_chat
+            if not owner:raise ValueError('Беседа не найдена.')
+            _private_chat(session, owner.bot_user_id, conversation_id)
+            existing = session.scalar(select(ComputerTask.id).where(ComputerTask.conversation_id == conversation_id,
+                ComputerTask.enabled.is_(True), ComputerTask.status.in_(['queued', 'running', 'scheduled'])).limit(1))
+            if existing:raise ValueError('В этой беседе уже есть активная задача. Добавьте уточнение к ней.')
         count = len(session.scalars(select(ComputerTask.id).where(
             ComputerTask.user_email == user, ComputerTask.enabled.is_(True))).all())
         if count >= 20:
             raise ValueError("Доступно до 20 активных задач. Приостановите одну из текущих.")
         row = ComputerTask(id=uuid.uuid4().hex, user_email=user, title=title or prompt[:100], prompt=prompt,
+            conversation_id=conversation_id,
             status="scheduled" if start_at > now else "queued", interval_seconds=interval, enabled=True,
             next_run_at=max(now, start_at), lease_until=0, run_number=0, progress="", error="",
             created_at=now, updated_at=now)
@@ -172,6 +180,24 @@ def control(user: str, task_id: str, action: str) -> dict:
         return public(row)
 
 
+def steer(user, task_id, text):
+    with SyncSessionLocal() as session:
+        row = session.scalar(select(ComputerTask).where(ComputerTask.id == task_id,
+            ComputerTask.user_email == user).with_for_update())
+        if not row:raise ValueError('Задача не найдена.')
+        if row.status not in {'queued', 'running', 'paused', 'interrupted', 'failed', 'blocked'}:
+            raise ValueError('Эта задача уже завершена. Отправьте новый запрос в беседу.')
+        text = text.strip()
+        if not text or len(text) > 2000:raise ValueError('Уточнение: от 1 до 2000 символов.')
+        if len(row.prompt) + len(text) > 48000:raise ValueError('Слишком много уточнений для одной задачи.')
+        row.prompt += '\n\nУточнение пользователя:\n' + text
+        row.updated_at = int(time.time())
+        session.add(ComputerEvent(task_id=task_id, run_number=row.run_number, kind='steering', detail=text,
+            created_at=row.updated_at))
+        session.commit()
+        return public(row)
+
+
 class ComputerWorker:
     def __init__(self):
         self.loop_task = None
@@ -228,7 +254,7 @@ class ComputerWorker:
                 raise QuotaError("Режим Оркестратора доступен с тарифа Pro.", "plan")
             cid = row["conversation_id"]
             # A new recurring run gets a clean context. A user-resumed run uses its transcript.
-            if not cid or not row["resume_history"]:
+            if not cid or (not row['resume_history'] and row['run_number'] > 1):
                 cid = (await repo.create_conversation(user, title=row["title"]))["id"]
             hub.mark_busy(user, cid)
             busy = True

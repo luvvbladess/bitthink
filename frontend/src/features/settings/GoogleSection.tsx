@@ -20,7 +20,7 @@ export function GoogleSection() {
   const [error, setError] = useState('');
   const [result, setResult] = useState<string | null>(null);
 
-  const { data, isLoading } = useQuery<Connector[]>({
+  const { data, isLoading, error: loadError, refetch } = useQuery<Connector[]>({
     queryKey: ['connectors'],
     queryFn: () => apiFetch('/connectors'),
   });
@@ -57,6 +57,7 @@ export function GoogleSection() {
 
   return (
     <Box>
+      {loadError && <Alert severity="error" sx={{ mb: 1.5 }} action={<Button color="inherit" onClick={() => void refetch()}>Повторить</Button>}>Не удалось загрузить подключения Google.</Alert>}
       {shown && (
         <Alert severity={shown.severity} sx={{ mb: 1.5 }} onClose={() => setResult(null)}>
           {shown.text}

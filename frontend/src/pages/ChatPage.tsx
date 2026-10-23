@@ -11,6 +11,7 @@ import { AccountMenu } from '@/components/AccountMenu';
 import { ChatWindow, DisplayMessage } from '@/features/chat/ChatWindow';
 import { DesignCanvas, findStudioCanvas } from '@/features/chat/DesignCanvas';
 import { MessageInput } from '@/features/chat/MessageInput';
+import { adoptNewComposerDraft } from '@/features/chat/useComposerDraft';
 import { AttachmentInfo } from '@/features/chat/DocumentAttachment';
 import { lastChatImageUrl } from '@/features/chat/chatImages';
 import { useWebSocket } from '@/hooks/useWebSocket';
@@ -31,7 +32,12 @@ import { DocumentEditorDialog } from '@/features/editor/DocumentEditor';
 import { ConversationFilesDrawer, filesQueryKey, type FilesScope } from '@/features/editor/ConversationFiles';
 import { RoomChat } from '@/features/chat/RoomChat';
 import { ProjectWorkspace, type ProjectItem, type ProjectSpace } from '@/features/chat/ProjectWorkspace';
+import { ProjectContextControl } from '@/features/chat/ProjectContextControl';
+import { CloudTaskBar, type CloudTask } from '@/features/chat/CloudTaskBar';
+import type { ResultEditRequest } from '@/features/chat/projectResultLinks';
+import type { ProjectCitation } from '@/features/chat/EvidenceLink';
 import { applyPageMeta } from '@/seo';
+import { useVisualViewportHeight } from '@/features/chat/useVisualViewportHeight';
 
 // Same-origin by default so it goes through the reverse proxy (nginx routes
 // /chat/ws to the backend — see frontend/nginx.conf) instead of a baked-in
@@ -83,6 +89,7 @@ function keepLiveUploads(current: DisplayMessage[], derived: DisplayMessage[]): 
 }
 
 export default function ChatPage() {
+  const visualViewportHeight = useVisualViewportHeight();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   // Sources dock beside the reply only when the 768px reading column plus its
@@ -95,8 +102,19 @@ export default function ChatPage() {
   const [mobileCanvasOpen, setMobileCanvasOpen] = useState(false);
   const dialogueJumpRef = useRef<DialogueJumpFn | null>(null);
   const [sourceMessageId, setSourceMessageId] = useState<string | undefined>();
+  const [selectionQuote, setSelectionQuote] = useState<{ text: string } | null>(null);
   const [activeConvId, setActiveConvId] = useState<string | undefined>();
+  const activeConvRef = useRef(activeConvId);
+  activeConvRef.current = activeConvId;
+  const selectionRequestRef = useRef(0);
+  const creationQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const sendingRef = useRef(new Set<string>());
+  const uploadedFilesRef = useRef(new WeakMap<File, Set<string>>());
   const [projectPanel, setProjectPanel] = useState<string | null>(null);
+  const [resultEdit, setResultEdit] = useState<ResultEditRequest | null>(null);
+  const [projectCitation, setProjectCitation] = useState<ProjectCitation | null>(null);
+  const taskEnrollmentRef = useRef({ payload: '', key: '' });
+  const lastCloudState = useRef<{ id: string; status: string } | null>(null);
   const [projectOpenError, setProjectOpenError] = useState('');
   const [projectExpanded, setProjectExpanded] = useState(false);
   const projectRequestRef = useRef(0);
@@ -225,6 +243,23 @@ export default function ChatPage() {
   const activeConversation = conversations.find((conversation) => conversation.id === activeConvId);
   const sharedRoom = Boolean(activeConversation?.shared);
   const projectBinding = useQuery<{ project_id: string | null }>({ queryKey: ['project-chat', activeConvId], queryFn: () => apiFetch(`/projects/chat/${activeConvId}`), enabled: !!activeConvId && !sharedRoom });
+  const cloudTasks = useQuery<CloudTask[]>({ queryKey: ['computer-tasks'], queryFn: () => apiFetch('/computer/tasks'), enabled: !sharedRoom,
+    refetchInterval: query => query.state.data?.some(t => ['queued', 'running'].includes(t.status)) ? 3000 : 15000 });
+  const currentCloudTask = cloudTasks.data?.find(task => task.conversation_id === activeConvId && ['queued', 'running'].includes(task.status))
+    || cloudTasks.data?.find(task => task.conversation_id === activeConvId);
+  useEffect(() => {
+    if (!currentCloudTask || !activeConvId) { lastCloudState.current = null; return; }
+    const previous = lastCloudState.current;
+    if (['queued', 'running'].includes(currentCloudTask.status)) {
+      ignoreByConvRef.current.delete(activeConvId);
+      patchJob(activeConvId, { thinking: true, userText: currentCloudTask.prompt, statusText: currentCloudTask.progress || 'Задача в очереди' });
+    } else if (previous?.id === currentCloudTask.id && ['queued', 'running'].includes(previous.status)) {
+      finishJob(activeConvId);
+      queryClient.invalidateQueries({ queryKey: ['messages', activeConvId] });
+      queryClient.invalidateQueries({ queryKey: ['project-context', activeConvId] });
+    }
+    lastCloudState.current = { id: currentCloudTask.id, status: currentCloudTask.status };
+  }, [activeConvId, currentCloudTask?.id, currentCloudTask?.status, currentCloudTask?.run_number]);
   const canSplitProject = useMediaQuery('(min-width: 1280px)') && !isStudio;
   const projectSideBySide = canSplitProject && !projectExpanded;
   const messagesQuery = useQuery<{
@@ -243,7 +278,7 @@ export default function ChatPage() {
     staleTime: 3_000,
     refetchInterval: thinking && activeConvId ? 2000 : sharedRoom ? 4000 : false,
   });
-  const messagesReady = Boolean(activeConvId) && messagesQuery.isSuccess && !messagesQuery.isPlaceholderData;
+  const messagesReady = Boolean(activeConvId) && messagesQuery.data !== undefined && !messagesQuery.isPlaceholderData;
   const messages = messagesReady ? (messagesQuery.data ?? []) : [];
 
   // Restore the latest/active chat after a page reload instead of showing an
@@ -266,6 +301,9 @@ export default function ChatPage() {
 
   useLayoutEffect(() => {
     setDisplayMessages([]);
+    setSelectionQuote(null);
+    setForcedEditUrl(null);
+    setSkipLastImage(false);
     setRegeneratingId(null);
     setSourceMessageId(undefined);
     setSourcesSheetOpen(false);
@@ -360,21 +398,10 @@ export default function ChatPage() {
         // A Pilot package posts each finished document mid-reply; those are not the answer yet.
         const isFinalAnswer = (message: (typeof withFile)[number]) => message.role === 'assistant'
           && !('attachment' in message && message.attachment?.interim);
-        const lastUserIndex = [...withFile].map((message) => message.role).lastIndexOf('user');
-        const hasAssistantAfterUser = lastUserIndex >= 0
-          && withFile.slice(lastUserIndex + 1).some(isFinalAnswer);
         const jobError = activeConvId ? jobErrors[activeConvId] : undefined;
-        const withError = jobError && !hasAssistantAfterUser && !pendingContent.thinking
+        const withError = jobError && !pendingContent.thinking
           ? [...withFile, { id: `job-err-${activeConvId}`, role: 'assistant' as const, content: jobError }]
           : withFile;
-        if (jobError && hasAssistantAfterUser) {
-          setJobErrors((prev) => {
-            if (!activeConvId || !prev[activeConvId]) return prev;
-            const next = { ...prev };
-            delete next[activeConvId];
-            return next;
-          });
-        }
 
         setDisplayMessages((current) => keepLiveUploads(current, withError));
 
@@ -407,7 +434,9 @@ export default function ChatPage() {
           setJobs((prev) => dropJob(prev, activeConvId));
         }
       } else {
-        setDisplayMessages((current) => keepLiveUploads(current, base));
+        const error = jobErrors[activeConvId];
+        const withError = error ? [...base, { id: `job-err-${activeConvId}`, role: 'assistant' as const, content: error }] : base;
+        setDisplayMessages((current) => keepLiveUploads(current, withError));
       }
   }, [activeConvId, messages, messagesReady, pendingContent, regeneratingId, jobErrors]);
 
@@ -590,6 +619,7 @@ export default function ChatPage() {
   useEffect(() => {
     setForcedEditUrl(null);
     setSkipLastImage(false);
+    setSelectionQuote(null);
   }, [activeConvId]);
 
   useEffect(() => {
@@ -597,15 +627,21 @@ export default function ChatPage() {
   }, [isStudio, isMobile, canvasSource?.url, canvasSource?.html, canvasSource?.name]);
 
   const handleSelect = async (id: string) => {
+    const request = ++selectionRequestRef.current;
     setProjectPanel(null);
     // Tapping the chat that is already open must not blank it: activeConvId stays the
     // same, so nothing would refill displayMessages afterwards.
     if (id === activeConvId) {
-      void activateMutation.mutateAsync(id);
+      void activateMutation.mutateAsync(id).catch(() => setProjectNotice({ text: 'Не удалось сохранить выбранную беседу. Проверьте соединение.', warning: true }));
       if (isMobile) setSidebarOpen(false);
       return;
     }
-    await activateMutation.mutateAsync(id);
+    try { await activateMutation.mutateAsync(id); }
+    catch {
+      if (request === selectionRequestRef.current) setProjectNotice({ text: 'Не удалось открыть беседу. Проверьте соединение и попробуйте ещё раз.', warning: true });
+      return;
+    }
+    if (request !== selectionRequestRef.current) return;
     setActiveConvId(id);
     setDisplayMessages([]);
     setSourceMessageId(undefined);
@@ -614,36 +650,52 @@ export default function ChatPage() {
   };
 
   const handleCreate = async (targetProject?: string | null) => {
+    const request = ++selectionRequestRef.current;
+    const owner = useAuthStore.getState().user;
+    const ownerId = owner?.id || owner?.email;
+    const sameAccount = () => {
+      const current = useAuthStore.getState();
+      return Boolean(current.accessToken) && (current.user?.id || current.user?.email) === ownerId;
+    };
     ++projectRequestRef.current;
     const pid = targetProject === undefined ? (projectPanel || projectBinding.data?.project_id || null) : targetProject;
     setProjectPanel(null);
-    const blank = conversations.find(
-      (conversation) =>
-        !conversation.shared && conversation.message_count === 0 && /^(Новый чат|Новая беседа|Беседа #\d+)$/.test(conversation.title),
-    );
-    if (blank) {
-      await apiFetch(`/projects/chat/${blank.id}`, { method: 'PUT', body: JSON.stringify({ project_id: pid }) });
-      queryClient.invalidateQueries({ queryKey: ['project-chat'] });
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-      if (blank.id !== activeConvId) {
-        await activateMutation.mutateAsync(blank.id);
-        setActiveConvId(blank.id);
-        setDisplayMessages([]);
+    let created = false;
+    // Every explicit click creates its own chat. Keep server-side activation in
+    // click order while generation in other conversations continues independently.
+    const creation = creationQueueRef.current.then(async () => {
+      if (!sameAccount()) return;
+      const conv = await createMutation.mutateAsync();
+      created = true;
+      if (!sameAccount()) return;
+      if (pid) await apiFetch(`/projects/chat/${conv.id}`, { method: 'PUT', body: JSON.stringify({ project_id: pid }) });
+      if (!sameAccount()) return;
+      void queryClient.invalidateQueries({ queryKey: ['project-chat'] });
+      void queryClient.invalidateQueries({ queryKey: ['projects'] });
+      if (request !== selectionRequestRef.current) {
+        // A later selection owns the screen and the active chat after reload.
+        const selected = activeConvRef.current;
+        if (selected) await activateMutation.mutateAsync(selected);
+        return;
       }
+      setActiveConvId(conv.id);
+      setDisplayMessages([]);
       setSourceMessageId(undefined);
       setSourcesSheetOpen(false);
+      setProjectNotice(null);
       if (isMobile) setSidebarOpen(false);
-      return;
+    });
+    // A failed request must not poison subsequent clicks in the queue.
+    creationQueueRef.current = creation.catch(() => undefined);
+    try { await creation; }
+    catch {
+      setProjectNotice({
+        text: created
+          ? 'Беседа создана, но не удалось завершить её открытие. Выберите её в списке бесед.'
+          : 'Не удалось создать беседу. Проверьте соединение и попробуйте ещё раз.',
+        warning: true,
+      });
     }
-    const conv = await createMutation.mutateAsync();
-    if (pid) await apiFetch(`/projects/chat/${conv.id}`, { method: 'PUT', body: JSON.stringify({ project_id: pid }) });
-    queryClient.invalidateQueries({ queryKey: ['project-chat'] });
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-    setActiveConvId(conv.id);
-    setDisplayMessages([]);
-    setSourceMessageId(undefined);
-    setSourcesSheetOpen(false);
-    if (isMobile) setSidebarOpen(false);
   };
 
   useEffect(() => {
@@ -699,13 +751,17 @@ export default function ChatPage() {
 
   const handleSend = async (rawText: string, files: File[] = [], mode: 'chat' | 'image' = 'chat'): Promise<boolean> => {
     const text = rawText || (files.length ? 'Проанализируй прикреплённые файлы.' : '');
-    if (!text) return false;
+    const sendKey = activeConvId || 'new';
+    if (!text || sendingRef.current.has(sendKey) || thinking || (activeConvId && !messagesReady)) return false;
+    sendingRef.current.add(sendKey);
     let optimisticId: string | undefined;
     let conversationId = activeConvId;
     try {
       if (!conversationId) {
         const conversation = await createMutation.mutateAsync();
         conversationId = conversation.id;
+        const account = useAuthStore.getState().user;
+        adoptNewComposerDraft(account?.id || account?.email || 'anonymous', conversationId!);
         setActiveConvId(conversationId);
       }
       if (!conversationId) throw new Error('не удалось создать беседу');
@@ -777,7 +833,7 @@ export default function ChatPage() {
           if (imageAbortRef.current === abort) imageAbortRef.current = null;
         }
         const caption = data.kind === 'edit' ? 'Отредактированное изображение' : 'Сгенерированное изображение';
-        if (data.url) {
+        if (data.url && activeConvRef.current === conversationId) {
           setDisplayMessages((current) => {
             const withoutPending = current.filter((message) => message.id !== optimisticId);
             if (withoutPending.some((message) => message.content.includes(data.url!))) return withoutPending;
@@ -800,6 +856,14 @@ export default function ChatPage() {
         if (!uploaded) throw new Error('не удалось загрузить вложения');
         patchJob(conversationId, { statusText: 'Смотрю файлы' });
       }
+      if (models?.selected === 'director' && !sharedRoom) {
+        const payload = JSON.stringify({ prompt: text, conversation_id: conversationId });
+        if (taskEnrollmentRef.current.payload !== payload) taskEnrollmentRef.current = { payload, key: crypto.randomUUID() };
+        const task = await apiFetch('/computer/tasks', { method: 'POST', body: JSON.stringify({ prompt: text, conversation_id: conversationId, idempotency_key: taskEnrollmentRef.current.key }) }) as CloudTask;
+        queryClient.setQueryData<CloudTask[]>(['computer-tasks'], old => [task, ...(old || []).filter(item => item.id !== task.id)]);
+        taskEnrollmentRef.current = { payload: '', key: '' };
+        return true;
+      }
       // Long multi-file uploads can outlive a WS reconnect. Wait until auth
       // completes before treating the send as delivered.
       const ready = await waitUntilReady(45000);
@@ -807,29 +871,39 @@ export default function ChatPage() {
       send('message', { content: text, conversation_id: conversationId });
       return true;
     } catch (error: any) {
-      const targetConvId = activeConvId || conversationId;
+      const targetConvId = conversationId;
       finishJob(targetConvId);
       queryClient.invalidateQueries({ queryKey: ['messages', targetConvId] });
       const aborted = /остановлен|ожидания/i.test(error?.message || '');
-      setDisplayMessages((current) => [
+      const errorText = aborted && mode === 'image'
+        ? (error?.message?.includes('ожидания') ? 'Картинка рисуется слишком долго. Попробуйте ещё раз или упростите описание.' : 'Генерация остановлена.')
+        : `Не удалось отправить сообщение: ${error?.message || 'ошибка соединения'}`;
+      if (targetConvId) setJobErrors(previous => ({ ...previous, [targetConvId]: errorText }));
+      if (activeConvRef.current === targetConvId) setDisplayMessages((current) => [
         ...current.filter((message) => message.id !== optimisticId),
         {
           id: `err-${Date.now()}`,
           role: 'assistant' as const,
-          content: aborted
-            ? (error?.message?.includes('ожидания')
-              ? 'Картинка рисуется слишком долго. Попробуйте ещё раз или упростите описание.'
-              : 'Генерация остановлена.')
-            : `Не удалось отправить сообщение: ${error?.message || 'ошибка соединения'}`,
+          content: errorText,
         },
       ]);
       return false;
+    } finally {
+      sendingRef.current.delete(sendKey);
     }
   };
 
   const handleStop = () => {
     imageAbortRef.current?.abort();
     if (!activeConvId) return;
+    if (currentCloudTask && ['queued', 'running'].includes(currentCloudTask.status)) {
+      void apiFetch(`/computer/tasks/${currentCloudTask.id}/pause`, { method: 'POST' }).then(() => {
+        ignoreByConvRef.current.add(activeConvId); finishJob(activeConvId);
+        queryClient.invalidateQueries({ queryKey: ['computer-tasks'] });
+        queryClient.invalidateQueries({ queryKey: ['messages', activeConvId] });
+      }).catch(error => setJobErrors(old => ({ ...old, [activeConvId]: error.message })));
+      return;
+    }
     ignoreByConvRef.current.add(activeConvId);
     finishJob(activeConvId);
     send('stop', { conversation_id: activeConvId });
@@ -892,6 +966,7 @@ export default function ChatPage() {
   };
 
   async function handleFileUpload(files: File[], conversationId: string, keepThinking = false): Promise<boolean> {
+    files = files.filter(file => !uploadedFilesRef.current.get(file)?.has(conversationId));
     if (!files.length) return true;
     let successCount = 0;
     const batch = files.map((file, index) => ({ file, uploadId: `upload-${Date.now()}-${index}` }));
@@ -966,6 +1041,9 @@ export default function ChatPage() {
           data = await res.json();
         }
         successCount += 1;
+        const uploadedIn = uploadedFilesRef.current.get(file) || new Set<string>();
+        uploadedIn.add(conversationId);
+        uploadedFilesRef.current.set(file, uploadedIn);
         const persisted = data.message as { id: string; role: string; content: string; attachment?: AttachmentInfo } | undefined;
         setDisplayMessages((current) => current.map((message) => message.id === uploadId ? {
           id: persisted?.id ?? message.id,
@@ -999,8 +1077,8 @@ export default function ChatPage() {
     if (!keepThinking) {
       patchJob(conversationId, { thinking: false, statusText: '' });
     }
-    if (successCount === 0 && lastError) {
-      throw new Error(lastError);
+    if (successCount !== batch.length) {
+      throw new Error(`Не загружено файлов: ${batch.length - successCount}. ${lastError || 'Ошибка загрузки'}. Повторите отправку — готовые файлы загружать заново не нужно.`);
     }
     return successCount > 0;
   }
@@ -1257,7 +1335,8 @@ export default function ChatPage() {
   return (
     <Box
       sx={{
-        height: '100%',
+        height: `min(100dvh, ${visualViewportHeight}px)`,
+        '--bt-viewport-h': `${visualViewportHeight}px`,
         display: 'flex',
         overflow: 'hidden',
       }}
@@ -1382,7 +1461,12 @@ export default function ChatPage() {
             </Box>
           </Box>
         )}
-        <ChatWindow
+        {activeConvId && !messagesReady && !displayMessages.length ? (
+          <Box role={messagesQuery.isError ? 'alert' : 'status'} sx={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 1.5, px: 3, textAlign: 'center', color: 'text.secondary' }}>
+            <Box>{messagesQuery.isError ? 'Не удалось загрузить беседу. Черновик сохранён.' : 'Загружаем беседу…'}</Box>
+            {messagesQuery.isError && <Button onClick={() => void messagesQuery.refetch()}>Повторить загрузку</Button>}
+          </Box>
+        ) : <ChatWindow
           key={activeConvId || 'new'}
           convId={activeConvId}
           chipsHost={chipsHost}
@@ -1404,15 +1488,18 @@ export default function ChatPage() {
                 }
           }
           onSuggestion={handleSend}
+          onEditResult={(result, selection) => { setResultEdit({ ...result, selection, requestId: crypto.randomUUID() }); setProjectCitation(null); setProjectOpenError(''); setProjectPanel(result.projectId); }}
+          onClarifySelection={text => { setSelectionQuote({ text }); setForcedEditUrl(null); setSkipLastImage(true); }}
           hasCanvas={Boolean(canvasSource)}
           people={sharedRoom}
           activeSourceId={sourceMessageId}
           onOpenSources={openSources}
+          onOpenProjectCitation={citation => { setProjectCitation(citation); setProjectOpenError(''); setProjectPanel(citation.projectId); }}
           clarifyDocked={clarifyQuestions.length > 0}
           jumpRef={dialogueJumpRef}
           splitPane={Boolean(isStudio && !isMobile)}
           composerSlotRef={!isMobile && !isStudio ? setSlotEl : undefined}
-        />
+        />}
         <Box
           ref={composerDockRef}
           sx={{
@@ -1428,7 +1515,7 @@ export default function ChatPage() {
               : 'linear-gradient(180deg, transparent 0%, var(--bt-fade) 42%, var(--bt-fade-solid) 78%)',
           }}
         >
-          <Box sx={{ ...CHAT_COL, ...(isStudio && !isMobile ? { maxWidth: '100%', px: 1.75 } : {}), position: 'relative', pb: { xs: 'max(12px, env(safe-area-inset-bottom))', md: 2 }, pointerEvents: 'auto' }}>
+          <Box sx={{ ...CHAT_COL, ...(isStudio && !isMobile ? { maxWidth: '100%', px: 1.75 } : {}), position: 'relative', display: 'flex', flexDirection: 'column', maxHeight: 'calc(var(--bt-viewport-h, 100dvh) - 76px)', pb: { xs: 'max(12px, env(safe-area-inset-bottom))', md: 2 }, pointerEvents: 'auto' }}>
             {isMobile && questionTicks.length >= MIN_DIALOGUE_QUESTIONS && (
               <Box
                 sx={{
@@ -1442,6 +1529,7 @@ export default function ChatPage() {
                 <DialogueJumpChip count={questionTicks.length} onClick={() => setDialogueSheetOpen(true)} />
               </Box>
             )}
+            <Box sx={{ minHeight: 0, flex: '0 1 auto', overflowY: 'auto', overflowX: 'hidden' }}>
             <QuotaNotice />
             <Box ref={setChipsHost} />
             {clarifyQuestions.length > 0 && (
@@ -1455,11 +1543,16 @@ export default function ChatPage() {
                 />
               </Box>
             )}
+            {currentCloudTask && <CloudTaskBar key={currentCloudTask.id} task={currentCloudTask} />}
+            {!sharedRoom && activeConvId && projectBinding.data?.project_id && <ProjectContextControl key={activeConvId} conversationId={activeConvId} projectId={projectBinding.data.project_id} disabled={thinking} />}
+            </Box>
             <MessageInput
               conversationId={activeConvId}
+              selectionQuote={selectionQuote}
+              onClearSelectionQuote={() => setSelectionQuote(null)}
               onOpenProjects={() => setProjectPanel(projectBinding.data?.project_id || '')}
               onSend={handleSend}
-              disabled={thinking}
+              disabled={thinking || Boolean(activeConvId && !messagesReady)}
               isGenerating={thinking}
               onStop={handleStop}
               editSourceUrl={forcedEditUrl || (!skipLastImage ? lastChatImageUrl(displayMessages) : null)}
@@ -1482,8 +1575,8 @@ export default function ChatPage() {
       )}
       <Snackbar open={!!projectNotice} autoHideDuration={projectNotice?.warning ? undefined : 6000} onClose={(_, reason) => { if (reason !== 'clickaway') setProjectNotice(null); }} anchorOrigin={{ vertical: 'top', horizontal: 'center' }}><Alert severity={projectNotice?.warning ? 'warning' : 'success'} onClose={() => setProjectNotice(null)} sx={{ maxWidth: 480 }}>{projectNotice?.text}</Alert></Snackbar>
       {projectPanel !== null && <Box sx={{ flex: projectSideBySide && projectPanel ? '0 0 48%' : '1 1 100%', minWidth: 0, minHeight: 0, borderLeft: projectSideBySide && projectPanel ? '1px solid var(--bt-hairline)' : 'none' }}>
-        <ProjectWorkspace onProjectDeleted={handleProjectDeleted} key={projectPanel || 'create-project'} projectId={projectPanel} conversationId={!sharedRoom && projectBinding.data?.project_id === projectPanel ? activeConvId : undefined} externalError={projectOpenError} expanded={projectExpanded} onToggleSize={canSplitProject ? () => setProjectExpanded(value => !value) : undefined}
-          onClose={() => { ++projectRequestRef.current; setProjectPanel(null); }}
+        <ProjectWorkspace editRequest={resultEdit?.projectId === projectPanel ? resultEdit : null} citation={projectCitation?.projectId === projectPanel ? projectCitation : null} onProjectDeleted={handleProjectDeleted} key={projectPanel || 'create-project'} projectId={projectPanel} conversationId={!sharedRoom && projectBinding.data?.project_id === projectPanel ? activeConvId : undefined} externalError={projectOpenError} expanded={projectExpanded} onToggleSize={canSplitProject ? () => setProjectExpanded(value => !value) : undefined}
+          onClose={() => { ++projectRequestRef.current; setProjectPanel(null); setProjectCitation(null); setResultEdit(null); }}
           onCreated={project => { queryClient.invalidateQueries({ queryKey: ['projects'] }); void openProject(project.id); }}
           onSelectChat={id => { ++projectRequestRef.current; void handleSelect(id); }} />
       </Box>}

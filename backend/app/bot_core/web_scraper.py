@@ -260,6 +260,12 @@ def _clean_html(html: str, page_url: str = '') -> str:
         label = link.get_text(' ', strip=True)
         target = urljoin(page_url, link['href'])
         parsed = urlparse(target)
+        if is_ru_marketplace(page_url) and (
+            not is_ru_marketplace(target)
+            or re.match(r'^/(my|cart|checkout|account|auth)(/|$)', parsed.path)
+        ):
+            link.replace_with(label)
+            continue
         if label and len(target) <= 2048 and parsed.scheme in {'http', 'https'} and parsed.hostname and not parsed.username and not parsed.password:
             link.replace_with(f'{label} ({target})')
     # Получаем текст

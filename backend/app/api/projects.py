@@ -1,7 +1,7 @@
 import asyncio
 from typing import Literal
 from urllib.parse import urlsplit
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator, model_validator
 from app.auth import get_current_user
 from app.core.repository import repo
@@ -77,6 +77,35 @@ class ResultInput(BaseModel):
     expected_revision: int | None = Field(default=None, ge=1)
 
 
+class ContextInput(BaseModel):
+    entry_ids: list[str] | None = Field(default=None, max_length=300)
+    include_memory: bool = True
+    web: bool = True
+
+
+class EditRequest(BaseModel):
+    expected_revision: int = Field(ge=1)
+    instruction: str = Field(min_length=1, max_length=2000)
+    target: dict
+
+
+class PatchRequest(BaseModel):
+    expected_revision: int = Field(ge=1)
+    changes: list[dict] = Field(min_length=1, max_length=100)
+
+
+@router.get('/chat/{cid}/context')
+async def context_settings(cid: str, user: str = Depends(get_current_user)):
+    from app.services import project_policy
+    return await call(project_policy.settings, user, cid)
+
+
+@router.put('/chat/{cid}/context')
+async def context_save(cid: str, data: ContextInput, user: str = Depends(get_current_user)):
+    from app.services import project_policy
+    return await call(project_policy.save, user, cid, data.entry_ids, data.include_memory, data.web)
+
+
 async def call(fn, user, *args):
     uid = await repo.ensure_user(user)
     try: return await asyncio.to_thread(fn, uid, *args)
@@ -115,8 +144,8 @@ async def attach(cid: str, data: Attach, user: str = Depends(get_current_user)):
 
 
 @router.get("/chat/{cid}/documents")
-async def documents(cid: str, user: str = Depends(get_current_user)):
-    return await call(memory.documents, user, cid)
+async def documents(cid: str, user: str = Depends(get_current_user), filename: str = Query(default="", max_length=255)):
+    return await call(memory.documents, user, cid, filename)
 
 
 @router.get("/{pid}/entries")
@@ -157,10 +186,36 @@ async def result_export(pid: str, eid: str, format: Literal['xlsx','docx','pptx'
     return Response(content, media_type=mime, headers={'Content-Disposition':f'attachment; filename="result.{format}"'})
 
 
+@router.post('/{pid}/results/{eid}/edit-preview')
+async def edit_preview(pid: str, eid: str, data: EditRequest, user: str = Depends(get_current_user)):
+    from app.services.result_edits import generate
+    from app.billing.quota import QuotaError
+    try:
+        return await generate(await repo.ensure_user(user), pid, eid, data.expected_revision, data.target, data.instruction.strip())
+    except ValueError as exc:raise HTTPException(409 if 'уже изменена' in str(exc) else 400, str(exc)) from exc
+    except asyncio.TimeoutError:raise HTTPException(504, 'Правка заняла слишком много времени. Результат не изменён.')
+    except QuotaError as exc:raise HTTPException(429, str(exc)) from exc
+
+
+@router.post('/{pid}/results/{eid}/patch')
+async def apply_patch(pid: str, eid: str, data: PatchRequest, user: str = Depends(get_current_user)):
+    return await call(results.patch, user, pid, eid, data.expected_revision, data.changes)
+
+
 @router.get('/{pid}/entries/{eid}/original')
-async def original(pid: str, eid: str, user: str = Depends(get_current_user)):
+async def original(pid: str, eid: str, revision: int | None = None, user: str = Depends(get_current_user)):
+    if revision is not None:
+        current = await call(memory.detail, user, pid, eid)
+        if revision != current['revision']:raise HTTPException(409, 'Оригинал уже обновлён. Откройте актуальную версию материала.')
     path,name = await call(project_assets.original,user,pid,eid)
     return FileResponse(path,filename=name)
+
+
+@router.get('/{pid}/entries/{eid}/evidence')
+async def evidence(pid: str, eid: str, revision: int, offset: int = 0, user: str = Depends(get_current_user)):
+    if revision < 1 or offset < 0:raise HTTPException(400, 'Неверная позиция источника.')
+    from app.services import project_evidence
+    return await call(project_evidence.read, user, pid, eid, revision, offset)
 
 
 @router.post('/{pid}/suggestions/{eid}')

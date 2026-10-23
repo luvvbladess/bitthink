@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Box, Dialog, DialogContent, DialogTitle, IconButton, Typography } from '@mui/material';
+import { useEffect, useState } from 'react';
+import { Alert, Box, Button, Dialog, DialogContent, DialogTitle, IconButton, TextField, Typography } from '@mui/material';
 import { Copy, Check, LinkBreak, Users, X } from '@phosphor-icons/react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/api/client';
@@ -22,13 +22,16 @@ interface ShareStatus {
 export function ShareDialog({ conversationId, open, onClose }: { conversationId: string; open: boolean; onClose: () => void }) {
   const queryClient = useQueryClient();
   const [copied, setCopied] = useState(false);
-  const { data } = useQuery<ShareStatus>({
+  const [error, setError] = useState('');
+  useEffect(() => { setError(''); setCopied(false); }, [open, conversationId]);
+  const { data, error: loadError, isPending, refetch } = useQuery<ShareStatus>({
     queryKey: ['share', conversationId],
     queryFn: () => apiFetch(`/conversations/${conversationId}/share`),
     enabled: open && !!conversationId,
   });
 
   const refresh = () => {
+    setError('');
     queryClient.invalidateQueries({ queryKey: ['share', conversationId] });
     queryClient.invalidateQueries({ queryKey: ['conversations'] });
   };
@@ -36,20 +39,26 @@ export function ShareDialog({ conversationId, open, onClose }: { conversationId:
   const createLink = useMutation({
     mutationFn: () => apiFetch(`/conversations/${conversationId}/share`, { method: 'POST' }),
     onSuccess: refresh,
+    onError: (err: Error) => setError(err.message || 'Не удалось создать ссылку'),
   });
   const revoke = useMutation({
     mutationFn: () => apiFetch(`/conversations/${conversationId}/share`, { method: 'DELETE' }),
     onSuccess: refresh,
+    onError: (err: Error) => setError(err.message || 'Не удалось закрыть доступ'),
   });
 
   const link = data?.token ? `${window.location.origin}/join/${data.token}` : '';
-  const isOwner = data?.role !== 'member';
+  const isOwner = data?.role === 'owner';
 
   const copy = async () => {
     if (!link) return;
-    await navigator.clipboard.writeText(link);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1500);
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopied(true); setError('');
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setError('Не удалось скопировать ссылку. Выделите и скопируйте её из поля вручную.');
+    }
   };
   // Phones: the system share sheet (Telegram, WhatsApp, mail) beats copy and paste.
   const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
@@ -57,14 +66,14 @@ export function ShareDialog({ conversationId, open, onClose }: { conversationId:
     if (!link) return;
     try {
       await navigator.share({ title: 'Общий диалог в Bit-Think', text: 'Присоединяйся к диалогу', url: link });
-    } catch {
-      // The person closed the sheet.
+    } catch (err) {
+      if ((err as Error).name !== 'AbortError') setError('Не удалось открыть меню отправки. Скопируйте ссылку из поля.');
     }
   };
 
   return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="xs">
-      <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1, pr: 1 }}>
+    <Dialog open={open} onClose={onClose} fullWidth maxWidth="xs" aria-labelledby="share-dialog-title">
+      <DialogTitle id="share-dialog-title" sx={{ display: 'flex', alignItems: 'center', gap: 1, pr: 1 }}>
         <Users size={20} />
         <Box component="span" sx={{ flex: 1 }}>Общий диалог</Box>
         <IconButton onClick={onClose} aria-label="Закрыть" sx={{ color: 'text.primary', bgcolor: 'var(--bt-elevated)', border: '1px solid var(--bt-hairline)', '&:hover': { bgcolor: 'color-mix(in srgb, var(--bt-elevated) 78%, #21a0ce)' } }}>
@@ -72,6 +81,9 @@ export function ShareDialog({ conversationId, open, onClose }: { conversationId:
         </IconButton>
       </DialogTitle>
       <DialogContent>
+        {isPending && <Typography role="status" sx={{ mb: 2 }}>Загружаем настройки доступа…</Typography>}
+        {loadError && <Alert severity="error" sx={{ mb: 2 }} action={<Button color="inherit" onClick={() => void refetch()}>Повторить</Button>}>Не удалось загрузить доступ к диалогу.</Alert>}
+        {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
         <Typography sx={{ fontSize: '0.875rem', color: 'text.secondary', mb: 2 }}>
           По ссылке люди видят всю историю, пишут ассистенту своим режимом и прикладывают файлы. Расход идёт с того, кто отправил сообщение.
         </Typography>
@@ -94,9 +106,7 @@ export function ShareDialog({ conversationId, open, onClose }: { conversationId:
         )}
         {link && (
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Typography sx={{ flex: 1, minWidth: 0, fontSize: '0.8125rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {link}
-            </Typography>
+            <TextField label="Ссылка на диалог" value={link} size="small" InputProps={{ readOnly: true }} onFocus={event => event.target.select()} sx={{ flex: 1, minWidth: 0 }} />
             <IconButton onClick={copy} aria-label="Скопировать ссылку" sx={{ width: 44, height: 44 }}>
               {copied ? <Check size={18} /> : <Copy size={18} />}
             </IconButton>
@@ -112,6 +122,7 @@ export function ShareDialog({ conversationId, open, onClose }: { conversationId:
         {isOwner && data?.token && (
           <Box
             component="button"
+            disabled={revoke.isPending || createLink.isPending}
             onClick={() => revoke.mutate()}
             sx={{ mt: 2, display: 'inline-flex', alignItems: 'center', gap: 0.75, border: 0, bgcolor: 'transparent', color: 'var(--bt-danger)', cursor: 'pointer', font: 'inherit', p: 0 }}
           >

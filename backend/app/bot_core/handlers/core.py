@@ -350,6 +350,21 @@ async def get_smart_response(
         logger.warning(f"Empty user_text in get_smart_response for user {user_id}")
         user_text = "Проанализируй предоставленные документы."
 
+    from app.services.project_policy import active_policy
+    policy = active_policy.get()
+    if policy and not policy['web']:
+        # Enforced catalog, not only a prompt: no search, external connectors,
+        # shell or arbitrary code can bypass a file-only request.
+        local_tools = frozenset({'project_search', 'project_read', 'read_chat_document',
+            'list_chat_files', 'project_result_read', 'project_result_patch', 'project_result'})
+        local_model = clamp_model(tier, model if model.startswith('gpt-') else 'gpt-6-luna')
+        return await get_chat_response(
+            [{'role':'system', 'content':'Поиск в интернете отключён пользователем для этой беседы. '
+                'Работай с выбранными материалами проекта и файлами беседы. Не подставляй факты из исключённых источников '
+                'или прошлых веб-проверок. Если данных нет, укажи конкретный пробел. Не объявляй данные актуальными без основания.'}, *messages],
+            model=local_model, user_id=user_id, use_tools=True, use_skills=False,
+            allowed_tools=local_tools, force_web_search=False)
+
     if model == "docgen":
         # Работает по полному, не сжатому тексту исходников через собственный
         # отбор релевантных фрагментов — reduce_heavy_context/fit_for_mode

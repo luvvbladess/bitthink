@@ -267,6 +267,7 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
       )}
 
       <List
+        component="div"
         sx={{
           flexGrow: 1,
           minHeight: 0,
@@ -320,11 +321,11 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
                 exit={reduce ? undefined : { opacity: 0 }}
                 transition={{ delay: reduce ? 0 : Math.min(i, 8) * 0.03, duration: 0.22, ease: [0.23, 1, 0.32, 1] }}
               >
-                <ListItemButton
+                <Box
                   {...dragProps(conv)}
-                  selected={active}
-                  onClick={() => onSelect(conv.id)}
                   sx={{
+                    display: 'flex',
+                    alignItems: 'center',
                     position: 'relative',
                     borderRadius: '12px',
                     px: 1.35,
@@ -374,7 +375,7 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
                         }}
                       />
                     ) : (
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 0 }}>
+                      <ListItemButton aria-label={`Открыть беседу ${conv.title}`} selected={active} onClick={() => onSelect(conv.id)} sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 0, minHeight: 44, px: 0, py: 0.5, borderRadius: 1, '&.Mui-selected, &.Mui-selected:hover': { bgcolor: 'transparent' } }}>
                         {generatingIds.includes(conv.id) && (
                           <Box
                             aria-hidden
@@ -414,7 +415,7 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
                           </Typography>
                         )}
                         </Box>
-                      </Box>
+                      </ListItemButton>
                     )}
                   </Box>
                   {editingId !== conv.id && conv.role !== 'member' && (
@@ -450,7 +451,7 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
                     </Box>
                     </>
                   )}
-                </ListItemButton>
+                </Box>
               </motion.div>
               </Fragment>
             );

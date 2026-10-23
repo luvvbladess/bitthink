@@ -2,33 +2,47 @@ import { useAuthStore } from '@/stores/authStore';
 
 export const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
+export class ApiError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 // Shared in-flight refresh so concurrent 401s don't each trigger their own
 // /auth/refresh call; they all await the same promise.
 let refreshPromise: Promise<string | null> | null = null;
+let refreshAccount: string | null = null;
 
 async function refreshAccessToken(): Promise<string | null> {
-  if (refreshPromise) return refreshPromise;
-  refreshPromise = (async () => {
-    const refreshToken = useAuthStore.getState().refreshToken;
-    if (!refreshToken) return null;
+  const refreshToken = useAuthStore.getState().refreshToken;
+  if (!refreshToken) return null;
+  if (refreshPromise && refreshAccount === refreshToken) return refreshPromise;
+  refreshAccount = refreshToken;
+  const pending = (async () => {
+    const timed = withTimeout({}, 15000);
     try {
       const res = await fetch(`${API_BASE}/auth/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ refresh_token: refreshToken }),
+        signal: timed.options.signal,
       });
-      if (!res.ok) return null;
+      if (useAuthStore.getState().refreshToken !== refreshToken) throw new Error('Аккаунт изменился. Повторите действие.');
+      if (res.status === 401 || res.status === 403) return null;
+      if (!res.ok) throw new ApiError('Не удалось обновить подключение. Попробуйте ещё раз.', res.status);
       const data = await res.json();
+      // A refresh from a previous account must not replace a newer login.
+      if (useAuthStore.getState().refreshToken !== refreshToken) throw new Error('Аккаунт изменился. Повторите действие.');
       useAuthStore.getState().setTokens(data.access_token, data.refresh_token);
       return data.access_token as string;
-    } catch {
-      return null;
-    }
+    } finally { timed.cancel(); }
   })();
+  refreshPromise = pending;
   try {
-    return await refreshPromise;
+    return await pending;
   } finally {
-    refreshPromise = null;
+    if (refreshPromise === pending) { refreshPromise = null; refreshAccount = null; }
   }
 }
 
@@ -51,13 +65,14 @@ function withTimeout(options: RequestInit, timeoutMs?: number): { options: Reque
     timedOut = true;
     controller.abort();
   }, timeoutMs);
+  const abort = () => controller.abort();
   if (options.signal) {
     if (options.signal.aborted) controller.abort();
-    else options.signal.addEventListener('abort', () => controller.abort(), { once: true });
+    else options.signal.addEventListener('abort', abort, { once: true });
   }
   return {
     options: { ...options, signal: controller.signal },
-    cancel: () => window.clearTimeout(timer),
+    cancel: () => { window.clearTimeout(timer); options.signal?.removeEventListener('abort', abort); },
     timedOut: () => timedOut,
   };
 }
@@ -80,7 +95,8 @@ export async function apiFetch(path: string, options: RequestInit & { timeoutMs?
 
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      throw new Error(data.detail || data.message || `HTTP ${res.status}`);
+      const detail = data.detail || data.message;
+      throw new ApiError(typeof detail === 'string' ? detail : `Не удалось выполнить запрос (HTTP ${res.status}). Попробуйте ещё раз.`, res.status);
     }
     return res.json();
   } catch (error: any) {
@@ -116,6 +132,10 @@ export function apiFormDataProgress(
 ): Promise<Record<string, unknown>> {
   const send = (token: string | null) =>
     new Promise<XMLHttpRequest>((resolve, reject) => {
+      if (options.signal?.aborted) {
+        reject(Object.assign(new Error('Запрос остановлен'), { name: 'AbortError' }));
+        return;
+      }
       const xhr = new XMLHttpRequest();
       let carry = '';
       let parsedLength = 0;
@@ -147,6 +167,7 @@ export function apiFormDataProgress(
       xhr.onprogress = () => consume(false);
       const abort = () => xhr.abort();
       options.signal?.addEventListener('abort', abort, { once: true });
+      xhr.onloadend = () => options.signal?.removeEventListener('abort', abort);
       xhr.onabort = () => reject(Object.assign(new Error('Запрос остановлен'), { name: 'AbortError' }));
       xhr.ontimeout = () => reject(new Error('Превышено время ожидания'));
       xhr.onerror = () => reject(new Error('Не удалось загрузить файл'));

@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { useEffect } from 'react';
-import { Box, Typography, Stack } from '@mui/material';
+import { Alert, Box, Button, Skeleton, Typography, Stack } from '@mui/material';
 import { useQuery } from '@tanstack/react-query';
 import { ChatText, Image, Lightning } from '@phosphor-icons/react';
 import { apiFetch } from '@/api/client';
@@ -84,14 +84,19 @@ export default function BillingPage() {
     });
   }, []);
 
-  const { data: sub } = useQuery<Subscription>({
+  const { data: sub, isPending, error, refetch } = useQuery<Subscription>({
     queryKey: ['subscription'],
     queryFn: () => apiFetch('/billing/subscription'),
   });
-  const { data: plans } = useQuery<{ plans: Plan[] }>({
+  const { data: plans, error: plansError, refetch: reloadPlans } = useQuery<{ plans: Plan[] }>({
     queryKey: ['plans'],
     queryFn: () => apiFetch('/billing/plans'),
   });
+
+  if (!sub) return <AccountPageShell title="Кабинет">
+    {isPending ? <Box role="status" aria-label="Загружаем тариф"><Skeleton height={100} /><Skeleton height={200} /></Box> :
+      <Alert severity="error" action={<Button color="inherit" onClick={() => void refetch()}>Повторить</Button>}>Не удалось загрузить тариф и остаток. Попробуйте ещё раз.</Alert>}
+  </AccountPageShell>;
 
   const tier = sub?.tier || 'free';
   const tierLabel = sub?.name || TIER_LABELS[tier] || tier;
@@ -114,6 +119,8 @@ export default function BillingPage() {
             : 'Один запас для чата, Оркестратора и Студии. Ограничения на 5 часов, неделю и месяц действуют одновременно.'
       }
     >
+      {error && <Alert severity="warning" action={<Button color="inherit" onClick={() => void refetch()}>Обновить</Button>}>Не удалось обновить остаток. Показаны последние загруженные данные.</Alert>}
+      {plansError && <Alert severity="error" action={<Button color="inherit" onClick={() => void reloadPlans()}>Повторить</Button>}>Не удалось загрузить список тарифов.</Alert>}
       <AccountSection featured>
         <Stack spacing={0.5}>
           <Stack

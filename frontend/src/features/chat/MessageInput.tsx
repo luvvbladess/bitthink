@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { Box, CircularProgress, IconButton, TextField, Tooltip } from '@mui/material';
 import { File as FileIcon, PaperPlaneRight, Paperclip, Microphone, Stop, X } from '@phosphor-icons/react';
-import { apiFormData } from '@/api/client';
+import { useComposerDraft } from './useComposerDraft';
+import { useVoiceInput } from './useVoiceInput';
 import { ReasoningEffortSelector, SearchModeSelector, useIsComputer, useSelectedModel } from '@/components/ModelSelector';
 import { composerIconBtnSx, composerShellSx } from '@/theme/effects';
 import { DOCGEN_LABEL, PILOT_LABEL } from '@/constants/modes';
 import { OrchestratorTools } from './OrchestratorTools';
+import { useVisualViewportHeight } from './useVisualViewportHeight';
 
 interface Props {
   onSend: (text: string, files?: File[], mode?: 'chat' | 'image') => Promise<boolean | void> | boolean | void;
@@ -17,9 +19,9 @@ interface Props {
   imageModeRequest?: number;
   conversationId?: string | null;
   onOpenProjects?: () => void;
+  selectionQuote?: { text: string } | null;
+  onClearSelectionQuote?: () => void;
 }
-
-type VoiceState = 'idle' | 'recording' | 'transcribing' | 'error';
 
 const isSecureContext = typeof window !== 'undefined' && window.isSecureContext;
 const hasRecorderApi =
@@ -90,21 +92,25 @@ export function MessageInput({
   imageModeRequest = 0,
   conversationId,
   onOpenProjects,
+  selectionQuote,
+  onClearSelectionQuote,
 }: Props) {
-  const [text, setText] = useState('');
   const [dragOver, setDragOver] = useState(false);
-  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [imageMode, setImageMode] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const viewportHeight = useVisualViewportHeight();
   const [submitting, setSubmitting] = useState(false);
-  const [voiceState, setVoiceState] = useState<VoiceState>('idle');
+  const { text, setText, pendingFiles, setPendingFiles, submission } = useComposerDraft(conversationId);
+  const { voiceState, handleMicClick } = useVoiceInput(conversationId, transcribed => {
+    setText(previous => previous.trim() ? `${previous.trim()} ${transcribed}` : transcribed);
+  }, !disabled);
+  const sendingRef = useRef(false);
   const isComputer = useIsComputer();
   const selectedModel = useSelectedModel();
   const isStudio = selectedModel === 'studio';
   const isDocgen = selectedModel === 'docgen';
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
 
   const addFiles = (files: File[] | FileList | null) => {
     if (!files) return;
@@ -120,76 +126,34 @@ export function MessageInput({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (disabled || submitting || (!text.trim() && !pendingFiles.length) || (imageMode && !text.trim())) return;
+    if (disabled || sendingRef.current || ['starting', 'recording', 'transcribing'].includes(voiceState) || (!text.trim() && !pendingFiles.length) || (imageMode && !text.trim())) return;
+    sendingRef.current = true;
     setSubmitting(true);
+    const acceptDraft = submission();
     try {
-      const result = await onSend(text.trim(), pendingFiles, imageMode ? 'image' : 'chat');
+      const question = text.trim();
+      const message = selectionQuote ? `Уточни по выделенному фрагменту предыдущего ответа:\n\n${selectionQuote.text.split('\n').map(line => `> ${line}`).join('\n')}\n\n${question}` : question;
+      const result = await onSend(message, pendingFiles, imageMode && !selectionQuote ? 'image' : 'chat');
       if (result !== false) {
-        setText('');
-        setPendingFiles([]);
+        acceptDraft();
+        if (selectionQuote) onClearSelectionQuote?.();
         // «Править эту картинку» – одноразовый режим: иначе следующее фото
         // с текстом в любом режиме уйдёт в редактор картинок, а не в чат.
         setImageMode(false);
         inputRef.current?.focus();
       }
     } finally {
+      sendingRef.current = false;
       setSubmitting(false);
     }
-  };
-
-  const failVoice = () => {
-    setVoiceState('error');
-    setTimeout(() => setVoiceState('idle'), 3000);
-  };
-
-  const startRecording = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
-      audioChunksRef.current = [];
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) audioChunksRef.current.push(e.data);
-      };
-      recorder.onstop = async () => {
-        stream.getTracks().forEach((t) => t.stop());
-        const mimeType = recorder.mimeType || 'audio/webm';
-        const blob = new Blob(audioChunksRef.current, { type: mimeType });
-        setVoiceState('transcribing');
-        try {
-          const ext = (mimeType.split('/')[1] || 'webm').split(';')[0] || 'webm';
-          const formData = new FormData();
-          formData.append('file', blob, `recording.${ext}`);
-          const res = await apiFormData('/media/audio/transcribe', formData);
-          if (!res.ok) throw new Error('transcribe failed');
-          const data = await res.json();
-          const transcribed = (data.text || '').trim();
-          if (transcribed && !transcribed.startsWith('❌')) {
-            setText((prev) => (prev.trim() ? `${prev.trim()} ${transcribed}` : transcribed));
-            setVoiceState('idle');
-          } else {
-            failVoice();
-          }
-        } catch {
-          failVoice();
-        }
-      };
-      mediaRecorderRef.current = recorder;
-      recorder.start();
-      setVoiceState('recording');
-    } catch {
-      failVoice();
-    }
-  };
-
-  const handleMicClick = () => {
-    if (voiceState === 'idle') startRecording();
-    else if (voiceState === 'recording') mediaRecorderRef.current?.stop();
   };
 
   const voiceLabel = !voiceSupported
     ? isSecureContext
       ? 'Голосовой ввод не поддерживается этим браузером'
       : 'Голосовой ввод доступен только по HTTPS'
+    : voiceState === 'starting'
+      ? 'Разрешите доступ к микрофону'
     : voiceState === 'recording'
       ? 'Остановить запись'
       : voiceState === 'transcribing'
@@ -205,11 +169,16 @@ export function MessageInput({
   // Сменили режим – правка картинки не должна тянуться за человеком в другой режим.
   useEffect(() => {
     setImageMode(false);
-  }, [selectedModel]);
+    setToolsOpen(false);
+  }, [selectedModel, conversationId]);
 
   const pendingImages = pendingFiles.filter((file) => file.type.startsWith('image/'));
   const editingImage = imageMode && (pendingImages.length > 0 || Boolean(editSourceUrl));
-  const canSend = (text.trim() || pendingFiles.length > 0) && !disabled && !submitting && !(imageMode && !text.trim());
+  useEffect(() => {
+    if (selectionQuote) { setImageMode(false); inputRef.current?.focus(); }
+  }, [selectionQuote]);
+
+  const canSend = (text.trim() || pendingFiles.length > 0) && !disabled && !submitting && !['starting', 'recording', 'transcribing'].includes(voiceState) && !(imageMode && !text.trim());
 
   return (
     <Box sx={{ width: '100%', '&:focus-within .bt-key-hint': { opacity: 1 } }}>
@@ -231,7 +200,10 @@ export function MessageInput({
         flexDirection: 'column',
         width: '100%',
         boxSizing: 'border-box',
-        overflow: 'visible',
+        overflowY: 'auto',
+        maxHeight: `${Math.max(140, viewportHeight - 80)}px`,
+        minHeight: 0,
+        flexShrink: 0,
         px: { xs: 1.5, sm: 1.75 },
         pt: { xs: 1.5, sm: 1.5 },
         pb: { xs: 1, sm: 1 },
@@ -310,12 +282,21 @@ export function MessageInput({
           ))}
         </Box>
       )}
+      {selectionQuote && <Box component="section" aria-label="Выбранный фрагмент" sx={{ mb: 1.25, p: 1.25, borderRadius: '10px', bgcolor: 'var(--bt-overlay-faint)', minWidth: 0 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, fontSize: 12, color: 'text.secondary' }}>
+          Уточнение по фрагменту
+          <IconButton size="small" type="button" aria-label="Убрать цитату" disabled={submitting} onClick={onClearSelectionQuote}><X size={15} /></IconButton>
+        </Box>
+        <Box component="blockquote" sx={{ m: 0, mt: .5, maxHeight: 72, overflowY: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 13, lineHeight: 1.5 }}>{selectionQuote.text}</Box>
+      </Box>}
       <TextField
         inputRef={inputRef as any}
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder={
-          editingImage
+          selectionQuote
+            ? 'Что уточнить об этом фрагменте?'
+            : editingImage
             ? 'Что изменить на этой картинке?'
             : pendingFiles.length
               ? isDocgen
@@ -326,13 +307,13 @@ export function MessageInput({
               : isDocgen
                 ? 'Прикрепите шаблоны и данные, затем опишите документ...'
                 : isComputer
-                  ? 'Сделайте что угодно...'
+                  ? 'Какой результат нужен? Можно прикрепить файлы…'
                   : selectedModel === 'studio'
                     ? 'Образец PPTX и ТЗ или опишите слайды...'
                     : selectedModel === 'kimi-k2.6'
                       ? 'Что найти прямо сейчас?'
                       : selectedModel === 'gpt-6-astra'
-                        ? 'Код, договор или задачу в песочницу...'
+                        ? 'Прикрепите материалы или опишите сложную задачу…'
                         : selectedModel === 'gpt-6-sol' || selectedModel === 'gpt-5.6-sol' || selectedModel === 'gpt-5.6-terra'
                           ? 'Какую тему разобрать с источниками?'
                           : 'Спросите что угодно...'
@@ -340,11 +321,11 @@ export function MessageInput({
         fullWidth
         multiline
         minRows={1}
-        maxRows={7}
+        maxRows={toolsOpen ? (viewportHeight < 480 ? 1 : 3) : viewportHeight < 480 ? 3 : 7}
         variant="standard"
         margin="none"
         hiddenLabel
-        disabled={disabled}
+        disabled={disabled || submitting}
         sx={{ m: 0 }}
         inputProps={{ 'aria-label': 'Сообщение' }}
         InputProps={{
@@ -370,7 +351,7 @@ export function MessageInput({
           },
         }}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey) {
+          if (e.key === 'Enter' && !e.shiftKey && !(e.nativeEvent as KeyboardEvent).isComposing && e.keyCode !== 229) {
             e.preventDefault();
             handleSubmit(e);
           }
@@ -401,6 +382,7 @@ export function MessageInput({
           <IconButton
             size="small"
             onClick={() => fileInputRef.current?.click()}
+            disabled={disabled || submitting}
             sx={composerIconBtnSx}
             aria-label="Прикрепить файл"
           >
@@ -418,7 +400,7 @@ export function MessageInput({
               size="small"
               type="button"
               onClick={handleMicClick}
-              disabled={disabled || !voiceSupported || voiceState === 'transcribing'}
+              disabled={disabled || submitting || !voiceSupported || voiceState === 'starting' || voiceState === 'transcribing'}
               sx={{
                 ...composerIconBtnSx,
                 ...(voiceState === 'recording' && {
@@ -435,7 +417,7 @@ export function MessageInput({
               }}
               aria-label={voiceLabel}
             >
-              {voiceState === 'transcribing' ? (
+              {voiceState === 'transcribing' || voiceState === 'starting' ? (
                 <CircularProgress size={18} sx={{ color: 'text.secondary' }} />
               ) : voiceState === 'recording' ? (
                 <Stop size={16} weight="fill" />
@@ -449,11 +431,6 @@ export function MessageInput({
           <IconButton
             size="small"
             type="button"
-            onPointerDown={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              onStop?.();
-            }}
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -501,7 +478,7 @@ export function MessageInput({
       <Box
         className="bt-key-hint"
         sx={{
-          display: isComputer ? 'none' : isStudio || isDocgen || imageMode ? 'block' : { xs: 'none', sm: 'block' },
+          display: toolsOpen && viewportHeight < 480 ? 'none' : isComputer ? 'none' : isStudio || isDocgen || imageMode ? 'block' : { xs: 'none', sm: 'block' },
           // The plain Enter/Shift+Enter reminder shows while typing; the mode explanations stay.
           opacity: isComputer || isStudio || isDocgen || imageMode || editingImage ? 1 : 0,
           transition: 'opacity 0.2s cubic-bezier(0.23, 1, 0.32, 1)',
@@ -520,10 +497,10 @@ export function MessageInput({
           : isStudio
             ? 'Готовый макет на холсте правится чатом. Можно прикрепить образец PPTX или PDF и файл ТЗ'
           : isComputer
-            ? `${PILOT_LABEL}: раздаёт должности подходящим ИИ-агентам в песочнице и собирает ответ`
+            ? `${PILOT_LABEL}: выполняет задачи с файлами, поиском и инструментами`
             : 'Enter отправит · Shift+Enter новая строка'}
       </Box>
-      {isComputer && <OrchestratorTools draft={text} hasFiles={pendingFiles.length > 0} conversationId={conversationId} onOpenProjects={onOpenProjects} />}
+      {isComputer && <OrchestratorTools draft={text} hasFiles={pendingFiles.length > 0} conversationId={conversationId} onOpenProjects={onOpenProjects} onOpenChange={setToolsOpen} />}
     </Box>
   );
 }

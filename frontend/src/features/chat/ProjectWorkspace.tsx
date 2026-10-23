@@ -3,10 +3,15 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, Box, Button, IconButton, Menu, MenuItem, Skeleton, Stack, TextField, Typography } from '@mui/material';
 import { ArrowLeft, ArrowsIn, ArrowsOut, Check, DownloadSimple, FileText, FolderSimple, Plus, Table, Presentation, Trash, X } from '@phosphor-icons/react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { apiBlob, apiFetch, apiFormData, downloadBlob } from '@/api/client';
+import { apiBlob, apiFetch, apiFormDataProgress, downloadBlob } from '@/api/client';
 import ReactMarkdown from 'react-markdown';
 import { ProjectActions, type ProjectDeleted } from './ProjectActions';
 import { ResultTable } from './ResultTable';
+import { SelectionClarify } from './SelectionClarify';
+import type { ResultEditRequest } from './projectResultLinks';
+import { ResultAiEdit, type EditTarget } from './ResultAiEdit';
+import { ProjectEvidence } from './ProjectEvidence';
+import type { ProjectCitation } from './EvidenceLink';
 
 export type ProjectItem = { id: string; name: string; chat_ids?: string[] };
 type Entry = { id: string; title: string; kind: string; revision: number; body?: string; updated_at?: number; chars?: number; has_original?: boolean };
@@ -17,27 +22,48 @@ type Detail = Entry & { body: string; spec?: Spec; source_url?: string; current_
 const tabs = ['Материалы', 'Результаты', 'Память'] as const;
 const readable = (body: string) => body.replace(/^Из сообщения пользователя в беседе [\w-]{1,64}:\n/, 'Из вашего сообщения:\n');
 
-export function ProjectWorkspace({ projectId: pid, conversationId: cid, onClose, onCreated, onSelectChat, externalError, expanded, onToggleSize, onProjectDeleted }: {
-  projectId: string; conversationId?: string; onClose: () => void; onCreated: (project: ProjectItem) => void; onSelectChat: (id: string) => void; externalError?: string; expanded?: boolean; onToggleSize?: () => void; onProjectDeleted?: ProjectDeleted;
+export function ProjectWorkspace({ projectId: pid, conversationId: cid, onClose, onCreated, onSelectChat, externalError, expanded, onToggleSize, onProjectDeleted, citation, editRequest }: {
+  projectId: string; editRequest?: ResultEditRequest | null; citation?: ProjectCitation | null; conversationId?: string; onClose: () => void; onCreated: (project: ProjectItem) => void; onSelectChat: (id: string) => void; externalError?: string; expanded?: boolean; onToggleSize?: () => void; onProjectDeleted?: ProjectDeleted;
 }) {
+  const reportRoot = useRef<HTMLDivElement>(null);
+  const handledEdit = useRef('');
+  const [editHint, setEditHint] = useState('');
   const client = useQueryClient(); const reduce = useReducedMotion();
   const [tab, setTab] = useState(0); const [selected, setSelected] = useState<string | null>(null);
   const [name, setName] = useState(''); const [filter, setFilter] = useState(''); const [error, setError] = useState('');
   const [editing, setEditing] = useState(false); const [title, setTitle] = useState(''); const [body, setBody] = useState('');
   const [draft, setDraft] = useState<Spec | null>(null); const [revision, setRevision] = useState<number | null>(null);
+  const [aiTarget, setAiTarget] = useState<EditTarget | null>(null);
+  const [fragment, setFragment] = useState<{ start: number; end: number } | null>(null);
+  const [undo, setUndo] = useState<{ oldRevision: number; currentRevision: number } | null>(null);
   const [editingRow, setEditingRow] = useState<string | null>(null);
   const [editRevision, setEditRevision] = useState<number | null>(null);
   const [menu, setMenu] = useState<HTMLElement | null>(null); const [deletePending, setDeletePending] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null); const [busy, setBusy] = useState(false);
   const space = useQuery<ProjectSpace>({ queryKey: ['project-workspace', pid], queryFn: () => apiFetch(`/projects/${pid}/workspace`), enabled: !!pid, refetchInterval: 10000 });
   const suggestions = useQuery<Entry[]>({ queryKey: ['project-suggestions', pid], queryFn: () => apiFetch(`/projects/${pid}/suggestions`), enabled: !!pid, refetchInterval: 10000 });
-  const detail = useQuery<Detail>({ queryKey: ['project-workspace-detail', pid, selected, revision], queryFn: () => apiFetch(`/projects/${pid}/entries/${selected}${revision ? `/versions/${revision}` : ''}`), enabled: !!pid && !!selected });
+  const detail = useQuery<Detail>({ queryKey: ['project-workspace-detail', pid, selected, revision, editRequest?.entryId === selected ? editRequest.requestId : null], queryFn: () => apiFetch(`/projects/${pid}/entries/${selected}${revision ? `/versions/${revision}` : ''}`), enabled: !!pid && !!selected });
   const history = useQuery<{ revision: number; title: string }[]>({ queryKey: ['project-history', pid, selected], queryFn: () => apiFetch(`/projects/${pid}/entries/${selected}/history`), enabled: !!selected });
   const refresh = () => { ['project-workspace', 'project-workspace-detail', 'project-entries', 'project-suggestions', 'project-history'].forEach(key => client.invalidateQueries({ queryKey: [key] })); };
   const action = useMutation({ mutationFn: ({ path, method = 'POST', data }: { path: string; method?: string; data?: unknown }) => apiFetch(path, { method, ...(data ? { body: JSON.stringify(data) } : {}) }), onSuccess: () => { setError(''); refresh(); }, onError: (e: Error) => setError(e.message) });
   useEffect(() => { setSelected(null); setEditing(false); setDraft(null); setRevision(null); setError(''); setDeletePending(false); }, [pid]);
-  useEffect(() => { setEditing(false); setDraft(null); setRevision(null); setDeletePending(false); }, [selected]);
+  useEffect(() => { setEditing(false); setDraft(null); setRevision(citation?.entryId === selected ? citation.revision : null); setDeletePending(false); setAiTarget(null); setFragment(null); setUndo(null); }, [selected]);
+  useEffect(() => { if (citation && citation.projectId === pid) { setSelected(citation.entryId); setRevision(citation.revision); setTab(0); } }, [citation, pid]);
+  useEffect(() => { if (editRequest?.projectId === pid) { setSelected(editRequest.entryId); setTab(1); setRevision(null); setEditHint(''); } }, [editRequest, pid]);
   const spec: Spec | null = draft || (() => { try { return detail.data?.kind === 'result' ? JSON.parse(detail.data.body) : null; } catch { return null; } })();
+  useEffect(() => {
+    if (!editRequest || handledEdit.current === editRequest.requestId || selected !== editRequest.entryId || !detail.data || !spec || revision) return;
+    handledEdit.current = editRequest.requestId;
+    if (spec.type !== 'report') { setEditHint(spec.type === 'table' ? 'Выберите нужную строку и нажмите «Изменить с ИИ».' : 'Выберите слайд и нажмите «Изменить с ИИ».'); return; }
+    const text = spec.text || '';
+    if (editRequest.selection) {
+      const start = text.indexOf(editRequest.selection);
+      if (start < 0 || text.indexOf(editRequest.selection, start + 1) >= 0) { setEditHint('Не удалось однозначно найти этот фрагмент в текущей версии. Выделите нужный текст в отчёте ниже.'); return; }
+      const from = Array.from(text.slice(0, start)).length;
+      setAiTarget({ start: from, end: from + Array.from(editRequest.selection).length });
+    } else if (text && Array.from(text).length <= 6000) setAiTarget({ start: 0, end: Array.from(text).length });
+    else setEditHint('Выделите в отчёте фрагмент до 6 000 символов и нажмите «Изменить с ИИ».');
+  }, [editRequest, selected, detail.data, revision]);
   const entries = (space.data?.entries || []).filter(e => (tab === 0 ? e.kind === 'file' || e.kind === 'source' : tab === 1 ? e.kind === 'result' : ['note', 'decision'].includes(e.kind)) && e.title.toLocaleLowerCase('ru').includes(filter.toLocaleLowerCase('ru')));
   const save = async () => {
     if (!detail.data || !selected) return;
@@ -55,8 +81,8 @@ export function ProjectWorkspace({ projectId: pid, conversationId: cid, onClose,
     setBusy(true); setError('');
     try {
       const data = new FormData(); data.append('file', file); data.append('conversation_id', cid);
-      await apiFormData('/documents/upload', data);
-      const docs = await apiFetch(`/projects/chat/${encodeURIComponent(cid)}/documents`) as { id: number; filename: string }[];
+      await apiFormDataProgress('/documents', data, { timeoutMs: 180000 });
+      const docs = await apiFetch(`/projects/chat/${encodeURIComponent(cid)}/documents?filename=${encodeURIComponent(file.name)}`) as { id: number; filename: string }[];
       const matched = docs.filter(item => item.filename === file.name || item.filename.startsWith(file.name + '/'));
       if (!matched.length) throw new Error('Файл загружен в беседу, но текст пока не готов. Сохраните его в проект после обработки.');
       let first = '';
@@ -70,6 +96,15 @@ export function ProjectWorkspace({ projectId: pid, conversationId: cid, onClose,
   const download = async () => {
     if (!spec || !selected) return;
     setBusy(true); try { const format = spec.type === 'table' ? 'xlsx' : spec.type === 'report' ? 'docx' : 'pptx'; downloadBlob(await apiBlob(`/projects/${pid}/results/${selected}/export/${format}`), `${spec.title}.${format}`); } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+  };
+  const captureSelection = (element: HTMLElement) => {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount || !selection.toString().trim()) return;
+    const range = selection.getRangeAt(0);
+    if (!element.contains(range.commonAncestorContainer)) return;
+    const before = range.cloneRange(); before.selectNodeContents(element); before.setEnd(range.startContainer, range.startOffset);
+    const start = Array.from(before.toString()).length;
+    setFragment({ start, end: start + Array.from(range.toString()).length });
   };
   const beginEdit = (rowId: string | null = null) => { if (!detail.data) return; setEditingRow(rowId); setEditRevision(detail.data.revision); setTitle(detail.data.title); setBody(detail.data.body); if (spec) setDraft(structuredClone(spec)); setEditing(true); };
   return <Box component="section" aria-label="Рабочая область проекта" sx={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', bgcolor: 'var(--bt-bg)', minWidth: 0 }}>
@@ -85,13 +120,15 @@ export function ProjectWorkspace({ projectId: pid, conversationId: cid, onClose,
         {tabs.map((label, index) => <Box component="button" role="tab" type="button" aria-selected={tab === index} tabIndex={tab === index ? 0 : -1} key={label} onClick={() => { setTab(index); setSelected(null); }} onKeyDown={e => { if (['ArrowLeft','ArrowRight','Home','End'].includes(e.key)) { e.preventDefault(); const next = e.key === 'Home' ? 0 : e.key === 'End' ? 2 : (index + (e.key === 'ArrowRight' ? 1 : 2)) % 3; setTab(next); setSelected(null); (e.currentTarget.parentElement?.querySelectorAll('[role=tab]')[next] as HTMLElement)?.focus(); } }} sx={{ position: 'relative', border: 0, bgcolor: 'transparent', color: tab === index ? 'text.primary' : 'text.secondary', font: 'inherit', fontSize: 13, fontWeight: 600, py: 1.5, px: 0.25, cursor: 'pointer', '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main' } }}>{label}{index === 2 && !!suggestions.data?.length ? ` · ${suggestions.data.length}` : ''}{tab === index && <Box component={motion.span} layoutId="project-tab-line" transition={{ duration: reduce ? 0 : .2 }} sx={{ position: 'absolute', left: 0, right: 0, bottom: -1, height: 2, bgcolor: 'primary.main' }} />}</Box>)}
       </Box>
       {(error || externalError || space.error || detail.error || suggestions.error) && <Alert severity="error" sx={{ mx: 2, mt: 1 }}>{error || externalError || space.error?.message || detail.error?.message || suggestions.error?.message}</Alert>}
-      <Box sx={{ flex: 1, minHeight: 0, overflow: 'auto', px: { xs: 2, md: 3 }, py: 2 }}>
+      <Box ref={reportRoot} sx={{ flex: 1, minHeight: 0, overflow: 'auto', px: { xs: 2, md: 3 }, py: 2 }}>
         <AnimatePresence mode="wait" initial={false}><Box component={motion.div} key={selected || `tab-${tab}`} initial={{ opacity: 0, y: reduce ? 0 : 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: reduce ? 0 : .18 }}>
           {selected ? <>
             <Button size="small" color="inherit" startIcon={<ArrowLeft size={16} />} onClick={() => setSelected(null)}>Все {tabs[tab].toLowerCase()}</Button>
             {detail.isLoading && <Skeleton height={120} />}
             {detail.data && <>
+              {citation?.entryId === selected && <ProjectEvidence key={`${citation.entryId}-${citation.revision}-${citation.offset}`} citation={citation} />}
               <Stack direction="row" alignItems="center" gap={1} flexWrap="wrap" sx={{ my: 2 }}><Typography sx={{ flex: 1, minWidth: 120, fontSize: 20, fontWeight: 600, overflowWrap: 'anywhere' }}>{detail.data.title}</Typography><Typography sx={{ fontSize: 12, color: 'text.secondary' }}>Версия {detail.data.revision}</Typography></Stack>
+              {editHint && <Alert severity="info" sx={{ mb: 1.5 }}>{editHint}</Alert>}
               <Stack direction="row" gap={1} flexWrap="wrap" sx={{ mb: 2 }}>
                 {!editing ? <Button size="small" onClick={() => beginEdit()} disabled={!!revision}>{detail.data.kind === 'file' ? 'Править текст материала' : 'Редактировать'}</Button> : <><Button startIcon={<Check size={16} />} size="small" disabled={action.isPending} onClick={() => { void save().catch(() => {}); }}>Сохранить</Button><Button size="small" color="inherit" disabled={action.isPending} onClick={() => { setDraft(null); setEditing(false); setError(''); }}>Отмена</Button></>}
                 {spec && <Button size="small" startIcon={<DownloadSimple size={16} />} disabled={busy || editing || !!revision} onClick={() => { void download(); }}>Скачать {spec.type === 'table' ? 'XLSX' : spec.type === 'report' ? 'DOCX' : 'PPTX'}</Button>}
@@ -105,14 +142,18 @@ export function ProjectWorkspace({ projectId: pid, conversationId: cid, onClose,
               {editing && detail.data.kind === 'file' && <Typography sx={{ fontSize: 12, color: 'text.secondary', mb: 2 }}>Правки применяются к извлечённому тексту проекта. Для изменения самого файла скачайте оригинал.</Typography>}
               {spec?.type === 'table' && <ResultTable key={selected || 'table'} title={spec.title} headers={(spec.columns || []).map(c => c.label)} editable={editing}
                 onEditRow={!editing && !revision ? id => beginEdit(id) : undefined}
+                onAiEditRow={!editing && !revision ? id => setAiTarget({ row_id: id }) : undefined}
                 rows={(spec.rows || []).map(row => ({ id: row.id, text: (spec.columns || []).map(c => row.cells[c.id] || ''), cells: (spec.columns || []).map(c => editing && (!editingRow || editingRow === row.id)
                   ? <TextField key={c.id} multiline variant="standard" fullWidth disabled={action.isPending} inputProps={{ 'aria-label': `${c.label}, строка ${row.id}`, maxLength: 1500 }} value={row.cells[c.id] || ''} onChange={e => setDraft({ ...spec, rows: spec.rows!.map(r => r.id === row.id ? { ...r, state: 'pending', cells: { ...r.cells, [c.id]: e.target.value } } : r) })} />
                   : /^https?:\/\//i.test(row.cells[c.id] || '') ? <Box key={c.id} component="a" href={row.cells[c.id]} target="_blank" rel="noreferrer" sx={{ color: 'primary.light' }}>Открыть источник</Box> : <ReactMarkdown key={c.id} skipHtml allowedElements={['p','a','strong','em','code','br']} unwrapDisallowed components={{ p: ({children}) => <Box component="span">{children}</Box>, a: ({href,children}) => <Box component="a" href={href} target="_blank" rel="noreferrer" sx={{ color: 'primary.light' }}>{children}</Box> }}>{row.cells[c.id] || '—'}</ReactMarkdown>) }))} />}
               {editing && editingRow && <Typography sx={{ fontSize: 12, color: 'text.secondary', mb: 1 }}>Редактируется одна строка. Остальные строки сохранятся без изменений.</Typography>}
               {spec?.workflow === 'procurement' && <Typography sx={{ color: 'text.secondary', fontSize: 12, mt: 1.5 }}>План закупки · пустые поля означают, что данные ещё не получены. Цены и наличие проверяются на указанную дату. Корзины и оплата не выполняются.</Typography>}
               {spec?.type === 'table' && editing && !editingRow && <Button sx={{ mt: 1 }} size="small" startIcon={<Plus size={15} />} onClick={() => setDraft({ ...spec, rows: [...spec.rows!, { id: crypto.randomUUID(), cells: {}, state: 'pending' }] })}>Добавить строку</Button>}
-              {spec?.type === 'slides' && <Stack gap={2}>{spec.slides?.map((slide, index) => <Box key={slide.id} sx={{ p: 2.5, border: '1px solid var(--bt-hairline)', borderRadius: 2 }}><Typography sx={{ fontSize: 12, color: 'text.secondary', mb: 1 }}>Слайд {index + 1}</Typography>{editing ? <><TextField fullWidth label="Заголовок слайда" value={slide.title} onChange={e => setDraft({ ...spec, slides: spec.slides!.map(s => s.id === slide.id ? { ...s, title: e.target.value } : s) })} /><TextField fullWidth multiline minRows={3} sx={{ mt: 1 }} label="Текст слайда" value={slide.text} onChange={e => setDraft({ ...spec, slides: spec.slides!.map(s => s.id === slide.id ? { ...s, text: e.target.value } : s) })} /></> : <><Typography sx={{ fontSize: 22, fontWeight: 600 }}>{slide.title}</Typography><Typography sx={{ mt: 1.5, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{slide.text}</Typography></>}</Box>)}</Stack>}
-              {(!spec || spec.type === 'report') && (editing ? <TextField fullWidth multiline minRows={10} maxRows={24} label={spec ? 'Текст отчёта' : 'Текст материала'} value={spec ? spec.text : body} onChange={e => spec ? setDraft({ ...spec, text: e.target.value }) : setBody(e.target.value)} /> : <Typography sx={{ fontSize: 14, lineHeight: 1.8, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{readable(spec?.text || detail.data.body)}</Typography>)}
+              {spec?.type === 'slides' && <Stack gap={2}>{spec.slides?.map((slide, index) => <Box key={slide.id} sx={{ p: 2.5, border: '1px solid var(--bt-hairline)', borderRadius: 2 }}><Typography sx={{ fontSize: 12, color: 'text.secondary', mb: 1 }}>Слайд {index + 1}</Typography>{editing ? <><TextField fullWidth label="Заголовок слайда" value={slide.title} onChange={e => setDraft({ ...spec, slides: spec.slides!.map(s => s.id === slide.id ? { ...s, title: e.target.value } : s) })} /><TextField fullWidth multiline minRows={3} sx={{ mt: 1 }} label="Текст слайда" value={slide.text} onChange={e => setDraft({ ...spec, slides: spec.slides!.map(s => s.id === slide.id ? { ...s, text: e.target.value } : s) })} /></> : <>{!revision && <Button size="small" onClick={() => setAiTarget({ slide_id: slide.id })}>Изменить с ИИ</Button>}<Typography sx={{ fontSize: 22, fontWeight: 600 }}>{slide.title}</Typography><Typography sx={{ mt: 1.5, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{slide.text}</Typography></>}</Box>)}</Stack>}
+              {(!spec || spec.type === 'report') && (editing ? <TextField fullWidth multiline minRows={10} maxRows={24} label={spec ? 'Текст отчёта' : 'Текст материала'} value={spec ? spec.text : body} onChange={e => spec ? setDraft({ ...spec, text: e.target.value }) : setBody(e.target.value)} /> : <Typography data-clarify-text={spec?.type === 'report' && !revision ? 'true' : undefined} onMouseUp={e => spec?.type === 'report' && captureSelection(e.currentTarget)} onKeyUp={e => spec?.type === 'report' && captureSelection(e.currentTarget)} sx={{ fontSize: 14, lineHeight: 1.8, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{spec?.type === 'report' ? spec.text || '' : readable(detail.data.body)}</Typography>)}
+              {spec?.type === 'report' && !editing && !revision && <Button size="small" disabled={!fragment && (!(spec.text || '').length || Array.from(spec.text || '').length > 6000)} onClick={() => setAiTarget(fragment || { start: 0, end: Array.from(spec.text || '').length })}>{fragment ? 'Изменить выделенное с ИИ' : 'Изменить отчёт с ИИ'}</Button>}
+              {aiTarget && !editing && !revision && <ResultAiEdit key={`${selected}-${JSON.stringify(aiTarget)}`} projectId={pid} entryId={selected!} revision={detail.data.revision} target={aiTarget} onClose={() => setAiTarget(null)} onApplied={value => { setUndo({ oldRevision: detail.data!.revision, currentRevision: value.revision }); setAiTarget(null); refresh(); }} />}
+              {undo && !editing && <Button size="small" disabled={action.isPending} onClick={() => { void action.mutateAsync({ path: `/projects/${pid}/entries/${selected}/restore`, data: { revision: undo.oldRevision, expected_revision: undo.currentRevision } }).then(() => setUndo(null)).catch(() => {}); }}>Отменить последнюю ИИ-правку</Button>}
             </>}
           </> : <>
             <Typography sx={{ color: 'text.secondary', fontSize: 13, lineHeight: 1.6, mb: 2 }}>{tab === 0 ? 'Загрузите документы: их содержимое будет доступно в беседах проекта.' : tab === 1 ? 'Здесь хранятся готовые таблицы, отчёты и презентации. Их можно править и скачивать.' : 'Сохраните общие требования и решения. Они учитываются в беседах проекта; предложения из переписки требуют вашего подтверждения.'}</Typography>
@@ -125,6 +166,7 @@ export function ProjectWorkspace({ projectId: pid, conversationId: cid, onClose,
           </>}
         </Box></AnimatePresence>
       </Box>
+      {spec?.type === 'report' && !editing && !revision && <SelectionClarify rootRef={reportRoot} onEdit={pick => { setAiTarget({ start: pick.start, end: pick.end }); setEditHint(''); }} />}
     </>}
     <input hidden ref={fileRef} type="file" accept=".pdf,.docx,.txt,.md,.csv,.xlsx,.zip" onChange={e => { const file = e.target.files?.[0]; if (file) void upload(file); e.target.value = ''; }} />
     <Menu anchorEl={menu} open={!!menu} onClose={() => setMenu(null)}>{tab === 1 ? [<MenuItem key="table" onClick={() => { void newResult('table').catch(() => {}); }}><Table size={17} style={{ marginRight: 10 }} />Таблица</MenuItem>,<MenuItem key="report" onClick={() => { void newResult('report').catch(() => {}); }}><FileText size={17} style={{ marginRight: 10 }} />Отчёт</MenuItem>,<MenuItem key="slides" onClick={() => { void newResult('slides').catch(() => {}); }}><Presentation size={17} style={{ marginRight: 10 }} />Презентация</MenuItem>] : <MenuItem onClick={() => { setMenu(null); void action.mutateAsync({ path: `/projects/${pid}/entries`, data: { title: 'Новая заметка', body: 'Запишите требования проекта.', kind: 'note' } }).then(item => setSelected((item as Entry).id)).catch(() => {}); }}>Заметка</MenuItem>}</Menu>

@@ -1,10 +1,10 @@
-import { useId, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { Alert, Box, Button, Collapse, IconButton, MenuItem, Skeleton, Stack, Switch, TextField, Typography } from '@mui/material';
 import { useReducedMotion } from 'framer-motion';
 import { ArrowLeft, CaretRight, Clock, Folder, Plugs, PuzzlePiece, SlidersHorizontal, X } from '@phosphor-icons/react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { apiFetch, apiFormData } from '@/api/client';
+import { apiFetch, apiFormDataProgress } from '@/api/client';
 import { MCPSection } from '@/features/settings/MCPSection';
 import { GoogleSection } from '@/features/settings/GoogleSection';
 import { ComputerRulesSection } from '@/features/settings/ComputerRulesSection';
@@ -19,7 +19,7 @@ const statusLabels: Record<string, string> = { queued: 'В очереди', runn
 const date = (value: number) => new Date(value * 1000).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
 /** One contextual entry point, beside the composer. No second application shell. */
-export function OrchestratorTools({ draft, hasFiles = false, conversationId, onOpenProjects }: { draft: string; hasFiles?: boolean; conversationId?: string | null; onOpenProjects?: () => void }) {
+export function OrchestratorTools({ draft, hasFiles = false, conversationId, onOpenProjects, onOpenChange }: { draft: string; hasFiles?: boolean; conversationId?: string | null; onOpenProjects?: () => void; onOpenChange?: (open: boolean) => void }) {
   const client = useQueryClient();
   const [open, setOpen] = useState(false);
   const [section, setSection] = useState<Section>('home');
@@ -40,12 +40,17 @@ export function OrchestratorTools({ draft, hasFiles = false, conversationId, onO
   const reduceMotion = useReducedMotion();
   const [panelHeight, setPanelHeight] = useState(360);
   const close = () => { setOpen(false); triggerRef.current?.focus({ preventScroll: true }); };
+  useEffect(() => { onOpenChange?.(open); }, [open, onOpenChange]);
+  useEffect(() => { setOpen(false); setCreating(false); setError(''); }, [conversationId]);
   useLayoutEffect(() => {
     if (!open) return;
     const composer = rootRef.current?.parentElement?.querySelector('form');
     const measure = () => {
       const viewport = window.visualViewport?.height || window.innerHeight;
-      setPanelHeight(Math.max(96, Math.min(360, viewport - (composer?.getBoundingClientRect().height || 120) - 240)));
+      const toolsHeight = rootRef.current?.getBoundingClientRect().height || 0;
+      const triggerHeight = rootRef.current?.firstElementChild?.getBoundingClientRect().height || 44;
+      const composerHeight = (composer?.getBoundingClientRect().height || 120) - toolsHeight + triggerHeight;
+      setPanelHeight(Math.max(96, Math.min(360, viewport - composerHeight - 88)));
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -85,7 +90,7 @@ export function OrchestratorTools({ draft, hasFiles = false, conversationId, onO
     onSettled: () => client.invalidateQueries({ queryKey: ['skills'] }),
   });
   const upload = useMutation({
-    mutationFn: (file: File) => { const form = new FormData(); form.append('file', file); return apiFormData('/skills/import', form); },
+    mutationFn: (file: File) => { const form = new FormData(); form.append('file', file); return apiFormDataProgress('/skills/import', form, { timeoutMs: 60000 }); },
     onSuccess: () => { setError(''); client.invalidateQueries({ queryKey: ['skills'] }); }, onError: (e: Error) => setError(e.message),
   });
   const addTemplate = useMutation({

@@ -3,9 +3,13 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "engines": { "node": ">=20" },
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "typecheck": "tsc --noEmit",
+    "test:ux": "node scripts/test-ux.mjs",
+    "test:exports": "node scripts/test-exports.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -24,16 +28,22 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^9.0.1",
-    "react-router-dom": "^6.28.1",
+    "react-router-dom": "^7.18.4",
     "rehype-highlight": "^7.0.1",
     "remark-gfm": "^4.0.0",
-    "zustand": "^5.0.2"
+    "zustand": "^5.0.2",
+    "react-is": "18.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react-swc": "^3.7.2",
     "typescript": "^5.7.2",
     "vite": "^6.0.6"
+  },
+  "overrides": {
+    "react-is": "18.3.1",
+    "pptxgenjs": { "image-size": "^2.0.3" }
   }
 }

@@ -18,6 +18,11 @@ class TaskCreate(BaseModel):
     interval_seconds: int = Field(default=0, ge=0, le=2592000)
     start_at: int = Field(default=0, ge=0)
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=100)
+    conversation_id: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class Steering(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
 
 
 class HookCreate(BaseModel):
@@ -52,7 +57,7 @@ async def create_task(data: TaskCreate, user: str = Depends(get_current_user)):
     prompt = await asyncio.to_thread(redact_for_user, uid, data.prompt.strip())
     try:
         return await asyncio.to_thread(computer_tasks.create_task, user, prompt, data.title,
-                                       data.interval_seconds, data.start_at, data.idempotency_key)
+                                       data.interval_seconds, data.start_at, data.idempotency_key, data.conversation_id)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -71,6 +76,14 @@ async def events(task_id: str, user: str = Depends(get_current_user)):
         return await asyncio.to_thread(computer_tasks.events, user, task_id)
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
+
+
+@router.post('/tasks/{task_id}/steer')
+async def steer_task(task_id: str, data: Steering, user: str = Depends(get_current_user)):
+    from app.services.chat_access import redact_for_user
+    text = await asyncio.to_thread(redact_for_user, await repo.ensure_user(user), data.text)
+    try:return await asyncio.to_thread(computer_tasks.steer, user, task_id, text)
+    except ValueError as exc:raise HTTPException(400, str(exc)) from exc
 
 
 @router.post("/tasks/{task_id}/{action}")

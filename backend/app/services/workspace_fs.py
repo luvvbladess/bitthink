@@ -35,6 +35,8 @@ _HELPER_STEM = re.compile(
     r"(?i)^(inspect|extract|parse|debug|scratch|dump|probe|calc)_"
 )
 _DOC_ARTIFACT_SUFFIXES = {
+    ".drawio",
+    ".svg",
     ".xlsx",
     ".xls",
     ".csv",
@@ -52,6 +54,8 @@ _PROJECT_MARKERS = {
     "dockerfile",
 }
 DELIVER_SUFFIXES = {
+    ".drawio",
+    ".svg",
     ".xlsx",
     ".xls",
     ".csv",
@@ -508,6 +512,8 @@ def valid_pip_spec(spec: str) -> bool:
 def _run_cmd(user_id: int, argv: list[str], timeout: int, limit_memory: bool = True) -> str:
     if os.environ.get("WORKSPACE_ALLOW_LOCAL_RUN") != "1" and not os.environ.get("SANDBOX_MODE"):
         return "Запуск Python только внутри песочницы."
+    if os.name != "posix" and (os.environ.get("SANDBOX_MODE") == "1" or os.environ.get("WORKSPACE_LANDLOCK") == "1"):
+        return "Запуск остановлен: изоляция файловой системы недоступна на этой ОС. Используйте Linux-песочницу."
     root = user_root(user_id)
     (root / ".tmp").mkdir(exist_ok=True)
     venv_bin = str(_venv_python(root).parent)
@@ -627,6 +633,9 @@ def _recent_workspace_files(
             rel = path.relative_to(root).as_posix()
             # Imported references are inputs, never a completed drawing package.
             if rel.startswith('engineering/materials/'):
+                continue
+            # Individual sheet previews already live in the drawing package.
+            if rel.startswith('engineering/output/') and '/sheets/' in rel and path.suffix.lower() == '.svg':
                 continue
             found.append((stat.st_mtime, rel, path, stat.st_size))
     found.sort(key=lambda item: item[0], reverse=True)
@@ -918,6 +927,12 @@ def glob_paths(user_id: int, pattern: str, path: str = ".") -> str:
 def dispatch(user_id: int, op: str, args: dict[str, Any]) -> str:
     op = (op or "").strip().lower()
     path = str(args.get("path") or ".")
+    if op == "diagram":
+        try:
+            from bt_diagrams import create_diagram
+        except ImportError:
+            from app.services.diagrams import create_diagram
+        return create_diagram(user_id, args)
     if op in ("ls", "list"):
         return ls(user_id, path)
     if op == "stat":

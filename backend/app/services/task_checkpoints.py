@@ -15,6 +15,24 @@ from app.services.computer_context import computer_task_id
 task_run_number: ContextVar[int] = ContextVar("task_run_number", default=0)
 logical_run: ContextVar[int] = ContextVar("logical_run", default=0)
 resumed_journal: ContextVar[list | None] = ContextVar("resumed_journal", default=None)
+steering_seen: ContextVar[int] = ContextVar('steering_seen', default=0)
+
+
+def steering():
+    if not computer_task_id.get():return steering_seen.get(), ''
+    with SyncSessionLocal() as session:
+        row = _task(session)
+        events = list(session.scalars(select(ComputerEvent).where(ComputerEvent.task_id == row.id,
+            ComputerEvent.kind == 'steering', ComputerEvent.id > steering_seen.get()).order_by(ComputerEvent.id).limit(10)))
+        if not events:return steering_seen.get(), ''
+        return events[-1].id, '\n\nУточнения пользователя (учти в дальнейшей работе):\n' + '\n'.join(e.detail for e in events)
+
+
+async def consume_steering():
+    import asyncio
+    last, note = await asyncio.to_thread(steering)
+    steering_seen.set(last)
+    return note
 
 
 def _task(session):

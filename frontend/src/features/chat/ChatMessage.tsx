@@ -1,6 +1,6 @@
 import { memo, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { Box, IconButton, TextField, Tooltip } from '@mui/material';
-import { Copy, Check, FileArrowDown, ArrowClockwise, PencilSimple, X } from '@phosphor-icons/react';
+import { Box, Button, IconButton, TextField, Tooltip } from '@mui/material';
+import { Copy, Check, FileArrowDown, ArrowClockwise, PencilSimple, Sparkle, X } from '@phosphor-icons/react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
@@ -19,6 +19,8 @@ import { ReasoningTrace, SearchItem } from './ReasoningTrace';
 import { normalizeMarkdown } from './markdownText';
 import { isReplyText, useReplySnapshot, useRevealShown } from './replyReveal';
 import { MarkdownResultTable } from './ResultTable';
+import { resultReferences, type ProjectResultRef } from './projectResultLinks';
+import { EvidenceLink, type ProjectCitation } from './EvidenceLink';
 import '@/theme/highlight.css';
 
 /** Module-level on purpose: a component created inside render is a new type on every
@@ -49,6 +51,8 @@ interface Props {
   onEdit?: (newContent: string) => void;
   sourcesActive?: boolean;
   onOpenSources?: () => void;
+  onEditResult?: (result: ProjectResultRef) => void;
+  onOpenProjectCitation?: (citation: ProjectCitation) => void;
   onEditImage?: (url: string) => void;
   onAcceptMode?: (model: string) => void;
   people?: boolean;
@@ -242,6 +246,8 @@ const ChatMessageView = memo(function ChatMessageView({
   onEdit,
   sourcesActive,
   onOpenSources,
+  onOpenProjectCitation,
+  onEditResult,
   onEditImage,
   onAcceptMode,
   people = false,
@@ -255,8 +261,8 @@ const ChatMessageView = memo(function ChatMessageView({
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(content);
-  const { sources } = splitSearch(search);
-  const parsedSources = parseSources(sources);
+  const parsedSources = useMemo(() => parseSources(splitSearch(search).sources), [search]);
+  const editableResults = useMemo(() => resultReferences(search), [search]);
   const modeSwitch = !isUser ? modeSwitchFromSearch(search) : null;
   // Stable between renders (scrolling re-renders the list): see MarkdownTable.
   const mdComponents = useMemo(
@@ -265,6 +271,7 @@ const ChatMessageView = memo(function ChatMessageView({
         pre: CodeBlock,
         table: MarkdownResultTable,
         td: MarkdownCell,
+        a: ({ href, children }) => <EvidenceLink href={href} sources={parsedSources} onProject={onOpenProjectCitation}>{children}</EvidenceLink>,
         img: ({ src, alt }: { src?: string | Blob; alt?: string }) =>
           typeof src === 'string' && src ? (
             <ChatImage
@@ -274,7 +281,7 @@ const ChatMessageView = memo(function ChatMessageView({
             />
           ) : null,
       }) as Components,
-    [onEditImage],
+    [onEditImage, parsedSources, onOpenProjectCitation],
   );
   const visibleContent = isUser && isClarifyReply(content) ? CLARIFY_ACK : content;
   // A reply can carry several files (Pilot writes a set of documents); every one
@@ -315,6 +322,7 @@ const ChatMessageView = memo(function ChatMessageView({
     <Box
       className="chat-message-row"
       sx={{
+        '@media (pointer: coarse)': { '& .MuiIconButton-root': { minWidth: 44, minHeight: 44 } },
         display: 'flex',
         flexDirection: 'column',
         alignItems: alignEnd ? 'flex-end' : 'flex-start',
@@ -368,6 +376,7 @@ const ChatMessageView = memo(function ChatMessageView({
       ) : (
         <Box
           className={typing ? 'bt-typing' : undefined}
+          data-clarify-text={!isUser && !typing ? 'true' : undefined}
           aria-busy={typing || undefined}
           sx={{
             minWidth: 0,
@@ -557,6 +566,12 @@ const ChatMessageView = memo(function ChatMessageView({
           )}
         </Box>
       )}
+      {!isUser && !editing && !typing && onEditResult && editableResults.length > 0 && <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: .75, mt: 1.5, minWidth: 0 }}>
+        {editableResults.map(result => <Box key={result.entryId} sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', minWidth: 0 }}>
+          <Box sx={{ fontSize: 12, color: 'text.secondary', overflowWrap: 'anywhere' }}>{result.title}</Box>
+          <Button size="small" startIcon={<Sparkle size={16} />} onClick={() => onEditResult(result)}>Изменить с ИИ</Button>
+        </Box>)}
+      </Box>}
       {!isUser && !editing && parsedSources.length > 0 && (
         <Box sx={{ display: 'flex', alignItems: 'center', mt: 0.75 }}>
           <SourcesCountButton count={parsedSources.length} active={sourcesActive} onClick={() => onOpenSources?.()} />
@@ -582,6 +597,8 @@ export function ChatMessage(props: Props) {
       onRegenerate: () => latest.current.onRegenerate?.(),
       onEdit: (text: string) => latest.current.onEdit?.(text),
       onOpenSources: () => latest.current.onOpenSources?.(),
+      onEditResult: (result: ProjectResultRef) => latest.current.onEditResult?.(result),
+      onOpenProjectCitation: (citation: ProjectCitation) => latest.current.onOpenProjectCitation?.(citation),
       onEditImage: (url: string) => latest.current.onEditImage?.(url),
       onAcceptMode: (model: string) => latest.current.onAcceptMode?.(model),
     }),
@@ -594,6 +611,8 @@ export function ChatMessage(props: Props) {
       onRegenerate={props.onRegenerate && call.onRegenerate}
       onEdit={props.onEdit && call.onEdit}
       onOpenSources={props.onOpenSources && call.onOpenSources}
+      onEditResult={props.onEditResult && call.onEditResult}
+      onOpenProjectCitation={props.onOpenProjectCitation && call.onOpenProjectCitation}
       onEditImage={props.onEditImage && call.onEditImage}
       onAcceptMode={props.onAcceptMode && call.onAcceptMode}
     />
