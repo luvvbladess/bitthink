@@ -1,23 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { clearPendingSends, drainSends, enqueueSend } from '@/hooks/wsQueue';
+import { apiFetch } from '@/api/client';
 
 export type WSStatus = 'idle' | 'connecting' | 'open' | 'closed' | 'error';
 
-interface WSMessage {
+export interface WSMessage {
   type: string;
   payload: Record<string, any>;
 }
 
 const MAX_RECONNECT_DELAY_MS = 15000;
-const HEARTBEAT_INTERVAL_MS = 25000;
+const HEARTBEAT_INTERVAL_MS = 10000;
+const RESPONSE_TIMEOUT_MS = 15000;
 const DISCONNECT_NOTICE_DELAY_MS = 2500;
 
-export function useWebSocket(url: string, token: string | null) {
+export function useWebSocket(url: string, token: string | null, onMessage?: (message: WSMessage) => void) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
   const disconnectNoticeRef = useRef<ReturnType<typeof setTimeout>>();
   const heartbeatRef = useRef<ReturnType<typeof setInterval>>();
+  const responseTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
+  const receiveRef = useRef(onMessage);
+  receiveRef.current = onMessage;
   // The queue lives in wsQueue so logout can drop it. A remount while the
   // token is still set must not wipe a message queued during a file upload.
   const tokenRef = useRef(token);
@@ -37,40 +42,69 @@ export function useWebSocket(url: string, token: string | null) {
   useEffect(() => {
     if (!token || !url) return;
     manualCloseRef.current = false;
+    let disposed = false;
+    const restart = (ws: WebSocket) => {
+      if (disposed || wsRef.current !== ws) return;
+      readyRef.current = false;
+      clearInterval(heartbeatRef.current);
+      clearTimeout(responseTimeoutRef.current);
+      responseTimeoutRef.current = undefined;
+      // A dead TCP connection may take minutes to finish a close handshake.
+      // Retire it immediately and ignore its late callbacks.
+      ws.onclose = null;
+      ws.close(4000, 'Connection timeout');
+      setStatus('closed');
+      connect();
+    };
+
+    const probe = () => {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN || responseTimeoutRef.current) return;
+      ws.send(JSON.stringify({ type: 'ping', payload: {} }));
+      responseTimeoutRef.current = setTimeout(() => {
+        responseTimeoutRef.current = undefined;
+        restart(ws);
+      }, RESPONSE_TIMEOUT_MS);
+    };
 
     const connect = () => {
+      if (disposed) return;
       const fullUrl = `${url}/chat/ws`;
       const isInitialConnection = wsRef.current === null;
       const ws = new WebSocket(fullUrl);
       wsRef.current = ws;
       readyRef.current = false;
+      responseTimeoutRef.current = setTimeout(() => {
+        responseTimeoutRef.current = undefined;
+        if (!readyRef.current) restart(ws);
+      }, RESPONSE_TIMEOUT_MS);
       if (isInitialConnection) setStatus('connecting');
 
       ws.onopen = () => {
+        if (disposed || wsRef.current !== ws) return;
         // Auth travels as the first message instead of a URL query param so
         // it doesn't end up in proxy/access logs. Do not flush the send queue
         // here: the server only accepts business frames after auth succeeds
         // and replies with `jobs`.
         ws.send(JSON.stringify({ type: 'auth', payload: { token } }));
-        reconnectAttemptsRef.current = 0;
         clearTimeout(disconnectNoticeRef.current);
         clearInterval(heartbeatRef.current);
-        heartbeatRef.current = setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'ping', payload: {} }));
-          }
-        }, HEARTBEAT_INTERVAL_MS);
-        setStatus('open');
+        heartbeatRef.current = setInterval(probe, HEARTBEAT_INTERVAL_MS);
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
+        if (wsRef.current !== ws) return;
         readyRef.current = false;
         clearInterval(heartbeatRef.current);
-        if (wsRef.current !== ws) return;
-        if (manualCloseRef.current) return;
+        clearTimeout(responseTimeoutRef.current);
+        responseTimeoutRef.current = undefined;
+        if (disposed || manualCloseRef.current) return;
+        // An expired access token needs the shared HTTP refresh flow. Reopening
+        // the socket with the same expired token can never recover the session.
+        if (event.code === 1008) void apiFetch('/auth/me', { timeoutMs: 15000 }).catch(() => undefined);
         clearTimeout(disconnectNoticeRef.current);
         disconnectNoticeRef.current = setTimeout(() => {
-          if (wsRef.current?.readyState !== WebSocket.OPEN) setStatus('closed');
+          if (!readyRef.current) setStatus('closed');
         }, DISCONNECT_NOTICE_DELAY_MS);
         const delay = Math.min(500 * 2 ** reconnectAttemptsRef.current, MAX_RECONNECT_DELAY_MS);
         reconnectAttemptsRef.current += 1;
@@ -82,14 +116,23 @@ export function useWebSocket(url: string, token: string | null) {
       ws.onerror = () => undefined;
 
       ws.onmessage = (event) => {
+        if (disposed || wsRef.current !== ws) return;
         try {
           const data = JSON.parse(event.data);
+          if (data.type === 'pong' || data.type === 'jobs') {
+            clearTimeout(responseTimeoutRef.current);
+            responseTimeoutRef.current = undefined;
+          }
           if (data.type === 'pong') return;
           if (data.type === 'jobs') {
             readyRef.current = true;
+            reconnectAttemptsRef.current = 0;
+            clearTimeout(disconnectNoticeRef.current);
+            setStatus('open');
             flushPending(ws);
           }
-          setMessages((prev) => [...prev, data]);
+          if (receiveRef.current) receiveRef.current(data);
+          else setMessages((prev) => [...prev, data]);
         } catch {
           // ignore malformed
         }
@@ -97,12 +140,29 @@ export function useWebSocket(url: string, token: string | null) {
     };
 
     connect();
+    const wake = () => {
+      if (document.visibilityState !== 'visible' || disposed) return;
+      const ws = wsRef.current;
+      if (!ws || ws.readyState === WebSocket.CLOSED) {
+        clearTimeout(reconnectTimeoutRef.current);
+        connect();
+      } else if (ws.readyState === WebSocket.OPEN) {
+        probe();
+      }
+    };
+    window.addEventListener('online', wake);
+    document.addEventListener('visibilitychange', wake);
 
     return () => {
+      disposed = true;
       manualCloseRef.current = true;
       clearTimeout(reconnectTimeoutRef.current);
       clearTimeout(disconnectNoticeRef.current);
       clearInterval(heartbeatRef.current);
+      clearTimeout(responseTimeoutRef.current);
+      responseTimeoutRef.current = undefined;
+      window.removeEventListener('online', wake);
+      document.removeEventListener('visibilitychange', wake);
       readyRef.current = false;
       wsRef.current?.close();
       wsRef.current = null;

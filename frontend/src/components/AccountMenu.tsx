@@ -9,6 +9,7 @@ import { apiFetch } from '@/api/client';
 import { TIER_LABELS, formatTokens, formatUsd } from '@/constants/tiers';
 import { headerIconBtnSx } from '@/theme/effects';
 import { UserAvatar } from '@/components/UserAvatar';
+import { preloadAccountPages, preloadRoute } from '@/navigation/preload';
 
 type SubView = {
   tier?: string;
@@ -80,7 +81,7 @@ export function AccountMenu({ variant = 'icon' }: { variant?: 'icon' | 'row' }) 
         <Box
           component="button"
           type="button"
-          onClick={(e: MouseEvent<HTMLElement>) => setAnchor(e.currentTarget)}
+          onClick={(e: MouseEvent<HTMLElement>) => { preloadAccountPages(); setAnchor(e.currentTarget); }}
           aria-label="Аккаунт"
           aria-haspopup="menu"
           aria-expanded={open}
@@ -139,7 +140,7 @@ export function AccountMenu({ variant = 'icon' }: { variant?: 'icon' | 'row' }) 
         </Box>
       ) : (
         <IconButton
-          onClick={(e) => setAnchor(e.currentTarget)}
+          onClick={(e) => { preloadAccountPages(); setAnchor(e.currentTarget); }}
           sx={{
             ...headerIconBtnSx,
             // Just the avatar, no plate: it sits in a phone header next to other bare icons.
@@ -203,13 +204,13 @@ export function AccountMenu({ variant = 'icon' }: { variant?: 'icon' | 'row' }) 
           )}
         </Box>
         <Divider sx={{ borderColor: 'var(--bt-hairline)' }} />
-        <MenuItem onClick={() => go('/settings')} sx={{ minHeight: 44 }}>
+        <MenuItem onMouseEnter={() => preloadRoute('/settings')} onFocus={() => preloadRoute('/settings')} onClick={() => go('/settings')} sx={{ minHeight: 44 }}>
           <ListItemIcon>
             <Gear size={20} weight="bold" />
           </ListItemIcon>
           Настройки
         </MenuItem>
-        <MenuItem onClick={() => go('/billing')} sx={{ minHeight: 44 }}>
+        <MenuItem onMouseEnter={() => preloadRoute('/billing')} onFocus={() => preloadRoute('/billing')} onClick={() => go('/billing')} sx={{ minHeight: 44 }}>
           <ListItemIcon>
             <CreditCard size={20} weight="bold" />
           </ListItemIcon>
