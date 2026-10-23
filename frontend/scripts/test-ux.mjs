@@ -13,6 +13,8 @@ const errors = [];
 async function fixture(options = {}) {
   const context = await browser.newContext({ viewport: options.viewport || { width: 1440, height: 900 }, hasTouch: Boolean(options.touch) });
   const page = await context.newPage();
+  if (options.clock) await page.clock.install();
+  if (options.failSettingsChunk) await page.route(/\/(?:assets\/SettingsPage-[^/]+\.js|src\/pages\/SettingsPage\.tsx)(?:\?.*)?$/, route => route.abort());
   const state = { auth: options.auth || 'ok', historyError: false, delay: {}, sends: [], uploads: [], created: [], historyLoads: [], failFile: '', ...options };
   const profile = { id: 'audit-user', email: 'audit@example.com', first_name: 'Анна', role: options.admin ? 'admin' : 'user', subscription_tier: 'pro', selected_model: 'auto' };
   const conversations = [
@@ -26,7 +28,10 @@ async function fixture(options = {}) {
   if (options.imageHistory) history['chat-a'].push({ id: 'image-original', role: 'assistant', content: '![Эскиз](/uploads/audit-source.png)' });
   if (options.clarify) history['chat-a'].push({ id: 'clarify', role: 'assistant', content: 'Уточните задачу', search: [{ query: '__clarify__', summary: JSON.stringify({ questions: [{ prompt: 'Какой формат результата нужен?', options: ['Таблица', 'Отчёт'] }] }) }] });
   await page.route('**/uploads/**', route => route.fulfill({ contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jvXkAAAAASUVORK5CYII=', 'base64') }));
-  page.on('pageerror', error => { errors.push(error.message); console.error('BROWSER', error.message); });
+  page.on('pageerror', error => {
+    if (options.failSettingsChunk && /Failed to fetch dynamically imported module: .*SettingsPage/.test(error.message)) return;
+    errors.push(error.message); console.error('BROWSER', error.message);
+  });
   page.on('console', message => { if (message.type() === 'error') console.error('CONSOLE', message.text()); });
   await page.addInitScript(({ profile, theme }) => {
     localStorage.setItem('bit-think-color-mode', theme);
@@ -86,6 +91,10 @@ async function fixture(options = {}) {
     else if (path === '/projects' || path === '/computer/tasks' || path === '/connectors') data = [];
     else if (path.startsWith('/projects/chat/')) data = { project_id: null };
     else if (path === '/billing/subscription') data = { tier: 'pro', name: 'Pro', chat: { used: 0, limit: 1000000 }, computer: { used: 0, limit: 1000000 }, windows: {} };
+    else if (path === '/models/prompts') data = { prompts: [], active_index: null };
+    else if (path === '/skills') data = { items: [], custom_count: 0, custom_limit: 20 };
+    else if (path === '/memory') data = { notes: '', enabled: true, updated_at: 0 };
+    else if (path === '/billing/plans') data = { plans: [] };
     else if (path === '/documents' && method === 'POST') {
       const body = route.request().postDataBuffer().toString();
       const name = /filename="([^"]+)"/.exec(body)?.[1] || 'file';
@@ -97,15 +106,27 @@ async function fixture(options = {}) {
     await route.fulfill({ json: data });
   });
   await page.routeWebSocket(/\/chat\/ws$/, socket => {
+    state.socketConnections = (state.socketConnections || 0) + 1;
+    let silent = false;
+    socket.onClose(() => { state.socketCloses = (state.socketCloses || 0) + 1; });
     socket.onMessage(raw => {
       const event = JSON.parse(String(raw));
-      if (event.type === 'auth') socket.send(JSON.stringify({ type: 'jobs', payload: { jobs: [] } }));
-      if (event.type === 'ping') socket.send(JSON.stringify({ type: 'pong', payload: {} }));
+      if (event.type === 'auth') {
+        state.socketAuths = (state.socketAuths || 0) + 1;
+        silent = state.silentFirstSocket && state.socketAuths === 1;
+        socket.send(JSON.stringify({ type: 'jobs', payload: { jobs: [] } }));
+      }
+      if (event.type === 'ping' && !silent) socket.send(JSON.stringify({ type: 'pong', payload: {} }));
       if (event.type === 'message') {
         state.sends.push(event.payload);
         const id = event.payload.conversation_id;
         if (state.holdAnswer && id === 'chat-a') {
           history[id].push({ id: 'pending-' + state.sends.length, role: 'user', content: event.payload.content });
+          state.finishHeldAnswer = () => {
+            history[id].push({ id: 'background-reply', role: 'assistant', content: 'Ответ завершён в другом разделе.' });
+            socket.send(JSON.stringify({ type: 'chunk', payload: { conversation_id: id, text: 'Ответ завершён в другом разделе.' } }));
+            socket.send(JSON.stringify({ type: 'done', payload: { conversation_id: id } }));
+          };
           socket.send(JSON.stringify({ type: 'status', payload: { conversation_id: id, text: 'Готовлю ответ' } }));
           return;
         }
@@ -186,6 +207,86 @@ async function projectFixture(options = {}) {
 }
 
 try {
+  await test('connection: answer completed in settings is restored once on return', async () => {
+    const f = await fixture({ holdAnswer: true });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('Продолжить ответ в фоне'); await f.input.press('Enter');
+      await expect.poll(() => Boolean(f.state.finishHeldAnswer)).toBe(true);
+      await f.page.getByRole('button', { name: 'Аккаунт', exact: true }).last().click();
+      await f.page.getByRole('menuitem', { name: 'Настройки', exact: true }).click();
+      await expect(f.page.getByRole('heading', { name: 'Настройки', exact: true })).toBeVisible();
+      f.state.finishHeldAnswer();
+      await f.page.getByRole('link', { name: 'Чат', exact: true }).click();
+      await expect(f.page.getByText('Ответ завершён в другом разделе.', { exact: true })).toHaveCount(1);
+      await expect(f.input).toBeEnabled();
+      assert.equal(f.state.socketAuths, 1);
+    } finally { await f.context.close(); }
+  });
+  await test('connection: failed section download offers recovery without losing chat access', async () => {
+    const f = await fixture({ failSettingsChunk: true });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('Черновик после сетевого сбоя');
+      await f.page.getByRole('button', { name: 'Аккаунт', exact: true }).last().click();
+      await f.page.getByRole('menuitem', { name: 'Настройки', exact: true }).click();
+      await expect(f.page.getByRole('alert')).toContainText('Не удалось открыть раздел');
+      await expect(f.page.getByRole('button', { name: 'Повторить загрузку', exact: true })).toBeVisible();
+      await f.page.getByRole('link', { name: 'Вернуться в чат', exact: true }).click();
+      await expect(f.input).toHaveValue('Черновик после сетевого сбоя');
+      assert.equal(f.state.socketAuths, 1);
+    } finally { await f.context.close(); }
+  });
+  await test('connection: section navigation preserves socket and composer draft', async () => {
+    const f = await fixture();
+    try {
+      await expect(f.input).toBeEnabled();
+      await expect.poll(() => f.state.socketAuths).toBe(1);
+      const connections = f.state.socketConnections;
+      const closes = f.state.socketCloses || 0;
+      await f.input.fill('Вернуться к этому черновику');
+      for (const [menu, heading] of [['Настройки', 'Настройки'], ['Кабинет', 'Кабинет']]) {
+        await f.page.getByRole('button', { name: 'Аккаунт', exact: true }).last().click();
+        await f.page.getByRole('menuitem', { name: menu, exact: true }).click();
+        await expect(f.page.getByRole('heading', { name: heading, exact: true })).toBeVisible();
+        assert.equal(f.state.socketConnections, connections, 'navigation must reuse the authenticated connection');
+        await f.page.getByRole('link', { name: 'Чат', exact: true }).click();
+        await expect(f.input).toHaveValue('Вернуться к этому черновику');
+        assert.equal(f.state.socketConnections, connections);
+        assert.equal(f.state.socketCloses || 0, closes);
+      }
+    } finally { await f.context.close(); }
+  });
+  await test('connection: silent socket recovers without waiting for TCP close', async () => {
+    const f = await fixture({ clock: true, silentFirstSocket: true });
+    try {
+      await expect(f.input).toBeEnabled();
+      await expect.poll(() => f.state.socketAuths).toBe(1);
+      await f.page.clock.runFor(26000);
+      await expect.poll(() => f.state.socketAuths).toBe(2);
+      await f.input.fill('Сообщение после восстановления');
+      await f.input.press('Enter');
+      await expect.poll(() => f.state.sends.length).toBe(1);
+      assert.equal(f.state.sends[0].content, 'Сообщение после восстановления');
+    } finally { await f.context.close(); }
+  });
+  await test('connection: returning to chat does not replay consumed reply chunks', async () => {
+    const f = await fixture();
+    try {
+      await expect(f.input).toBeEnabled();
+      await expect.poll(() => f.state.socketAuths).toBe(1);
+      const connections = f.state.socketConnections;
+      await f.input.fill('Первое сообщение'); await f.input.press('Enter');
+      await expect(f.page.getByText('Проверенный новый ответ.', { exact: true })).toBeVisible();
+      await f.page.getByRole('button', { name: 'Аккаунт', exact: true }).last().click();
+      await f.page.getByRole('menuitem', { name: 'Настройки', exact: true }).click();
+      await expect(f.page.getByRole('heading', { name: 'Настройки', exact: true })).toBeVisible();
+      await f.page.getByRole('link', { name: 'Чат', exact: true }).click();
+      await expect(f.page.getByText('Проверенный новый ответ.', { exact: true })).toHaveCount(1);
+      assert.equal(f.state.sends.length, 1);
+      assert.equal(f.state.socketConnections, connections);
+    } finally { await f.context.close(); }
+  });
   await test('journey: answer mode sheet stays above a simulated keyboard and can be closed', async () => {
     const f = await fixture({ model: 'director', viewport: { width: 390, height: 844 }, touch: true });
     try {

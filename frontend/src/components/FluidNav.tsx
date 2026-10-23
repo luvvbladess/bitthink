@@ -8,6 +8,7 @@ import { BrandLink } from '@/components/BrandMark';
 import { ColorModeToggle } from '@/components/ColorModeToggle';
 import { headerIconBtnSx } from '@/theme/effects';
 import { useAuthStore } from '@/stores/authStore';
+import { preloadRoute } from '@/navigation/preload';
 
 const navLinks = [
   { label: 'Возможности', href: '/#features', private: false, publicOnly: true },
@@ -97,7 +98,7 @@ export function FluidNav() {
           <List>
             {!token && <ListItemButton component={Link} to="/login" onClick={() => setOpen(false)} sx={{ minHeight: 44 }}><ListItemText primary="Войти" /></ListItemButton>}
             {visibleLinks.map((link) => (
-              <ListItemButton key={link.href} component={Link} to={link.href} onClick={() => setOpen(false)} sx={{ minHeight: 44 }}>
+              <ListItemButton key={link.href} component={Link} to={link.href} onFocus={() => preloadRoute(link.href)} onPointerDown={() => preloadRoute(link.href)} onClick={() => setOpen(false)} sx={{ minHeight: 44 }}>
                 <ListItemText primary={link.label} />
               </ListItemButton>
             ))}
@@ -124,6 +125,9 @@ function NavLink({ to, active, children }: { to: string; active: boolean; childr
     <Box
       component={Link}
       to={to}
+      onMouseEnter={() => preloadRoute(to)}
+      onFocus={() => preloadRoute(to)}
+      onPointerDown={() => preloadRoute(to)}
       sx={{
         px: 1,
         py: 1.5,

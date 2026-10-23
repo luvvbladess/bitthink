@@ -14,7 +14,7 @@ import { MessageInput } from '@/features/chat/MessageInput';
 import { adoptNewComposerDraft } from '@/features/chat/useComposerDraft';
 import { AttachmentInfo } from '@/features/chat/DocumentAttachment';
 import { lastChatImageUrl } from '@/features/chat/chatImages';
-import { useWebSocket } from '@/hooks/useWebSocket';
+import { useChatConnection } from '@/hooks/ChatConnection';
 import { apiFetch, apiFormData, apiFormDataProgress, downloadBlob, exportDocx as requestDocx } from '@/api/client';
 import { useAuthStore } from '@/stores/authStore';
 import { CHAT_COL } from '@/features/chat/chatColumn';
@@ -38,16 +38,6 @@ import type { ResultEditRequest } from '@/features/chat/projectResultLinks';
 import type { ProjectCitation } from '@/features/chat/EvidenceLink';
 import { applyPageMeta } from '@/seo';
 import { useVisualViewportHeight } from '@/features/chat/useVisualViewportHeight';
-
-// Same-origin by default so it goes through the reverse proxy (nginx routes
-// /chat/ws to the backend — see frontend/nginx.conf) instead of a baked-in
-// public IP. VITE_WS_URL stays as an explicit override for local dev, where
-// the frontend (5173) and backend (8000) run on different ports directly.
-const WS_URL =
-  import.meta.env.VITE_WS_URL ||
-  (import.meta.env.PROD
-    ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
-    : 'ws://127.0.0.1:8000');
 
 // Fallback parser for Kimi-style citations like [1] Title – https://...
 // so the "Web search (N)" panel still appears even if the backend extras
@@ -231,7 +221,6 @@ export default function ChatPage() {
   // from `base` below so the old answer doesn't flash alongside the new one while
   // the server hasn't confirmed the deletion/replacement yet.
   const [regeneratingId, setRegeneratingId] = useState<number | null>(null);
-  const token = useAuthStore((s) => s.accessToken);
   const queryClient = useQueryClient();
 
   const { data: conversations = [], isFetched: conversationsFetched } = useQuery<ConversationItem[]>({
@@ -466,7 +455,7 @@ export default function ChatPage() {
     mutationFn: (id: string) => apiFetch(`/conversations/${id}/activate`, { method: 'POST' }),
   });
 
-  const { messages: wsMessages, send, status: wsStatus, waitUntilReady } = useWebSocket(WS_URL, token);
+  const { messages: wsMessages, send, status: wsStatus, waitUntilReady } = useChatConnection();
   const processedRef = useRef<Set<string>>(new Set());
   const ignoreByConvRef = useRef<Set<string>>(new Set());
   const openingNewRef = useRef(false);

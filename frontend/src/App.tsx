@@ -2,12 +2,15 @@ import { lazy, Suspense, useEffect } from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { Box } from '@mui/material';
 import { AnimatePresence, motion } from 'framer-motion';
+import { loadChat, loadSettings, loadBilling, preloadAccountPages } from '@/navigation/preload';
+import { ChatConnectionProvider } from '@/hooks/ChatConnection';
+import { RouteErrorBoundary } from '@/components/RouteErrorBoundary';
 const LoginPage = lazy(() => import('@/pages/LoginPage'));
 const LandingPage = lazy(() => import('@/pages/LandingPage'));
-const ChatPage = lazy(() => import('@/pages/ChatPage'));
+const ChatPage = lazy(loadChat);
 const JoinPage = lazy(() => import('@/pages/JoinPage'));
-const SettingsPage = lazy(() => import('@/pages/SettingsPage'));
-const BillingPage = lazy(() => import('@/pages/BillingPage'));
+const SettingsPage = lazy(loadSettings);
+const BillingPage = lazy(loadBilling);
 const PrivacyPage = lazy(() => import('@/pages/PrivacyPage'));
 const AdminLayout = lazy(() => import('@/pages/admin/AdminLayout'));
 const AdminUsersPage = lazy(() => import('@/pages/admin/AdminUsersPage'));
@@ -50,8 +53,15 @@ function PublicRoute({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
+  const location = useLocation();
   const token = useAuthStore((s) => s.accessToken);
   const setUser = useAuthStore((s) => s.setUser);
+
+  useEffect(() => {
+    if (!token) return;
+    const timer = window.setTimeout(preloadAccountPages, 1200);
+    return () => window.clearTimeout(timer);
+  }, [token]);
 
   useEffect(() => {
     if (!token) return;
@@ -67,6 +77,7 @@ export default function App() {
   }, [token, setUser]);
 
   return (
+    <ChatConnectionProvider>
     <Box sx={{ minHeight: '100dvh', bgcolor: 'background.default', color: 'text.primary', position: 'relative' }}>
       <PageAtmosphere />
       <Box
@@ -83,6 +94,7 @@ export default function App() {
       <Box sx={{ position: 'relative', zIndex: 1 }}>
       <FluidNav />
       <Box component="main" id="main">
+      <RouteErrorBoundary key={location.pathname} path={location.pathname}>
       <Suspense fallback={<Box role="status" sx={{ minHeight: '100dvh', display: 'grid', placeItems: 'center', color: 'text.secondary' }}>Загружаем страницу…</Box>}>
       <AnimatePresence mode="wait">
         <Routes>
@@ -157,8 +169,10 @@ export default function App() {
         </Routes>
       </AnimatePresence>
       </Suspense>
+      </RouteErrorBoundary>
       </Box>
       </Box>
     </Box>
+    </ChatConnectionProvider>
   );
 }
