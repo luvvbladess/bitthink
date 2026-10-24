@@ -206,7 +206,107 @@ async function projectFixture(options = {}) {
   return f;
 }
 
+async function sidebarFixture(options = {}) {
+  const conversations = [
+    { id: 'chat-a', title: 'Первая беседа', message_count: 2, is_active: true, updated_at: new Date().toISOString() },
+    { id: 'chat-b', title: 'Вторая беседа', message_count: 2, is_active: false, updated_at: new Date().toISOString() },
+    { id: 'shared', title: 'Общий чат команды', message_count: 0, shared: true, role: 'member' },
+  ];
+  const project = { id: 'demo', name: 'Презентация продукта', chat_ids: ['chat-b'] };
+  const f = await fixture({ ...options, handleRoute: async ({ path, method, route, state }) => {
+    if (path === '/conversations' && method === 'GET') { await route.fulfill({ json: conversations }); return true; }
+    if (path === '/projects') { await route.fulfill({ json: [project] }); return true; }
+    if (path.startsWith('/projects/chat/') && path.endsWith('/context')) {
+      await route.fulfill({ json: { project_id: 'demo', entry_ids: null, include_memory: true, web: true, last_used: [] } }); return true;
+    }
+    if (path.startsWith('/projects/chat/')) {
+      const id = path.split('/').at(-1);
+      if (method === 'PUT') {
+        const pid = route.request().postDataJSON().project_id;
+        project.chat_ids = project.chat_ids.filter(cid => cid !== id);
+        if (pid) project.chat_ids.push(id);
+        state.moves = [...(state.moves || []), { id, pid }];
+      }
+      await route.fulfill({ json: { project_id: project.chat_ids.includes(id) ? 'demo' : null } }); return true;
+    }
+    if (path === '/conversations/chat-a' && method === 'PATCH') {
+      conversations[0].title = route.request().postDataJSON().title;
+      state.renames = [...(state.renames || []), conversations[0].title];
+      await route.fulfill({ json: conversations[0] }); return true;
+    }
+  } });
+  await expect(f.input).toBeEnabled();
+  const opener = f.page.getByRole('button', { name: 'Открыть список бесед', exact: true });
+  if (await opener.isVisible()) await opener.click();
+  f.sidebar = f.page.getByRole('navigation', { name: 'Беседы и проекты', exact: true });
+  await expect(f.sidebar).toBeVisible();
+  return f;
+}
+
 try {
+  await test('sidebar: desktop drag moves a chat into the project', async () => {
+    const f = await sidebarFixture();
+    try {
+      const source = f.sidebar.getByRole('button', { name: 'Открыть беседу Первая беседа', exact: true });
+      const target = f.sidebar.getByRole('button', { name: /^Презентация продукта/ });
+      await source.dragTo(target);
+      await expect.poll(() => f.state.moves?.length).toBe(1);
+      assert.deepEqual(f.state.moves[0], { id: 'chat-a', pid: 'demo' });
+      await expect(f.sidebar.getByRole('button', { name: 'Открыть беседу Первая беседа', exact: true })).toBeVisible();
+    } finally { await f.context.close(); }
+  });
+  await test('sidebar: search includes project chats and restores the grouped list', async () => {
+    const f = await sidebarFixture();
+    try {
+      const search = f.sidebar.getByRole('textbox', { name: 'Найти беседу', exact: true });
+      await search.fill('Вторая');
+      await expect(f.sidebar.getByRole('button', { name: 'Открыть беседу Вторая беседа', exact: true })).toBeVisible();
+      await expect(f.sidebar.getByText('Презентация продукта', { exact: true })).toBeVisible();
+      await expect(f.sidebar.getByRole('heading', { name: 'Проекты', exact: true })).toHaveCount(0);
+      await search.fill('Нет такой беседы');
+      await expect(f.sidebar.getByText('Беседа не найдена', { exact: true })).toBeVisible();
+      await f.sidebar.getByRole('button', { name: 'Очистить поиск', exact: true }).click();
+      await expect(f.sidebar.getByRole('heading', { name: 'Проекты', exact: true })).toBeVisible();
+      await expect(f.sidebar.getByRole('button', { name: 'Открыть беседу Первая беседа', exact: true })).toBeVisible();
+    } finally { await f.context.close(); }
+  });
+  for (const width of [1440, 320]) await test('sidebar: consistent actions, inline editing and move navigation ' + width, async () => {
+    const f = await sidebarFixture({ viewport: { width, height: 900 }, touch: width < 900 });
+    try {
+      const actions = f.sidebar.getByRole('button', { name: 'Действия с беседой Первая беседа', exact: true });
+      await actions.focus(); await actions.press('Enter');
+      await f.page.getByRole('menuitem', { name: 'Переименовать', exact: true }).click();
+      const name = f.sidebar.getByRole('textbox', { name: 'Название беседы', exact: true });
+      await expect(name).toBeFocused();
+      await name.fill('Несохранённое название'); await name.press('Escape');
+      await expect(actions).toBeAttached();
+      await actions.focus(); await actions.press('Enter');
+      await f.page.getByRole('menuitem', { name: 'Переименовать', exact: true }).click();
+      await name.fill('План презентации'); await name.press('Enter');
+      await expect(f.sidebar.getByRole('button', { name: 'Открыть беседу План презентации', exact: true })).toBeVisible();
+      assert.deepEqual(f.state.renames, ['План презентации']);
+      const renamedActions = f.sidebar.getByRole('button', { name: 'Действия с беседой План презентации', exact: true });
+      await renamedActions.focus(); await renamedActions.press('Enter');
+      await f.page.getByRole('menuitem', { name: 'Переместить в проект…', exact: true }).click();
+      await expect(f.page.getByRole('menuitem', { name: 'Переименовать', exact: true })).toHaveCount(0);
+      await f.page.getByRole('menuitem', { name: 'Назад', exact: true }).click();
+      await f.page.getByRole('menuitem', { name: 'Переместить в проект…', exact: true }).click();
+      await f.page.getByRole('menuitem', { name: 'Презентация продукта', exact: true }).click();
+      await expect.poll(() => f.state.moves?.length).toBe(1);
+      const nested = f.sidebar.getByRole('button', { name: 'Открыть беседу План презентации', exact: true });
+      await expect(nested).toBeVisible();
+      const nestedActions = f.sidebar.getByRole('button', { name: 'Действия с беседой План презентации', exact: true });
+      if (width < 900) {
+        const bounds = await nestedActions.boundingBox(); assert(bounds.width >= 44 && bounds.height >= 44);
+        assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      }
+      await nestedActions.focus(); await nestedActions.press('Enter');
+      await f.page.getByRole('menuitem', { name: 'Удалить', exact: true }).click();
+      await f.page.getByRole('button', { name: 'Отмена', exact: true }).click();
+      await expect(nested).toBeVisible();
+      assert.equal(await f.sidebar.getByRole('button', { name: 'Действия с беседой Общий чат команды', exact: true }).count(), 0);
+    } finally { await f.context.close(); }
+  });
   await test('connection: answer completed in settings is restored once on return', async () => {
     const f = await fixture({ holdAnswer: true });
     try {

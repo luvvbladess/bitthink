@@ -1,28 +1,13 @@
-import { Fragment, useState } from 'react';
+import { Fragment, useMemo, useRef, useState } from 'react';
 import {
-  Box,
-  IconButton,
-  List,
-  ListItemButton,
-  ListItemIcon,
-  Menu,
-  MenuItem,
-  Typography,
-  TextField,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogContentText,
-  DialogActions,
-  Button,
-  Collapse,
-  Alert,
+  Alert, Box, Button, Collapse, Dialog, DialogActions, DialogContent,
+  DialogContentText, DialogTitle, Divider, IconButton, ListItemButton,
+  ListItemIcon, Menu, MenuItem, TextField, Tooltip, Typography,
 } from '@mui/material';
-import { Plus, Trash, PencilSimple, Check, X, MagnifyingGlass, FolderSimple, DotsThree, CaretRight } from '@phosphor-icons/react';
-import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { ArrowLeft, Check, CaretRight, DotsThree, FolderSimple, MagnifyingGlass, PencilSimple, Plus, Trash, Users, X } from '@phosphor-icons/react';
+import { useReducedMotion } from 'framer-motion';
 import { BrandLink } from '@/components/BrandMark';
 import { AccountMenu } from '@/components/AccountMenu';
-import { headerIconBtnSx } from '@/theme/effects';
 import { ProjectActions, type ProjectDeleted } from './ProjectActions';
 
 export interface ConversationItem {
@@ -34,19 +19,6 @@ export interface ConversationItem {
   role?: 'owner' | 'member';
   updated_at?: string;
   created_at?: string;
-}
-
-/** Day buckets for the list: a flat "recent" list stops helping after a dozen chats. */
-function dateGroup(iso?: string): string {
-  const then = iso ? new Date(iso) : null;
-  if (!then || Number.isNaN(then.getTime())) return 'Недавние';
-  const dayStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const days = Math.round((dayStart(new Date()) - dayStart(then)) / 86_400_000);
-  if (days <= 0) return 'Сегодня';
-  if (days === 1) return 'Вчера';
-  if (days < 7) return 'На этой неделе';
-  if (days < 30) return 'В этом месяце';
-  return 'Раньше';
 }
 
 interface Props {
@@ -68,15 +40,36 @@ interface Props {
   onProjectDeleted?: ProjectDeleted;
 }
 
-const SIDEBAR_W = { xs: '100%', md: 280 };
-
-const actionBtnSx = {
-  width: 28,
-  height: 28,
-  borderRadius: '8px',
-  color: 'text.secondary',
-  '&:hover': { color: 'text.primary', bgcolor: 'var(--bt-overlay)' },
+const finePointer = '@media (min-width: 900px) and (hover: hover) and (pointer: fine)';
+const actionSx = {
+  width: { xs: 40, md: 32 }, height: { xs: 40, md: 32 }, flexShrink: 0,
+  borderRadius: '8px', color: 'text.secondary',
+  '@media (pointer: coarse)': { width: 44, height: 44 },
+  '&:hover': { bgcolor: 'var(--bt-overlay)', color: 'text.primary' },
+  '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 },
 } as const;
+const rowSx = {
+  display: 'flex', alignItems: 'center', minWidth: 0, minHeight: { xs: 44, md: 40 },
+  borderRadius: '8px', position: 'relative', transition: 'background-color 120ms ease-out',
+  '&:hover, &:focus-within': { bgcolor: 'var(--bt-overlay-faint)' },
+  [finePointer]: {
+    '& .sidebar-row-action': { opacity: 0 },
+    '&:hover .sidebar-row-action, &:focus-within .sidebar-row-action, & .sidebar-row-action[data-open="true"]': { opacity: 1 },
+  },
+} as const;
+const sectionSx = { px: 1, fontSize: '0.75rem', fontWeight: 500, color: 'text.muted', lineHeight: 1.5 } as const;
+
+function dateGroup(iso?: string): string {
+  const then = iso ? new Date(iso) : null;
+  if (!then || Number.isNaN(then.getTime())) return 'Недавние';
+  const dayStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((dayStart(new Date()) - dayStart(then)) / 86_400_000);
+  if (days <= 0) return 'Сегодня';
+  if (days === 1) return 'Вчера';
+  if (days < 7) return 'На этой неделе';
+  if (days < 30) return 'В этом месяце';
+  return 'Раньше';
+}
 
 export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDelete, onRename, onClose, onLibrary, generatingIds = [], projects = [], activeProjectId, onProject, onCreateProject, onMoveChat, onCreateInProject, onProjectDeleted }: Props) {
   const reduce = useReducedMotion();
@@ -85,12 +78,25 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
   const [moveError, setMoveError] = useState('');
   const [moveBusy, setMoveBusy] = useState(false);
   const [moveMenu, setMoveMenu] = useState(false);
-  const membership = new Map(projects.flatMap(p => (p.chat_ids || []).map(id => [id, p.id] as const)));
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [confirmDelete, setConfirmDelete] = useState<ConversationItem | null>(null);
+  const [search, setSearch] = useState('');
+  const [rowMenu, setRowMenu] = useState<{ el: HTMLElement; conv: ConversationItem } | null>(null);
+  const renameInput = useRef<HTMLInputElement>(null);
+  const rowActions = useRef(new Map<string, HTMLButtonElement>());
+  const membership = useMemo(() => new Map(projects.flatMap(p => (p.chat_ids || []).map(id => [id, p.id] as const))), [projects]);
+  const searching = Boolean(search.trim());
+  const filtered = conversations.filter(c => searching
+    ? c.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()) : !membership.has(c.id));
+  const ordered = filtered.every(c => c.updated_at)
+    ? [...filtered].sort((a, b) => Date.parse(b.updated_at!) - Date.parse(a.updated_at!)) : filtered;
+
   const move = async (id: string, pid: string | null) => {
     if (!onMoveChat || moveBusy || conversations.find(c => c.id === id)?.shared) return;
     setMoveBusy(true); setMoveError('');
     try { await onMoveChat(id, pid); if (pid) setExpanded(v => ({ ...v, [pid]: true })); }
-    catch { setMoveError('Не удалось перенести беседу. Попробуйте ещё раз через меню беседы.'); }
+    catch { setMoveError('Не удалось перенести беседу. Попробуйте ещё раз через её меню.'); }
     finally { setMoveBusy(false); }
   };
   const dragProps = (conv: ConversationItem) => ({
@@ -103,433 +109,145 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
     onDragLeave: (e: React.DragEvent) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragTarget(null); },
     onDrop: (e: React.DragEvent) => { e.preventDefault(); setDragTarget(null); const id = e.dataTransfer.getData('application/x-bitthink-chat'); if (conversations.some(c => c.id === id && !c.shared)) void move(id, pid); },
   });
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editTitle, setEditTitle] = useState('');
-  const [confirmDelete, setConfirmDelete] = useState<ConversationItem | null>(null);
-  const [search, setSearch] = useState('');
-  // Touch screens: one "..." per row instead of two always-visible icons that crowd the title.
-  const [rowMenu, setRowMenu] = useState<{ el: HTMLElement; conv: ConversationItem } | null>(null);
-  const filteredConversations = search.trim()
-    ? conversations.filter((c) => c.title.toLowerCase().includes(search.trim().toLowerCase()))
-    : conversations.filter(c => !membership.has(c.id));
-  // Newest first. Keep the server order when it sent no dates.
-  const ordered = filteredConversations.every((c) => c.updated_at)
-    ? [...filteredConversations].sort((a, b) => Date.parse(b.updated_at!) - Date.parse(a.updated_at!))
-    : filteredConversations;
-
-  const startEdit = (conv: ConversationItem) => {
-    setEditingId(conv.id);
-    setEditTitle(conv.title);
-  };
-
+  const startEdit = (conv: ConversationItem) => { setEditingId(conv.id); setEditTitle(conv.title); };
+  const focusAction = (id: string | null) => { if (id) window.requestAnimationFrame(() => rowActions.current.get(id)?.focus()); };
+  const cancelEdit = () => { focusAction(editingId); setEditingId(null); };
   const saveEdit = () => {
-    if (editingId && editTitle.trim()) {
-      onRename(editingId, editTitle.trim());
-    }
+    if (!editTitle.trim()) return;
+    if (editingId) onRename(editingId, editTitle.trim());
+    focusAction(editingId);
     setEditingId(null);
   };
+  const closeMenu = () => { setRowMenu(null); setMoveMenu(false); };
+  const chooseProject = (pid: string | null) => { const id = rowMenu?.conv.id; closeMenu(); if (id) void move(id, pid); };
 
-  return (
-    <Box
-      sx={{
-        height: '100%',
-        display: 'flex',
-        flexDirection: 'column',
-        width: SIDEBAR_W,
-        minWidth: { md: 280 },
-        maxWidth: { md: 280 },
-        overflow: 'hidden',
-        bgcolor: 'var(--bt-sidebar)',
-        borderRight: onClose ? 'none' : '1px solid',
-        borderColor: 'var(--bt-hairline)',
-      }}
-    >
-      <Box
-        sx={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          px: 1.75,
-          minHeight: 56,
-          flexShrink: 0,
+  // One row and one editing flow for both project conversations and recent chats.
+  const renderConversation = (conv: ConversationItem) => {
+    const active = conv.id === activeId;
+    const working = generatingIds.includes(conv.id);
+    const menuOpen = rowMenu?.conv.id === conv.id;
+    const projectName = searching ? projects.find(p => p.id === membership.get(conv.id))?.name : undefined;
+    return <Box key={conv.id} {...dragProps(conv)} sx={{ ...rowSx, bgcolor: active ? 'var(--bt-overlay)' : 'transparent', '&:hover, &:focus-within': { bgcolor: active ? 'var(--bt-overlay)' : 'var(--bt-overlay-faint)' } }}>
+      {editingId === conv.id ? <TextField
+        autoFocus inputRef={renameInput} fullWidth size="small" value={editTitle}
+        onChange={e => setEditTitle(e.target.value)} inputProps={{ 'aria-label': 'Название беседы' }}
+        onKeyDown={e => {
+          if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); }
+          if (e.key === 'Enter' && !e.nativeEvent.isComposing) saveEdit();
+          if (e.key === 'Escape') cancelEdit();
         }}
-      >
-        <BrandLink variant="sidebar" />
-        {onClose && (
-          <IconButton onClick={onClose} sx={{ ...headerIconBtnSx, bgcolor: 'transparent', borderColor: 'transparent', '&:hover': { bgcolor: 'transparent' } }} aria-label="Закрыть меню">
-            <X size={22} weight="bold" />
-          </IconButton>
-        )}
-      </Box>
+        sx={{ '& .MuiInputBase-root': { px: 0.5, fontSize: '0.875rem', borderRadius: '8px' }, '& input': { px: 0.75, py: 1 } }}
+        InputProps={{ endAdornment: <Box sx={{ display: 'flex' }}>
+          <IconButton aria-label="Сохранить название" disabled={!editTitle.trim()} onClick={saveEdit} sx={actionSx}><Check size={16} weight="bold" /></IconButton>
+          <IconButton aria-label="Отменить редактирование" onClick={cancelEdit} sx={actionSx}><X size={16} weight="bold" /></IconButton>
+        </Box> }}
+      /> : <>
+        <ListItemButton component="button" aria-label={`Открыть беседу ${conv.title}`} aria-current={active ? 'page' : undefined} selected={active} onClick={() => onSelect(conv.id)}
+          sx={{ flex: 1, minWidth: 0, minHeight: { xs: 44, md: 40 }, px: 1, py: 0.75, gap: 0.75, borderRadius: '8px', textAlign: 'left', color: active ? 'text.primary' : 'text.secondary', '&.Mui-selected, &.Mui-selected:hover, &:hover': { bgcolor: 'transparent' }, '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 } }}>
+          {working && <Tooltip title="Готовится ответ"><Box component="span" role="status" aria-label="Готовится ответ" sx={{ width: 6, height: 6, borderRadius: '50%', flexShrink: 0, bgcolor: 'primary.main' }} /></Tooltip>}
+          <Box component="span" sx={{ flex: 1, minWidth: 0 }}>
+            <Typography component="span" title={conv.title} sx={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.875rem', fontWeight: active ? 600 : 400, lineHeight: 1.45, color: 'inherit' }}>{conv.title}</Typography>
+            {projectName && <Typography component="span" sx={{ display: 'block', fontSize: '0.75rem', color: 'text.muted', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{projectName}</Typography>}
+          </Box>
+          {conv.shared && <Tooltip title="Общая беседа"><Box component="span" aria-label="Общая беседа" sx={{ display: 'flex', flexShrink: 0, color: 'text.muted' }}><Users size={15} weight="bold" /></Box></Tooltip>}
+        </ListItemButton>
+        {conv.role !== 'member' && <Tooltip title="Действия с беседой"><IconButton className="sidebar-row-action" data-open={menuOpen || active || undefined}
+          ref={node => { if (node) rowActions.current.set(conv.id, node); else rowActions.current.delete(conv.id); }}
+          aria-label={`Действия с беседой ${conv.title}`} aria-haspopup="menu" aria-expanded={menuOpen} aria-controls={menuOpen ? 'sidebar-conversation-menu' : undefined}
+          onClick={e => { setMoveMenu(false); setRowMenu({ el: e.currentTarget, conv }); }} sx={{ ...actionSx, mr: 0.25 }}><DotsThree size={20} weight="bold" /></IconButton></Tooltip>}
+      </>}
+    </Box>;
+  };
 
-      <Box sx={{ px: 1.25, pb: 1.25, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-        <Button
-          fullWidth
-          startIcon={<Plus size={16} weight="bold" />}
-          onClick={onCreate}
-          sx={{
-            justifyContent: 'flex-start',
-            // Neutral on purpose: the one saturated CTA on this screen is Send, not a sidebar row.
-            color: 'text.primary',
-            bgcolor: 'var(--bt-overlay-faint)',
-            border: '1px solid var(--bt-hairline)',
-            borderRadius: '12px',
-            textTransform: 'none',
-            fontWeight: 600,
-            fontSize: '0.875rem',
-            px: 1.4,
-            py: 1,
-            '& .MuiButton-startIcon': { color: 'primary.light' },
-            '&:hover': { bgcolor: 'var(--bt-overlay)' },
-            '&:active': { transform: 'scale(0.98)' },
-          }}
-        >
-          Новый вопрос
-        </Button>
-        {onLibrary && (
-          <Button
-            fullWidth
-            startIcon={<FolderSimple size={16} weight="bold" />}
-            onClick={onLibrary}
-            sx={{
-              justifyContent: 'flex-start',
-              color: 'text.primary',
-              borderRadius: '12px',
-              textTransform: 'none',
-              fontWeight: 600,
-              fontSize: '0.875rem',
-              px: 1.4,
-              py: 1,
-              '&:hover': { bgcolor: 'var(--bt-overlay)' },
-            }}
-          >
-            Библиотека
-          </Button>
-        )}
-      </Box>
-
-      {onProject && <Box sx={{ px: 1.25, pb: 1.5, flexShrink: 0, maxHeight: '42%', overflowY: 'auto' }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 1, mb: .5 }}><Typography sx={{ fontSize: 12, color: 'text.secondary', fontWeight: 600 }}>Проекты</Typography><IconButton size="small" aria-label="Создать проект" onClick={onCreateProject}><Plus size={16} /></IconButton></Box>
+  return <Box component="nav" aria-label="Беседы и проекты" sx={{ height: '100%', display: 'flex', flexDirection: 'column', width: { xs: '100%', md: 280 }, minWidth: 0, overflow: 'hidden', bgcolor: 'var(--bt-sidebar)', borderRight: onClose ? 'none' : '1px solid var(--bt-hairline)' }}>
+    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 1.75, minHeight: 56, flexShrink: 0 }}>
+      <BrandLink variant="sidebar" />
+      {onClose && <IconButton onClick={onClose} aria-label="Закрыть меню" sx={actionSx}><X size={20} weight="bold" /></IconButton>}
+    </Box>
+    <Box sx={{ px: 1.5, pb: 1.25, display: 'flex', flexDirection: 'column', gap: 0.5, flexShrink: 0 }}>
+      <Button fullWidth startIcon={<Plus size={18} weight="bold" />} onClick={onCreate}
+        sx={{ minHeight: 42, justifyContent: 'flex-start', px: 1.25, borderRadius: '8px', border: '1px solid var(--bt-hairline)', bgcolor: 'var(--bt-overlay-faint)', color: 'text.primary', fontWeight: 500, fontSize: '0.875rem', '&:hover': { bgcolor: 'var(--bt-overlay)' } }}>Новый вопрос</Button>
+      {onLibrary && <Button fullWidth startIcon={<FolderSimple size={18} weight="bold" />} onClick={onLibrary}
+        sx={{ minHeight: 40, justifyContent: 'flex-start', px: 1.25, borderRadius: '8px', color: 'text.secondary', fontWeight: 400, fontSize: '0.875rem', '&:hover': { bgcolor: 'var(--bt-overlay-faint)', color: 'text.primary' } }}>Библиотека</Button>}
+      <TextField value={search} onChange={e => setSearch(e.target.value)} placeholder="Найти беседу" size="small" fullWidth
+        inputProps={{ 'aria-label': 'Найти беседу', autoComplete: 'off' }}
+        InputProps={{ startAdornment: <Box sx={{ display: 'flex', mr: 0.75, color: 'text.muted' }}><MagnifyingGlass size={17} weight="bold" /></Box>,
+          endAdornment: search ? <IconButton aria-label="Очистить поиск" onClick={() => setSearch('')} sx={{ ...actionSx, width: 32, height: 32 }}><X size={15} weight="bold" /></IconButton> : undefined }}
+        sx={{ '& .MuiOutlinedInput-root': { minHeight: 40, px: 1.25, borderRadius: '8px', bgcolor: 'transparent', fontSize: '0.8125rem', '& fieldset': { borderColor: 'transparent' }, '&:hover fieldset': { borderColor: 'var(--bt-hairline)' }, '&.Mui-focused fieldset': { borderColor: 'primary.main' } }, '& input': { py: 1 }, '& input::placeholder': { color: 'text.muted', opacity: 1 } }} />
+    </Box>
+    <Box aria-label="Список бесед" sx={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', px: 1, pb: 1.5, '&::-webkit-scrollbar': { width: 6 }, '&::-webkit-scrollbar-thumb': { bgcolor: 'var(--bt-overlay-strong)', borderRadius: 6 } }}>
+      {onProject && !searching && <Box sx={{ mb: 2 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', pl: 1, mb: 0.25 }}>
+          <Typography component="h2" sx={{ ...sectionSx, px: 0 }}>Проекты</Typography>
+          {onCreateProject && <Tooltip title="Создать проект"><IconButton aria-label="Создать проект" onClick={onCreateProject} sx={actionSx}><Plus size={16} weight="bold" /></IconButton></Tooltip>}
+        </Box>
         {projects.map(project => {
           const chats = conversations.filter(c => !c.shared && membership.get(c.id) === project.id);
-          const open = expanded[project.id] ?? (activeProjectId === project.id);
-          return <Box key={project.id} {...dropProps(project.id)} sx={{ borderRadius: 2, bgcolor: dragTarget === project.id ? 'var(--bt-overlay-strong)' : 'transparent', outline: dragTarget === project.id ? '1px solid var(--bt-accent, #21A0CE)' : 'none' }}>
-            <Box sx={{ display: 'flex', alignItems: 'center' }}>
-              <IconButton size="small" aria-label={`${open ? 'Свернуть' : 'Показать'} беседы проекта ${project.name}`} aria-expanded={open} onClick={() => setExpanded(v => ({ ...v, [project.id]: !open }))}><CaretRight size={14} style={{ transform: open ? 'rotate(90deg)' : undefined, transition: reduce ? 'none' : 'transform 180ms ease-out' }} /></IconButton>
-              <Button fullWidth startIcon={<FolderSimple size={16} />} onClick={() => { setExpanded(v => ({ ...v, [project.id]: true })); onProject(project.id); }} aria-pressed={activeProjectId === project.id} sx={{ minWidth: 0, justifyContent: 'flex-start', color: activeProjectId === project.id ? 'primary.light' : 'text.secondary', px: .5, py: .9, fontSize: 13, borderRadius: 2, textAlign: 'left' }}><Box component="span" sx={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{project.name}</Box><Typography component="span" sx={{ ml: .5, fontSize: 12, color: 'text.secondary' }}>{chats.length}</Typography></Button><ProjectActions project={project} onDeleted={onProjectDeleted} />
+          const open = expanded[project.id] ?? activeProjectId === project.id;
+          return <Box key={project.id} {...dropProps(project.id)} sx={{ borderRadius: '8px', bgcolor: dragTarget === project.id ? 'var(--bt-overlay-strong)' : 'transparent', outline: dragTarget === project.id ? '1px solid' : 'none', outlineColor: 'primary.main' }}>
+            <Box sx={rowSx}>
+              <IconButton aria-label={`${open ? 'Свернуть' : 'Показать'} беседы проекта ${project.name}`} aria-expanded={open}
+                onClick={() => setExpanded(v => ({ ...v, [project.id]: !open }))} sx={{ ...actionSx, width: { xs: 32, md: 28 } }}>
+                <CaretRight size={14} weight="bold" style={{ transform: open ? 'rotate(90deg)' : undefined, transition: reduce ? 'none' : 'transform 150ms ease-out' }} />
+              </IconButton>
+              <Button onClick={() => { setExpanded(v => ({ ...v, [project.id]: true })); onProject(project.id); }} aria-pressed={activeProjectId === project.id}
+                sx={{ flex: 1, minWidth: 0, minHeight: { xs: 44, md: 40 }, justifyContent: 'flex-start', textAlign: 'left', px: 0.25, py: 0.75, gap: 0.5, borderRadius: '8px', color: activeProjectId === project.id ? 'text.primary' : 'text.secondary', fontWeight: 500, fontSize: '0.875rem', '&:hover': { bgcolor: 'transparent', color: 'text.primary' } }}>
+                <Box component="span" title={project.name} sx={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{project.name}</Box>
+                {chats.length > 0 && <Box component="span" sx={{ minWidth: 18, fontSize: '0.75rem', color: 'text.muted', fontVariantNumeric: 'tabular-nums', textAlign: 'center' }}>{chats.length}</Box>}
+              </Button>
+              <ProjectActions compact project={project} onDeleted={onProjectDeleted} />
             </Box>
-            <Collapse in={open} timeout={reduce ? 0 : 180}>
-              <Box sx={{ ml: 2, pl: .5, borderLeft: '1px solid var(--bt-hairline)', pb: .5 }}>
-                {chats.map(conv => <Box key={conv.id} {...dragProps(conv)} sx={{ display: 'flex', alignItems: 'center', borderRadius: 2, bgcolor: conv.id === activeId ? 'var(--bt-overlay)' : 'transparent' }}>
-                  {editingId === conv.id ? <TextField size="small" fullWidth autoFocus value={editTitle} onChange={e => setEditTitle(e.target.value)} inputProps={{ 'aria-label': 'Название беседы' }} onKeyDown={e => { if (e.key === 'Enter') saveEdit(); if (e.key === 'Escape') setEditingId(null); }} InputProps={{ endAdornment: <IconButton size="small" aria-label="Сохранить название" onClick={saveEdit}><Check size={14} /></IconButton> }} /> : <Button onClick={() => onSelect(conv.id)} sx={{ flex: 1, minWidth: 0, justifyContent: 'flex-start', color: conv.id === activeId ? 'text.primary' : 'text.secondary', px: 1, py: .75, fontSize: 13 }}><Box component="span" sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{generatingIds.includes(conv.id) ? 'В работе · ' : ''}{conv.title}</Box></Button>}
-                  <IconButton size="small" aria-label={`Действия с беседой ${conv.title}`} onClick={e => { setMoveMenu(false); setRowMenu({ el: e.currentTarget, conv }); }}><DotsThree size={18} /></IconButton>
-                </Box>)}
-                {onCreateInProject && <Button size="small" startIcon={<Plus size={14} />} onClick={() => { void onCreateInProject(project.id).catch(() => setMoveError('Не удалось создать беседу в проекте. Попробуйте ещё раз.')); }} sx={{ justifyContent: 'flex-start', px: 1, fontSize: 12, color: 'text.secondary' }}>Новая беседа в проекте</Button>}
-                {!chats.length && <Typography sx={{ px: 1, py: .75, fontSize: 12, color: 'text.secondary' }}>Перетащите беседу сюда или выберите проект в её меню «…».</Typography>}
+            <Collapse in={open} timeout={reduce ? 0 : 150}>
+              <Box sx={{ ml: 2, pl: 0.5, borderLeft: '1px solid var(--bt-hairline)', mb: 0.5 }}>
+                {chats.map(renderConversation)}
+                {onCreateInProject && <Button startIcon={<Plus size={14} weight="bold" />} aria-label={`Новая беседа в проекте ${project.name}`} onClick={() => { void onCreateInProject(project.id).catch(() => setMoveError('Не удалось создать беседу в проекте. Попробуйте ещё раз.')); }}
+                  sx={{ minHeight: { xs: 44, md: 36 }, px: 1, justifyContent: 'flex-start', color: 'text.muted', fontWeight: 400, fontSize: '0.8125rem', borderRadius: '8px', '&:hover': { color: 'text.primary', bgcolor: 'var(--bt-overlay-faint)' } }}>Новая беседа</Button>}
+                {!chats.length && !onCreateInProject && <Typography sx={{ px: 1, py: 1, fontSize: '0.8125rem', color: 'text.muted' }}>Нет бесед</Typography>}
               </Box>
             </Collapse>
           </Box>;
         })}
-        {!projects.length && <Button fullWidth onClick={onCreateProject} size="small" sx={{ justifyContent: 'flex-start', color: 'text.secondary', px: 1 }}>Объединить работу в проект</Button>}
-        {projects.length > 0 && <Typography sx={{ px: 1, pt: .75, fontSize: 12, color: 'text.secondary' }}>Перенос беседы: перетащите её в проект или нажмите «…».</Typography>}
+        {!projects.length && <Typography sx={{ px: 1, py: 0.75, fontSize: '0.8125rem', color: 'text.muted' }}>Проектов пока нет</Typography>}
       </Box>}
-      {moveError && <Alert severity="error" onClose={() => setMoveError('')} sx={{ mx: 1, mb: 1 }} role="alert">{moveError}</Alert>}
-      <Box {...dropProps(null)} sx={{ px: 2.25, py: .75, bgcolor: dragTarget === 'unassigned' ? 'var(--bt-overlay-strong)' : 'transparent' }}><Typography sx={{ fontSize: 12, color: 'text.secondary', fontWeight: 600 }}>{search.trim() ? 'Результаты поиска' : 'Беседы вне проектов'}</Typography></Box>
-      {conversations.length > 5 && (
-        <Box sx={{ px: 1.25, pb: 1.25, flexShrink: 0 }}>
-          <TextField
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Найти беседу"
-            size="small"
-            fullWidth
-            InputProps={{
-              startAdornment: (
-                <Box sx={{ color: 'text.secondary', display: 'flex', mr: 0.75 }}>
-                  <MagnifyingGlass size={15} />
-                </Box>
-              ),
-            }}
-            sx={{
-              '& .MuiOutlinedInput-root': {
-                borderRadius: '12px',
-                bgcolor: 'var(--bt-overlay-faint)',
-                fontSize: '0.875rem',
-                color: 'text.primary',
-                '& fieldset': { borderColor: 'var(--bt-hairline)' },
-                '&:hover fieldset': { borderColor: 'var(--bt-line)' },
-                '&.Mui-focused fieldset': { borderColor: 'primary.main' },
-              },
-              '& input::placeholder': { color: 'text.secondary', opacity: 1 },
-            }}
-          />
-        </Box>
-      )}
-
-      <List
-        component="div"
-        sx={{
-          flexGrow: 1,
-          minHeight: 0,
-          overflow: 'auto',
-          overflowX: 'hidden',
-          overscrollBehavior: 'contain',
-          py: 0,
-          px: 1,
-          '&::-webkit-scrollbar': { width: 8 },
-          '&::-webkit-scrollbar-thumb': {
-            bgcolor: 'var(--bt-overlay-strong)',
-            borderRadius: 8,
-            border: '2px solid transparent',
-            backgroundClip: 'padding-box',
-          },
-        }}
-      >
-        {search.trim() && filteredConversations.length === 0 && (
-          <Typography sx={{ color: 'text.secondary', px: 1.25, py: 1, fontSize: '0.8125rem' }}>
-            Ничего не найдено
-          </Typography>
-        )}
-        {!conversations.length && (
-          <Box sx={{ px: 1.25, py: 1.5 }}>
-            <Typography sx={{ color: 'text.primary', fontSize: '0.875rem', fontWeight: 600, mb: 0.4 }}>
-              Пока пусто
-            </Typography>
-            <Typography sx={{ color: 'text.secondary', fontSize: '0.8125rem', lineHeight: 1.45 }}>
-              Нажмите «Новый вопрос» или просто напишите в поле справа.
-            </Typography>
-          </Box>
-        )}
-        <AnimatePresence initial={false}>
-          {ordered.map((conv, i) => {
-            const active = conv.id === activeId;
-            const label = dateGroup(conv.updated_at);
-            const showLabel = !search.trim() && (i === 0 || label !== dateGroup(ordered[i - 1].updated_at));
-            return (
-              <Fragment key={conv.id}>
-                {showLabel && (
-                  <Typography
-                    component="div"
-                    sx={{ px: 1.35, pt: i === 0 ? 0.5 : 1.75, pb: 0.6, color: 'text.muted', fontSize: '0.75rem', fontWeight: 600 }}
-                  >
-                    {label}
-                  </Typography>
-                )}
-              <motion.div
-                initial={reduce ? false : { opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={reduce ? undefined : { opacity: 0 }}
-                transition={{ delay: reduce ? 0 : Math.min(i, 8) * 0.03, duration: 0.22, ease: [0.23, 1, 0.32, 1] }}
-              >
-                <Box
-                  {...dragProps(conv)}
-                  sx={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    position: 'relative',
-                    borderRadius: '12px',
-                    px: 1.35,
-                    py: 1,
-                    mb: 0.4,
-                    overflow: 'hidden',
-                    color: active ? 'text.primary' : 'text.secondary',
-                    border: '1px solid',
-                    borderColor: 'transparent',
-                    bgcolor: active ? 'var(--bt-overlay)' : 'transparent',
-                    boxShadow: 'none',
-                    transition: 'background-color 0.18s cubic-bezier(0.23, 1, 0.32, 1), color 0.18s cubic-bezier(0.23, 1, 0.32, 1)',
-                    '&.Mui-selected': {
-                      bgcolor: 'var(--bt-overlay)',
-                      '&:hover': { bgcolor: 'var(--bt-overlay-strong)' },
-                    },
-                    '&:hover': {
-                      bgcolor: active ? 'var(--bt-overlay-strong)' : 'var(--bt-overlay-faint)',
-                      color: 'text.primary',
-                    },
-                  }}
-                >
-                  <Box sx={{ flexGrow: 1, minWidth: 0, mr: 0.5, pl: 0.4 }}>
-                    {editingId === conv.id ? (
-                      <TextField
-                        value={editTitle}
-                        onChange={(e) => setEditTitle(e.target.value)}
-                        size="small"
-                        fullWidth
-                        autoFocus
-                        onClick={(e) => e.stopPropagation()}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') saveEdit();
-                          if (e.key === 'Escape') setEditingId(null);
-                        }}
-                        InputProps={{
-                          endAdornment: (
-                            <Box sx={{ display: 'flex' }}>
-                              <IconButton size="small" onClick={(e) => { e.stopPropagation(); saveEdit(); }} aria-label="Сохранить название" sx={actionBtnSx}>
-                                <Check size={14} />
-                              </IconButton>
-                              <IconButton size="small" onClick={(e) => { e.stopPropagation(); setEditingId(null); }} aria-label="Отменить редактирование" sx={actionBtnSx}>
-                                <X size={14} />
-                              </IconButton>
-                            </Box>
-                          ),
-                        }}
-                      />
-                    ) : (
-                      <ListItemButton aria-label={`Открыть беседу ${conv.title}`} selected={active} onClick={() => onSelect(conv.id)} sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 0, minHeight: 44, px: 0, py: 0.5, borderRadius: 1, '&.Mui-selected, &.Mui-selected:hover': { bgcolor: 'transparent' } }}>
-                        {generatingIds.includes(conv.id) && (
-                          <Box
-                            aria-hidden
-                            sx={{
-                              width: 8,
-                              height: 8,
-                              borderRadius: '50%',
-                              flexShrink: 0,
-                              bgcolor: 'primary.main',
-                              '@media (prefers-reduced-motion: no-preference)': {
-                                animation: 'sidebarJobPulse 1.6s ease-in-out infinite',
-                              },
-                              '@keyframes sidebarJobPulse': {
-                                '0%, 100%': { opacity: 0.35 },
-                                '50%': { opacity: 1 },
-                              },
-                            }}
-                          />
-                        )}
-                        <Box sx={{ minWidth: 0 }}>
-                        <Typography
-                          sx={{
-                            fontWeight: active ? 600 : 500,
-                            fontSize: '0.875rem',
-                            lineHeight: 1.35,
-                            color: 'inherit',
-                            whiteSpace: 'nowrap',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                          }}
-                        >
-                          {conv.title}
-                        </Typography>
-                        {conv.shared && (
-                          <Typography sx={{ fontSize: '0.6875rem', color: 'text.secondary', lineHeight: 1.2 }}>
-                            Общий
-                          </Typography>
-                        )}
-                        </Box>
-                      </ListItemButton>
-                    )}
-                  </Box>
-                  {editingId !== conv.id && conv.role !== 'member' && (
-                    <>
-                    <IconButton
-                      size="small"
-                      onClick={(e) => { e.stopPropagation(); setMoveMenu(false); setRowMenu({ el: e.currentTarget, conv }); }}
-                      aria-label="Действия с беседой"
-                      sx={{ ...actionBtnSx, width: 36, height: 36, display: 'inline-flex' }}
-                    >
-                      <DotsThree size={20} weight="bold" />
-                    </IconButton>
-                    <Box
-                      sx={{
-                        display: 'none',
-                        gap: 0.15,
-                        opacity: { xs: 1, md: 0 },
-                        '.MuiListItemButton-root:hover &, .MuiListItemButton-root:focus-within &': { opacity: 1 },
-                        transition: 'opacity 0.18s cubic-bezier(0.23, 1, 0.32, 1)',
-                      }}
-                    >
-                      <IconButton size="small" onClick={(e) => { e.stopPropagation(); startEdit(conv); }} aria-label="Переименовать беседу" sx={actionBtnSx}>
-                        <PencilSimple size={15} />
-                      </IconButton>
-                      <IconButton
-                        size="small"
-                        onClick={(e) => { e.stopPropagation(); setConfirmDelete(conv); }}
-                        aria-label="Удалить беседу"
-                        sx={{ ...actionBtnSx, '&:hover': { color: 'var(--bt-danger)', bgcolor: 'var(--bt-danger-soft)' } }}
-                      >
-                        <Trash size={15} />
-                      </IconButton>
-                    </Box>
-                    </>
-                  )}
-                </Box>
-              </motion.div>
-              </Fragment>
-            );
-          })}
-        </AnimatePresence>
-      </List>
-
-      <Box sx={{ flexShrink: 0, borderTop: '1px solid var(--bt-hairline)', p: 1, pb: 'max(8px, env(safe-area-inset-bottom))' }}>
-        <AccountMenu variant="row" />
+      {moveError && <Alert severity="error" closeText="Закрыть" onClose={() => setMoveError('')} sx={{ mb: 1 }} role="alert">{moveError}</Alert>}
+      <Box {...dropProps(null)} sx={{ minHeight: 44, borderRadius: '8px', bgcolor: dragTarget === 'unassigned' ? 'var(--bt-overlay-strong)' : 'transparent' }}>
+        <Typography component="h2" sx={{ ...sectionSx, pt: 0.5, pb: 0.75 }}>{searching ? 'Результаты поиска' : 'Беседы'}</Typography>
+        {searching && !ordered.length && <Typography sx={{ px: 1, py: 1, fontSize: '0.8125rem', color: 'text.secondary' }}>Беседа не найдена</Typography>}
+        {!conversations.length && !searching && <Typography sx={{ px: 1, py: 0.75, fontSize: '0.8125rem', lineHeight: 1.5, color: 'text.secondary' }}>Здесь появятся ваши беседы.</Typography>}
+        {ordered.map((conv, i) => {
+          const label = dateGroup(conv.updated_at);
+          const showLabel = !searching && Boolean(conv.updated_at) && (i === 0 || label !== dateGroup(ordered[i - 1].updated_at));
+          return <Fragment key={conv.id}>
+            {showLabel && <Typography sx={{ ...sectionSx, pt: i ? 1.5 : 0.25, pb: 0.5 }}>{label}</Typography>}
+            {renderConversation(conv)}
+          </Fragment>;
+        })}
       </Box>
-
-      <Menu
-        anchorEl={rowMenu?.el}
-        open={Boolean(rowMenu)}
-        onClose={() => setRowMenu(null)}
-        slotProps={{ paper: { sx: { minWidth: 200, borderRadius: '14px' } } }}
-      >
-        {!rowMenu?.conv.shared && onMoveChat && !moveMenu && <MenuItem disabled={moveBusy || !projects.length} onClick={() => setMoveMenu(true)}><ListItemIcon><FolderSimple size={18} /></ListItemIcon>Переместить в проект…</MenuItem>}
-        {moveMenu && projects.map(p => <MenuItem key={p.id} selected={membership.get(rowMenu?.conv.id || '') === p.id} disabled={moveBusy} onClick={() => { const id = rowMenu?.conv.id; setRowMenu(null); setMoveMenu(false); if (id) void move(id, p.id); }}><ListItemIcon><FolderSimple size={18} /></ListItemIcon>{p.name}</MenuItem>)}
-        {!rowMenu?.conv.shared && membership.has(rowMenu?.conv.id || '') && <MenuItem disabled={moveBusy} onClick={() => { const id = rowMenu?.conv.id; setRowMenu(null); setMoveMenu(false); if (id) void move(id, null); }}>Убрать из проекта</MenuItem>}
-        <MenuItem
-          sx={{ minHeight: 48 }}
-          onClick={() => {
-            const conv = rowMenu?.conv;
-            setRowMenu(null);
-            if (conv) startEdit(conv);
-          }}
-        >
-          <ListItemIcon><PencilSimple size={18} /></ListItemIcon>
-          Переименовать
-        </MenuItem>
-        <MenuItem
-          sx={{ minHeight: 48, color: 'var(--bt-danger)' }}
-          onClick={() => {
-            const conv = rowMenu?.conv;
-            setRowMenu(null);
-            if (conv) setConfirmDelete(conv);
-          }}
-        >
-          <ListItemIcon sx={{ color: 'inherit' }}><Trash size={18} /></ListItemIcon>
-          Удалить
-        </MenuItem>
-      </Menu>
-
-      <Dialog
-        open={!!confirmDelete}
-        onClose={() => setConfirmDelete(null)}
-        PaperProps={{
-          sx: {
-            bgcolor: 'surface.elevated',
-            backgroundImage: 'none',
-            border: '1px solid var(--bt-hairline)',
-            borderRadius: '16px',
-            boxShadow: '0 24px 60px var(--bt-scrim), 0 0 28px var(--bt-glow)',
-          },
-        }}
-      >
-        <DialogTitle sx={{ color: 'text.primary' }}>Удалить беседу?</DialogTitle>
-        <DialogContent>
-          <DialogContentText sx={{ color: 'text.secondary' }}>
-            «{confirmDelete?.title}» будет удалена без возможности восстановления.
-          </DialogContentText>
-        </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 2 }}>
-          <Button onClick={() => setConfirmDelete(null)} sx={{ color: 'text.secondary' }}>
-            Отмена
-          </Button>
-          <Button
-            color="error"
-            onClick={() => {
-              if (confirmDelete) onDelete(confirmDelete.id);
-              setConfirmDelete(null);
-            }}
-          >
-            Удалить
-          </Button>
-        </DialogActions>
-      </Dialog>
     </Box>
-  );
+    <Box sx={{ flexShrink: 0, borderTop: '1px solid var(--bt-hairline)', p: 1, pb: 'max(8px, env(safe-area-inset-bottom))' }}><AccountMenu variant="row" /></Box>
+    <Menu id="sidebar-conversation-menu" anchorEl={rowMenu?.el} open={Boolean(rowMenu)} onClose={closeMenu} disableRestoreFocus={Boolean(editingId || confirmDelete)}
+      TransitionProps={{ onExited: () => renameInput.current?.focus() }}
+      slotProps={{ paper: { sx: { minWidth: 220, maxWidth: 'calc(100vw - 24px)', borderRadius: '12px', '& .MuiMenuItem-root': { minHeight: 44, fontSize: '0.875rem' } } } }}>
+      {moveMenu ? [
+        <MenuItem key="back" onClick={() => setMoveMenu(false)}><ListItemIcon><ArrowLeft size={18} weight="bold" /></ListItemIcon>Назад</MenuItem>,
+        <Divider key="divider" />,
+        ...projects.map(p => <MenuItem key={p.id} selected={membership.get(rowMenu?.conv.id || '') === p.id} disabled={moveBusy} onClick={() => chooseProject(p.id)}><ListItemIcon><FolderSimple size={18} weight="bold" /></ListItemIcon><Box component="span" sx={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}</Box></MenuItem>),
+        membership.has(rowMenu?.conv.id || '') && <MenuItem key="unassigned" disabled={moveBusy} onClick={() => chooseProject(null)}>Убрать из проекта</MenuItem>,
+      ] : [
+        <MenuItem key="rename" onClick={() => { const conv = rowMenu?.conv; closeMenu(); if (conv) startEdit(conv); }}><ListItemIcon><PencilSimple size={18} weight="bold" /></ListItemIcon>Переименовать</MenuItem>,
+        !rowMenu?.conv.shared && onMoveChat && <MenuItem key="move" disabled={moveBusy || !projects.length} onClick={() => setMoveMenu(true)}><ListItemIcon><FolderSimple size={18} weight="bold" /></ListItemIcon>Переместить в проект…</MenuItem>,
+        !rowMenu?.conv.shared && membership.has(rowMenu?.conv.id || '') && <MenuItem key="remove" disabled={moveBusy} onClick={() => chooseProject(null)}>Убрать из проекта</MenuItem>,
+        <Divider key="divider" />,
+        <MenuItem key="delete" sx={{ color: 'var(--bt-danger)' }} onClick={() => { const conv = rowMenu?.conv; closeMenu(); if (conv) setConfirmDelete(conv); }}><ListItemIcon sx={{ color: 'inherit' }}><Trash size={18} weight="bold" /></ListItemIcon>Удалить</MenuItem>,
+      ]}
+    </Menu>
+    <Dialog open={!!confirmDelete} onClose={() => setConfirmDelete(null)} maxWidth="xs" fullWidth aria-labelledby="delete-conversation-title">
+      <DialogTitle id="delete-conversation-title">Удалить беседу?</DialogTitle>
+      <DialogContent><DialogContentText sx={{ overflowWrap: 'anywhere' }}>«{confirmDelete?.title}» будет удалена без возможности восстановления.</DialogContentText></DialogContent>
+      <DialogActions sx={{ px: 3, pb: 2 }}>
+        <Button autoFocus color="inherit" onClick={() => setConfirmDelete(null)}>Отмена</Button>
+        <Button color="error" onClick={() => { if (confirmDelete) onDelete(confirmDelete.id); setConfirmDelete(null); }}>Удалить</Button>
+      </DialogActions>
+    </Dialog>
+  </Box>;
 }
