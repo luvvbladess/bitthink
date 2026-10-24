@@ -7,7 +7,7 @@ import { apiFetch } from '@/api/client';
 export type ProjectDeleted = (id: string, cleanupPending?: boolean) => void;
 
 /** The same management actions in the sidebar and in the project workspace. */
-export function ProjectActions({ project, onDeleted }: { project: { id: string; name: string }; onDeleted?: ProjectDeleted }) {
+export function ProjectActions({ project, onDeleted, compact = false }: { project: { id: string; name: string }; onDeleted?: ProjectDeleted; compact?: boolean }) {
   const client = useQueryClient();
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [dialog, setDialog] = useState<'rename' | 'delete' | null>(null);
@@ -34,7 +34,7 @@ export function ProjectActions({ project, onDeleted }: { project: { id: string; 
     finally { setBusy(false); }
   };
   return <>
-    <Tooltip title="Управление проектом"><span><IconButton size="small" disabled={busy} aria-label={`Действия с проектом ${project.name}`} aria-haspopup="menu" aria-expanded={!!anchor} onClick={e => { e.stopPropagation(); setAnchor(e.currentTarget); }}><DotsThree size={20} /></IconButton></span></Tooltip>
+    <Tooltip title="Действия с проектом"><span className={compact ? 'sidebar-row-action' : undefined} data-open={anchor ? true : undefined}><IconButton size="small" disabled={busy} aria-label={`Действия с проектом ${project.name}`} aria-haspopup="menu" aria-expanded={!!anchor} sx={compact ? { width: { xs: 40, md: 32 }, height: { xs: 40, md: 32 }, borderRadius: '8px', color: 'text.secondary', '@media (pointer: coarse)': { width: 44, height: 44 }, '&:hover': { bgcolor: 'var(--bt-overlay)', color: 'text.primary' } } : undefined} onClick={e => { e.stopPropagation(); setAnchor(e.currentTarget); }}><DotsThree size={20} weight="bold" /></IconButton></span></Tooltip>
     <Menu anchorEl={anchor} open={!!anchor} onClose={() => setAnchor(null)}>
       <MenuItem onClick={() => open('rename')}><ListItemIcon><PencilSimple size={18} /></ListItemIcon>Переименовать проект</MenuItem>
       <MenuItem onClick={() => open('delete')} sx={{ color: 'error.main' }}><ListItemIcon sx={{ color: 'inherit' }}><Trash size={18} /></ListItemIcon>Удалить проект</MenuItem>
