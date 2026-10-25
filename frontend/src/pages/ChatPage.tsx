@@ -4,9 +4,8 @@ import { List as ListIcon, FileArrowDown, MagnifyingGlass, WarningCircle, Square
 import { useColorMode } from '@/theme/ColorMode';
 import { headerGroupBtnSx, headerGroupSx, headerIconBtnSx } from '@/theme/effects';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useSearchParams } from 'react-router-dom';
-import { replyReveal } from '@/features/chat/replyReveal';
-import { ChatSidebar, ConversationItem } from '@/features/chat/ChatSidebar';
+import { useConversationNavigation } from '@/features/chat/useConversationNavigation';
+import { ChatSidebar } from '@/features/chat/ChatSidebar';
 import { AccountMenu } from '@/components/AccountMenu';
 import { ChatWindow, DisplayMessage } from '@/features/chat/ChatWindow';
 import { DesignCanvas, findStudioCanvas } from '@/features/chat/DesignCanvas';
@@ -14,7 +13,8 @@ import { MessageInput } from '@/features/chat/MessageInput';
 import { adoptNewComposerDraft } from '@/features/chat/useComposerDraft';
 import { AttachmentInfo } from '@/features/chat/DocumentAttachment';
 import { lastChatImageUrl } from '@/features/chat/chatImages';
-import { useChatConnection } from '@/hooks/ChatConnection';
+import { useChatGeneration } from '@/features/chat/useChatGeneration';
+import { projectConversation } from '@/features/chat/conversationProjection';
 import { apiFetch, apiFormData, apiFormDataProgress, downloadBlob, exportDocx as requestDocx } from '@/api/client';
 import { useAuthStore } from '@/stores/authStore';
 import { CHAT_COL } from '@/features/chat/chatColumn';
@@ -23,13 +23,13 @@ import { ClarifyCard } from '@/features/chat/ClarifyCard';
 import { isClarifyMessage, isClarifyReply, splitSearch } from '@/features/chat/clarify';
 import { collectDialogueSources, parseSources, sourcesLabel } from '@/features/chat/sources';
 import { SourcesSheet } from '@/features/chat/SourcesPanel';
-import { dropJob, emptyJob, mergeRemoteJobs, upsertJob, type LiveJobPatch, type LiveJobsMap } from '@/features/chat/liveJobs';
+import { dropJob } from '@/features/chat/liveJobs';
 import { DialogueJumpChip, DialogueJumpSheet } from '@/features/chat/DialogueJumpSheet';
 import { MIN_DIALOGUE_QUESTIONS, type DialogueJumpFn } from '@/features/chat/dialogueNav';
 import { BRAND_NAME, NEW_CHAT_TITLE } from '@/brand';
 import { ShareDialog } from '@/features/chat/ShareDialog';
 import { DocumentEditorDialog } from '@/features/editor/DocumentEditor';
-import { ConversationFilesDrawer, filesQueryKey, type FilesScope } from '@/features/editor/ConversationFiles';
+import { ConversationFilesDrawer, type FilesScope } from '@/features/editor/ConversationFiles';
 import { RoomChat } from '@/features/chat/RoomChat';
 import { ProjectWorkspace, type ProjectItem, type ProjectSpace } from '@/features/chat/ProjectWorkspace';
 import { ProjectContextControl } from '@/features/chat/ProjectContextControl';
@@ -38,39 +38,6 @@ import type { ResultEditRequest } from '@/features/chat/projectResultLinks';
 import type { ProjectCitation } from '@/features/chat/EvidenceLink';
 import { applyPageMeta } from '@/seo';
 import { useVisualViewportHeight } from '@/features/chat/useVisualViewportHeight';
-import { lastConversation, rememberConversation } from '@/navigation/chatLocation';
-
-// Fallback parser for Kimi-style citations like [1] Title – https://...
-// so the "Web search (N)" panel still appears even if the backend extras
-// message is missed or empty.
-function parseSearchFromText(text: string): { query: string; summary: string }[] | undefined {
-  const results: { query: string; summary: string }[] = [];
-  const seen = new Set<string>();
-  for (const line of text.split(/\n/)) {
-    const m = line.match(/^\[(\d+)\]\s*(.+)$/);
-    if (!m) continue;
-    const body = m[2].trim();
-    const parts = body.split(/\s+[–—-]\s+/);
-    let title = '';
-    let url = '';
-    if (parts.length >= 2) {
-      title = parts[0].trim();
-      url = parts[parts.length - 1].trim();
-    } else {
-      const urlMatch = body.match(/https?:\/\/[^\s\)\]\>\"\']+/);
-      if (urlMatch) {
-        url = urlMatch[0];
-        title = body.replace(url, '').trim();
-      }
-    }
-    if (!url) continue;
-    url = url.replace(/[.,;:!?\)\]\>\"\']+$/, '');
-    if (seen.has(url)) continue;
-    seen.add(url);
-    results.push({ query: title || 'Источник', summary: url });
-  }
-  return results.length ? results : undefined;
-}
 
 function keepLiveUploads(current: DisplayMessage[], derived: DisplayMessage[]): DisplayMessage[] {
   const uploads = current.filter((message) => (
@@ -80,9 +47,12 @@ function keepLiveUploads(current: DisplayMessage[], derived: DisplayMessage[]): 
 }
 
 export default function ChatPage() {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const openNewChat = searchParams.get('new') === '1';
-  const requestedConversation = searchParams.get('c');
+  const [projectPanel, setProjectPanel] = useState<string | null>(null);
+  const { activeConvId, setActiveConvId, activeConvRef, selectionRequestRef, openNewChat, setSearchParams,
+    conversationsQuery, conversations, conversationsFetched, activateMutation } = useConversationNavigation({
+      onExternalSelection: () => setProjectPanel(null),
+      onPersistError: text => setProjectNotice({ text, warning: true }),
+    });
   const visualViewportHeight = useVisualViewportHeight();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
@@ -97,15 +67,10 @@ export default function ChatPage() {
   const dialogueJumpRef = useRef<DialogueJumpFn | null>(null);
   const [sourceMessageId, setSourceMessageId] = useState<string | undefined>();
   const [selectionQuote, setSelectionQuote] = useState<{ text: string } | null>(null);
-  const [activeConvId, setActiveConvId] = useState<string | undefined>(() => openNewChat ? undefined : requestedConversation || lastConversation());
-  const activeConvRef = useRef(activeConvId);
-  activeConvRef.current = activeConvId;
-  const appliedLocationRef = useRef(requestedConversation);
-  const selectionRequestRef = useRef(0);
+  const openingNewRef = useRef(false);
   const creationQueueRef = useRef<Promise<void>>(Promise.resolve());
   const sendingRef = useRef(new Set<string>());
   const uploadedFilesRef = useRef(new WeakMap<File, Set<string>>());
-  const [projectPanel, setProjectPanel] = useState<string | null>(null);
   const [resultEdit, setResultEdit] = useState<ResultEditRequest | null>(null);
   const [projectCitation, setProjectCitation] = useState<ProjectCitation | null>(null);
   const taskEnrollmentRef = useRef({ payload: '', key: '' });
@@ -127,45 +92,10 @@ export default function ChatPage() {
   const [forcedEditUrl, setForcedEditUrl] = useState<string | null>(null);
   const [skipLastImage, setSkipLastImage] = useState(false);
   const [imageModeRequest, setImageModeRequest] = useState(0);
-  const [jobs, setJobs] = useState<LiveJobsMap>({});
-  const [jobErrors, setJobErrors] = useState<Record<string, string>>({});
-  const live = activeConvId ? jobs[activeConvId] : undefined;
-  const thinking = Boolean(live?.thinking);
-  const statusText = live?.statusText || '';
-  const pendingContent = useMemo(() => ({
-    convId: live?.convId,
-    userText: live?.convId === activeConvId ? (live?.userText || '') : '',
-    text: live?.convId === activeConvId ? (live?.text || '') : '',
-    thinking,
-    file: live?.convId === activeConvId ? live?.file : undefined,
-    reasoning: live?.convId === activeConvId ? live?.reasoning : undefined,
-    search: live?.convId === activeConvId ? live?.search : undefined,
-  }), [live, activeConvId, thinking]);
-  const generatingIds = Object.keys(jobs).filter((id) => jobs[id]?.thinking);
   const { data: models } = useQuery({ queryKey: ['models'], queryFn: () => apiFetch('/models'), staleTime: 10_000 });
   const isStudio = models?.selected === 'studio';
   const isDocgen = models?.selected === 'docgen';
   const canvasSource = useMemo(() => findStudioCanvas(displayMessages), [displayMessages]);
-  const patchJob = (convId: string | undefined, patch: LiveJobPatch) => {
-    if (!convId) return;
-    setJobs((prev) => upsertJob(prev, convId, patch));
-  };
-  const finishJob = (convId?: string) => {
-    if (!convId) return;
-    delete imageBaselineRef.current[convId];
-    httpJobsRef.current.delete(convId);
-    setJobs((prev) => {
-      const current = prev[convId];
-      const keepCanvas =
-        Boolean(current?.file?.url)
-        || Boolean(current?.file?.canvas)
-        || /\.html?$/i.test(current?.file?.filename || '');
-      if (current?.file && keepCanvas) {
-        return upsertJob(prev, convId, { thinking: false, statusText: '', file: current.file });
-      }
-      return dropJob(prev, convId);
-    });
-  };
   const [exporting, setExporting] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [roomOpenById, setRoomOpenById] = useState<Record<string, boolean>>({});
@@ -226,13 +156,11 @@ export default function ChatPage() {
   // the server hasn't confirmed the deletion/replacement yet.
   const [regeneratingId, setRegeneratingId] = useState<number | null>(null);
   const queryClient = useQueryClient();
+  const { setJobs, jobErrors, setJobErrors, pendingContent, thinking, statusText, generatingIds,
+    patchJob, finishJob, send, wsStatus, waitUntilReady, ignoreByConvRef, imageAbortRef, imageBaselineRef, httpJobsRef } = useChatGeneration({
+      activeConvId, setActiveConvId, setSearchParams, setRegeneratingId, setDisplayMessages,
+    });
 
-  const conversationsQuery = useQuery<ConversationItem[]>({
-    queryKey: ['conversations'],
-    queryFn: ({ signal }) => apiFetch('/conversations', { signal, timeoutMs: 15000 }),
-    staleTime: 5_000,
-  });
-  const { data: conversations = [], isFetched: conversationsFetched } = conversationsQuery;
 
   const activeConversation = conversations.find((conversation) => conversation.id === activeConvId);
   const sharedRoom = Boolean(activeConversation?.shared);
@@ -280,35 +208,6 @@ export default function ChatPage() {
   const conversationListFailed = !activeConvId && conversationsQuery.isError && !conversationsQuery.data;
   const historyPending = conversationListFailed || restoringConversation || Boolean(activeConvId && (!messagesReady || displayConversationId !== activeConvId));
 
-  // Restore the latest/active chat after a page reload instead of showing an
-  // empty home screen while its messages and document cards still exist.
-  useLayoutEffect(() => {
-    if (openNewChat) return;
-    if (requestedConversation) {
-      // Router navigation can commit after a local selection. Only a changed
-      // URL (including Back/Forward) may replace it; the old URL must not undo
-      // a newly created chat while that navigation is still being committed.
-      const locationChanged = appliedLocationRef.current !== requestedConversation;
-      appliedLocationRef.current = requestedConversation;
-      if (locationChanged && requestedConversation !== activeConvRef.current) {
-        ++selectionRequestRef.current;
-        setProjectPanel(null);
-        setActiveConvId(requestedConversation);
-      }
-      return;
-    }
-    appliedLocationRef.current = null;
-    if (activeConvId) {
-      setSearchParams({ c: activeConvId }, { replace: true });
-    } else if (conversations.length) {
-      const restored = conversations.find((conversation) => conversation.is_active) || conversations[0];
-      setActiveConvId(restored.id);
-      setSearchParams({ c: restored.id }, { replace: true });
-    }
-  }, [activeConvId, conversations, openNewChat, requestedConversation, setSearchParams]);
-
-  useLayoutEffect(() => { rememberConversation(activeConvId); }, [activeConvId]);
-
   useLayoutEffect(() => {
     setDisplayMessages([]);
     setDisplayConversationId(undefined);
@@ -322,137 +221,20 @@ export default function ChatPage() {
 
   useLayoutEffect(() => {
     if (!activeConvId || !messagesReady) return;
-      // Commit the conversation and its projected messages before paint. The
-      // welcome screen is only valid after a loaded history is genuinely empty.
-      setDisplayConversationId(activeConvId);
-      const base = messages
-        .filter((m) => m.role === 'user' || m.role === 'assistant')
-        .filter((m) => regeneratingId == null || m.message_id !== regeneratingId)
-        .map((m) => ({
-          id: m.id,
-          message_id: m.message_id,
-          role: m.role as 'user' | 'assistant',
-          content: m.content,
-          attachment: m.attachment,
-          search: m.search,
-          author: m.author,
-          mine: m.mine,
-        }));
-
-      if (pendingContent.convId === activeConvId) {
-        const lastBaseUser = [...base].reverse().find((m) => m.role === 'user');
-        const imageBaseline = activeConvId ? imageBaselineRef.current[activeConvId] : undefined;
-        const persistedNewUser = Boolean(
-          pendingContent.userText
-          && imageBaseline
-          && base.some((message) => (
-            message.role === 'user'
-            && message.content === pendingContent.userText
-            && !imageBaseline.has(message.id)
-          )),
-        );
-        const withUser =
-          pendingContent.userText && lastBaseUser?.content !== pendingContent.userText
-            ? [...base, { id: 'pending-user', role: 'user' as const, content: pendingContent.userText, mine: true }]
-            : pendingContent.userText && imageBaseline && !persistedNewUser
-              ? [...base, { id: 'pending-user', role: 'user' as const, content: pendingContent.userText, mine: true }]
-              : base;
-
-        const lastBaseAssistant = [...withUser].reverse().find((m) => m.role === 'assistant');
-        // The server saves the reply a moment before it streams the text. A poll that lands in that
-        // gap would show the whole answer at once, and the typing would have nothing left to type.
-        // Hold the saved answer back until the text starts arriving (the job stops "thinking").
-        // Without a live socket, or for an image job (plain HTTP), no stream is coming: show what the poll found.
-        const holdSavedAnswer =
-          pendingContent.thinking && wsStatus === 'open' && !(activeConvId && httpJobsRef.current.has(activeConvId));
-        const lastUserAt = withUser.map((m) => m.role).lastIndexOf('user');
-        const viewBase = holdSavedAnswer
-          ? withUser.filter((m, i) => !(i > lastUserAt && m.role === 'assistant' && !('attachment' in m && m.attachment?.interim)))
-          : withUser;
-        const pendingClarify = splitSearch(pendingContent.search).questions.length > 0;
-        const lastHasClarify = isClarifyMessage(
-          lastBaseAssistant && 'search' in lastBaseAssistant ? lastBaseAssistant.search : undefined,
-        );
-        const withAssistant =
-          (pendingContent.text || pendingClarify) &&
-          !lastHasClarify &&
-          lastBaseAssistant?.content !== pendingContent.text
-            ? [
-                ...viewBase,
-                {
-                  id: 'pending-assistant',
-                  role: 'assistant' as const,
-                  content: pendingContent.text,
-                  reasoning: pendingContent.reasoning,
-                  search: pendingContent.search,
-                },
-              ]
-            : viewBase;
-
-        const lastAssistant = withAssistant[withAssistant.length - 1];
-        const withFile = pendingContent.file
-          ? lastAssistant?.role === 'assistant'
-            ? withAssistant.map((message, index) =>
-                index === withAssistant.length - 1 ? { ...message, file: pendingContent.file } : message,
-              )
-            : [
-                ...withAssistant,
-                {
-                  id: 'pending-file',
-                  role: 'assistant' as const,
-                  content: `Файл готов: ${pendingContent.file.filename}`,
-                  file: pendingContent.file,
-                  ...(withAssistant === viewBase
-                    ? { reasoning: pendingContent.reasoning, search: pendingContent.search }
-                    : {}),
-                },
-              ]
-          : withAssistant;
-
-        // A Pilot package posts each finished document mid-reply; those are not the answer yet.
-        const isFinalAnswer = (message: (typeof withFile)[number]) => message.role === 'assistant'
-          && !('attachment' in message && message.attachment?.interim);
-        const jobError = activeConvId ? jobErrors[activeConvId] : undefined;
-        const withError = jobError && !pendingContent.thinking
-          ? [...withFile, { id: `job-err-${activeConvId}`, role: 'assistant' as const, content: jobError }]
-          : withFile;
-
-        setDisplayMessages((current) => keepLiveUploads(current, withError));
-
-        // If the socket reconnected during a long analysis, polling may see the
-        // persisted assistant answer before a new `done` event can arrive.
-        const pendingUserIndex = pendingContent.userText
-          ? base.map((message) => message.role === 'user' ? message.content : '').lastIndexOf(pendingContent.userText)
-          : -1;
-        const recoveredAnswer = imageBaseline
-          ? base.some((message) => isFinalAnswer(message) && !imageBaseline.has(message.id))
-          : pendingUserIndex >= 0
-            && base.slice(pendingUserIndex + 1).some(isFinalAnswer);
-        if (pendingContent.thinking && recoveredAnswer && !holdSavedAnswer) {
-          setRegeneratingId(null);
-          finishJob(activeConvId);
-          if (activeConvId) delete imageBaselineRef.current[activeConvId];
-        }
-
-        // Once the assistant response has been persisted to the server, drop the pending copy.
-        const lastAttachment =
-          lastBaseAssistant && 'attachment' in lastBaseAssistant ? lastBaseAssistant.attachment : undefined;
-        if (pendingContent.text && lastBaseAssistant?.content === pendingContent.text) {
-          const persistedCanvas = Boolean(lastAttachment?.url);
-          if (persistedCanvas || !pendingContent.file) {
-            setJobs((prev) => dropJob(prev, activeConvId));
-          } else {
-            patchJob(activeConvId, { text: '', userText: '', thinking: false, file: pendingContent.file });
-          }
-        } else if (!pendingContent.thinking && lastAttachment?.url && pendingContent.file) {
-          setJobs((prev) => dropJob(prev, activeConvId));
-        }
-      } else {
-        const error = jobErrors[activeConvId];
-        const withError = error ? [...base, { id: `job-err-${activeConvId}`, role: 'assistant' as const, content: error }] : base;
-        setDisplayMessages((current) => keepLiveUploads(current, withError));
-      }
-  }, [activeConvId, messages, messagesReady, pendingContent, regeneratingId, jobErrors]);
+    const projection = projectConversation({
+      messages, pending: pendingContent, conversationId: activeConvId, regeneratingId, error: jobErrors[activeConvId],
+      imageBaseline: imageBaselineRef.current[activeConvId], socketOpen: wsStatus === 'open', httpJob: httpJobsRef.current.has(activeConvId),
+    });
+    setDisplayConversationId(activeConvId);
+    setDisplayMessages(current => keepLiveUploads(current, projection.messages));
+    if (projection.recovered) {
+      setRegeneratingId(null);
+      finishJob(activeConvId);
+      delete imageBaselineRef.current[activeConvId];
+    }
+    if (projection.persistence === 'drop') setJobs(previous => dropJob(previous, activeConvId));
+    if (projection.persistence === 'keep-file') patchJob(activeConvId, { text: '', userText: '', thinking: false, file: pendingContent.file });
+  }, [activeConvId, messages, messagesReady, pendingContent, regeneratingId, jobErrors, wsStatus]);
 
   const createMutation = useMutation({
     mutationFn: () => apiFetch('/conversations', { method: 'POST', body: JSON.stringify({ title: NEW_CHAT_TITLE }) }),
@@ -476,173 +258,6 @@ export default function ChatPage() {
       apiFetch(`/conversations/${id}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['conversations'] }),
   });
-
-  const activateMutation = useMutation({
-    // Persist rapid selections in order, so a slow earlier request cannot
-    // become the server's active conversation after the latest selection.
-    scope: { id: 'activate-conversation' },
-    mutationFn: (id: string) => apiFetch(`/conversations/${id}/activate`, { method: 'POST', timeoutMs: 15000 }),
-  });
-
-  useEffect(() => {
-    if (!activeConvId) return;
-    activateMutation.mutate(activeConvId, { onError: () => {
-      if (activeConvRef.current === activeConvId) setProjectNotice({ text: 'Не удалось сохранить выбор беседы. Она останется открытой; повторите выбор, когда соединение восстановится.', warning: true });
-    } });
-  }, [activeConvId]);
-
-  const { messages: wsMessages, send, status: wsStatus, waitUntilReady } = useChatConnection();
-  const processedRef = useRef<Set<string>>(new Set());
-  const ignoreByConvRef = useRef<Set<string>>(new Set());
-  const openingNewRef = useRef(false);
-  const imageAbortRef = useRef<AbortController | null>(null);
-  const imageBaselineRef = useRef<Record<string, Set<string>>>({});
-  // Chats whose current job runs over plain HTTP (images), not over the socket: no stream is coming.
-  const httpJobsRef = useRef<Set<string>>(new Set());
-
-  useEffect(() => {
-    if (wsStatus === 'open' && activeConvId) {
-      queryClient.invalidateQueries({ queryKey: ['messages', activeConvId] });
-    }
-  }, [wsStatus, activeConvId, queryClient]);
-
-  useEffect(() => {
-    apiFetch('/chat/jobs')
-      .then((data) => {
-        setJobs((prev) => mergeRemoteJobs(prev, data.jobs));
-      })
-      .catch(() => undefined);
-  }, [wsStatus]);
-
-  useEffect(() => {
-    wsMessages.forEach((msg, idx) => {
-      const key = `${idx}-${msg.type}`;
-      if (processedRef.current.has(key)) return;
-      processedRef.current.add(key);
-
-      const convId = (msg.payload?.conversation_id as string | undefined) || undefined;
-      if (convId && ignoreByConvRef.current.has(convId) && msg.type !== 'stopped' && msg.type !== 'done' && msg.type !== 'error') {
-        return;
-      }
-
-      if (msg.type === 'conversation_sync') {
-        const syncId = msg.payload?.conversation_id as string | undefined;
-        if (syncId) {
-          queryClient.invalidateQueries({ queryKey: ['messages', syncId] });
-          queryClient.invalidateQueries({ queryKey: ['asides', syncId] });
-          queryClient.invalidateQueries({ queryKey: ['conversations'] });
-          queryClient.invalidateQueries({ queryKey: filesQueryKey(syncId) });
-        }
-        return;
-      }
-      if (msg.type === 'jobs') {
-        setJobs((prev) => mergeRemoteJobs(prev, msg.payload.jobs));
-        return;
-      }
-      if (msg.type === 'thinking' && convId) {
-        patchJob(convId, { thinking: true });
-      }
-      if (msg.type === 'status' && convId) {
-        patchJob(convId, { thinking: true, statusText: msg.payload.text || '' });
-      }
-      if (msg.type === 'reasoning_delta' && convId) {
-        setJobs((prev) => upsertJob(prev, convId, { reasoning: (prev[convId]?.reasoning || '') + (msg.payload.text || '') }));
-      }
-      if (msg.type === 'chunk' && convId) {
-        replyReveal.push(convId, msg.payload.text || '');
-        setJobs((prev) => {
-          const current = prev[convId] || emptyJob(convId);
-          const nextText = (current.text || '') + (msg.payload.text || '');
-          const fallbackSearch = !current.search?.length ? parseSearchFromText(nextText) : undefined;
-          return upsertJob(prev, convId, {
-            text: nextText,
-            thinking: false,
-            search: current.search?.length ? current.search : fallbackSearch,
-          });
-        });
-      }
-      if (msg.type === 'meta' && convId) {
-        // replaces: the open chat was deleted elsewhere and the reply moved to a new one.
-        if (!activeConvId || msg.payload?.replaces === activeConvId) {
-          setActiveConvId(convId);
-          setSearchParams({ c: convId }, { replace: true });
-        }
-        patchJob(convId, { thinking: true });
-      }
-      if (msg.type === 'file' && convId) {
-        patchJob(convId, {
-          file: {
-            filename: msg.payload.filename,
-            data: msg.payload.data || '',
-            url: msg.payload.url,
-            canvas: Boolean(msg.payload.canvas),
-          },
-        });
-      }
-      if (msg.type === 'extras' && convId) {
-        const extrasSearch = msg.payload.search?.length ? msg.payload.search : undefined;
-        setJobs((prev) => {
-          const current = prev[convId] || emptyJob(convId);
-          const fallbackSearch = !extrasSearch ? parseSearchFromText(current.text) : undefined;
-          const hasClarify = splitSearch(extrasSearch).questions.length > 0;
-          return upsertJob(prev, convId, {
-            reasoning: msg.payload.reasoning || undefined,
-            search: extrasSearch || fallbackSearch,
-            ...(hasClarify ? { thinking: false, statusText: '' } : {}),
-          });
-        });
-      }
-      if (msg.type === 'done') {
-        queryClient.invalidateQueries({ queryKey: ['project-workspace'] });
-        queryClient.invalidateQueries({ queryKey: ['project-suggestions'] });
-        const doneConvId = convId || pendingContent.convId;
-        if (doneConvId) ignoreByConvRef.current.delete(doneConvId);
-        if (doneConvId === activeConvId) setRegeneratingId(null);
-        replyReveal.seal();
-        if (doneConvId && replyReveal.isTyping(doneConvId)) {
-          // The text arrives in milliseconds but is typed out over a few seconds. Keep the live
-          // copy on screen until then; it drops itself as soon as the saved message matches.
-          patchJob(doneConvId, { thinking: false, statusText: '' });
-          replyReveal.whenIdle(() => finishJob(doneConvId));
-        } else {
-          finishJob(doneConvId);
-        }
-        if (doneConvId) {
-          queryClient.invalidateQueries({ queryKey: ['messages', doneConvId] });
-        }
-        queryClient.invalidateQueries({ queryKey: ['conversations'] });
-        queryClient.invalidateQueries({ queryKey: ['subscription'] });
-      }
-      if (msg.type === 'stopped') {
-        const stoppedId = convId || pendingContent.convId;
-        if (stoppedId) ignoreByConvRef.current.delete(stoppedId);
-        replyReveal.seal();
-        patchJob(stoppedId, { thinking: false, statusText: '' });
-      }
-      if (msg.type === 'error') {
-        const errConvId = convId || pendingContent.convId || activeConvId;
-        if (errConvId) ignoreByConvRef.current.delete(errConvId);
-        if (errConvId === activeConvId) setRegeneratingId(null);
-        replyReveal.seal();
-        finishJob(errConvId);
-        const raw = msg.payload.message || 'Internal error';
-        const errorText = /законч|тариф|токен|картинк/i.test(raw) ? raw : `Ошибка: ${raw}`;
-        if (errConvId) {
-          setJobErrors((prev) => ({ ...prev, [errConvId]: errorText }));
-        }
-        if (errConvId === activeConvId) {
-          setDisplayMessages((m) => {
-            if (m.some((message) => message.content === errorText)) return m;
-            return [...m, { id: `err-${Date.now()}`, role: 'assistant', content: errorText }];
-          });
-        }
-        queryClient.invalidateQueries({ queryKey: ['subscription'] });
-        if (errConvId) {
-          queryClient.invalidateQueries({ queryKey: ['messages', errConvId] });
-        }
-      }
-    });
-  }, [wsMessages, activeConvId, queryClient, pendingContent.convId]);
 
   useEffect(() => {
     setForcedEditUrl(null);

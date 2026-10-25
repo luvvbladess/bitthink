@@ -293,7 +293,7 @@ async def _generate_and_send(
     if len(response_text) > 8000 and desktop_mode.get() is None:
         from docx_generator import convert_markdown_to_docx
 
-        base_template = await asyncio.to_thread(repo._manager.get_base_template, bot_user_id)
+        base_template = await asyncio.to_thread(repo.templates.base, bot_user_id)
         docx_bytes = await asyncio.to_thread(convert_markdown_to_docx, response_text, base_template)
         if docx_bytes:
             await best_effort(send_file, "response.docx", docx_bytes)
@@ -338,11 +338,9 @@ async def run_chat(
     # A tab still showing a chat that was deleted elsewhere: start a new one
     # instead of failing every message with «Нет доступа к беседе».
     replaced = None
-    if conversation_id and await asyncio.to_thread(repo._manager.conversation_owner, conversation_id) is None:
+    if conversation_id and await asyncio.to_thread(repo.conversations.owner, conversation_id) is None:
         replaced, conversation_id = conversation_id, None
-    if conversation_id:
-        await repo.set_active_conversation(web_user_id, conversation_id)
-    else:
+    if not conversation_id:
         created = await repo.create_conversation(web_user_id, title="Новый чат")
         conversation_id = created["id"]
 

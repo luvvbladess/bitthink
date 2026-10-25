@@ -4,6 +4,7 @@ from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, Large
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.db.generation_models import Generation, GenerationEvent, WorkerHeartbeat  # noqa: F401
 
 
 class User(Base):

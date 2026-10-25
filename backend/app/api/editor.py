@@ -240,7 +240,7 @@ def store_saved_version(doc_id: str, data: bytes, bump: bool, edited_by: Optiona
 def _write_back(conv_id: str, filename: str, bot_id: int, data: bytes) -> None:
     """Положить правку туда, откуда файл беседы читают все остальные."""
     try:
-        conv = repo._manager.conversation_view(int(bot_id), conv_id)
+        conv = repo.conversations.view(int(bot_id), conv_id)
         found = _find_attachment(conv, filename) if conv else None
         if not found:
             return
@@ -351,7 +351,7 @@ def conversation_files(conv) -> list[dict]:
             }
     people = {row.edited_by for row in records.values() if row.edited_by}
     people |= {item["uploaded_by_id"] for item in found.values() if item["uploaded_by_id"]}
-    cards = repo._manager.author_cards(list(people))
+    cards = repo.authors.cards(list(people))
     files = []
     for name, item in found.items():
         record = records.get(name)
@@ -389,14 +389,14 @@ def file_bytes(conv, filename: str) -> Optional[bytes]:
 
 async def _conversation_for(web_user_id: str, conv_id: str):
     bot_id = await repo.ensure_user(web_user_id)
-    conv = await asyncio.to_thread(repo._manager.conversation_view, bot_id, conv_id)
+    conv = await asyncio.to_thread(repo.conversations.view, bot_id, conv_id)
     if conv is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Беседа не найдена")
     return bot_id, conv
 
 
 def _allowed(bot_id: int, conv_id: str) -> bool:
-    return repo._manager.conversation_view(int(bot_id), conv_id) is not None
+    return repo.conversations.view(int(bot_id), conv_id) is not None
 
 
 # ---------------------------------------------------------------- routes
@@ -418,7 +418,7 @@ async def open_document(data: dict, user_id: str = Depends(get_current_user)):
     doc_id, version = await asyncio.to_thread(
         _open_record, conv.id, filename, bot_id, lambda: source_bytes(conv, filename)
     )
-    names = await asyncio.to_thread(repo._manager.author_cards, [bot_id])
+    names = await asyncio.to_thread(repo.authors.cards, [bot_id])
     backend = settings.BACKEND_INTERNAL_URL.rstrip("/")
     app_url = (settings.PUBLIC_APP_URL or str(data.get("origin") or "")).rstrip("/")
     if not app_url.startswith(("http://", "https://")):
@@ -502,7 +502,7 @@ def _editing_names(doc_id: str, me: int) -> list[str]:
     ids = [int(item) for item in _EDITING.get(doc_id, set()) if item.isdigit()]
     if not ids:
         return []
-    cards = repo._manager.author_cards(ids)
+    cards = repo.authors.cards(ids)
     return ["вы" if item == me else (cards.get(item) or {}).get("name") or "участник" for item in ids]
 
 
@@ -542,7 +542,7 @@ async def edit_paragraph(doc_id: str, data: dict, user_id: str = Depends(get_cur
     text = str(data.get("text") or "").strip()
     if not text:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Пустой текст пункта")
-    cards = await asyncio.to_thread(repo._manager.author_cards, [bot_id])
+    cards = await asyncio.to_thread(repo.authors.cards, [bot_id])
     author = (cards.get(bot_id) or {}).get("name") or "Участник"
     # Two phones saving at once must not write over each other's version.
     async with _PHONE_LOCKS.setdefault(doc_id, asyncio.Lock()):

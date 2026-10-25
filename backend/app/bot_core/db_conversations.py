@@ -734,9 +734,6 @@ class DatabaseConversationManager:
         self._template_docs: Dict[int, bytes] = {}
         self._template_names: Dict[int, str] = {}
         self._base_template_mode: Dict[int, bool] = {}
-        self._base_template_cache: Dict[int, bytes] = {}
-        self._base_template_name_cache: Dict[int, str] = {}
-        self._active_custom_prompt: Dict[int, Optional[str]] = {}
         self._user_tasks: Dict[int, asyncio.Task] = {}
         self._quota_lock = threading.Lock()
 
@@ -1063,6 +1060,14 @@ class DatabaseConversationManager:
             self.set_subscription_tier(bot_id, chosen, duration_days, from_today=True)
         return {"reset": len(targets), "skipped_admins": len(admin_ids), "tier": chosen}
 
+    @property
+    def transaction_lock(self):
+        """Stable ledger boundary shared by engine and web adapters."""
+        return self._quota_lock
+
+    def lock_subscription(self, session: Session, user_id: int) -> Subscription:
+        return self._lock_subscription(session, user_id)
+
     def _lock_subscription(self, session: Session, user_id: int) -> Subscription:
         """Create the row if needed, then lock it for a check-and-update."""
         self._get_or_create_subscription(session, user_id)
@@ -1266,10 +1271,20 @@ class DatabaseConversationManager:
     # Model
     # ------------------------------------------------------------------
     def get_user_model(self, user_id: int) -> str:
+        from app.core.request_context import preference
+        captured, value = preference(user_id, 'selected_model')
+        if captured:
+            return value or 'auto'
         # Новый человек без выбора – «Авто», как и показывает интерфейс, а не Nano.
         with SyncSessionLocal() as session:
             sub = session.query(Subscription).filter_by(user_id=user_id).first()
             return sub.selected_model if sub and sub.selected_model else "auto"
+
+    def generation_preferences(self, user_id: int) -> dict:
+        with SyncSessionLocal() as session:
+            sub = session.query(Subscription).filter_by(user_id=user_id).first()
+            return {'user_id': user_id, 'selected_model': sub.selected_model if sub and sub.selected_model else 'auto',
+                'reasoning_effort': sub.reasoning_effort if sub else None}
 
     def set_user_model(self, user_id: int, model: str) -> None:
         with SyncSessionLocal() as session:
@@ -1278,6 +1293,10 @@ class DatabaseConversationManager:
             session.commit()
 
     def get_user_reasoning_effort(self, user_id: int) -> Optional[str]:
+        from app.core.request_context import preference
+        captured, value = preference(user_id, 'reasoning_effort')
+        if captured:
+            return value
         with SyncSessionLocal() as session:
             sub = session.query(Subscription).filter_by(user_id=user_id).first()
             return sub.reasoning_effort if sub else None
@@ -1377,22 +1396,16 @@ class DatabaseConversationManager:
         self._base_template_mode[user_id] = enabled
 
     def get_base_template(self, user_id: int) -> Optional[bytes]:
-        if user_id in self._base_template_cache:
-            return self._base_template_cache[user_id]
         with SyncSessionLocal() as session:
             record = session.get(BaseTemplate, user_id)
             if record:
-                self._base_template_cache[user_id] = record.content
                 return record.content
         return None
 
     def get_base_template_name(self, user_id: int) -> Optional[str]:
-        if user_id in self._base_template_name_cache:
-            return self._base_template_name_cache[user_id]
         with SyncSessionLocal() as session:
             record = session.get(BaseTemplate, user_id)
             if record:
-                self._base_template_name_cache[user_id] = record.filename
                 return record.filename
         return None
 
@@ -1405,8 +1418,6 @@ class DatabaseConversationManager:
             else:
                 session.add(BaseTemplate(user_id=user_id, filename=filename, content=doc_bytes))
             session.commit()
-        self._base_template_cache[user_id] = doc_bytes
-        self._base_template_name_cache[user_id] = filename
 
     def clear_base_template(self, user_id: int) -> bool:
         existed = False
@@ -1416,8 +1427,6 @@ class DatabaseConversationManager:
                 session.delete(record)
                 existed = True
             session.commit()
-        self._base_template_cache.pop(user_id, None)
-        self._base_template_name_cache.pop(user_id, None)
         return existed
 
     def get_user_memory(self, user_id: int) -> dict:
@@ -1620,8 +1629,6 @@ class DatabaseConversationManager:
             return new_prompt.id
 
     def get_active_custom_prompt(self, user_id: int) -> Optional[str]:
-        if user_id in self._active_custom_prompt:
-            return self._active_custom_prompt[user_id]
         with SyncSessionLocal() as session:
             active = session.query(CustomPrompt).filter_by(user_id=user_id, active=True).first()
             return active.prompt if active else None
@@ -1633,11 +1640,6 @@ class DatabaseConversationManager:
                 prompt = session.query(CustomPrompt).filter_by(user_id=user_id, id=index).first()
                 if prompt:
                     prompt.active = True
-                    self._active_custom_prompt[user_id] = prompt.prompt
-                else:
-                    self._active_custom_prompt[user_id] = None
-            else:
-                self._active_custom_prompt[user_id] = None
             session.commit()
 
     def delete_custom_prompt(self, user_id: int, index: int) -> bool:
@@ -1647,8 +1649,6 @@ class DatabaseConversationManager:
                 return False
             session.delete(prompt)
             session.commit()
-            if self._active_custom_prompt.get(user_id) == prompt.prompt:
-                self._active_custom_prompt[user_id] = None
             return True
 
     # ------------------------------------------------------------------
@@ -1952,6 +1952,7 @@ class DatabaseConversationManager:
         for _ in range(5):
             try:
                 with SyncSessionLocal() as session:
+                    self._lock_conversation_selection(session, user_id)
                     session.query(Conversation).filter_by(user_id=user_id, is_active=True).update({"is_active": False})
                     conv = Conversation(
                         id=self._conv_id(),
@@ -1969,8 +1970,19 @@ class DatabaseConversationManager:
             raise last_error
         raise RuntimeError("Не удалось создать беседу")
 
+    @staticmethod
+    def _lock_conversation_selection(session: Session, user_id: int) -> None:
+        # Serializing only UPDATE(is_active=true) is insufficient on PostgreSQL:
+        # a concurrent statement's snapshot may not see the newly inserted chat.
+        # An account transaction lock works even before a User/Subscription row
+        # exists, and covers every API/worker process.
+        if session.bind.dialect.name == 'postgresql':
+            from sqlalchemy import text
+            session.execute(text('SELECT pg_advisory_xact_lock(:account)'), {'account': int(user_id)})
+
     def set_active_conversation(self, user_id: int, conv_id: str) -> Optional[ConversationData]:
         with SyncSessionLocal() as session:
+            self._lock_conversation_selection(session, user_id)
             conv = session.get(Conversation, conv_id)
             if not conv or not self._allows(session, user_id, conv):
                 return None

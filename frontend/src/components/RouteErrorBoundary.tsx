@@ -2,12 +2,14 @@ import { Component, type ReactNode } from 'react';
 import { Alert, Box, Button, Stack } from '@mui/material';
 import { Link } from 'react-router-dom';
 import { isRouteDownloadError, refreshRouteOnce } from '@/navigation/routeRecovery';
+import { reportClientError } from '@/api/diagnostics';
 
 export class RouteErrorBoundary extends Component<{ children: ReactNode; path: string }, { failed: boolean; download: boolean }> {
   state = { failed: false, download: false };
   static getDerivedStateFromError(error: unknown) { return { failed: true, download: isRouteDownloadError(error) }; }
 
   componentDidCatch(error: Error) {
+    reportClientError(error, isRouteDownloadError(error) ? 'chunk' : 'render');
     if (isRouteDownloadError(error)) refreshRouteOnce();
   }
 
