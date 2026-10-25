@@ -120,6 +120,7 @@ export default function ChatPage() {
     });
   }, []);
   const [displayMessages, setDisplayMessages] = useState<DisplayMessage[]>([]);
+  const [displayConversationId, setDisplayConversationId] = useState<string | undefined>();
   const [forcedEditUrl, setForcedEditUrl] = useState<string | null>(null);
   const [skipLastImage, setSkipLastImage] = useState(false);
   const [imageModeRequest, setImageModeRequest] = useState(0);
@@ -269,6 +270,10 @@ export default function ChatPage() {
   });
   const messagesReady = Boolean(activeConvId) && messagesQuery.data !== undefined && !messagesQuery.isPlaceholderData;
   const messages = messagesReady ? (messagesQuery.data ?? []) : [];
+  // A missing history is a loading state, not a new conversation. Cached query
+  // data can also arrive one render before its display projection is installed.
+  const restoringConversation = !openNewChat && !activeConvId && (!conversationsFetched || conversations.length > 0);
+  const historyPending = restoringConversation || Boolean(activeConvId && (!messagesReady || displayConversationId !== activeConvId));
 
   // Restore the latest/active chat after a page reload instead of showing an
   // empty home screen while its messages and document cards still exist.
@@ -290,6 +295,7 @@ export default function ChatPage() {
 
   useLayoutEffect(() => {
     setDisplayMessages([]);
+    setDisplayConversationId(undefined);
     setSelectionQuote(null);
     setForcedEditUrl(null);
     setSkipLastImage(false);
@@ -298,8 +304,11 @@ export default function ChatPage() {
     setSourcesSheetOpen(false);
   }, [activeConvId]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!activeConvId || !messagesReady) return;
+      // Commit the conversation and its projected messages before paint. The
+      // welcome screen is only valid after a loaded history is genuinely empty.
+      setDisplayConversationId(activeConvId);
       const base = messages
         .filter((m) => m.role === 'user' || m.role === 'assistant')
         .filter((m) => regeneratingId == null || m.message_id !== regeneratingId)
@@ -1450,7 +1459,7 @@ export default function ChatPage() {
             </Box>
           </Box>
         )}
-        {activeConvId && !messagesReady && !displayMessages.length ? (
+        {historyPending ? (
           <Box role={messagesQuery.isError ? 'alert' : 'status'} sx={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 1.5, px: 3, textAlign: 'center', color: 'text.secondary' }}>
             <Box>{messagesQuery.isError ? 'Не удалось загрузить беседу. Черновик сохранён.' : 'Загружаем беседу…'}</Box>
             {messagesQuery.isError && <Button onClick={() => void messagesQuery.refetch()}>Повторить загрузку</Button>}
@@ -1541,7 +1550,7 @@ export default function ChatPage() {
               onClearSelectionQuote={() => setSelectionQuote(null)}
               onOpenProjects={() => setProjectPanel(projectBinding.data?.project_id || '')}
               onSend={handleSend}
-              disabled={thinking || Boolean(activeConvId && !messagesReady)}
+              disabled={thinking || historyPending}
               isGenerating={thinking}
               onStop={handleStop}
               editSourceUrl={forcedEditUrl || (!skipLastImage ? lastChatImageUrl(displayMessages) : null)}

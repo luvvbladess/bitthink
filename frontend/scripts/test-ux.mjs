@@ -14,6 +14,14 @@ async function fixture(options = {}) {
   const context = await browser.newContext({ viewport: options.viewport || { width: 1440, height: 900 }, hasTouch: Boolean(options.touch) });
   const page = await context.newPage();
   if (options.clock) await page.clock.install();
+  if (options.observeWelcome) await page.addInitScript(() => {
+    window.auditWelcomeMounts = [];
+    new MutationObserver(records => {
+      for (const record of records) for (const node of record.addedNodes) {
+        if (node.textContent?.includes('С чего начнём?')) window.auditWelcomeMounts.push(performance.now());
+      }
+    }).observe(document, { childList: true, subtree: true });
+  });
   if (options.failSettingsChunk) await page.route(/\/(?:assets\/SettingsPage-[^/]+\.js|src\/pages\/SettingsPage\.tsx)(?:\?.*)?$/, route => route.abort());
   const state = { auth: options.auth || 'ok', historyError: false, delay: {}, sends: [], uploads: [], created: [], historyLoads: [], failFile: '', ...options };
   const profile = { id: 'audit-user', email: 'audit@example.com', first_name: 'Анна', role: options.admin ? 'admin' : 'user', subscription_tier: 'pro', selected_model: 'auto' };
@@ -76,7 +84,10 @@ async function fixture(options = {}) {
       state.created.push(id);
       state.activeId = id;
     }
-    else if (path === '/conversations') data = conversations;
+    else if (path === '/conversations') {
+      if (state.listDelay) await new Promise(resolve => setTimeout(resolve, state.listDelay));
+      data = conversations;
+    }
     else if (path.endsWith('/activate')) {
       const id = path.split('/')[2];
       if (state.delay[id]) await new Promise(resolve => setTimeout(resolve, state.delay[id]));
@@ -85,6 +96,7 @@ async function fixture(options = {}) {
       data = { ok: true };
     } else if (path.endsWith('/messages')) {
       state.historyLoads.push(path.split('/')[2]);
+      if (state.historyDelay?.[path.split('/')[2]]) await new Promise(resolve => setTimeout(resolve, state.historyDelay[path.split('/')[2]]));
       if (state.historyError) return route.fulfill({ status: 503, json: { detail: 'Temporary outage' } });
       data = history[path.split('/')[2]] || [];
     } else if (path === '/chat/jobs') data = { jobs: [] };
@@ -244,6 +256,36 @@ async function sidebarFixture(options = {}) {
 }
 
 try {
+  await test('switching: restoring an existing conversation never mounts the welcome screen', async () => {
+    const f = await fixture({ observeWelcome: true, listDelay: 250, historyDelay: { 'chat-a': 250 } });
+    try {
+      await expect(f.page.getByText('Ответ первой беседы. Здесь удобно читать и продолжать работу.', { exact: true })).toBeVisible();
+      assert.deepEqual(await f.page.evaluate(() => window.auditWelcomeMounts), [], 'restoring history must not render the new-chat welcome screen');
+    } finally { await f.context.close(); }
+  });
+  for (const width of [1440, 390]) await test('switching: cold and cached conversations never mount the welcome screen ' + width, async () => {
+    const f = await fixture({ observeWelcome: true, viewport: { width, height: 844 }, touch: width < 900, historyDelay: { 'chat-b': 450 } });
+    try {
+      await expect(f.page.getByText('Ответ первой беседы. Здесь удобно читать и продолжать работу.', { exact: true })).toBeVisible();
+      await f.page.evaluate(() => { window.auditWelcomeMounts = []; });
+      await f.select('Вторая беседа');
+      await expect(f.page.getByText('Ответ второй беседы.', { exact: true })).toBeVisible();
+      await f.select('Первая беседа');
+      await expect(f.page.getByText('Ответ первой беседы. Здесь удобно читать и продолжать работу.', { exact: true })).toBeVisible();
+      await f.select('Вторая беседа');
+      await expect(f.page.getByText('Ответ второй беседы.', { exact: true })).toBeVisible();
+      assert.deepEqual(await f.page.evaluate(() => window.auditWelcomeMounts), [], 'neither a slow history nor a cached history may show welcome content');
+    } finally { await f.context.close(); }
+  });
+  await test('switching: a genuinely new conversation still shows the welcome screen', async () => {
+    const f = await fixture();
+    try {
+      await expect(f.page.getByText('Ответ первой беседы. Здесь удобно читать и продолжать работу.', { exact: true })).toBeVisible();
+      await f.page.getByRole('button', { name: 'Новый вопрос', exact: true }).click();
+      await expect(f.page.getByText('С чего начнём?', { exact: true })).toBeVisible();
+      await expect(f.input).toBeEnabled();
+    } finally { await f.context.close(); }
+  });
   await test('sidebar: desktop drag moves a chat into the project', async () => {
     const f = await sidebarFixture();
     try {
