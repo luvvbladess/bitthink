@@ -38,6 +38,7 @@ import type { ResultEditRequest } from '@/features/chat/projectResultLinks';
 import type { ProjectCitation } from '@/features/chat/EvidenceLink';
 import { applyPageMeta } from '@/seo';
 import { useVisualViewportHeight } from '@/features/chat/useVisualViewportHeight';
+import { lastConversation, rememberConversation } from '@/navigation/chatLocation';
 
 // Fallback parser for Kimi-style citations like [1] Title – https://...
 // so the "Web search (N)" panel still appears even if the backend extras
@@ -79,6 +80,9 @@ function keepLiveUploads(current: DisplayMessage[], derived: DisplayMessage[]): 
 }
 
 export default function ChatPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const openNewChat = searchParams.get('new') === '1';
+  const requestedConversation = searchParams.get('c');
   const visualViewportHeight = useVisualViewportHeight();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
@@ -93,9 +97,10 @@ export default function ChatPage() {
   const dialogueJumpRef = useRef<DialogueJumpFn | null>(null);
   const [sourceMessageId, setSourceMessageId] = useState<string | undefined>();
   const [selectionQuote, setSelectionQuote] = useState<{ text: string } | null>(null);
-  const [activeConvId, setActiveConvId] = useState<string | undefined>();
+  const [activeConvId, setActiveConvId] = useState<string | undefined>(() => openNewChat ? undefined : requestedConversation || lastConversation());
   const activeConvRef = useRef(activeConvId);
   activeConvRef.current = activeConvId;
+  const appliedLocationRef = useRef(requestedConversation);
   const selectionRequestRef = useRef(0);
   const creationQueueRef = useRef<Promise<void>>(Promise.resolve());
   const sendingRef = useRef(new Set<string>());
@@ -109,8 +114,6 @@ export default function ChatPage() {
   const [projectExpanded, setProjectExpanded] = useState(false);
   const projectRequestRef = useRef(0);
   const projectsQuery = useQuery<ProjectItem[]>({ queryKey: ['projects'], queryFn: () => apiFetch('/projects') });
-  const [searchParams, setSearchParams] = useSearchParams();
-  const openNewChat = searchParams.get('new') === '1';
 
   useEffect(() => {
     applyPageMeta({
@@ -224,11 +227,12 @@ export default function ChatPage() {
   const [regeneratingId, setRegeneratingId] = useState<number | null>(null);
   const queryClient = useQueryClient();
 
-  const { data: conversations = [], isFetched: conversationsFetched } = useQuery<ConversationItem[]>({
+  const conversationsQuery = useQuery<ConversationItem[]>({
     queryKey: ['conversations'],
-    queryFn: () => apiFetch('/conversations'),
+    queryFn: ({ signal }) => apiFetch('/conversations', { signal, timeoutMs: 15000 }),
     staleTime: 5_000,
   });
+  const { data: conversations = [], isFetched: conversationsFetched } = conversationsQuery;
 
   const activeConversation = conversations.find((conversation) => conversation.id === activeConvId);
   const sharedRoom = Boolean(activeConversation?.shared);
@@ -263,7 +267,7 @@ export default function ChatPage() {
     mine?: boolean;
   }[]>({
     queryKey: ['messages', activeConvId],
-    queryFn: () => apiFetch(`/conversations/${activeConvId}/messages`),
+    queryFn: ({ signal }) => apiFetch(`/conversations/${activeConvId}/messages`, { signal, timeoutMs: 15000 }),
     enabled: !!activeConvId,
     staleTime: 3_000,
     refetchInterval: thinking && activeConvId ? 2000 : sharedRoom ? 4000 : false,
@@ -273,25 +277,37 @@ export default function ChatPage() {
   // A missing history is a loading state, not a new conversation. Cached query
   // data can also arrive one render before its display projection is installed.
   const restoringConversation = !openNewChat && !activeConvId && (!conversationsFetched || conversations.length > 0);
-  const historyPending = restoringConversation || Boolean(activeConvId && (!messagesReady || displayConversationId !== activeConvId));
+  const conversationListFailed = !activeConvId && conversationsQuery.isError && !conversationsQuery.data;
+  const historyPending = conversationListFailed || restoringConversation || Boolean(activeConvId && (!messagesReady || displayConversationId !== activeConvId));
 
   // Restore the latest/active chat after a page reload instead of showing an
   // empty home screen while its messages and document cards still exist.
-  useEffect(() => {
-    const openId = searchParams.get('c');
-    if (openId) {
-      setActiveConvId(openId);
-      const next = new URLSearchParams(searchParams);
-      next.delete('c');
-      setSearchParams(next, { replace: true });
+  useLayoutEffect(() => {
+    if (openNewChat) return;
+    if (requestedConversation) {
+      // Router navigation can commit after a local selection. Only a changed
+      // URL (including Back/Forward) may replace it; the old URL must not undo
+      // a newly created chat while that navigation is still being committed.
+      const locationChanged = appliedLocationRef.current !== requestedConversation;
+      appliedLocationRef.current = requestedConversation;
+      if (locationChanged && requestedConversation !== activeConvRef.current) {
+        ++selectionRequestRef.current;
+        setProjectPanel(null);
+        setActiveConvId(requestedConversation);
+      }
       return;
     }
-    if (openNewChat) return;
-    if (!activeConvId && conversations.length) {
+    appliedLocationRef.current = null;
+    if (activeConvId) {
+      setSearchParams({ c: activeConvId }, { replace: true });
+    } else if (conversations.length) {
       const restored = conversations.find((conversation) => conversation.is_active) || conversations[0];
       setActiveConvId(restored.id);
+      setSearchParams({ c: restored.id }, { replace: true });
     }
-  }, [activeConvId, conversations, openNewChat, searchParams, setSearchParams]);
+  }, [activeConvId, conversations, openNewChat, requestedConversation, setSearchParams]);
+
+  useLayoutEffect(() => { rememberConversation(activeConvId); }, [activeConvId]);
 
   useLayoutEffect(() => {
     setDisplayMessages([]);
@@ -449,6 +465,7 @@ export default function ChatPage() {
       queryClient.invalidateQueries({ queryKey: ['conversations'] });
       if (activeConvId === deletedId) {
         setActiveConvId(undefined);
+        setSearchParams({}, { replace: true });
         setDisplayMessages([]);
       }
     },
@@ -461,8 +478,18 @@ export default function ChatPage() {
   });
 
   const activateMutation = useMutation({
-    mutationFn: (id: string) => apiFetch(`/conversations/${id}/activate`, { method: 'POST' }),
+    // Persist rapid selections in order, so a slow earlier request cannot
+    // become the server's active conversation after the latest selection.
+    scope: { id: 'activate-conversation' },
+    mutationFn: (id: string) => apiFetch(`/conversations/${id}/activate`, { method: 'POST', timeoutMs: 15000 }),
   });
+
+  useEffect(() => {
+    if (!activeConvId) return;
+    activateMutation.mutate(activeConvId, { onError: () => {
+      if (activeConvRef.current === activeConvId) setProjectNotice({ text: 'Не удалось сохранить выбор беседы. Она останется открытой; повторите выбор, когда соединение восстановится.', warning: true });
+    } });
+  }, [activeConvId]);
 
   const { messages: wsMessages, send, status: wsStatus, waitUntilReady } = useChatConnection();
   const processedRef = useRef<Set<string>>(new Set());
@@ -536,7 +563,10 @@ export default function ChatPage() {
       }
       if (msg.type === 'meta' && convId) {
         // replaces: the open chat was deleted elsewhere and the reply moved to a new one.
-        if (!activeConvId || msg.payload?.replaces === activeConvId) setActiveConvId(convId);
+        if (!activeConvId || msg.payload?.replaces === activeConvId) {
+          setActiveConvId(convId);
+          setSearchParams({ c: convId }, { replace: true });
+        }
         patchJob(convId, { thinking: true });
       }
       if (msg.type === 'file' && convId) {
@@ -625,7 +655,7 @@ export default function ChatPage() {
   }, [isStudio, isMobile, canvasSource?.url, canvasSource?.html, canvasSource?.name]);
 
   const handleSelect = async (id: string) => {
-    const request = ++selectionRequestRef.current;
+    ++selectionRequestRef.current;
     setProjectPanel(null);
     // Tapping the chat that is already open must not blank it: activeConvId stays the
     // same, so nothing would refill displayMessages afterwards.
@@ -634,13 +664,8 @@ export default function ChatPage() {
       if (isMobile) setSidebarOpen(false);
       return;
     }
-    try { await activateMutation.mutateAsync(id); }
-    catch {
-      if (request === selectionRequestRef.current) setProjectNotice({ text: 'Не удалось открыть беседу. Проверьте соединение и попробуйте ещё раз.', warning: true });
-      return;
-    }
-    if (request !== selectionRequestRef.current) return;
     setActiveConvId(id);
+    setSearchParams({ c: id });
     setDisplayMessages([]);
     setSourceMessageId(undefined);
     setSourcesSheetOpen(false);
@@ -677,6 +702,7 @@ export default function ChatPage() {
         return;
       }
       setActiveConvId(conv.id);
+      setSearchParams({ c: conv.id }, { replace: openNewChat });
       setDisplayMessages([]);
       setSourceMessageId(undefined);
       setSourcesSheetOpen(false);
@@ -700,7 +726,6 @@ export default function ChatPage() {
     if (!openNewChat || !conversationsFetched || openingNewRef.current) return;
     openingNewRef.current = true;
     void handleCreate().finally(() => {
-      setSearchParams({}, { replace: true });
       openingNewRef.current = false;
     });
   }, [openNewChat, conversationsFetched]);
@@ -761,6 +786,7 @@ export default function ChatPage() {
         const account = useAuthStore.getState().user;
         adoptNewComposerDraft(account?.id || account?.email || 'anonymous', conversationId!);
         setActiveConvId(conversationId);
+        setSearchParams({ c: conversationId! }, { replace: true });
       }
       if (!conversationId) throw new Error('не удалось создать беседу');
       ignoreByConvRef.current.delete(conversationId);
@@ -1460,9 +1486,9 @@ export default function ChatPage() {
           </Box>
         )}
         {historyPending ? (
-          <Box role={messagesQuery.isError ? 'alert' : 'status'} sx={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 1.5, px: 3, textAlign: 'center', color: 'text.secondary' }}>
-            <Box>{messagesQuery.isError ? 'Не удалось загрузить беседу. Черновик сохранён.' : 'Загружаем беседу…'}</Box>
-            {messagesQuery.isError && <Button onClick={() => void messagesQuery.refetch()}>Повторить загрузку</Button>}
+          <Box role={messagesQuery.isError || conversationListFailed ? 'alert' : 'status'} sx={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 1.5, px: 3, textAlign: 'center', color: 'text.secondary' }}>
+            <Box>{conversationListFailed ? 'Не удалось загрузить список бесед. Повторите загрузку.' : messagesQuery.isError ? 'Не удалось загрузить беседу. Черновик сохранён.' : 'Загружаем беседу…'}</Box>
+            {(messagesQuery.isError || conversationListFailed) && <Button onClick={() => void (conversationListFailed ? conversationsQuery.refetch() : messagesQuery.refetch())}>Повторить загрузку</Button>}
           </Box>
         ) : <ChatWindow
           key={activeConvId || 'new'}

@@ -1,5 +1,5 @@
-import { lazy, Suspense, useEffect } from 'react';
-import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { lazy, Suspense, useEffect, useLayoutEffect } from 'react';
+import { Routes, Route, Navigate, useLocation, useNavigationType } from 'react-router-dom';
 import { Box } from '@mui/material';
 import { AnimatePresence, motion } from 'framer-motion';
 import { loadChat, loadSettings, loadBilling, preloadAccountPages } from '@/navigation/preload';
@@ -54,8 +54,15 @@ function PublicRoute({ children }: { children: React.ReactNode }) {
 
 export default function App() {
   const location = useLocation();
+  const navigationType = useNavigationType();
   const token = useAuthStore((s) => s.accessToken);
   const setUser = useAuthStore((s) => s.setUser);
+
+  useLayoutEffect(() => {
+    // New sections start at the top. Conversation/search changes leave their
+    // own scroll position alone; browser Back retains native restoration.
+    if (navigationType !== 'POP' || location.pathname === '/chat') window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+  }, [location.pathname]);
 
   useEffect(() => {
     if (!token) return;
