@@ -300,7 +300,7 @@ async def convert_to_docx(data: dict, user_id: str = Depends(get_current_user)):
 
     markdown_text = data.get("markdown", "")
     bot_user_id = await repo.ensure_user(user_id)
-    base_template = await asyncio.to_thread(repo._manager.get_base_template, bot_user_id)
+    base_template = await asyncio.to_thread(repo.templates.base, bot_user_id)
     docx_bytes = await asyncio.to_thread(convert_markdown_to_docx, markdown_text, base_template)
 
     from fastapi.responses import Response

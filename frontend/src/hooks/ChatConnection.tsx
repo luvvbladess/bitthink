@@ -35,9 +35,18 @@ export function ChatConnectionProvider({ children }: { children: ReactNode }) {
 export function useChatConnection() {
   const connection = useContext(Context);
   if (!connection) throw new Error('ChatConnectionProvider is required');
-  const [messages, setMessages] = useState<WSMessage[]>([]);
-  useEffect(() => connection.subscribe(message => setMessages(previous => [...previous, message])), [connection.subscribe]);
+  const [messages, setMessages] = useState<Array<WSMessage & { deliveryId: number }>>([]);
+  const nextDeliveryId = useRef(0);
+  useEffect(() => connection.subscribe(message => {
+    const received = { ...message, deliveryId: ++nextDeliveryId.current };
+    setMessages(previous => [...previous, received]);
+  }), [connection.subscribe]);
+  // Retain only unconsumed frames. A fixed-size buffer could drop a burst of
+  // chunks; retaining the entire session makes every update progressively slower.
+  const acknowledge = useCallback((through: number) => setMessages(previous =>
+    previous.length && previous[0].deliveryId <= through ? previous.filter(message => message.deliveryId > through) : previous
+  ), []);
   // A remounted chat reads saved history and the current /chat/jobs snapshot;
   // replaying already consumed chunks would duplicate text and old errors.
-  return { ...connection, messages };
+  return { ...connection, messages, acknowledge };
 }

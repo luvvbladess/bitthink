@@ -57,8 +57,8 @@ def recover_expired(manager: Any, user_id: int) -> None:
     from app.bot_core.db_conversations import _apply_subscription_payload, _subscription_payload
     from app.db.engine import SyncSessionLocal
     from app.db.models import TokenReservation
-    with manager._quota_lock, SyncSessionLocal() as session:
-        sub = manager._lock_subscription(session, user_id)
+    with manager.transaction_lock, SyncSessionLocal() as session:
+        sub = manager.lock_subscription(session, user_id)
         rows = session.query(TokenReservation).filter(
             TokenReservation.user_id == user_id, TokenReservation.expires_at <= int(time.time()),
         ).all()
@@ -78,8 +78,8 @@ def reserve(user_id: int, pool: str, model: str, input_tokens: int, output_cap: 
     from app.db.models import TokenReservation
 
     manager = _manager()
-    with manager._quota_lock, SyncSessionLocal() as session:
-        sub = manager._lock_subscription(session, user_id)
+    with manager.transaction_lock, SyncSessionLocal() as session:
+        sub = manager.lock_subscription(session, user_id)
         data = _subscription_payload(sub)
         refresh_windows(data)
         now = int(time.time())
@@ -134,8 +134,8 @@ def settle(user_id: int, reservation_id: str | None, actual: int | None, pool: s
     from app.db.models import TokenReservation
 
     manager = _manager()
-    with manager._quota_lock, SyncSessionLocal() as session:
-        sub = manager._lock_subscription(session, user_id)
+    with manager.transaction_lock, SyncSessionLocal() as session:
+        sub = manager.lock_subscription(session, user_id)
         row = session.get(TokenReservation, reservation_id)
         if row is None:
             # A later call may have recovered a stale hold after a worker timeout.

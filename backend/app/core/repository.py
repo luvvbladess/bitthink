@@ -6,8 +6,8 @@ import threading
 from pathlib import Path
 from typing import Any, Optional
 
-import config as bot_config
-import conversations
+from app.core.legacy import settings as bot_config, create_manager
+from app.core.ports import ConversationAccess, SharingAccess, AsideAccess, AuthorAccess, TemplateAccess, BillingAccess
 from app.config import get_settings
 
 _PLACEHOLDER_TITLE_RE = re.compile(r"^(Новый чат|Новая беседа|Беседа #\d+)$")
@@ -24,9 +24,15 @@ def derive_conversation_title(content: str) -> str:
 class ConversationRepository:
     """Adapter over the existing bot ConversationManager for web users."""
 
-    def __init__(self) -> None:
+    def __init__(self, manager=None) -> None:
         # Use the PostgreSQL-backed drop-in replacement.
-        self._manager = conversations.DatabaseConversationManager()
+        self._manager = manager if manager is not None else create_manager()
+        self.conversations = ConversationAccess(lambda: self._manager)
+        self.sharing = SharingAccess(lambda: self._manager)
+        self.asides = AsideAccess(lambda: self._manager)
+        self.authors = AuthorAccess(lambda: self._manager)
+        self.templates = TemplateAccess(lambda: self._manager)
+        self.billing = BillingAccess(lambda: self._manager)
         self._mutate_lock = threading.Lock()
 
     @staticmethod
@@ -72,6 +78,10 @@ class ConversationRepository:
     async def get_user_model(self, web_user_id: str) -> str:
         bot_id = self._bot_id(web_user_id)
         return await asyncio.to_thread(self._manager.get_user_model, bot_id)
+
+    async def capture_generation_preferences(self, web_user_id: str) -> dict:
+        bot_id = await self.ensure_user(web_user_id)
+        return await asyncio.to_thread(self._manager.generation_preferences, bot_id)
 
     async def set_user_model(self, web_user_id: str, model: str) -> None:
         bot_id = self._bot_id(web_user_id)
@@ -215,8 +225,6 @@ class ConversationRepository:
         supersede_message_id: Optional[int] = None,
     ) -> dict:
         with self._mutate_lock:
-            if conv_id and role != "assistant":
-                self._manager.set_active_conversation(bot_id, conv_id)
             msg = self._manager.add_message(
                 bot_id, role, content, attachment=attachment, search=search,
                 conv_id=conv_id, author_user_id=bot_id if role == "user" else None,
@@ -253,8 +261,6 @@ class ConversationRepository:
 
     def _get_messages_for_api_sync(self, bot_id: int, conv_id: Optional[str]) -> list[dict]:
         with self._mutate_lock:
-            if conv_id:
-                self._manager.set_active_conversation(bot_id, conv_id)
             return self._manager.get_messages_for_api(
                 bot_id, bot_config.SYSTEM_PROMPT, requesting_user_id=bot_id, conv_id=conv_id,
             )
@@ -308,9 +314,7 @@ class ConversationRepository:
         return await asyncio.to_thread(self._manager.attachment_filename_used, bot_id, filename, conv_id)
 
     def _clear_documents_sync(self, bot_id: int, conv_id: Optional[str]) -> bool:
-        if conv_id:
-            self._manager.set_active_conversation(bot_id, conv_id)
-        return self._manager.clear_documents(bot_id)
+        return self._manager.clear_documents(bot_id, conv_id=conv_id)
 
     async def clear_documents(self, web_user_id: str, conv_id: Optional[str] = None) -> bool:
         bot_id = self._bot_id(web_user_id)

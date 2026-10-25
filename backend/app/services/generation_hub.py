@@ -268,4 +268,8 @@ class BoundSenders:
         await self._emit("reasoning_delta", {"text": text})
 
 
-hub = GenerationHub()
+from app.services.durable_hub import persistent_hub
+
+# Keep the small in-memory implementation independently testable; production
+# uses database ownership and cross-process event delivery.
+hub = persistent_hub(GenerationHub, LiveJob)

@@ -58,9 +58,9 @@ class QuotaError(Exception):
 
 
 def _manager():
-    import conversations
-
-    return conversations.conversation_manager
+    from app.core.legacy import billing_manager
+    from app.core.ports import BillingAccess
+    return BillingAccess(billing_manager)
 
 
 def msk_now(now_ts: int | None = None) -> datetime:

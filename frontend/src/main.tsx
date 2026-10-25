@@ -6,6 +6,9 @@ import { ColorModeProvider } from '@/theme/ColorMode';
 import App from '@/App';
 import '@/theme/tokens.css';
 import { useAuthStore } from '@/stores/authStore';
+import { installDiagnostics } from '@/api/diagnostics';
+
+installDiagnostics();
 
 const queryClient = new QueryClient({
   defaultOptions: {

@@ -162,7 +162,7 @@ async def set_user_subscription(
     bot_ids = {int(user.bot_user_id), repo._bot_id(user.email)}
     for bot_id in bot_ids:
         await asyncio.to_thread(
-            repo._manager.set_subscription_tier, bot_id, tier, duration_days, from_today
+            repo.billing.set_subscription_tier, bot_id, tier, duration_days, from_today
         )
     return {"ok": True, "tier": tier, "from_today": from_today}
 

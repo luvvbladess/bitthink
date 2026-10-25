@@ -107,9 +107,9 @@ async def desktop_socket(ws: WebSocket):
             bot_id = await repo.ensure_user(user_id)
             cid = payload.get("conversation_id") if mode == "chat" else None
             if cid:
-                owner = await asyncio.to_thread(repo._manager.conversation_owner, str(cid))
+                owner = await asyncio.to_thread(repo.conversations.owner, str(cid))
                 if owner != bot_id:
-                    roles = await asyncio.to_thread(repo._manager.conversation_roles, bot_id, [str(cid)])
+                    roles = await asyncio.to_thread(repo.conversations.roles, bot_id, [str(cid)])
                     if roles.get(str(cid)) != "member":
                         raise ValueError("Нет доступа к этой беседе. Создайте новую.")
             elif mode == "chat":

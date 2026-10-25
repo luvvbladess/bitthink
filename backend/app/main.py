@@ -14,27 +14,19 @@ from app.db.base import Base
 from app.db.engine import sync_engine
 from app.api import marketplace_relay, desktop, computer
 from app.api import projects
+from app.api import diagnostics
 
 
-def _ensure_runtime_tables() -> None:
-    from sqlalchemy import inspect, text
-
-    from app.db.models import ConversationAside, ConversationMember, ConversationShare, EditorDocument, UserSkill
-
-    UserSkill.__table__.create(bind=sync_engine, checkfirst=True)
-    _db_models.TokenReservation.__table__.create(bind=sync_engine, checkfirst=True)
-    for model in (_db_models.ComputerTask, _db_models.ComputerEvent, _db_models.ComputerHook, _db_models.SkillResource):
-        model.__table__.create(bind=sync_engine, checkfirst=True)
-    EditorDocument.__table__.create(bind=sync_engine, checkfirst=True)
-    ConversationShare.__table__.create(bind=sync_engine, checkfirst=True)
-    ConversationMember.__table__.create(bind=sync_engine, checkfirst=True)
-    ConversationAside.__table__.create(bind=sync_engine, checkfirst=True)
+def _validate_schema() -> None:
+    """Startup is read-only. Alembic is the only production schema writer."""
+    from sqlalchemy import inspect
     inspector = inspect(sync_engine)
-    if "messages" in inspector.get_table_names():
-        columns = {column["name"] for column in inspector.get_columns("messages")}
-        if "author_user_id" not in columns:
-            with sync_engine.begin() as connection:
-                connection.execute(text("ALTER TABLE messages ADD COLUMN author_user_id BIGINT"))
+    for name in ('users', 'conversations', 'messages', 'generations', 'generation_events', 'worker_heartbeats'):
+        if not inspector.has_table(name):
+            raise RuntimeError('Database migration required: run alembic upgrade head')
+        existing = {column['name'] for column in inspector.get_columns(name)}
+        if set(Base.metadata.tables[name].columns.keys()) - existing:
+            raise RuntimeError('Database schema is outdated: run alembic upgrade head')
 
 
 @asynccontextmanager
@@ -43,16 +35,13 @@ async def lifespan(app: FastAPI):
     settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     (settings.UPLOAD_DIR / "avatars").mkdir(parents=True, exist_ok=True)
     settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    # Create DB tables for SQLite dev mode; for PostgreSQL use Alembic in production
-    if settings.DATABASE_URL.startswith("sqlite"):
-        Base.metadata.create_all(bind=sync_engine)
-    _ensure_runtime_tables()
-    from app.services.computer_tasks import worker
-    await worker.start()
+    _validate_schema()
+    from app.services.generation_hub import hub
+    await hub.start()
     try:
         yield
     finally:
-        await worker.stop()
+        await hub.stop()
 
 
 def create_app() -> FastAPI:
@@ -97,6 +86,7 @@ def create_app() -> FastAPI:
     app.include_router(desktop.router, prefix="/desktop", tags=["desktop"])
     app.include_router(computer.router, prefix="/computer", tags=["computer"])
     app.include_router(projects.router, prefix="/projects", tags=["projects"])
+    app.include_router(diagnostics.router, prefix='/diagnostics', tags=['diagnostics'])
 
     # Chat and generated files are stored as sha256(email)[:16]/uuid.hex.ext.
     # Anything else under those trees is not a file we wrote.
@@ -130,6 +120,17 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health():
         return {"status": "ok"}
+
+    @app.get('/ready')
+    async def ready():
+        import asyncio
+        from fastapi.responses import JSONResponse
+        from app.services.generation_store import ready as worker_ready
+        try:
+            available = await asyncio.to_thread(worker_ready)
+        except Exception:
+            available = False
+        return JSONResponse({'status': 'ok' if available else 'unavailable'}, status_code=200 if available else 503)
 
     return app
 

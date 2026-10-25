@@ -30,7 +30,7 @@ async def library_files(user_id: str = Depends(get_current_user)):
         # ponytail: читает все беседы разом; при сотнях бесед – отдельный запрос по вложениям.
         items = [
             {**item, "conversation_id": conv.id, "conversation_title": conv.title}
-            for conv in repo._manager.get_conversations(bot_id)
+            for conv in repo.conversations.list(bot_id)
             for item in conversation_files(conv)
         ]
         items.sort(key=lambda f: str(f["edited_at"] or f["uploaded_at"]), reverse=True)
@@ -60,8 +60,8 @@ async def download_conversation_file(conv_id: str, t: str = ""):
     linked_conv, filename = check_file_link(t)
     if linked_conv != conv_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Ссылка недействительна")
-    owner = await asyncio.to_thread(repo._manager.conversation_owner, conv_id)
-    conv = await asyncio.to_thread(repo._manager.conversation_view, owner, conv_id) if owner else None
+    owner = await asyncio.to_thread(repo.conversations.owner, conv_id)
+    conv = await asyncio.to_thread(repo.conversations.view, owner, conv_id) if owner else None
     data = await asyncio.to_thread(file_bytes, conv, filename) if conv else None
     if not data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Файл не найден")
@@ -108,7 +108,7 @@ async def clear_conversation(conv_id: str, user_id: str = Depends(get_current_us
 @router.get("/{conv_id}/share")
 async def share_status(conv_id: str, user_id: str = Depends(get_current_user)):
     bot_id = await repo.ensure_user(user_id)
-    status_payload = await asyncio.to_thread(repo._manager.share_status, bot_id, conv_id)
+    status_payload = await asyncio.to_thread(repo.sharing.status, bot_id, conv_id)
     if status_payload is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return status_payload
@@ -117,16 +117,16 @@ async def share_status(conv_id: str, user_id: str = Depends(get_current_user)):
 @router.post("/{conv_id}/share")
 async def create_share(conv_id: str, user_id: str = Depends(get_current_user)):
     bot_id = await repo.ensure_user(user_id)
-    token = await asyncio.to_thread(repo._manager.create_share, bot_id, conv_id)
+    token = await asyncio.to_thread(repo.sharing.create, bot_id, conv_id)
     if not token:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
-    return await asyncio.to_thread(repo._manager.share_status, bot_id, conv_id)
+    return await asyncio.to_thread(repo.sharing.status, bot_id, conv_id)
 
 
 @router.delete("/{conv_id}/share")
 async def revoke_share(conv_id: str, user_id: str = Depends(get_current_user)):
     bot_id = await repo.ensure_user(user_id)
-    ok = await asyncio.to_thread(repo._manager.revoke_share, bot_id, conv_id)
+    ok = await asyncio.to_thread(repo.sharing.revoke, bot_id, conv_id)
     if not ok:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return {"ok": True}
@@ -136,7 +136,7 @@ async def revoke_share(conv_id: str, user_id: str = Depends(get_current_user)):
 async def list_asides(conv_id: str, user_id: str = Depends(get_current_user)):
     """Людская переписка внутри беседы. В контекст ассистента не попадает."""
     bot_id = await repo.ensure_user(user_id)
-    rows = await asyncio.to_thread(repo._manager.list_asides, bot_id, conv_id)
+    rows = await asyncio.to_thread(repo.asides.list, bot_id, conv_id)
     if rows is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return rows
@@ -145,7 +145,7 @@ async def list_asides(conv_id: str, user_id: str = Depends(get_current_user)):
 @router.post("/{conv_id}/asides", response_model=AsideOut)
 async def post_aside(conv_id: str, data: AsideCreate, user_id: str = Depends(get_current_user)):
     bot_id = await repo.ensure_user(user_id)
-    row = await asyncio.to_thread(repo._manager.add_aside, bot_id, conv_id, data.content)
+    row = await asyncio.to_thread(repo.asides.add, bot_id, conv_id, data.content)
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     await repo.notify_room(conv_id)

@@ -249,7 +249,7 @@ class ComputerWorker:
             group, journal = await asyncio.to_thread(task_checkpoints.begin, task_id, row['run_number'], row['resume_history'])
             group_token = task_checkpoints.logical_run.set(group)
             journal_token = task_checkpoints.resumed_journal.set(journal)
-            sub = await asyncio.to_thread(repo._manager.get_subscription, uid)
+            sub = await asyncio.to_thread(repo.billing.get_subscription, uid)
             if "director" not in allowed_models(effective_tier(sub)):
                 raise QuotaError("Режим Оркестратора доступен с тарифа Pro.", "plan")
             cid = row["conversation_id"]

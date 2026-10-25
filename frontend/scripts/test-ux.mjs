@@ -71,7 +71,10 @@ async function fixture(options = {}) {
     const method = route.request().method();
     if (options.handleRoute && await options.handleRoute({ path, method, route, state, profile, history })) return;
     let data = {};
-    if (path === '/auth/me') {
+    if (path === '/diagnostics/client-error') {
+      (state.diagnostics ||= []).push(route.request().postDataJSON());
+      data = { report_id: state.diagnostics.at(-1).report_id };
+    } else if (path === '/auth/me') {
       if (state.auth === 'network') return route.abort('failed');
       if (state.auth === '500') return route.fulfill({ status: 500, json: { detail: 'Temporary outage' } });
       if (state.auth.startsWith('refresh')) return route.fulfill({ status: 401, json: {} });
@@ -144,6 +147,13 @@ async function fixture(options = {}) {
       if (event.type === 'message') {
         state.sends.push(event.payload);
         const id = event.payload.conversation_id;
+        if (state.streamBurst) {
+          history[id].push({ id: 'burst-user', role: 'user', content: event.payload.content });
+          state.burstAnswer = 'Поток: ' + Array.from({ length: 100 }, (_, index) => `${index}, `).join('');
+          socket.send(JSON.stringify({ type: 'chunk', payload: { conversation_id: id, text: 'Поток: ' } }));
+          for (let index = 0; index < 100; index++) socket.send(JSON.stringify({ type: 'chunk', payload: { conversation_id: id, text: `${index}, ` } }));
+          return;
+        }
         if (state.holdAnswer && id === 'chat-a') {
           history[id].push({ id: 'pending-' + state.sends.length, role: 'user', content: event.payload.content });
           state.finishHeldAnswer = () => {
@@ -359,6 +369,50 @@ try {
       await f.page.getByRole('button', { name: 'Отмена', exact: true }).click();
       await expect(nested).toBeVisible();
       assert.equal(await f.sidebar.getByRole('button', { name: 'Действия с беседой Общий чат команды', exact: true }).count(), 0);
+    } finally { await f.context.close(); }
+  });
+  await test('architecture: a burst of frames is consumed in order without a saved-answer fallback', async () => {
+    const f = await fixture({ streamBurst: true });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('Проверка потока'); await f.input.press('Enter');
+      await expect.poll(() => Boolean(f.state.burstAnswer)).toBe(true);
+      await expect(f.page.getByText(f.state.burstAnswer.trim(), { exact: true })).toBeVisible();
+      assert.equal(f.state.sends.length, 1);
+    } finally { await f.context.close(); }
+  });
+  await test('architecture: interrupted durable job is visible once after reconnect', async () => {
+    const text = 'Выполнение было прервано перезапуском обработчика. Повторите запрос.';
+    const f = await fixture({ handleRoute: async ({ path, route }) => {
+      if (path !== '/chat/jobs') return false;
+      await route.fulfill({ json: { jobs: [{ conversation_id: 'chat-a', thinking: false, error: text, text: '' }] } }); return true;
+    } });
+    try {
+      await expect(f.input).toBeEnabled();
+      await expect(f.page.getByText(text, { exact: true })).toHaveCount(1);
+      await f.page.reload();
+      await expect(f.page.getByText(text, { exact: true })).toHaveCount(1);
+      await expect(f.input).toBeEnabled();
+    } finally { await f.context.close(); }
+  });
+  await test('architecture: diagnostics exclude content, tokens and invitation URLs', async () => {
+    const f = await fixture();
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.page.evaluate(async () => {
+        const { reportClientError } = await import('/src/api/diagnostics.ts');
+        history.replaceState({}, '', '/join/PRIVATE_INVITE?token=PRIVATE_TOKEN');
+        const error = new Error('PRIVATE_MESSAGE');
+        error.stack = 'Error: PRIVATE_MESSAGE\n at f (https://bit-think.space/assets/ChatPage-fixture.js:2:3)';
+        reportClientError(error, 'render');
+        reportClientError(error, 'render');
+      });
+      await expect.poll(() => f.state.diagnostics?.length).toBe(1);
+      const report = f.state.diagnostics[0];
+      assert.equal(report.route, '/join/:token');
+      assert.equal(report.frames[0].file, 'ChatPage-fixture.js');
+      assert(!JSON.stringify(report).includes('PRIVATE_'));
+      assert.deepEqual(Object.keys(report).sort(), ['build', 'category', 'frames', 'report_id', 'route']);
     } finally { await f.context.close(); }
   });
   await test('navigation: deep links keep the selected conversation in the address', async () => {

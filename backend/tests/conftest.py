@@ -34,6 +34,16 @@ _EXTRA_COLUMNS = {
 
 
 def pytest_configure():
+    # TestClient/asyncio.run create independent event loops. asyncpg pooled
+    # connections belong to their originating loop; never reuse them across
+    # test clients. Production keeps its normal pool in one long-lived loop.
+    if sync_engine.dialect.name == 'postgresql':
+        from sqlalchemy.ext.asyncio import create_async_engine
+        from sqlalchemy.pool import NullPool
+        from app.db import engine
+        from app.config import get_settings
+        engine.async_engine = create_async_engine(get_settings().DATABASE_URL, poolclass=NullPool)
+        engine.AsyncSessionLocal.configure(bind=engine.async_engine)
     Base.metadata.create_all(bind=sync_engine)
     inspector = inspect(sync_engine)
     with sync_engine.begin() as connection:

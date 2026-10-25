@@ -40,12 +40,12 @@ async def subscription_payload(user_id: str) -> dict:
 async def subscription_payload_for_bot(bot_id: int) -> dict:
     import asyncio
 
-    sub = await asyncio.to_thread(repo._manager.get_subscription, bot_id)
+    sub = await asyncio.to_thread(repo.billing.get_subscription, bot_id)
     day = month = None
     from app.billing.plans import plan_for
     if plan_for(sub.get("tier")).get("unlimited"):
-        day = await asyncio.to_thread(repo._manager.get_day_usage, bot_id)
-        month = await asyncio.to_thread(repo._manager.get_month_usage, bot_id)
+        day = await asyncio.to_thread(repo.billing.get_day_usage, bot_id)
+        month = await asyncio.to_thread(repo.billing.get_month_usage, bot_id)
     return await subscription_view_from_sub(sub, day=day, month=month)
 
 router = APIRouter()

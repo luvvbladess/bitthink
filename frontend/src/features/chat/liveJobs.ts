@@ -4,6 +4,7 @@ export interface LiveJob {
   statusText: string;
   userText: string;
   text: string;
+  error?: string;
   reasoning?: string;
   search?: { query: string; summary: string }[];
   file?: { filename: string; data: string; url?: string; canvas?: boolean };
@@ -36,6 +37,7 @@ export function jobFromSnapshot(job: {
   reasoning?: string;
   search?: { query: string; summary: string }[];
   thinking?: boolean;
+  error?: string;
 }): LiveJob {
   return {
     convId: job.conversation_id,
@@ -43,6 +45,7 @@ export function jobFromSnapshot(job: {
     statusText: job.status_text || '',
     userText: job.user_text || '',
     text: job.text || '',
+    error: job.error || undefined,
     reasoning: job.reasoning || undefined,
     search: job.search?.length ? job.search : undefined,
   };
@@ -56,6 +59,7 @@ export function jobsFromSnapshot(list?: Array<{
   reasoning?: string;
   search?: { query: string; summary: string }[];
   thinking?: boolean;
+  error?: string;
 }> | null): LiveJobsMap {
   const next: LiveJobsMap = {};
   for (const job of list || []) {
@@ -75,11 +79,13 @@ export function mergeRemoteJobs(local: LiveJobsMap, remoteList?: Array<{
   reasoning?: string;
   search?: { query: string; summary: string }[];
   thinking?: boolean;
+  error?: string;
 }> | null): LiveJobsMap {
   const next = jobsFromSnapshot(remoteList);
   for (const [id, job] of Object.entries(local)) {
     if (!job.thinking) continue;
     const remote = next[id];
+    if (remote?.error) continue;
     if (!remote) {
       next[id] = job;
       continue;
