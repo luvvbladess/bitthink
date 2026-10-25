@@ -22,6 +22,18 @@ if DEEPSEEK_API_KEY:
 else:
     client = None
 
+
+def _billing_model_id(model: str) -> str:
+    # Keep persisted usage, reservations and tier permissions on the established
+    # product id. The provider's canonical Flash name changed in September 2026.
+    return "deepseek-v4-flash" if model == "deepseek-flash" else model
+
+
+def _api_model_id(model: str) -> str:
+    # V4 Flash is retired. Its temporary legacy alias currently reaches V4.1
+    # Flash-1017, but production calls should use the documented canonical id.
+    return "deepseek-flash" if model == "deepseek-v4-flash" else model
+
 # Схема visualize_data для Chat Completions API (вложена в function)
 VISUALIZE_TOOL_DEEPSEEK = {
     "type": "function",
@@ -101,6 +113,7 @@ async def get_deepseek_response(
 
     Возвращает (текст_ответа, файлы, текст_размышлений, результаты_поиска).
     """
+    model = _billing_model_id(model)
     global client
     # Ленивая инициализация на случай, если ключ был обновлен в рантайме в config.py
     if client is None and DEEPSEEK_API_KEY:
@@ -212,7 +225,7 @@ async def get_deepseek_response(
         try:
             from app.billing.call_budget import model_call
             await model_call(client, {
-                "model": model, "messages": current_messages, "tools": active_tools or None,
+                "model": _api_model_id(model), "messages": current_messages, "tools": active_tools or None,
                 "extra_body": {"thinking": {"type": "enabled" if reasoning_enabled else "disabled"}},
                 "max_tokens": max_output_tokens(model), "stream": True,
                 "stream_options": {"include_usage": True},
@@ -256,6 +269,10 @@ async def get_deepseek_response(
             "role": "assistant",
             "content": message_content or ""
         }
+        if reasoning_enabled:
+            # Thinking + tools requires every assistant turn's complete
+            # reasoning_content on continuation, including an empty value.
+            assistant_msg["reasoning_content"] = loop_reasoning
 
         if tool_calls:
             # Для корректного продолжения диалога в Chat Completions нужно передать tool_calls
