@@ -22,7 +22,16 @@ async function fixture(options = {}) {
       }
     }).observe(document, { childList: true, subtree: true });
   });
-  if (options.failSettingsChunk) await page.route(/\/(?:assets\/SettingsPage-[^/]+\.js|src\/pages\/SettingsPage\.tsx)(?:\?.*)?$/, route => route.abort());
+  if (options.failSettingsChunk) {
+    if (!options.allowAutoRecovery) await page.addInitScript(() => sessionStorage.setItem('bit-think-route-refresh', String(Date.now())));
+    await page.route(/\/(?:assets\/SettingsPage-[^/]+\.js|src\/pages\/SettingsPage\.tsx)(?:\?.*)?$/, route => route.abort());
+  }
+  if (options.runtimeSettingsError) await page.route(/\/(?:assets\/SettingsPage-[^/]+\.js|src\/pages\/SettingsPage\.tsx)(?:\?.*)?$/, route => route.fulfill({ contentType: 'application/javascript', body: 'export default function BrokenSettings() { if (!window.auditRuntimeRecovered) throw new Error("UI_TEST_RUNTIME_FAILURE"); return "Раздел восстановлен"; }' }));
+  if (options.failChatChunkOnce) {
+    let failed = false;
+    await page.route(/\/(?:assets\/ChatPage-[^/]+\.js|src\/pages\/ChatPage\.tsx)(?:\?.*)?$/, route => { if (!failed) { failed = true; return route.abort(); } return route.continue(); });
+  }
+  if (options.failChatChunkPersistent) await page.route(/\/(?:assets\/ChatPage-[^/]+\.js|src\/pages\/ChatPage\.tsx)(?:\?.*)?$/, route => { state.chatDownloadAttempts = (state.chatDownloadAttempts || 0) + 1; return route.abort(); });
   const state = { auth: options.auth || 'ok', historyError: false, delay: {}, sends: [], uploads: [], created: [], historyLoads: [], failFile: '', ...options };
   const profile = { id: 'audit-user', email: 'audit@example.com', first_name: 'Анна', role: options.admin ? 'admin' : 'user', subscription_tier: 'pro', selected_model: 'auto' };
   const conversations = [
@@ -38,6 +47,8 @@ async function fixture(options = {}) {
   await page.route('**/uploads/**', route => route.fulfill({ contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jvXkAAAAASUVORK5CYII=', 'base64') }));
   page.on('pageerror', error => {
     if (options.failSettingsChunk && /Failed to fetch dynamically imported module: .*SettingsPage/.test(error.message)) return;
+    if ((options.failChatChunkOnce || options.failChatChunkPersistent) && /Failed to fetch dynamically imported module: .*ChatPage/.test(error.message)) return;
+    if (options.runtimeSettingsError && error.message === 'UI_TEST_RUNTIME_FAILURE') return;
     errors.push(error.message); console.error('BROWSER', error.message);
   });
   page.on('console', message => { if (message.type() === 'error') console.error('CONSOLE', message.text()); });
@@ -93,6 +104,7 @@ async function fixture(options = {}) {
       if (state.delay[id]) await new Promise(resolve => setTimeout(resolve, state.delay[id]));
       conversations.forEach(item => { item.is_active = item.id === id; });
       state.activeId = id;
+      (state.activations ||= []).push(id);
       data = { ok: true };
     } else if (path.endsWith('/messages')) {
       state.historyLoads.push(path.split('/')[2]);
@@ -349,6 +361,143 @@ try {
       assert.equal(await f.sidebar.getByRole('button', { name: 'Действия с беседой Общий чат команды', exact: true }).count(), 0);
     } finally { await f.context.close(); }
   });
+  await test('navigation: deep links keep the selected conversation in the address', async () => {
+    const f = await fixture({ startPath: '/chat?c=chat-b', observeWelcome: true });
+    try {
+      await expect(f.page.getByText('Вопрос второй беседы', { exact: true }).first()).toBeVisible();
+      assert.equal(new URL(f.page.url()).searchParams.get('c'), 'chat-b');
+      assert.deepEqual(await f.page.evaluate(() => window.auditWelcomeMounts), []);
+    } finally { await f.context.close(); }
+  });
+  await test('navigation: conversation opens before its slow selection is saved', async () => {
+    const f = await fixture({ delay: { 'chat-b': 1600 } });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.select('Вторая беседа');
+      await baseExpect(f.page.getByText('Вопрос второй беседы', { exact: true }).first()).toBeVisible({ timeout: 800 });
+      assert.equal(new URL(f.page.url()).searchParams.get('c'), 'chat-b');
+      await expect.poll(() => f.state.activeId).toBe('chat-b');
+    } finally { await f.context.close(); }
+  });
+  await test('navigation: Back and Forward restore conversation and draft', async () => {
+    const f = await fixture();
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('Черновик первой беседы');
+      await f.select('Вторая беседа');
+      await expect(f.page.getByText('Вопрос второй беседы', { exact: true }).first()).toBeVisible();
+      await f.input.fill('Черновик второй беседы');
+      await f.page.goBack();
+      await expect(f.page.getByText('Вопрос первой беседы', { exact: true }).first()).toBeVisible();
+      await expect(f.input).toHaveValue('Черновик первой беседы');
+      await f.page.goForward();
+      await expect(f.page.getByText('Вопрос второй беседы', { exact: true }).first()).toBeVisible();
+      await expect(f.input).toHaveValue('Черновик второй беседы');
+      assert.equal(f.state.socketAuths, 1);
+    } finally { await f.context.close(); }
+  });
+  await test('navigation: rapid selections persist in the same order as the screen', async () => {
+    const f = await fixture({ delay: { 'chat-b': 900 } });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.select('Вторая беседа');
+      await f.select('Первая беседа');
+      await expect(f.page.getByText('Вопрос первой беседы', { exact: true }).first()).toBeVisible();
+      await expect.poll(() => f.state.activations?.slice(-2)).toEqual(['chat-b', 'chat-a']);
+      assert.equal(f.state.activeId, 'chat-a');
+      assert.equal(new URL(f.page.url()).searchParams.get('c'), 'chat-a');
+    } finally { await f.context.close(); }
+  });
+  for (const width of [1440, 390]) await test('navigation: chat settings and billing preserve the last selection before it is saved ' + width, async () => {
+    const f = await fixture({ delay: { 'chat-b': 3000 }, viewport: { width, height: 844 }, touch: width < 900 });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.select('Вторая беседа');
+      await expect(f.page.getByText('Вопрос второй беседы', { exact: true }).first()).toBeVisible();
+      await f.input.fill('Черновик во второй беседе');
+      for (const [menu, heading] of [['Настройки', 'Настройки'], ['Кабинет', 'Кабинет']]) {
+        await f.page.getByRole('button', { name: 'Аккаунт', exact: true }).last().click();
+        await f.page.getByRole('menuitem', { name: menu, exact: true }).click();
+        await expect(f.page.getByRole('heading', { name: heading, exact: true })).toBeVisible();
+        assert.equal(await f.page.evaluate(() => window.scrollY), 0);
+        if (width < 900) await f.page.getByRole('button', { name: 'Меню', exact: true }).click();
+        await f.page.getByRole('link', { name: 'Чат', exact: true }).click();
+        await expect(f.page.getByText('Вопрос второй беседы', { exact: true }).first()).toBeVisible();
+        await expect(f.input).toHaveValue('Черновик во второй беседе');
+        assert.equal(new URL(f.page.url()).searchParams.get('c'), 'chat-b');
+      }
+      assert.equal(f.state.socketAuths, 1);
+    } finally { await f.context.close(); }
+  });
+  await test('navigation: failed conversation list offers retry instead of a new-chat screen', async () => {
+    const f = await fixture({ listFailure: true, handleRoute: async ({ path, route, state }) => {
+      if (path === '/conversations' && state.listFailure) { await route.fulfill({ status: 503, json: { detail: 'Temporary outage' } }); return true; }
+    } });
+    try {
+      await expect(f.page.getByRole('alert')).toContainText('Не удалось загрузить список бесед');
+      f.state.listFailure = false;
+      await f.page.getByRole('button', { name: 'Повторить загрузку', exact: true }).click();
+      await expect(f.page.getByText('Вопрос первой беседы', { exact: true }).first()).toBeVisible();
+    } finally { await f.context.close(); }
+  });
+  await test('navigation: runtime error does not blame the connection and allows returning to chat', async () => {
+    const f = await fixture({ runtimeSettingsError: true, startPath: '/settings' });
+    try {
+      await expect(f.page.getByRole('alert')).toContainText('В этом разделе произошла ошибка');
+      await expect(f.page.getByRole('alert')).not.toContainText('соединение');
+      await expect(f.page.getByRole('button', { name: 'Открыть заново', exact: true })).toBeVisible();
+      await f.page.getByRole('link', { name: 'Вернуться в чат', exact: true }).click();
+      await expect(f.input).toBeEnabled();
+    } finally { await f.context.close(); }
+  });
+  await test('navigation: a transient chat download recovers with one bounded refresh', async () => {
+    const f = await fixture({ failChatChunkOnce: true });
+    try {
+      await expect(f.input).toBeEnabled();
+      await expect(f.page.getByText('Вопрос первой беседы', { exact: true }).first()).toBeVisible();
+      assert(await f.page.evaluate(() => Boolean(sessionStorage.getItem('bit-think-route-refresh'))));
+    } finally { await f.context.close(); }
+  });
+  await test('navigation: persistent chat download failure never loops document refreshes', async () => {
+    const f = await fixture({ failChatChunkPersistent: true });
+    try {
+      await expect.poll(() => f.state.chatDownloadAttempts).toBe(2);
+      await expect(f.page.getByRole('alert')).toContainText('Не удалось загрузить раздел');
+      await expect(f.page.getByRole('button', { name: 'Повторить загрузку', exact: true })).toBeVisible();
+      // Long enough for another automatic document navigation to be observed.
+      await f.page.waitForTimeout(500);
+      assert.equal(f.state.chatDownloadAttempts, 2);
+    } finally { await f.context.close(); }
+  });
+  await test('navigation: a section failure preserves unsent attachments and the live connection', async () => {
+    const f = await fixture({ failSettingsChunk: true, allowAutoRecovery: true });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('Черновик с файлом');
+      await f.page.locator('input[type=file][multiple]').setInputFiles({ name: 'draft.txt', mimeType: 'text/plain', buffer: Buffer.from('draft') });
+      await f.page.getByRole('button', { name: 'Аккаунт', exact: true }).last().click();
+      await f.page.getByRole('menuitem', { name: 'Настройки', exact: true }).click();
+      await expect(f.page.getByRole('alert')).toContainText('Не удалось загрузить раздел');
+      await f.page.getByRole('link', { name: 'Вернуться в чат', exact: true }).click();
+      await expect(f.input).toHaveValue('Черновик с файлом');
+      await expect(f.page.getByRole('button', { name: 'Убрать draft.txt', exact: true })).toBeVisible();
+      assert.equal(f.state.socketAuths, 1);
+    } finally { await f.context.close(); }
+  });
+  for (const width of [1440, 320]) await test('navigation: error recovery controls fit and retry runtime failures ' + width, async () => {
+    const f = await fixture({ runtimeSettingsError: true, startPath: '/settings', viewport: { width, height: 720 }, theme: width === 320 ? 'light' : 'dark' });
+    try {
+      await expect(f.page.getByRole('alert')).toContainText('В этом разделе произошла ошибка');
+      const retry = f.page.getByRole('button', { name: 'Открыть заново', exact: true });
+      await reachable(retry, f.page, 'Retry after runtime failure');
+      await reachable(f.page.getByRole('link', { name: 'Вернуться в чат', exact: true }), f.page, 'Return from runtime failure');
+      assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      await f.page.screenshot({ path: `${output}/route-error-${width}.png`, animations: 'disabled' });
+      await f.page.evaluate(() => { window.auditRuntimeRecovered = true; });
+      await retry.click();
+      await expect(f.page.getByText('Раздел восстановлен', { exact: true })).toBeVisible();
+    } finally { await f.context.close(); }
+  });
   await test('connection: answer completed in settings is restored once on return', async () => {
     const f = await fixture({ holdAnswer: true });
     try {
@@ -372,7 +521,7 @@ try {
       await f.input.fill('Черновик после сетевого сбоя');
       await f.page.getByRole('button', { name: 'Аккаунт', exact: true }).last().click();
       await f.page.getByRole('menuitem', { name: 'Настройки', exact: true }).click();
-      await expect(f.page.getByRole('alert')).toContainText('Не удалось открыть раздел');
+      await expect(f.page.getByRole('alert')).toContainText('Не удалось загрузить раздел');
       await expect(f.page.getByRole('button', { name: 'Повторить загрузку', exact: true })).toBeVisible();
       await f.page.getByRole('link', { name: 'Вернуться в чат', exact: true }).click();
       await expect(f.input).toHaveValue('Черновик после сетевого сбоя');
@@ -940,7 +1089,7 @@ try {
     try {
       try { await expect(f.input).toBeVisible(); }
       catch (error) { console.error('PAGE', f.page.url(), await f.page.locator('body').innerText()); throw error; }
-      await expect(f.page).toHaveURL(/\/chat$/);
+      await expect(f.page).toHaveURL(/\/chat(?:\?[^#]*)?$/);
       assert.equal(await f.page.evaluate(() => JSON.parse(localStorage.getItem('gpt-ultra-auth')).state.accessToken), 'audit-access');
     } finally { await f.context.close(); }
   });

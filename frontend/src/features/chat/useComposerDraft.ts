@@ -6,6 +6,11 @@ const drafts = new Map<string, Draft>();
 const redirects = new WeakMap<Draft, string>();
 const storageKey = (scope: string) => `bit-think-draft:${scope}`;
 
+/** Text survives a document refresh; browser File objects only live in memory. */
+export function hasPendingAttachments(): boolean {
+  return [...drafts.values()].some(draft => draft.files.length > 0);
+}
+
 function read(scope: string): Draft {
   const cached = drafts.get(scope);
   if (cached) return cached;
