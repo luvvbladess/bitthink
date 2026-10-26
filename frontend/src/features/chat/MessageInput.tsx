@@ -10,6 +10,7 @@ import { OrchestratorTools } from './OrchestratorTools';
 import { useVisualViewportHeight } from './useVisualViewportHeight';
 
 interface Props {
+  starterPrompt?: string | null; onStarterApplied?: () => void;
   onSend: (text: string, files?: File[], mode?: 'chat' | 'image') => Promise<boolean | void> | boolean | void;
   disabled?: boolean;
   isGenerating?: boolean;
@@ -83,6 +84,7 @@ function PendingPreview({ file, onRemove }: { file: File; onRemove: () => void }
 }
 
 export function MessageInput({
+  starterPrompt, onStarterApplied,
   onSend,
   disabled,
   isGenerating,
@@ -100,7 +102,8 @@ export function MessageInput({
   const [toolsOpen, setToolsOpen] = useState(false);
   const viewportHeight = useVisualViewportHeight();
   const [submitting, setSubmitting] = useState(false);
-  const { text, setText, pendingFiles, setPendingFiles, submission } = useComposerDraft(conversationId);
+  const { text, setText, pendingFiles, setPendingFiles, submission, restoring, storageWarning } = useComposerDraft(conversationId);
+  useEffect(() => { if (starterPrompt && !restoring) { setText(previous => previous.trim() ? `${previous}\n\n${starterPrompt}` : starterPrompt); onStarterApplied?.(); inputRef.current?.focus(); } }, [starterPrompt, restoring]);
   const { voiceState, handleMicClick } = useVoiceInput(conversationId, transcribed => {
     setText(previous => previous.trim() ? `${previous.trim()} ${transcribed}` : transcribed);
   }, !disabled);
@@ -126,7 +129,7 @@ export function MessageInput({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (disabled || sendingRef.current || ['starting', 'recording', 'transcribing'].includes(voiceState) || (!text.trim() && !pendingFiles.length) || (imageMode && !text.trim())) return;
+    if (restoring || disabled || sendingRef.current || ['starting', 'recording', 'transcribing'].includes(voiceState) || (!text.trim() && !pendingFiles.length) || (imageMode && !text.trim())) return;
     sendingRef.current = true;
     setSubmitting(true);
     const acceptDraft = submission();
@@ -178,7 +181,7 @@ export function MessageInput({
     if (selectionQuote) { setImageMode(false); inputRef.current?.focus(); }
   }, [selectionQuote]);
 
-  const canSend = (text.trim() || pendingFiles.length > 0) && !disabled && !submitting && !['starting', 'recording', 'transcribing'].includes(voiceState) && !(imageMode && !text.trim());
+  const canSend = (text.trim() || pendingFiles.length > 0) && !restoring && !disabled && !submitting && !['starting', 'recording', 'transcribing'].includes(voiceState) && !(imageMode && !text.trim());
 
   return (
     <Box sx={{ width: '100%', '&:focus-within .bt-key-hint': { opacity: 1 } }}>
@@ -226,6 +229,8 @@ export function MessageInput({
         }),
       }}
     >
+      {storageWarning && <Box role="status" sx={{ fontSize: 12, color: 'text.secondary', mb: 1 }}>{storageWarning}</Box>}
+      {restoring && <Box role="status" sx={{ fontSize: 12, color: 'text.secondary', mb: 1 }}>Восстанавливаем черновик…</Box>}
       <input
         type="file"
         ref={fileInputRef}
@@ -325,7 +330,7 @@ export function MessageInput({
         variant="standard"
         margin="none"
         hiddenLabel
-        disabled={disabled || submitting}
+        disabled={restoring || disabled || submitting}
         sx={{ m: 0 }}
         inputProps={{ 'aria-label': 'Сообщение' }}
         InputProps={{
@@ -382,7 +387,7 @@ export function MessageInput({
           <IconButton
             size="small"
             onClick={() => fileInputRef.current?.click()}
-            disabled={disabled || submitting}
+            disabled={restoring || disabled || submitting}
             sx={composerIconBtnSx}
             aria-label="Прикрепить файл"
           >
@@ -400,7 +405,7 @@ export function MessageInput({
               size="small"
               type="button"
               onClick={handleMicClick}
-              disabled={disabled || submitting || !voiceSupported || voiceState === 'starting' || voiceState === 'transcribing'}
+              disabled={restoring || disabled || submitting || !voiceSupported || voiceState === 'starting' || voiceState === 'transcribing'}
               sx={{
                 ...composerIconBtnSx,
                 ...(voiceState === 'recording' && {

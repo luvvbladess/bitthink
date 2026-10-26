@@ -5,6 +5,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 from app.db.generation_models import Generation, GenerationEvent, WorkerHeartbeat  # noqa: F401
+from app.db.experience_models import ChatSubmission, ExperienceMetric  # noqa: F401
 
 
 class User(Base):
@@ -30,6 +31,7 @@ class Conversation(Base):
     user_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    deleted_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

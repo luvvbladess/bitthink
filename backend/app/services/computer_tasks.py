@@ -10,9 +10,9 @@ import uuid
 import hashlib
 import json
 
-from sqlalchemy import select, update
+from sqlalchemy import select, update, or_
 from app.db.engine import SyncSessionLocal
-from app.db.models import ComputerTask, ComputerEvent, User
+from app.db.models import ComputerTask, ComputerEvent, User, Conversation
 from app.services.computer_context import computer_task_id
 
 log = logging.getLogger(__name__)
@@ -29,7 +29,8 @@ def public(row: ComputerTask) -> dict:
 def list_tasks(user: str) -> list[dict]:
     with SyncSessionLocal() as session:
         return [public(row) for row in session.scalars(select(ComputerTask).where(
-            ComputerTask.user_email == user).order_by(ComputerTask.updated_at.desc()).limit(100))]
+            ComputerTask.user_email == user, or_(ComputerTask.conversation_id.is_(None),
+                ComputerTask.conversation_id.notin_(select(Conversation.id).where(Conversation.deleted_at.is_not(None))))).order_by(ComputerTask.updated_at.desc()).limit(100))]
 
 
 def get_task(user: str, task_id: str) -> dict | None:
@@ -166,6 +167,8 @@ def control(user: str, task_id: str, action: str) -> dict:
         if not row or row.user_email != user:
             raise ValueError("Задача не найдена.")
         if action == "resume":
+            if row.conversation_id and session.scalar(select(Conversation.id).where(Conversation.id == row.conversation_id, Conversation.deleted_at.is_not(None))):
+                raise ValueError('Сначала восстановите беседу из корзины.')
             if row.status == "running":
                 raise ValueError("Задача уже выполняется.")
             row.resume_history = row.status not in {"completed", "scheduled"}

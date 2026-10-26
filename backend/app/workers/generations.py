@@ -13,6 +13,11 @@ log = logging.getLogger(__name__)
 
 
 async def execute(row):
+    try:
+        from app.domains.experience import record
+        await asyncio.to_thread(record, 'queue_wait', max(0, int(time.time()) - row.get('created_at', int(time.time()))) * 1000, 'server')
+    except Exception:
+        log.warning('Queue measurement unavailable')
     user = row['user']
     cid = None if row['cid'].startswith('pending:') else row['cid']
     senders = hub.bind(user, cid, generation_id=row['id'])
@@ -51,6 +56,7 @@ async def serve(stop=None):
     stop = stop or asyncio.Event()
     running = {}
     renewed = 0
+    cleaned = 0
     try:
         while not stop.is_set():
             try:
@@ -65,6 +71,10 @@ async def serve(stop=None):
                             running[task_id].cancel()
                     await asyncio.to_thread(store.recover, hub.publisher)
                     renewed = time.monotonic()
+                if time.monotonic() - cleaned > 600:
+                    from app.domains.conversations import purge_expired
+                    await asyncio.to_thread(purge_expired)
+                    cleaned = time.monotonic()
                 running = {key: task for key, task in running.items() if not task.done()}
                 if len(running) < 4:
                     row = await asyncio.to_thread(store.claim, hub.publisher)

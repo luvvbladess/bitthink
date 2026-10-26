@@ -1,6 +1,7 @@
 import asyncio
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from app.domains import conversations as library
 
 from app.auth import get_current_user
 from app.core.repository import repo
@@ -10,8 +11,42 @@ router = APIRouter()
 
 
 @router.get("", response_model=list[ConversationOut])
-async def list_conversations(user_id: str = Depends(get_current_user)):
-    return await repo.get_conversations(user_id)
+async def list_conversations(user_id: str = Depends(get_current_user), limit: int | None = Query(None, ge=1, le=200), offset: int = Query(0, ge=0)):
+    return await asyncio.to_thread(library.summaries, repo._bot_id(user_id), limit, offset)
+
+
+@router.get('/search')
+async def search_conversations(q: str = Query('', max_length=200), offset: int = Query(0, ge=0), user_id: str = Depends(get_current_user)):
+    return await asyncio.to_thread(library.search, repo._bot_id(user_id), q, 30, offset)
+
+
+@router.get('/trash')
+async def trash_conversations(user_id: str = Depends(get_current_user), offset: int = Query(0, ge=0)):
+    return await asyncio.to_thread(library.summaries, repo._bot_id(user_id), 50, offset, True)
+
+
+@router.post('/{conv_id}/restore')
+async def restore_conversation(conv_id: str, user_id: str = Depends(get_current_user)):
+    if not await asyncio.to_thread(library.trash, repo._bot_id(user_id), conv_id, True):
+        raise HTTPException(404, 'Беседа не найдена или срок восстановления истёк')
+    return {'ok': True}
+
+
+@router.get('/{conv_id}/history')
+async def conversation_history(conv_id: str, limit: int = Query(80, ge=1, le=100), before: int | None = Query(None, ge=1), around: int | None = Query(None, ge=1), user_id: str = Depends(get_current_user)):
+    try:
+        return await asyncio.to_thread(library.history, repo._bot_id(user_id), conv_id, limit, before, around)
+    except PermissionError:
+        raise HTTPException(404, 'Беседа недоступна')
+    except ValueError:
+        raise HTTPException(404, 'Сообщение не найдено')
+
+
+@router.get('/{conv_id}/summary', response_model=ConversationOut)
+async def conversation_summary(conv_id: str, user_id: str = Depends(get_current_user)):
+    rows = await asyncio.to_thread(library.summaries, repo._bot_id(user_id), 1, 0, False, conv_id)
+    if not rows:raise HTTPException(404, 'Беседа недоступна')
+    return rows[0]
 
 
 @router.post("", response_model=ConversationOut)
@@ -91,9 +126,11 @@ async def rename_conversation(conv_id: str, data: ConversationRename, user_id: s
 
 @router.delete("/{conv_id}")
 async def delete_conversation(conv_id: str, user_id: str = Depends(get_current_user)):
-    ok = await repo.delete_conversation(user_id, conv_id)
+    from app.services.generation_store import cancel
+    ok = await asyncio.to_thread(library.trash, repo._bot_id(user_id), conv_id)
     if not ok:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    await asyncio.to_thread(cancel, user_id, conv_id)
     return {"ok": True}
 
 

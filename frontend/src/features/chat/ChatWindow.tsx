@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 import { createPortal } from 'react-dom';
-import { Box, IconButton } from '@mui/material';
+import { Box, Button, IconButton } from '@mui/material';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { ArrowsLeftRight, Bug, Newspaper, Paperclip, type Icon } from '@phosphor-icons/react';
 import { useAuthStore } from '@/stores/authStore';
@@ -39,6 +39,10 @@ export interface DisplayMessage {
 }
 
 interface Props {
+  hasOlder?: boolean; loadingOlder?: boolean; olderError?: boolean; onLoadOlder?: () => Promise<void>;
+  hasNewer?: boolean; onLatest?: () => void;
+  focusMessageId?: number;
+  onStartScenario?: (prompt: string) => void;
   messages: DisplayMessage[];
   thinking: boolean;
   statusText: string;
@@ -130,6 +134,7 @@ const suggestionChipSx = {
 };
 
 export function ChatWindow({
+  hasOlder, loadingOlder, olderError, onLoadOlder, hasNewer, onLatest, onStartScenario, focusMessageId,
   messages,
   thinking,
   statusText,
@@ -154,9 +159,18 @@ export function ChatWindow({
   convId,
   chipsHost,
 }: Props) {
+  const loadOlder = async () => {
+    const element = scrollerRef.current;
+    const height = element?.scrollHeight || 0;
+    const top = element?.scrollTop || 0;
+    pinToBottomRef.current = false;
+    await onLoadOlder?.();
+    requestAnimationFrame(() => { if (element) element.scrollTop = top + element.scrollHeight - height; });
+  };
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const pinToBottomRef = useRef(true);
+  const appliedFocus = useRef<number>();
   const skipPinUpdateRef = useRef(false);
   const scrollGeometryRef = useRef({ height: 0, viewport: 0 });
   // Editing is locked while a reply is generated. Read through a ref and a CSS class, not a prop:
@@ -285,12 +299,23 @@ export function ChatWindow({
   }, [thinking, lastUserId, reduce]);
 
   useLayoutEffect(() => {
+    if (focusMessageId) {
+      const message = messages.find(item => item.message_id === focusMessageId);
+      const node = scrollerRef.current;
+      if (message && node && appliedFocus.current !== focusMessageId) {
+        appliedFocus.current = focusMessageId;
+        pinToBottomRef.current = false;
+        scrollToQuestion(node, message.id, true);
+        setArriveId(message.id);
+      }
+      return;
+    }
     if (!pinToBottomRef.current) {
       measureJump();
       return;
     }
     scrollToBottom();
-  }, [messages, thinking, statusText, liveReasoning, nextChips.length]);
+  }, [messages, thinking, statusText, liveReasoning, nextChips.length, focusMessageId]);
 
   useLayoutEffect(() => {
     setScrollerNode(scrollerRef.current);
@@ -399,7 +424,9 @@ export function ChatWindow({
         flexDirection: 'column',
         minWidth: 0,
       }}>
-        {messages.length === 0 && !thinking && (
+        {hasOlder && <Box sx={{ textAlign: 'center', pt: 2 }}><Button disabled={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? 'Загружаем…' : olderError ? 'Повторить загрузку предыдущих сообщений' : 'Предыдущие сообщения'}</Button></Box>}
+      {hasNewer && <Box sx={{ textAlign: 'center', pt: 1 }}><Button onClick={onLatest}>К последним сообщениям</Button></Box>}
+      {messages.length === 0 && !thinking && (
           <Box sx={{ m: 'auto', textAlign: 'center', width: '100%', maxWidth: 480, py: 2 }}>
             <motion.div
               initial={reduce ? false : { opacity: 0, y: 8 }}
@@ -466,6 +493,11 @@ export function ChatWindow({
                       : ''}
               </Box>
               )}
+              {!isComputer && !isStudio && !isDocgen && onStartScenario && <Box sx={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: .5, mb: 2 }}>{[
+                ['Разобрать документ', 'Разбери прикреплённый документ: краткое содержание, ключевые выводы и вопросы, требующие внимания.'],
+                ['Сравнить предложения', 'Сравни предложения из прикреплённых файлов по цене, условиям и рискам. Сначала уточни, чего не хватает для сравнения.'],
+                ['Подготовить презентацию', 'Помоги подготовить презентацию. Сначала уточни тему, аудиторию, цель и количество слайдов, затем предложи план и подходящий режим.'],
+              ].map(([label, prompt]) => <Button key={label} color="inherit" size="small" onClick={() => onStartScenario(prompt)}>{label}</Button>)}</Box>}
               {composerSlotRef && (
                 <Box ref={composerSlotRef} aria-hidden sx={{ height: 'var(--bt-composer-h, 112px)', mb: 2.5 }} />
               )}

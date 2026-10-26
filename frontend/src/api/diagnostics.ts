@@ -1,4 +1,5 @@
 import { useAuthStore } from '@/stores/authStore';
+import { installPerformance } from './performance';
 
 type Category = 'render' | 'chunk' | 'unhandled';
 const reports = new Map<string, { id: string; time: number }>();
@@ -36,6 +37,7 @@ export function reportClientError(error: unknown, category: Category): string | 
 }
 
 export function installDiagnostics() {
+  installPerformance();
   window.addEventListener('error', event => { if (event.error) reportClientError(event.error, 'unhandled'); });
   window.addEventListener('unhandledrejection', event => reportClientError(event.reason, 'unhandled'));
 }

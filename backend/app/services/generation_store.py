@@ -12,6 +12,7 @@ from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from app.db.engine import SyncSessionLocal
 from app.db.models import User
+from app.db.experience_models import ChatSubmission, ExperienceMetric
 from app.db.generation_models import Generation, GenerationEvent, WorkerHeartbeat
 
 ACTIVE = ('queued', 'running', 'external')
@@ -43,13 +44,23 @@ def running(user, cid=None):
         return session.scalar(query.limit(1)) is not None
 
 
-def reserve(user, cid, kind='external', request=None, owner='', limit=4):
+def reserve(user, cid, kind='external', request=None, owner='', limit=4, request_id=None):
     now = int(time.time())
+    submitted_cid = cid
     cid = cid or 'pending:' + uuid.uuid4().hex
     initial = {'conversation_id': cid, 'user_text': (request or {}).get('content', ''), 'thinking': True, 'text': '', 'status_text': 'Думаю'}
     try:
         with SyncSessionLocal.begin() as session:
             session.scalar(select(User).where(User.email == user).with_for_update())
+            receipt_key = hashlib.sha256((user + '\0' + request_id).encode()).hexdigest() if request_id else None
+            # Preferences can change between retries; the human operation cannot.
+            fingerprint = hashlib.sha256(json.dumps([submitted_cid, kind, (request or {}).get('content', '')], ensure_ascii=False).encode()).hexdigest()
+            if receipt_key:
+                existing = session.get(ChatSubmission, receipt_key)
+                if existing:
+                    if existing.fingerprint != fingerprint:
+                        raise RuntimeError('Идентификатор отправки уже использован для другого сообщения.')
+                    return existing.generation_id
             if session.scalar(_active(session, user, cid)) or (cid.startswith('pending:') and session.scalar(_active(session, user).where(Generation.conversation_id.like('pending:%')))):
                 raise RuntimeError('Этот чат ещё отвечает. Дождитесь окончания или остановите ответ.')
             if len(session.scalars(_active(session, user)).all()) >= limit:
@@ -63,6 +74,9 @@ def reserve(user, cid, kind='external', request=None, owner='', limit=4):
                 cancel_requested=False, created_at=now, updated_at=now)
             session.add(row)
             session.flush()
+            if receipt_key:
+                session.add(ChatSubmission(id=receipt_key, user_email=user, fingerprint=fingerprint,
+                    generation_id=row.id, conversation_id=cid, created_at=now))
             return row.id
     except IntegrityError as exc:
         raise RuntimeError('Этот чат ещё отвечает. Дождитесь окончания или остановите ответ.') from exc
@@ -72,6 +86,12 @@ def snapshot(user, cid):
     with SyncSessionLocal() as session:
         row = session.scalar(_active(session, user, cid))
         return json.loads(row.snapshot) if row else None
+
+
+def delivery_status(user, generation_id):
+    with SyncSessionLocal() as session:
+        row = session.scalar(select(Generation.status).where(Generation.id == generation_id, Generation.user_email == user))
+        return row or 'completed'
 
 
 def subscription(user):
@@ -193,7 +213,7 @@ def claim(owner):
         if not changed.rowcount:
             return None
         return {'id': row.id, 'user': row.user_email, 'cid': row.conversation_id, 'kind': row.kind,
-            'request': json.loads(row.request), 'cancel': row.cancel_requested}
+            'request': json.loads(row.request), 'cancel': row.cancel_requested, 'created_at': row.created_at}
 
 
 def renew(owner, heartbeat=False):
@@ -223,6 +243,8 @@ def recover(publisher):
         session.execute(delete(GenerationEvent).where(GenerationEvent.created_at < now - 900))
         session.execute(delete(Generation).where(Generation.status.notin_(ACTIVE), Generation.updated_at < now - 86400))
         session.execute(delete(WorkerHeartbeat).where(WorkerHeartbeat.seen_at < now - 86400))
+        session.execute(delete(ChatSubmission).where(ChatSubmission.created_at < now - 30 * 86400))
+        session.execute(delete(ExperienceMetric).where(ExperienceMetric.bucket < now - 30 * 86400))
 
 
 def ready():

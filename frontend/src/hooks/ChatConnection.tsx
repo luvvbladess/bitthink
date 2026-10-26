@@ -10,6 +10,7 @@ type Listener = (message: WSMessage) => void;
 type Connection = {
   status: WSStatus;
   send: (type: string, payload: Record<string, any>) => boolean;
+  submit: (type: string, payload: Record<string, any>, requestId: string) => Promise<boolean>;
   waitUntilReady: (timeoutMs?: number) => Promise<boolean>;
   subscribe: (listener: Listener) => () => void;
 };
@@ -23,12 +24,12 @@ export function ChatConnectionProvider({ children }: { children: ReactNode }) {
   const receive = useCallback((message: WSMessage) => {
     listeners.current.forEach(listener => listener(message));
   }, []);
-  const { status, send, waitUntilReady } = useWebSocket(WS_URL, token, receive);
+  const { status, send, submit, waitUntilReady } = useWebSocket(WS_URL, token, receive);
   const subscribe = useCallback((listener: Listener) => {
     listeners.current.add(listener);
     return () => { listeners.current.delete(listener); };
   }, []);
-  const value = useMemo(() => ({ status, send, waitUntilReady, subscribe }), [status, send, waitUntilReady, subscribe]);
+  const value = useMemo(() => ({ status, send, submit, waitUntilReady, subscribe }), [status, send, submit, waitUntilReady, subscribe]);
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }
 

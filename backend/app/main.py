@@ -21,7 +21,7 @@ def _validate_schema() -> None:
     """Startup is read-only. Alembic is the only production schema writer."""
     from sqlalchemy import inspect
     inspector = inspect(sync_engine)
-    for name in ('users', 'conversations', 'messages', 'generations', 'generation_events', 'worker_heartbeats'):
+    for name in ('users', 'conversations', 'messages', 'generations', 'generation_events', 'worker_heartbeats', 'chat_submissions', 'experience_metrics'):
         if not inspector.has_table(name):
             raise RuntimeError('Database migration required: run alembic upgrade head')
         existing = {column['name'] for column in inspector.get_columns(name)}

@@ -94,7 +94,7 @@ export function useChatGeneration({ activeConvId, setActiveConvId, setSearchPara
       return next;
     });
   }
-  const { messages: wsMessages, acknowledge, send, status: wsStatus, waitUntilReady } = useChatConnection();
+  const { messages: wsMessages, acknowledge, send, submit, status: wsStatus, waitUntilReady } = useChatConnection();
   const processedThrough = useRef(0);
   const ignoreByConvRef = useRef<Set<string>>(new Set());
   const imageAbortRef = useRef<AbortController | null>(null);
@@ -122,6 +122,13 @@ export function useChatGeneration({ activeConvId, setActiveConvId, setSearchPara
       processedThrough.current = msg.deliveryId;
 
       const convId = (msg.payload?.conversation_id as string | undefined) || undefined;
+      if (msg.type === 'accepted' && convId) {
+        if (['completed', 'failed', 'stopped', 'interrupted', 'archived'].includes(msg.payload.status)) {
+          finishJob(convId);
+          if (['failed', 'interrupted'].includes(msg.payload.status)) setJobErrors(previous => ({ ...previous, [convId]: 'Предыдущая отправка была принята, но ответ не завершён. Проверьте историю и отправьте новый запрос.' }));
+        }
+        queryClient.invalidateQueries({ queryKey: ['messages', convId] });
+      }
       if (convId && ignoreByConvRef.current.has(convId) && msg.type !== 'stopped' && msg.type !== 'done' && msg.type !== 'error') {
         return;
       }
@@ -247,5 +254,5 @@ export function useChatGeneration({ activeConvId, setActiveConvId, setSearchPara
   }, [wsMessages, activeConvId, queryClient, pendingContent.convId, acknowledge]);
 
   return { jobs, setJobs, jobErrors, setJobErrors, pendingContent, thinking, statusText, generatingIds,
-    patchJob, finishJob, send, wsStatus, waitUntilReady, ignoreByConvRef, imageAbortRef, imageBaselineRef, httpJobsRef };
+    patchJob, finishJob, send, submit, wsStatus, waitUntilReady, ignoreByConvRef, imageAbortRef, imageBaselineRef, httpJobsRef };
 }

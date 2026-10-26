@@ -1655,6 +1655,8 @@ class DatabaseConversationManager:
     # Shared conversations
     # ------------------------------------------------------------------
     def _allows(self, session: Session, user_id: int, conv: Conversation) -> bool:
+        if conv.deleted_at is not None:
+            return False
         if conv.user_id == user_id:
             return True
         return (
@@ -1672,7 +1674,7 @@ class DatabaseConversationManager:
             if conv and self._allows(session, user_id, conv):
                 return conv
             return None
-        return session.query(Conversation).filter_by(user_id=user_id, is_active=True).first()
+        return session.query(Conversation).filter_by(user_id=user_id, is_active=True, deleted_at=None).first()
 
     def conversation_view(self, user_id: int, conv_id: str) -> Optional[ConversationData]:
         with SyncSessionLocal() as session:
@@ -1809,7 +1811,7 @@ class DatabaseConversationManager:
             if not share:
                 return None
             conv = session.get(Conversation, share.conversation_id)
-            if not conv:
+            if not conv or conv.deleted_at is not None:
                 return None
             if conv.user_id != user_id:
                 exists = (
@@ -1887,7 +1889,7 @@ class DatabaseConversationManager:
 
     def get_conversations(self, user_id: int) -> List[ConversationData]:
         with SyncSessionLocal() as session:
-            owned = session.query(Conversation).filter_by(user_id=user_id).order_by(Conversation.created_at.desc()).all()
+            owned = session.query(Conversation).filter_by(user_id=user_id, deleted_at=None).order_by(Conversation.created_at.desc()).all()
             joined_ids = [
                 row.conversation_id
                 for row in session.query(ConversationMember).filter_by(user_id=user_id).all()
@@ -1897,7 +1899,7 @@ class DatabaseConversationManager:
             if joined_ids:
                 joined = (
                     session.query(Conversation)
-                    .filter(Conversation.id.in_(joined_ids))
+                    .filter(Conversation.id.in_(joined_ids), Conversation.deleted_at.is_(None))
                     .order_by(Conversation.updated_at.desc())
                     .all()
                 )
@@ -1942,7 +1944,7 @@ class DatabaseConversationManager:
 
     def get_active_conversation(self, user_id: int) -> Optional[ConversationData]:
         with SyncSessionLocal() as session:
-            conv = session.query(Conversation).filter_by(user_id=user_id, is_active=True).first()
+            conv = session.query(Conversation).filter_by(user_id=user_id, is_active=True, deleted_at=None).first()
             return ConversationData.from_model(conv) if conv else None
 
     def create_conversation(self, user_id: int, title: Optional[str] = None) -> ConversationData:

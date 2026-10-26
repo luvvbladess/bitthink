@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { measure } from '@/api/performance';
 import { useSearchParams } from 'react-router-dom';
 import { apiFetch } from '@/api/client';
 import type { ConversationItem } from './ChatSidebar';
@@ -16,12 +17,25 @@ export function useConversationNavigation(options: { onExternalSelection: () => 
   activeConvRef.current = activeConvId;
   const appliedLocationRef = useRef(requestedConversation);
   const selectionRequestRef = useRef(0);
-  const conversationsQuery = useQuery<ConversationItem[]>({
-    queryKey: ['conversations'],
-    queryFn: ({ signal }) => apiFetch('/conversations', { signal, timeoutMs: 15000 }),
+  const conversationsQuery = useInfiniteQuery<ConversationItem[]>({
+    queryKey: ['conversations', 'pages'],
+    initialPageParam: 0,
+    queryFn: async ({ signal, pageParam }) => {
+      const started = performance.now();
+      const result = await apiFetch(`/conversations?limit=50&offset=${pageParam}`, { signal, timeoutMs: 15000 });
+      measure('list_load', performance.now() - started);
+      return result;
+    },
+    getNextPageParam: (page, pages) => page.length === 50 ? pages.length * 50 : undefined,
     staleTime: 5_000,
   });
-  const { data: conversations = [], isFetched: conversationsFetched } = conversationsQuery;
+  const loadedConversations = conversationsQuery.data?.pages.flat() || [];
+  const selected = useQuery<ConversationItem>({ queryKey: ['conversation-summary', activeConvId],
+    queryFn: ({ signal }) => apiFetch(`/conversations/${activeConvId}/summary`, { signal, timeoutMs: 15000 }),
+    enabled: !!activeConvId && conversationsQuery.isFetched && !loadedConversations.some(item => item.id === activeConvId) });
+  const conversations = selected.data?.id && !loadedConversations.some(item => item.id === selected.data.id)
+    ? [...loadedConversations, selected.data] : loadedConversations;
+  const conversationsFetched = conversationsQuery.isFetched;
 
   // Restore the latest/active chat after a page reload instead of showing an
   // empty home screen while its messages and document cards still exist.
