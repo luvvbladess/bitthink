@@ -204,6 +204,26 @@ def evidence_issues(answer: str, sources, *, has_previous_evidence=False, observ
     return issues
 
 
+def answer_recovery_issues(answer: str, sources, **kwargs) -> list[str]:
+    """Citation placement is advisory once actual page content is available.
+
+    The source panel can carry attribution. Missing per-line links alone must
+    neither trigger another model/search round nor erase a useful answer.
+    This does not certify facts: unknown URLs, unread cited numbers, invented
+    publication dates and obsolete commercial terms still need recovery.
+    """
+    issues = evidence_issues(answer, sources, **kwargs)
+    if any(s.get('evidence_state') == 'read' and source_urls([s]) for s in sources or []):
+        advisory = {'missing_inline_evidence', 'precise_claim_without_inline_source'}
+        # The coverage scan stops at its first bad line. Ignoring a formatting
+        # warning must not hide a later price linked only to an unread snippet.
+        for line in (answer or '').splitlines():
+            if cited_urls(line):
+                issues.extend(evidence_issues(line, sources, **kwargs))
+        issues = list(dict.fromkeys(issue for issue in issues if issue not in advisory))
+    return issues
+
+
 def supported_partial(answer: str, sources, *, observed_text=None, require_current_terms=False) -> str:
     """Keep structurally supported parts after a failed bounded recovery.
 

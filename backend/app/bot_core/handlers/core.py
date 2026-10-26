@@ -486,6 +486,14 @@ async def get_smart_response(
         if kimi_result_is_grounded(candidate[0], candidate[3], minimum_sources=minimum):
             await push_status("browse", f"Изучаю {len(candidate[3])} источников")
             return candidate
+        # Keep an actual search draft for the shared bounded recovery instead
+        # of discarding its observations and starting a second full search.
+        from app.services.source_quality import source_urls
+        if (source_urls(candidate[3]) and candidate[0].strip()
+                and not candidate[0].lstrip().startswith('❌')
+                and not re.search(r'<(?:tool|tool_call|function_call)>', candidate[0], re.I)):
+            await push_status("think", "Оформляю результаты поиска")
+            return candidate
         await push_status("think", "Уточняю результаты поиска")
         return None
 
@@ -681,7 +689,7 @@ async def get_smart_response(
     source_limit = 28 if model == "director" else (24 if model in {"gpt-6-sol", "gpt-6-astra", "kimi-k2.6"} else 18)
     sources = _merge_sources(grounded_sources, model_sources, limit=source_limit)
     from app.services.followup_evidence import previous_source_rows
-    from app.services.source_quality import cited_urls, evidence_issues, resolve_numbered_citations, supported_partial
+    from app.services.source_quality import cited_urls, answer_recovery_issues, resolve_numbered_citations, supported_partial
     from app.services.run_protocol import current_run
     previous_sources = previous_source_rows(evidence_note)
     record = current_run.get()
@@ -691,7 +699,7 @@ async def get_smart_response(
     require_current_terms = intent.task in {'recommendation', 'comparison'} and web_required
     checking_sources = _merge_sources(sources, previous_sources, limit=40)
     answer = resolve_numbered_citations(answer, checking_sources)
-    issues = evidence_issues(answer, checking_sources, has_previous_evidence=bool(evidence_note), observed_text=observed_page_text, require_current_terms=require_current_terms) if (web_required or evidence_note) and not intent.local and not intent.web_forbidden else []
+    issues = answer_recovery_issues(answer, checking_sources, has_previous_evidence=bool(evidence_note), observed_text=observed_page_text, require_current_terms=require_current_terms) if (web_required or evidence_note) and not intent.local and not intent.web_forbidden else []
     if issues and not files and model not in {'studio', 'director'}:
         # One bounded recovery only, and only for a visible source-contract
         # failure. Ordinary grounded answers incur no extra model round-trip.
@@ -752,7 +760,7 @@ async def get_smart_response(
             if record:
                 repaired_sources = record.enrich_sources(repaired_sources)
             repaired_text = resolve_numbered_citations(repaired[0], repaired_sources)
-            repaired_issues = evidence_issues(repaired_text, repaired_sources,
+            repaired_issues = answer_recovery_issues(repaired_text, repaired_sources,
                                               has_previous_evidence=bool(evidence_note),
                                               require_current_terms=require_current_terms,
                                               observed_text='\n'.join(record.page_texts.values()) if record else None)
@@ -766,7 +774,7 @@ async def get_smart_response(
     # Only actual retrievals and explicitly reused observations enter the source
     # list. Do not manufacture sources by extracting domains from model prose.
     cited = cited_urls(answer)
-    final_issues = evidence_issues(answer, _merge_sources(sources,previous_sources,limit=40),
+    final_issues = answer_recovery_issues(answer, _merge_sources(sources,previous_sources,limit=40),
                                   has_previous_evidence=bool(evidence_note),
                                   require_current_terms=require_current_terms,
                                   observed_text='\n'.join(record.page_texts.values()) if record else None) if (web_required or evidence_note) and not intent.local and not intent.web_forbidden else []
