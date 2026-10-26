@@ -157,3 +157,11 @@ def route_for_turn(user_text: str, previous_user_text: str, has_deepseek: bool) 
         if thread_route in {"deepseek-v4-pro", "gpt-6-sol"}:
             route = thread_route
     return route, deep
+
+
+def vision_route(selected: str, tier: str, prompt: str = "") -> str:
+    """Terra handles routine paid vision; preserve explicit strong/complex routes."""
+    from app.billing.plans import clamp_model
+    complex_visual = bool(re.search(r'черт[её]ж|допуск|посадк|производственн|геометри|размерн|cad|solidworks|компас', prompt, re.I))
+    wanted = selected if selected in {'gpt-6-astra', 'gpt-6-sol', 'gpt-6.1-terra'} else ('gpt-6-sol' if complex_visual else 'gpt-6.1-terra')
+    return clamp_model(tier, wanted)

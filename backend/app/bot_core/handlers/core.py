@@ -298,7 +298,7 @@ async def get_smart_response(
     tier = view["tier"]
     if (is_desktop or cloud_task) and "director" not in allowed_models(tier):
         raise QuotaError("Оркестратор недоступен на вашем тарифе. Откройте тарифы Bit-Think.", "plan")
-    if desktop_chat and (model not in allowed_models(tier) or model not in {"auto", "gpt-6-sol", "gpt-6-astra", "director", "studio"}):
+    if desktop_chat and (model not in allowed_models(tier) or model not in {"auto", "gpt-6.1-terra", "gpt-6-sol", "gpt-6-astra", "director", "studio"}):
         raise QuotaError("Эта модель недоступна для обычных бесед на вашем тарифе.", "plan")
     model = clamp_model(tier, model)
     # Before quota: a mode hint must not spend a reply or start a model call.
@@ -423,7 +423,7 @@ async def get_smart_response(
     # go to the web even if an older photo or PDF is sitting in the thread.
     web_required = not intent.web_forbidden and (bool(catalog_note) or intent.needs_web or (followup_web and not intent.local) or turn_requires_web(
         user_text,
-        model,
+        "auto" if is_desktop else model,
         research_mode=research_mode,
         has_documents=has_documents,
         has_images=has_images,
@@ -432,6 +432,14 @@ async def get_smart_response(
         "Web route: user_id=%s model=%s required=%s current_docs=%s current_images=%s",
         user_id, model, web_required, has_documents, has_images,
     )
+
+    if is_desktop and not web_required:
+        messages = list(messages)
+        messages.insert(0, {'role': 'system', 'content':
+            'Это локальная задача BitClient. Описывай проект по реально прочитанным файлам и результатам инструментов. '
+            'Для сведений о проекте указывай пути файлов; интернет-ссылки не обязательны. '
+            'Если данных не хватает, сначала прочитай подходящие локальные файлы. '
+            'Не проверяй устройство локального проекта поиском в интернете без необходимости.'})
 
     # Legacy DeepSeek routes use the shared Kimi-first retrieval layer. Public
     # Search/Auto/Research routes below use Kimi directly and validate its result.
@@ -540,7 +548,8 @@ async def get_smart_response(
         # Multimodal turns always use a vision-capable OpenAI route. The images
         # are already resized on upload, so this remains materially cheaper than
         # repeatedly OCRing originals while preserving visual understanding.
-        vision_model = "gpt-6-astra" if model == "gpt-6-astra" else "gpt-6-sol"
+        from routing import vision_route
+        vision_model = vision_route(model, tier, user_text)
         vision_tools, vision_force_web = openai_tool_flags(model, web_required)
         result = await get_chat_response(
             messages,

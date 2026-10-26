@@ -38,7 +38,7 @@ def test_public_model_catalog_hides_internal_routes():
         response = TestClient(app).get("/models")
         assert response.status_code == 200
         ids = {model["id"] for model in response.json()["models"]}
-        assert ids == {"auto", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra", "director", "studio", "docgen"}
+        assert ids == {"gpt-6.1-terra", "auto", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra", "director", "studio", "docgen"}
         assert "none" in response.json()["reasoningEfforts"]
         assert "deepseek-v4-pro" not in ids
         assert "kimi-k2.6" not in ids
@@ -478,7 +478,8 @@ def test_astra_is_sandbox_agent_not_web_only_chat():
     assert "песочниц" in ASTRA_AGENT_PROMPT
 
     client = (Path(__file__).resolve().parents[1] / "app" / "bot_core" / "openai_client.py").read_text(encoding="utf-8")
-    assert "if image_base64 and not is_astra" in client
+    from routing import vision_route
+    assert vision_route("gpt-6-astra", "proplus", "Разбери снимок") == "gpt-6-astra"
     assert "max_loops = 12 if is_astra else 6" in client
     assert "force_web = bool(force_web_search and not is_astra)" in client
     assert "COMPUTER_TOOLS_RESPONSES" in client

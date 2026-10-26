@@ -25,6 +25,7 @@ def _desktop_work_instructions() -> str:
 MODEL_POOL = [
     "gpt-5-nano",
     "gpt-6-luna",
+    "gpt-6.1-terra",
     "deepseek-v4-pro",
     "gpt-6-sol",
     "gpt-6-astra",
@@ -1138,6 +1139,7 @@ async def _plan_round(
         '{"status": "clarify", "questions": ['
         '{"prompt": "Какой тип приложения ты хочешь создать?", '
         '"options": ["Веб-приложение", "Telegram-бот", "Десктоп-приложение", "CLI / скрипт", "Другое"]}]}\n'
+        "Terra назначай для чтения изображений/экранов и ограниченных точных правок; не заменяй ею дешёвые текстовые роли без необходимости. "
         "Поле model - строго один из id моделей выше. questions: 1-3 штуки, у каждого 2-6 коротких options."
     )
 

@@ -179,7 +179,7 @@ def test_local_skills_catalog_and_resource_roundtrip(monkeypatch, account):
     assert desktop_skills.get() == []
 
 
-@pytest.mark.parametrize("tier,models", [("free", {"auto", "kimi-k2.6"}), ("pro", {"auto", "studio", "gpt-6-sol", "director", "kimi-k2.6"}), ("proplus", {"auto", "studio", "gpt-6-sol", "director", "gpt-6-astra", "kimi-k2.6"})])
+@pytest.mark.parametrize("tier,models", [("free", {"auto", "kimi-k2.6"}), ("pro", {"gpt-6.1-terra", "auto", "studio", "gpt-6-sol", "director", "kimi-k2.6"}), ("proplus", {"gpt-6.1-terra", "auto", "studio", "gpt-6-sol", "director", "gpt-6-astra", "kimi-k2.6"})])
 def test_desktop_answer_modes_follow_site_plan(monkeypatch, account, tier, models):
     email, token = account
     async def subscription(user):
