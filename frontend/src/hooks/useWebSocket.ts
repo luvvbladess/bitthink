@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { clearPendingSends, drainSends, enqueueSend } from '@/hooks/wsQueue';
 import { apiFetch } from '@/api/client';
+import { measure } from '@/api/performance';
 
 export type WSStatus = 'idle' | 'connecting' | 'open' | 'closed' | 'error';
 
@@ -31,12 +32,15 @@ export function useWebSocket(url: string, token: string | null, onMessage?: (mes
   const manualCloseRef = useRef(false);
   const [status, setStatus] = useState<WSStatus>('idle');
   const [messages, setMessages] = useState<WSMessage[]>([]);
+  const submissions = useRef(new Map<string, { frame: WSMessage; resolve: (value: boolean) => void; reject: (error: Error) => void; timer: number }>());
+  const firstToken = useRef(new Map<string, number>());
 
   const flushPending = useCallback((ws: WebSocket) => {
     if (ws.readyState !== WebSocket.OPEN || !readyRef.current) return;
     for (const queued of drainSends()) {
       ws.send(JSON.stringify(queued));
     }
+    submissions.current.forEach(({ frame }) => ws.send(JSON.stringify(frame)));
   }, []);
 
   useEffect(() => {
@@ -99,6 +103,7 @@ export function useWebSocket(url: string, token: string | null, onMessage?: (mes
         clearTimeout(responseTimeoutRef.current);
         responseTimeoutRef.current = undefined;
         if (disposed || manualCloseRef.current) return;
+        measure('disconnect', 1);
         // An expired access token needs the shared HTTP refresh flow. Reopening
         // the socket with the same expired token can never recover the session.
         if (event.code === 1008) void apiFetch('/auth/me', { timeoutMs: 15000 }).catch(() => undefined);
@@ -125,11 +130,24 @@ export function useWebSocket(url: string, token: string | null, onMessage?: (mes
           }
           if (data.type === 'pong') return;
           if (data.type === 'jobs') {
+            if (reconnectAttemptsRef.current) measure('reconnect', 1);
             readyRef.current = true;
             reconnectAttemptsRef.current = 0;
             clearTimeout(disconnectNoticeRef.current);
             setStatus('open');
             flushPending(ws);
+          }
+          if (data.type === 'accepted' || (data.type === 'error' && data.payload?.request_id)) {
+            const pending = submissions.current.get(data.payload.request_id);
+            if (pending) {
+              window.clearTimeout(pending.timer); submissions.current.delete(data.payload.request_id);
+              if (data.type === 'accepted') pending.resolve(true);
+              else pending.reject(new Error(data.payload.message || 'Не удалось отправить сообщение'));
+            }
+          }
+          if (data.type === 'chunk' && firstToken.current.has(data.payload?.conversation_id)) {
+            measure('first_token', performance.now() - firstToken.current.get(data.payload.conversation_id)!);
+            firstToken.current.delete(data.payload.conversation_id);
           }
           if (receiveRef.current) receiveRef.current(data);
           else setMessages((prev) => [...prev, data]);
@@ -166,7 +184,11 @@ export function useWebSocket(url: string, token: string | null, onMessage?: (mes
       readyRef.current = false;
       wsRef.current?.close();
       wsRef.current = null;
-      if (!tokenRef.current) clearPendingSends();
+      if (!tokenRef.current) {
+        clearPendingSends(); firstToken.current.clear();
+        submissions.current.forEach(pending => { window.clearTimeout(pending.timer); pending.reject(new Error('Вы вышли из аккаунта')); });
+        submissions.current.clear();
+      }
     };
   // `status` deliberately stays out of dependencies: reconnect callbacks manage
   // it, while recreating the effect on every status change would itself flap WS.
@@ -205,5 +227,17 @@ export function useWebSocket(url: string, token: string | null, onMessage?: (mes
 
   const clearMessages = useCallback(() => setMessages([]), []);
 
-  return { status, messages, send, clearMessages, waitUntilReady };
+  const submit = useCallback((type: string, payload: Record<string, any>, requestId: string) => new Promise<boolean>((resolve, reject) => {
+    if (submissions.current.has(requestId)) { reject(new Error('Сообщение уже отправляется')); return; }
+    const frame = { type, payload: { ...payload, request_id: requestId } };
+    const timer = window.setTimeout(() => {
+      submissions.current.delete(requestId);
+      reject(new Error('Не удалось подтвердить доставку. Черновик сохранён; повторная отправка не создаст дубликат.'));
+    }, 45000);
+    submissions.current.set(requestId, { frame, resolve, reject, timer });
+    firstToken.current.set(payload.conversation_id, performance.now());
+    if (wsRef.current?.readyState === WebSocket.OPEN && readyRef.current) wsRef.current.send(JSON.stringify(frame));
+  }), []);
+
+  return { status, messages, send, submit, clearMessages, waitUntilReady };
 }

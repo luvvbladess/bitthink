@@ -74,6 +74,9 @@ async function fixture(options = {}) {
     if (path === '/diagnostics/client-error') {
       (state.diagnostics ||= []).push(route.request().postDataJSON());
       data = { report_id: state.diagnostics.at(-1).report_id };
+    } else if (path === '/diagnostics/performance') {
+      if (method === 'POST') (state.performanceReports ||= []).push(route.request().postDataJSON());
+      data = method === 'POST' ? { ok: true } : { days: 7, metrics: [] };
     } else if (path === '/auth/me') {
       if (state.auth === 'network') return route.abort('failed');
       if (state.auth === '500') return route.fulfill({ status: 500, json: { detail: 'Temporary outage' } });
@@ -100,7 +103,9 @@ async function fixture(options = {}) {
     }
     else if (path === '/conversations') {
       if (state.listDelay) await new Promise(resolve => setTimeout(resolve, state.listDelay));
-      data = conversations;
+      const params = new URL(route.request().url()).searchParams;
+      const offset = Number(params.get('offset') || 0);
+      data = conversations.slice(offset, offset + Number(params.get('limit') || conversations.length));
     }
     else if (path.endsWith('/activate')) {
       const id = path.split('/')[2];
@@ -109,11 +114,12 @@ async function fixture(options = {}) {
       state.activeId = id;
       (state.activations ||= []).push(id);
       data = { ok: true };
-    } else if (path.endsWith('/messages')) {
+    } else if (path.endsWith('/messages') || path.endsWith('/history')) {
       state.historyLoads.push(path.split('/')[2]);
       if (state.historyDelay?.[path.split('/')[2]]) await new Promise(resolve => setTimeout(resolve, state.historyDelay[path.split('/')[2]]));
       if (state.historyError) return route.fulfill({ status: 503, json: { detail: 'Temporary outage' } });
       data = history[path.split('/')[2]] || [];
+      if (path.endsWith('/history')) data = { items: data, has_more: false, before: null, has_newer: false };
     } else if (path === '/chat/jobs') data = { jobs: [] };
     else if (path === '/projects' || path === '/computer/tasks' || path === '/connectors') data = [];
     else if (path.startsWith('/projects/chat/')) data = { project_id: null };
@@ -145,6 +151,17 @@ async function fixture(options = {}) {
       }
       if (event.type === 'ping' && !silent) socket.send(JSON.stringify({ type: 'pong', payload: {} }));
       if (event.type === 'message') {
+        if (state.dropFirstReceipt) {
+          (state.deliveryAttempts ||= []).push(event.payload.request_id);
+          if (!state.receiptDropped) {
+            state.receiptDropped = true;
+            state.sends.push(event.payload);
+            history[event.payload.conversation_id].push({ id: 'receipt-user', role: 'user', content: event.payload.content }, { id: 'receipt-answer', role: 'assistant', content: 'Ответ сохранён до переподключения.' });
+            socket.close();
+          } else socket.send(JSON.stringify({ type: 'accepted', payload: { conversation_id: event.payload.conversation_id, request_id: event.payload.request_id, status: 'completed' } }));
+          return;
+        }
+        if (event.payload.request_id) socket.send(JSON.stringify({ type: 'accepted', payload: { conversation_id: event.payload.conversation_id, request_id: event.payload.request_id } }));
         state.sends.push(event.payload);
         const id = event.payload.conversation_id;
         if (state.streamBurst) {
@@ -278,6 +295,96 @@ async function sidebarFixture(options = {}) {
 }
 
 try {
+  await test('experience: files and draft survive refresh on this device', async () => {
+    const f = await fixture();
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('Мой сохранённый черновик');
+      await f.page.locator('input[type="file"]').setInputFiles({ name: 'local-draft.txt', mimeType: 'text/plain', buffer: Buffer.from('Private local attachment') });
+      await expect(f.page.getByText('local-draft.txt', { exact: true })).toBeVisible();
+      await expect.poll(() => f.page.evaluate(async () => {
+        const db = await new Promise((resolve, reject) => { const request = indexedDB.open('bitthink-drafts', 1); request.onsuccess = () => resolve(request.result); request.onerror = reject; });
+        return await new Promise(resolve => { const request = db.transaction('drafts').objectStore('drafts').get('audit-user:chat-a'); request.onsuccess = () => resolve(request.result?.files?.length || 0); });
+      })).toBe(1);
+      await f.page.reload();
+      await expect(f.input).toHaveValue('Мой сохранённый черновик');
+      await expect(f.page.getByText('local-draft.txt', { exact: true })).toBeVisible();
+      assert.equal(f.state.uploads.length, 0);
+    } finally { await f.context.close(); }
+  });
+  await test('experience: delivery recovers a lost receipt without duplicate execution', async () => {
+    const f = await fixture({ dropFirstReceipt: true });
+    try {
+      await expect(f.input).toBeEnabled(); await f.input.fill('Проверка подтверждения'); await f.input.press('Enter');
+      await expect(f.page.getByText('Ответ сохранён до переподключения.', { exact: true })).toBeVisible();
+      await expect(f.input).toHaveValue('');
+      assert.equal(f.state.sends.length, 1);
+      assert(f.state.deliveryAttempts.length >= 2);
+      assert.equal(new Set(f.state.deliveryAttempts).size, 1);
+    } finally { await f.context.close(); }
+  });
+  for (const width of [320, 1440]) await test(`experience: search opens matching message and drawers fit ${width}`, async () => {
+    const f = await fixture({ viewport: { width, height: 900 }, handleRoute: async ({ path, route }) => {
+      if (path === '/conversations/search') { await route.fulfill({ json: [{ id: 'chat-b', title: 'Условия договора', snippet: 'Предоплата тридцать процентов.', message_id: 123 }] }); return true; }
+      return false;
+    } });
+    try {
+      await expect(f.input).toBeEnabled();
+      const menu = f.page.getByRole('button', { name: 'Открыть список бесед', exact: true }); if (await menu.isVisible()) await menu.click();
+      await f.page.getByRole('textbox', { name: 'Найти беседу', exact: true }).fill('Предоплата');
+      await f.page.getByRole('button', { name: 'Искать в переписке и файлах', exact: true }).click();
+      await expect(f.page.getByText('Предоплата тридцать процентов.', { exact: true })).toBeVisible();
+      assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      await expect.poll(() => f.page.getByRole('heading', { name: 'Мои беседы и задачи' }).evaluate(element => { const r = element.closest('.MuiDrawer-paper').getBoundingClientRect(); return r.x >= -1 && r.right <= innerWidth + 1; })).toBe(true);
+      await f.page.screenshot({ path: `${output}/experience-search-${width}.png`, fullPage: true });
+      await f.page.getByRole('button', { name: /Условия договора Предоплата/ }).click();
+      await expect(f.page).toHaveURL(/c=chat-b&m=123/);
+    } finally { await f.context.close(); }
+  });
+  await test('experience: trash restores a conversation and task controls reach the right job', async () => {
+    const f = await fixture({ handleRoute: async ({ path, method, route, state }) => {
+      if (path === '/conversations/trash') { await route.fulfill({ json: state.restored ? [] : [{ id: 'deleted', title: 'Удалённая беседа' }] }); return true; }
+      if (path === '/conversations/deleted/restore') { state.restored = true; await route.fulfill({ json: { ok: true } }); return true; }
+      if (path === '/chat/activity') { await route.fulfill({ json: [{ id: 'job-1', conversation_id: 'chat-a', prompt: 'Долгая проверка', status: 'running', progress: 'Проверяю источники', kind: 'chat' }] }); return true; }
+      if (path === '/chat/activity/job-1/stop' && method === 'POST') { state.stopped = true; await route.fulfill({ json: { ok: true } }); return true; }
+      return false;
+    } });
+    try {
+      await expect(f.input).toBeEnabled(); await f.page.getByRole('button', { name: 'Корзина', exact: true }).click();
+      await expect(f.page.getByText('Удалённая беседа', { exact: true })).toBeVisible();
+      await f.page.getByRole('button', { name: 'Восстановить', exact: true }).click(); await expect(f.page.getByText('Корзина пуста.', { exact: true })).toBeVisible();
+      await f.page.getByRole('tab', { name: 'Задачи', exact: true }).click();
+      await expect(f.page.getByText('Долгая проверка', { exact: true })).toBeVisible();
+      await f.page.getByRole('button', { name: 'Остановить', exact: true }).click(); await expect.poll(() => f.state.stopped).toBe(true);
+      await f.page.screenshot({ path: `${output}/experience-tasks.png`, fullPage: true });
+    } finally { await f.context.close(); }
+  });
+  await test('experience: older history loads without losing the current conversation', async () => {
+    const f = await fixture({ handleRoute: async ({ path, route, state }) => {
+      if (path === '/conversations/chat-a/history') {
+        (state.historyRequests ||= []).push(route.request().url());
+        const before = new URL(route.request().url()).searchParams.has('before');
+        await route.fulfill({ json: { items: before ? [{ id: 'chat-a_0', role: 'user', content: 'Самое раннее сообщение' }] : [{ id: 'chat-a_80', role: 'assistant', content: 'Последняя часть переписки' }], has_more: !before, before: before ? 1 : 81, has_newer: false } }); return true;
+      } return false;
+    } });
+    try {
+      await expect(f.page.getByText('Последняя часть переписки', { exact: true })).toBeVisible();
+      await f.page.getByRole('button', { name: 'Предыдущие сообщения', exact: true }).click();
+      await expect(f.page.locator('#main').getByText('Самое раннее сообщение', { exact: true })).toBeVisible();
+      await expect(f.page.getByText('Последняя часть переписки', { exact: true })).toBeVisible();
+      await expect(f.page).toHaveURL(/c=chat-a/);
+    } finally { await writeFile(`${output}/history-debug.txt`, JSON.stringify({ requests: f.state.historyRequests, text: await f.page.locator('body').innerText() })); await f.page.screenshot({ path: `${output}/history-debug.png` }); await f.context.close(); }
+  });
+  await test('experience: a guided scenario prepares a draft without sending it', async () => {
+    const f = await fixture({ handleRoute: async ({ path, route, history }) => {
+      if (path.endsWith('/history')) { await route.fulfill({ json: { items: [], has_more: false, before: null, has_newer: false } }); return true; } return false;
+    } });
+    try {
+      await expect(f.input).toBeEnabled(); await f.page.getByRole('button', { name: 'Разобрать документ', exact: true }).click();
+      await expect(f.input).toHaveValue(/Разбери прикреплённый документ/);
+      assert.equal(f.state.sends.length, 0);
+    } finally { await f.context.close(); }
+  });
   await test('switching: restoring an existing conversation never mounts the welcome screen', async () => {
     const f = await fixture({ observeWelcome: true, listDelay: 250, historyDelay: { 'chat-a': 250 } });
     try {

@@ -104,23 +104,8 @@ class ConversationRepository:
         return await asyncio.to_thread(self._manager.set_user_image_quality, bot_id, quality)
 
     async def get_conversations(self, web_user_id: str) -> list[dict]:
-        bot_id = self._bot_id(web_user_id)
-        convs = await asyncio.to_thread(self._manager.get_conversations, bot_id)
-        roles = await asyncio.to_thread(self._manager.conversation_roles, bot_id, [c.id for c in convs])
-        return [
-            {
-                "id": c.id,
-                "title": c.title,
-                "created_at": c.created_at,
-                "updated_at": getattr(c, "updated_at", None) or c.created_at,
-                "message_count": len(c.messages),
-                "document_count": len(c.documents),
-                "is_active": bool(getattr(c, "is_active", False)) and getattr(c, "owner_id", None) == bot_id,
-                "shared": c.id in roles,
-                "role": roles.get(c.id, "owner"),
-            }
-            for c in convs
-        ]
+        from app.domains.conversations import summaries
+        return await asyncio.to_thread(summaries, self._bot_id(web_user_id))
 
     async def create_conversation(self, web_user_id: str, title: Optional[str] = None) -> dict:
         bot_id = self._bot_id(web_user_id)

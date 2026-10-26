@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useLayoutEffect, useState } from 'react';
 import { AppBar, Toolbar, Box, IconButton, Drawer, List, ListItemButton, ListItemText } from '@mui/material';
 import { List as ListIcon, X } from '@phosphor-icons/react';
 import { Link, useLocation } from 'react-router-dom';
@@ -33,6 +33,10 @@ export function FluidNav() {
       (!l.publicOnly || !token)
   );
   const isChatPage = location.pathname === '/chat';
+  useLayoutEffect(() => { setOpen(false); }, [location.pathname]);
+  // Hiding an ancestor while its Drawer exits can strand the portal backdrop
+  // over the next page. Unmount the account navigation on the chat route.
+  if (isChatPage) return null;
 
   return (
     <AppBar

@@ -10,6 +10,20 @@ from app.core.repository import repo
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+
+@router.get('/activity')
+async def activity(user: str = Depends(get_current_user)):
+    from app.domains.execution import activity
+    return await asyncio.to_thread(activity, user)
+
+
+@router.post('/activity/{generation_id}/stop')
+async def stop_activity(generation_id: str, user: str = Depends(get_current_user)):
+    from fastapi import HTTPException
+    from app.domains.execution import stop
+    if not await asyncio.to_thread(stop, user, generation_id):raise HTTPException(404, 'Задача уже завершена или недоступна')
+    return {'ok': True}
+
 async def _authenticate_ws(websocket: WebSocket) -> str:
     # Token travels in the first WS message instead of the URL query string so
     # it doesn't end up in proxy/access logs (nginx, browser history, etc).
@@ -77,6 +91,10 @@ async def chat_websocket(websocket: WebSocket):
             if kind not in ('message', 'regenerate'):
                 await websocket.send_json({'type': 'error', 'payload': {'message': 'Unknown message type'}})
                 continue
+            request_id = payload.get('request_id')
+            if request_id is not None and (not isinstance(request_id, str) or not 8 <= len(request_id) <= 64 or not all(c.isalnum() or c in '-_' for c in request_id)):
+                await websocket.send_json({'type': 'error', 'payload': {'message': 'Некорректный идентификатор отправки', 'conversation_id': cid}})
+                continue
             content = payload.get('content', '')
             if kind == 'message' and (not isinstance(content, str) or not content.strip() or len(content) > 120000):
                 await websocket.send_json({'type': 'error', 'payload': {'message': 'Введите сообщение до 120 000 символов.', 'conversation_id': cid}})
@@ -86,10 +104,14 @@ async def chat_websocket(websocket: WebSocket):
                 continue
             try:
                 preferences = await repo.capture_generation_preferences(user_id)
-                await asyncio.to_thread(store.reserve, user_id, cid, kind,
-                    {'preferences': preferences, **({'content': content.strip()} if kind == 'message' else {})})
+                generation_id = await asyncio.to_thread(store.reserve, user_id, cid, kind,
+                    {'preferences': preferences, **({'content': content.strip()} if kind == 'message' else {})}, request_id=request_id)
             except RuntimeError as exc:
-                await websocket.send_json({'type': 'error', 'payload': {'message': str(exc), 'conversation_id': cid}})
+                await websocket.send_json({'type': 'error', 'payload': {'message': str(exc), 'conversation_id': cid, 'request_id': request_id}})
+                continue
+            if request_id:
+                delivery_status = await asyncio.to_thread(store.delivery_status, user_id, generation_id)
+                await websocket.send_json({'type': 'accepted', 'payload': {'request_id': request_id, 'generation_id': generation_id, 'conversation_id': cid, 'status': delivery_status}})
                 continue
             # Acknowledgement only. The independent worker owns execution and
             # publishes ordered events; closing this socket cannot cancel it.

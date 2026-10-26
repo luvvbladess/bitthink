@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Users, ChatsCircle, ChatText } from '@phosphor-icons/react';
 import { adminApi } from '@/api/adminApi';
 import { AdminIsland } from './AdminIsland';
+import { ExperiencePanel } from './ExperiencePanel';
 
 export default function AdminStatsPage() {
   const { data, isLoading, isError } = useQuery({ queryKey: ['admin', 'stats'], queryFn: () => adminApi.getStats() });
@@ -57,6 +58,7 @@ export default function AdminStatsPage() {
           </Grid>
         );
       })}
+      <Grid size={12}><ExperiencePanel /></Grid>
     </Grid>
   );
 }

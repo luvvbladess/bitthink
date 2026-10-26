@@ -65,6 +65,8 @@ jobs:
                   assert not any(isinstance(node, ast.Attribute) and node.attr == '_manager' and isinstance(node.value, ast.Name) and node.value.id == 'repo' for node in ast.walk(tree)), f'Private engine dependency in {path}'
           PY
       - run: python -m pytest tests
+      - run: python -m evals.quality --report /tmp/bitthink-quality.json
+      - run: python -m evals.product_journeys --fixtures --report /tmp/bitthink-product-journeys.json
   frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 20

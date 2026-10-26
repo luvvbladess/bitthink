@@ -4,6 +4,8 @@ import {
   DialogContentText, DialogTitle, Divider, IconButton, ListItemButton,
   ListItemIcon, Menu, MenuItem, TextField, Tooltip, Typography,
 } from '@mui/material';
+import type { ToolsMode } from './ConversationTools';
+import { ListChecks } from '@phosphor-icons/react';
 import { ArrowLeft, Check, CaretRight, DotsThree, FolderSimple, MagnifyingGlass, PencilSimple, Plus, Trash, Users, X } from '@phosphor-icons/react';
 import { useReducedMotion } from 'framer-motion';
 import { BrandLink } from '@/components/BrandMark';
@@ -22,6 +24,8 @@ export interface ConversationItem {
 }
 
 interface Props {
+  hasMore?: boolean; loadingMore?: boolean; onLoadMore?: () => void;
+  onTools?: (mode: ToolsMode, query?: string) => void;
   conversations: ConversationItem[];
   activeId?: string;
   onSelect: (id: string) => void;
@@ -71,7 +75,7 @@ function dateGroup(iso?: string): string {
   return 'Раньше';
 }
 
-export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDelete, onRename, onClose, onLibrary, generatingIds = [], projects = [], activeProjectId, onProject, onCreateProject, onMoveChat, onCreateInProject, onProjectDeleted }: Props) {
+export function ChatSidebar({ hasMore, loadingMore, onLoadMore, onTools, conversations, activeId, onSelect, onCreate, onDelete, onRename, onClose, onLibrary, generatingIds = [], projects = [], activeProjectId, onProject, onCreateProject, onMoveChat, onCreateInProject, onProjectDeleted }: Props) {
   const reduce = useReducedMotion();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [dragTarget, setDragTarget] = useState<string | null>(null);
@@ -169,12 +173,14 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
         sx={{ minHeight: 42, justifyContent: 'flex-start', px: 1.25, borderRadius: '8px', border: '1px solid var(--bt-hairline)', bgcolor: 'var(--bt-overlay-faint)', color: 'text.primary', fontWeight: 500, fontSize: '0.875rem', '&:hover': { bgcolor: 'var(--bt-overlay)' } }}>Новый вопрос</Button>
       {onLibrary && <Button fullWidth startIcon={<FolderSimple size={18} weight="bold" />} onClick={onLibrary}
         sx={{ minHeight: 40, justifyContent: 'flex-start', px: 1.25, borderRadius: '8px', color: 'text.secondary', fontWeight: 400, fontSize: '0.875rem', '&:hover': { bgcolor: 'var(--bt-overlay-faint)', color: 'text.primary' } }}>Библиотека</Button>}
+      {onTools && <Box sx={{ display: 'flex', gap: .5 }}><Button color="inherit" startIcon={<ListChecks size={17} />} onClick={() => onTools('tasks')} sx={{ minHeight: 40, flex: 1, justifyContent: 'flex-start', fontSize: 13 }}>Задачи</Button><Button color="inherit" startIcon={<Trash size={17} />} onClick={() => onTools('trash')} sx={{ minHeight: 40, flex: 1, justifyContent: 'flex-start', fontSize: 13 }}>Корзина</Button></Box>}
       <TextField value={search} onChange={e => setSearch(e.target.value)} placeholder="Найти беседу" size="small" fullWidth
         inputProps={{ 'aria-label': 'Найти беседу', autoComplete: 'off' }}
         InputProps={{ startAdornment: <Box sx={{ display: 'flex', mr: 0.75, color: 'text.muted' }}><MagnifyingGlass size={17} weight="bold" /></Box>,
           endAdornment: search ? <IconButton aria-label="Очистить поиск" onClick={() => setSearch('')} sx={{ ...actionSx, width: 32, height: 32 }}><X size={15} weight="bold" /></IconButton> : undefined }}
         sx={{ '& .MuiOutlinedInput-root': { minHeight: 40, px: 1.25, borderRadius: '8px', bgcolor: 'transparent', fontSize: '0.8125rem', '& fieldset': { borderColor: 'transparent' }, '&:hover fieldset': { borderColor: 'var(--bt-hairline)' }, '&.Mui-focused fieldset': { borderColor: 'primary.main' } }, '& input': { py: 1 }, '& input::placeholder': { color: 'text.muted', opacity: 1 } }} />
     </Box>
+    {searching && onTools && <Button onClick={() => onTools('search', search)} sx={{ mx: 1, mb: 1, justifyContent: 'flex-start', fontSize: 12 }}>Искать в переписке и файлах</Button>}
     <Box aria-label="Список бесед" sx={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', px: 1, pb: 1.5, '&::-webkit-scrollbar': { width: 6 }, '&::-webkit-scrollbar-thumb': { bgcolor: 'var(--bt-overlay-strong)', borderRadius: 6 } }}>
       {onProject && !searching && <Box sx={{ mb: 2 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', pl: 1, mb: 0.25 }}>
@@ -225,6 +231,7 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
       </Box>
     </Box>
     <Box sx={{ flexShrink: 0, borderTop: '1px solid var(--bt-hairline)', p: 1, pb: 'max(8px, env(safe-area-inset-bottom))' }}><AccountMenu variant="row" /></Box>
+    {hasMore && <Button onClick={onLoadMore} disabled={loadingMore} sx={{ minHeight: 40, mx: 2 }}>{loadingMore ? 'Загружаем…' : 'Показать ещё беседы'}</Button>}
     <Menu id="sidebar-conversation-menu" anchorEl={rowMenu?.el} open={Boolean(rowMenu)} onClose={closeMenu} disableRestoreFocus={Boolean(editingId || confirmDelete)}
       TransitionProps={{ onExited: () => renameInput.current?.focus() }}
       slotProps={{ paper: { sx: { minWidth: 220, maxWidth: 'calc(100vw - 24px)', borderRadius: '12px', '& .MuiMenuItem-root': { minHeight: 44, fontSize: '0.875rem' } } } }}>
@@ -242,8 +249,8 @@ export function ChatSidebar({ conversations, activeId, onSelect, onCreate, onDel
       ]}
     </Menu>
     <Dialog open={!!confirmDelete} onClose={() => setConfirmDelete(null)} maxWidth="xs" fullWidth aria-labelledby="delete-conversation-title">
-      <DialogTitle id="delete-conversation-title">Удалить беседу?</DialogTitle>
-      <DialogContent><DialogContentText sx={{ overflowWrap: 'anywhere' }}>«{confirmDelete?.title}» будет удалена без возможности восстановления.</DialogContentText></DialogContent>
+      <DialogTitle id="delete-conversation-title">Переместить беседу в корзину?</DialogTitle>
+      <DialogContent><DialogContentText sx={{ overflowWrap: 'anywhere' }}>«{confirmDelete?.title}» можно будет восстановить в течение 30 дней.</DialogContentText></DialogContent>
       <DialogActions sx={{ px: 3, pb: 2 }}>
         <Button autoFocus color="inherit" onClick={() => setConfirmDelete(null)}>Отмена</Button>
         <Button color="error" onClick={() => { if (confirmDelete) onDelete(confirmDelete.id); setConfirmDelete(null); }}>Удалить</Button>

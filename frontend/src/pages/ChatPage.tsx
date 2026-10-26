@@ -1,11 +1,16 @@
+import { useSearchParams } from 'react-router-dom';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Box, Button, Snackbar, Alert, Drawer, SwipeableDrawer, IconButton, Tooltip, Menu, MenuItem, ListItemIcon, ListItemText, useMediaQuery, useTheme } from '@mui/material';
 import { List as ListIcon, FileArrowDown, MagnifyingGlass, WarningCircle, SquareHalf, Users, ChatsCircle, FolderSimple, DotsThree, Sun, Moon } from '@phosphor-icons/react';
 import { useColorMode } from '@/theme/ColorMode';
 import { headerGroupBtnSx, headerGroupSx, headerIconBtnSx } from '@/theme/effects';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, type InfiniteData } from '@tanstack/react-query';
+import { ConversationTools, type ToolsMode } from '@/features/chat/ConversationTools';
+import { useConversationHistory } from '@/features/chat/useConversationHistory';
+import { measure } from '@/api/performance';
+import { submissionId, confirmSubmission } from '@/features/chat/submissionReceipt';
 import { useConversationNavigation } from '@/features/chat/useConversationNavigation';
-import { ChatSidebar } from '@/features/chat/ChatSidebar';
+import { ChatSidebar, type ConversationItem } from '@/features/chat/ChatSidebar';
 import { AccountMenu } from '@/components/AccountMenu';
 import { ChatWindow, DisplayMessage } from '@/features/chat/ChatWindow';
 import { DesignCanvas, findStudioCanvas } from '@/features/chat/DesignCanvas';
@@ -47,6 +52,13 @@ function keepLiveUploads(current: DisplayMessage[], derived: DisplayMessage[]): 
 }
 
 export default function ChatPage() {
+  const [toolsMode, setToolsMode] = useState<ToolsMode | null>(null);
+  const [toolsQuery, setToolsQuery] = useState('');
+  const [starterPrompt, setStarterPrompt] = useState<string | null>(null);
+  const [deletedChat, setDeletedChat] = useState<string | null>(null);
+  const deliveryRef = useRef({ payload: '', key: '' });
+  const navigationTime = useRef<number | null>(null);
+  const [locationParams] = useSearchParams();
   const [projectPanel, setProjectPanel] = useState<string | null>(null);
   const { activeConvId, setActiveConvId, activeConvRef, selectionRequestRef, openNewChat, setSearchParams,
     conversationsQuery, conversations, conversationsFetched, activateMutation } = useConversationNavigation({
@@ -157,7 +169,7 @@ export default function ChatPage() {
   const [regeneratingId, setRegeneratingId] = useState<number | null>(null);
   const queryClient = useQueryClient();
   const { setJobs, jobErrors, setJobErrors, pendingContent, thinking, statusText, generatingIds,
-    patchJob, finishJob, send, wsStatus, waitUntilReady, ignoreByConvRef, imageAbortRef, imageBaselineRef, httpJobsRef } = useChatGeneration({
+    patchJob, finishJob, send, submit, wsStatus, waitUntilReady, ignoreByConvRef, imageAbortRef, imageBaselineRef, httpJobsRef } = useChatGeneration({
       activeConvId, setActiveConvId, setSearchParams, setRegeneratingId, setDisplayMessages,
     });
 
@@ -184,24 +196,12 @@ export default function ChatPage() {
   }, [activeConvId, currentCloudTask?.id, currentCloudTask?.status, currentCloudTask?.run_number]);
   const canSplitProject = useMediaQuery('(min-width: 1280px)') && !isStudio;
   const projectSideBySide = canSplitProject && !projectExpanded;
-  const messagesQuery = useQuery<{
-    id: string;
-    message_id?: number;
-    role: string;
-    content: string;
-    attachment?: AttachmentInfo;
-    search?: { query: string; summary: string }[];
-    author?: { name: string; avatar_url?: string | null } | null;
-    mine?: boolean;
-  }[]>({
-    queryKey: ['messages', activeConvId],
-    queryFn: ({ signal }) => apiFetch(`/conversations/${activeConvId}/messages`, { signal, timeoutMs: 15000 }),
-    enabled: !!activeConvId,
-    staleTime: 3_000,
-    refetchInterval: thinking && activeConvId ? 2000 : sharedRoom ? 4000 : false,
-  });
+  const messagesQuery = useConversationHistory(activeConvId, thinking, sharedRoom, locationParams.get('m'));
   const messagesReady = Boolean(activeConvId) && messagesQuery.data !== undefined && !messagesQuery.isPlaceholderData;
   const messages = messagesReady ? (messagesQuery.data ?? []) : [];
+  useEffect(() => {
+    if (messagesReady && navigationTime.current !== null) { measure('conversation_open', performance.now() - navigationTime.current); navigationTime.current = null; }
+  }, [messagesReady, activeConvId]);
   // A missing history is a loading state, not a new conversation. Cached query
   // data can also arrive one render before its display projection is installed.
   const restoringConversation = !openNewChat && !activeConvId && (!conversationsFetched || conversations.length > 0);
@@ -243,7 +243,13 @@ export default function ChatPage() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => apiFetch(`/conversations/${id}`, { method: 'DELETE' }),
+    onError: () => setProjectNotice({ text: 'Не удалось переместить беседу в корзину. Попробуйте ещё раз.', warning: true }),
     onSuccess: (_, deletedId) => {
+      queryClient.setQueriesData<InfiniteData<ConversationItem[]>>({ queryKey: ['conversations', 'pages'] }, previous => previous ? ({ ...previous, pages: previous.pages.map(page => page.filter(item => item.id !== deletedId)) }) : previous);
+      queryClient.removeQueries({ queryKey: ['conversation-summary', deletedId] });
+      setDeletedChat(deletedId);
+      queryClient.invalidateQueries({ queryKey: ['trash'] });
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
       queryClient.invalidateQueries({ queryKey: ['conversations'] });
       if (activeConvId === deletedId) {
         setActiveConvId(undefined);
@@ -270,6 +276,7 @@ export default function ChatPage() {
   }, [isStudio, isMobile, canvasSource?.url, canvasSource?.html, canvasSource?.name]);
 
   const handleSelect = async (id: string) => {
+    navigationTime.current = performance.now();
     ++selectionRequestRef.current;
     setProjectPanel(null);
     // Tapping the chat that is already open must not blank it: activeConvId stays the
@@ -388,6 +395,7 @@ export default function ChatPage() {
   };
 
   const handleSend = async (rawText: string, files: File[] = [], mode: 'chat' | 'image' = 'chat'): Promise<boolean> => {
+    if (locationParams.has('m') && activeConvId) setSearchParams({ c: activeConvId });
     const text = rawText || (files.length ? 'Проанализируй прикреплённые файлы.' : '');
     const sendKey = activeConvId || 'new';
     if (!text || sendingRef.current.has(sendKey) || thinking || (activeConvId && !messagesReady)) return false;
@@ -507,7 +515,13 @@ export default function ChatPage() {
       // completes before treating the send as delivered.
       const ready = await waitUntilReady(45000);
       if (!ready) throw new Error('нет соединения с сервером, попробуйте ещё раз');
-      send('message', { content: text, conversation_id: conversationId });
+      const operation = JSON.stringify({ content: text, conversation_id: conversationId });
+      if (deliveryRef.current.payload !== operation) deliveryRef.current = { payload: operation, key: submissionId(operation) };
+      patchJob(conversationId, { statusText: 'Отправляется…' });
+      await submit('message', { content: text, conversation_id: conversationId }, deliveryRef.current.key);
+      confirmSubmission(operation);
+      deliveryRef.current = { payload: '', key: '' };
+      queryClient.invalidateQueries({ queryKey: ['messages', conversationId] });
       return true;
     } catch (error: any) {
       const targetConvId = conversationId;
@@ -575,7 +589,7 @@ export default function ChatPage() {
     try {
       await apiFetch(`/conversations/${activeConvId}/messages/truncate`, {
         method: 'POST',
-        body: JSON.stringify({ keep_count: idx }),
+        body: JSON.stringify({ keep_count: Number(messageId.split('_').pop()) }),
       });
       setDisplayMessages((m) => m.slice(0, idx));
       queryClient.invalidateQueries({ queryKey: ['messages', activeConvId] });
@@ -1000,6 +1014,10 @@ export default function ChatPage() {
         >
           <ChatSidebar
             conversations={conversations}
+            hasMore={conversationsQuery.hasNextPage}
+            loadingMore={conversationsQuery.isFetchingNextPage}
+            onLoadMore={() => { void conversationsQuery.fetchNextPage(); }}
+            onTools={(mode, query = '') => { setToolsQuery(query); setToolsMode(mode); if (isMobile) setSidebarOpen(false); }}
             activeId={activeConvId}
             onSelect={id => { ++projectRequestRef.current; void handleSelect(id); }}
             onCreate={() => { void handleCreate(null); }}
@@ -1025,6 +1043,10 @@ export default function ChatPage() {
         <Box sx={{ flexShrink: 0, height: '100%', overflow: 'hidden' }}>
           <ChatSidebar
             conversations={conversations}
+            hasMore={conversationsQuery.hasNextPage}
+            loadingMore={conversationsQuery.isFetchingNextPage}
+            onLoadMore={() => { void conversationsQuery.fetchNextPage(); }}
+            onTools={(mode, query = '') => { setToolsQuery(query); setToolsMode(mode); if (isMobile) setSidebarOpen(false); }}
             activeId={activeConvId}
             onSelect={id => { ++projectRequestRef.current; void handleSelect(id); }}
             onCreate={() => { void handleCreate(null); }}
@@ -1109,6 +1131,14 @@ export default function ChatPage() {
           key={activeConvId || 'new'}
           convId={activeConvId}
           chipsHost={chipsHost}
+          hasOlder={messagesQuery.hasNextPage}
+          loadingOlder={messagesQuery.isFetchingNextPage}
+          olderError={messagesQuery.isFetchNextPageError}
+          onLoadOlder={() => messagesQuery.fetchNextPage().then(() => undefined)}
+          hasNewer={messagesQuery.hasNewer}
+          focusMessageId={Number(locationParams.get('m')) || undefined}
+          onLatest={() => setSearchParams({ c: activeConvId! })}
+          onStartScenario={(prompt) => { setStarterPrompt(prompt); }}
           messages={displayMessages}
           thinking={thinking}
           statusText={statusText}
@@ -1192,6 +1222,8 @@ export default function ChatPage() {
               onOpenProjects={() => setProjectPanel(projectBinding.data?.project_id || '')}
               onSend={handleSend}
               disabled={thinking || historyPending}
+              starterPrompt={starterPrompt}
+              onStarterApplied={() => setStarterPrompt(null)}
               isGenerating={thinking}
               onStop={handleStop}
               editSourceUrl={forcedEditUrl || (!skipLastImage ? lastChatImageUrl(displayMessages) : null)}
@@ -1212,6 +1244,8 @@ export default function ChatPage() {
           onClose={() => setRoomOpenById((prev) => ({ ...prev, [activeConvId]: false }))}
         />
       )}
+      <ConversationTools mode={toolsMode} initialQuery={toolsQuery} onMode={setToolsMode} onClose={() => setToolsMode(null)} onSelect={(id, message) => { void handleSelect(id).then(() => { if (message) setSearchParams({ c: id, m: String(message) }); }); }} />
+      <Snackbar open={!!deletedChat} autoHideDuration={10000} onClose={() => setDeletedChat(null)} message="Беседа перемещена в корзину" action={<Button onClick={() => { const id = deletedChat; if (id) void apiFetch(`/conversations/${id}/restore`, { method: 'POST' }).then(() => { setDeletedChat(null); queryClient.invalidateQueries({ queryKey: ['conversations'] }); queryClient.invalidateQueries({ queryKey: ['trash'] }); }).catch(() => setProjectNotice({ text: 'Не удалось восстановить беседу. Попробуйте через корзину.', warning: true })); }}>Отменить</Button>} />
       <Snackbar open={!!projectNotice} autoHideDuration={projectNotice?.warning ? undefined : 6000} onClose={(_, reason) => { if (reason !== 'clickaway') setProjectNotice(null); }} anchorOrigin={{ vertical: 'top', horizontal: 'center' }}><Alert severity={projectNotice?.warning ? 'warning' : 'success'} onClose={() => setProjectNotice(null)} sx={{ maxWidth: 480 }}>{projectNotice?.text}</Alert></Snackbar>
       {projectPanel !== null && <Box sx={{ flex: projectSideBySide && projectPanel ? '0 0 48%' : '1 1 100%', minWidth: 0, minHeight: 0, borderLeft: projectSideBySide && projectPanel ? '1px solid var(--bt-hairline)' : 'none' }}>
         <ProjectWorkspace editRequest={resultEdit?.projectId === projectPanel ? resultEdit : null} citation={projectCitation?.projectId === projectPanel ? projectCitation : null} onProjectDeleted={handleProjectDeleted} key={projectPanel || 'create-project'} projectId={projectPanel} conversationId={!sharedRoom && projectBinding.data?.project_id === projectPanel ? activeConvId : undefined} externalError={projectOpenError} expanded={projectExpanded} onToggleSize={canSplitProject ? () => setProjectExpanded(value => !value) : undefined}

@@ -44,7 +44,7 @@ def _owned(session, uid, pid, *, lock=False):
 
 def _private_chat(session, uid, cid):
     row = session.get(Conversation, cid)
-    if not row or row.user_id != uid or session.scalar(select(ConversationMember.id).where(ConversationMember.conversation_id == cid).limit(1)):
+    if not row or row.deleted_at is not None or row.user_id != uid or session.scalar(select(ConversationMember.id).where(ConversationMember.conversation_id == cid).limit(1)):
         raise ValueError("Память проекта доступна в вашей личной беседе.")
 
 
@@ -54,7 +54,7 @@ def list_projects(uid):
         membership = {}
         for pid, cid in session.execute(select(ProjectChat.project_id, Conversation.id)
                 .join(Conversation, Conversation.id == ProjectChat.conversation_id)
-                .where(ProjectChat.project_id.in_([p.id for p in projects]), Conversation.user_id == uid,
+                .where(ProjectChat.project_id.in_([p.id for p in projects]), Conversation.user_id == uid, Conversation.deleted_at.is_(None),
                     ~select(ConversationMember.id).where(ConversationMember.conversation_id == Conversation.id).exists())):
             membership.setdefault(pid, []).append(cid)
         return [{"id": r.id, "name": r.name, "chat_ids": membership.get(r.id, [])} for r in projects]
@@ -69,7 +69,7 @@ def workspace(uid, pid):
         versions = dict(session.execute(select(ProjectRevision.entry_id, func.max(ProjectRevision.number)).where(
             ProjectRevision.entry_id.in_([item['id'] for item in entries])).group_by(ProjectRevision.entry_id)).all())
         chats = list(session.execute(select(Conversation.id, Conversation.title).join(ProjectChat, ProjectChat.conversation_id == Conversation.id)
-            .where(ProjectChat.project_id == pid, Conversation.user_id == uid,
+            .where(ProjectChat.project_id == pid, Conversation.user_id == uid, Conversation.deleted_at.is_(None),
                 ~select(ConversationMember.id).where(ConversationMember.conversation_id == Conversation.id).exists()).limit(100)).mappings())
         from app.services.project_assets import folder
         return {'project':{'id':pid,'name':project.name},'entries':[{**item,'revision':versions.get(item['id'],1),'has_original':(folder(uid,pid)/(item['id']+'.asset.json')).is_file()} for item in entries],
