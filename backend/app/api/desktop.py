@@ -36,7 +36,7 @@ _active_users: set[str] = set()
 async def desktop_status(user_id: str = Depends(get_current_user)):
     from app.billing.plans import allowed_models
     subscription = await subscription_payload(user_id)
-    models = allowed_models(subscription.get("tier")) & {"auto", "gpt-6-sol", "gpt-6-astra", "director", "studio", "kimi-k2.6", "docgen"}
+    models = allowed_models(subscription.get("tier")) & {"auto", "gpt-6.1-terra", "gpt-6-sol", "gpt-6-astra", "director", "studio", "kimi-k2.6", "docgen"}
     return {"protocol": PROTOCOL, "mode": "director", "modes": ["director", "chat"], "local_history": True, "work_context": True, "context_compaction": True, "context_policy": context_policy(), "chat_models": sorted(models), "subscription": subscription}
 
 

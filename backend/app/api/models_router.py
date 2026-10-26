@@ -26,18 +26,19 @@ WEB_MODEL_INFO = {
     "gpt-5-nano": {"name": "Быстрый ответ (GPT-5 Nano)", "description": "Мгновенные ответы на простые вопросы"},
     "gpt-6-luna": {"name": "Быстрый", "description": "Повседневные вопросы пачками, с минимальным расходом"},
     "gpt-6-sol": {"name": "Эксперт", "description": "Сложный код, агенты и многошаговые задачи"},
+    "gpt-6.1-terra": {"name": "GPT-6.1 Terra", "description": "Изображения, скриншоты и точные правки"},
     "gpt-6-astra": {"name": "Astra", "description": "Песочница GPT-6: код, договоры, файлы, многошаговые задачи"},
     "deepseek-v4-pro": {"name": "Код и логика", "description": "Программирование и технические задачи"},
 }
 
 # Perplexity-like public surface: users choose an intent, not a provider catalog.
 # Hidden routes remain available internally to Auto, OCR and specialist pipelines.
-PUBLIC_MODEL_IDS = ["auto", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra", "director", "studio", "docgen"]
+PUBLIC_MODEL_IDS = ["gpt-6.1-terra", "auto", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra", "director", "studio", "docgen"]
 
 # The API lets Sol and Luna run up to max. The product dial keeps max on Astra
 # so everyday Luna does not burn reasoning tokens, and xhigh on Sol and Astra.
 REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"]
-XHIGH_CAPABLE_MODELS = {"gpt-6-sol", "gpt-6-astra"}
+XHIGH_CAPABLE_MODELS = {"gpt-6-sol", "gpt-6-astra", "gpt-6.1-terra"}
 MAX_CAPABLE_MODELS = {"gpt-6-astra"}
 
 # Only the direct OpenAI-family models expose a real, honored effort dial in this
@@ -47,7 +48,7 @@ MAX_CAPABLE_MODELS = {"gpt-6-astra"}
 # effort levels internally by design — a single global override would fight their
 # own cost/quality routing logic. The picker is hidden for all of those.
 REASONING_EFFORT_CAPABLE_MODELS = {
-    "auto", "gpt-5-nano", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra",
+    "auto", "gpt-5-nano", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra", "gpt-6.1-terra",
 }
 
 

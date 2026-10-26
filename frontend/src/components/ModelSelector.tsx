@@ -60,10 +60,11 @@ const REASONING_CAPABLE = new Set([
   'auto',
   'gpt-5-nano',
   'gpt-6-luna',
+  'gpt-6.1-terra',
   'gpt-6-sol',
   'gpt-6-astra',
 ]);
-const XHIGH_CAPABLE = new Set(['gpt-6-sol', 'gpt-6-astra']);
+const XHIGH_CAPABLE = new Set(['gpt-6-sol', 'gpt-6-astra', 'gpt-6.1-terra']);
 
 export function useModelsQuery() {
   return useQuery<ModelsCache>({ queryKey: ['models'], queryFn: ({ signal }) => apiFetch('/models', { signal, timeoutMs: 15000 }), staleTime: 10_000, retry: 1 });

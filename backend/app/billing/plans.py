@@ -30,6 +30,7 @@ MODEL_MULTIPLIER: dict[str, int] = {
     "gpt-5.6-sol": 32,
     "gpt-5.6-sol-pro": 32,
     "gpt-6-sol": 20,
+    "gpt-6.1-terra": 10,
     "gpt-6-astra": 100,
 }
 
@@ -51,7 +52,7 @@ CHEAP_MODELS = [
     "deepseek-v4-flash",
 ]
 
-PRO_MODELS = CHEAP_MODELS + ["director", "studio", "gpt-6-sol"]
+PRO_MODELS = CHEAP_MODELS + ["director", "studio", "gpt-6-sol", "gpt-6.1-terra"]
 PROPLUS_MODELS = PRO_MODELS + ["gpt-6-astra"]
 ULTRA_MODELS = list(PROPLUS_MODELS)
 # Creator is the internal unlimited seat. It must never lag behind Ultra.
@@ -246,6 +247,8 @@ def research_model(tier: str | None) -> str | None:
 def computer_models(tier: str | None) -> list[str]:
     allowed = allowed_models(tier)
     pool = [item for item in ("gpt-5-nano", "gpt-6-luna", "kimi-k2.6", "deepseek-v4-pro") if item in allowed]
+    if "gpt-6.1-terra" in allowed:
+        pool.append("gpt-6.1-terra")
     if "gpt-6-sol" in allowed:
         pool.append("gpt-6-sol")
     if "gpt-6-astra" in allowed:

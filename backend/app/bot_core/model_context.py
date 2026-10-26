@@ -47,6 +47,7 @@ MODE_WINDOWS: Dict[str, ModeWindow] = {
     "director": ModeWindow(1_050_000, 128_000),
     "studio": ModeWindow(1_050_000, 128_000),
     "gpt-6-luna": ModeWindow(1_050_000, 128_000),
+    "gpt-6.1-terra": ModeWindow(1_050_000, 128_000),
     "gpt-6-sol": ModeWindow(1_050_000, 128_000),
     "gpt-6-astra": ModeWindow(1_050_000, 128_000),
     "kimi-k2.6": ModeWindow(262_144, 32_768),
@@ -58,6 +59,7 @@ MODE_WINDOWS: Dict[str, ModeWindow] = {
 LEAF_OUTPUT: Dict[str, int] = {
     "gpt-5-nano": 128_000,
     "gpt-6-luna": 128_000,
+    "gpt-6.1-terra": 128_000,
     "gpt-6-sol": 128_000,
     "gpt-6-astra": 128_000,
     "kimi-k2.6": 32_768,

@@ -97,7 +97,7 @@ def _last_user_text(messages: List[dict]) -> str:
     return ""
 
 
-_XHIGH_CAPABLE_MODELS = ("gpt-6-sol", "gpt-6-astra")
+_XHIGH_CAPABLE_MODELS = ("gpt-6-sol", "gpt-6-astra", "gpt-6.1-terra")
 _MAX_CAPABLE_MODELS = ("gpt-6-astra",)
 
 
@@ -124,7 +124,7 @@ def _get_reasoning_config(model: str, user_effort: Optional[str] = None) -> dict
         # ничего не менял, а выходные токены стоят $10 за миллион. medium на
         # GPT-6.1 Sol держит почти тот же результат, глубина – по тумблеру.
         return {"effort": "medium"}
-    if model in ("gpt-5-nano", "gpt-6-luna"):
+    if model in ("gpt-5-nano", "gpt-6-luna", "gpt-6.1-terra"):
         return {"effort": "low"}
     return {"effort": "medium"}
 
@@ -476,7 +476,7 @@ async def get_chat_response(
         is_astra = use_model == "gpt-6-astra"
 
         # Astra takes images natively. Other routes still upgrade to the vision model.
-        if image_base64 and not is_astra:
+        if image_base64 and use_model not in {"gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-terra"}:
             use_model = OPENAI_VISION_MODEL
 
         # Reasoning config считаем ДО перевода старых id в строку API.
