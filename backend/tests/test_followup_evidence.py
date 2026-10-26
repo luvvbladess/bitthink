@@ -194,6 +194,70 @@ def test_failed_recovery_cannot_keep_an_unobserved_link_or_unread_number():
     assert 'выдуман' not in supported_partial('Предыдущие ответы выдуманы.',[source()])
 
 
+def test_read_page_does_not_require_another_check_for_link_placement():
+    from app.services.source_quality import answer_recovery_issues
+    answer = ('Бюджет — до 40 000 ₽.\n\n'
+              'Рассмотрите Phone A: удобная камера. Сравните состояние б/у экземпляра.')
+    assert 'missing_inline_evidence' in evidence_issues(answer, [source()])
+    assert not answer_recovery_issues(answer, [source()])
+    assert 'missing_inline_evidence' in answer_recovery_issues(answer, [source('retrieved')])
+
+
+def test_formatting_warning_cannot_hide_a_later_unread_price():
+    from app.services.source_quality import answer_recovery_issues
+    rows = [source(), source('retrieved', 'https://shop.example/phone')]
+    text = 'Бюджет 40 000 ₽.\n\nТелефон стоит 35 000 ₽. [Магазин](https://shop.example/phone)'
+    assert 'precise_claim_needs_page_read' in answer_recovery_issues(text, rows)
+    assert 'unobserved_citation_url' in answer_recovery_issues(
+        'Модель [здесь](https://invented.example/no)', rows)
+
+
+def test_phone_recommendation_with_read_pages_survives_without_inline_links(monkeypatch):
+    core, kimi, user = _mock_auto_turn(monkeypatch)
+    monkeypatch.setattr(core.conversation_manager, 'conversation_for_turn', lambda uid: NS(messages=[]))
+    answer = ('До 40 000 ₽ я бы сравнил Phone A и Phone B.\n\n'
+              'Phone A — мой выбор ради камеры; Phone B — если важнее новый аппарат. '
+              'Текущие цены конкретных объявлений не подтверждены.')
+    async def search(*args, **kwargs): return answer, [], '', [source()]
+    async def forbidden(*args, **kwargs): raise AssertionError('Do not repeat search/model calls for link formatting')
+    monkeypatch.setattr(kimi, 'get_kimi_chat_response', search)
+    monkeypatch.setattr(core, 'get_chat_response', forbidden)
+    query = 'Какой телефон выбрать к покупке с камерой до 40 тысяч рублей?'
+    result = asyncio.run(core.get_smart_response(user, query, [{'role': 'user', 'content': query}], None))
+    assert result[0] == answer and result[3]
+
+
+def test_search_draft_with_bad_link_has_one_repair_and_keeps_observations(monkeypatch):
+    core, kimi, user = _mock_auto_turn(monkeypatch)
+    monkeypatch.setattr(core.conversation_manager, 'conversation_for_turn', lambda uid: NS(messages=[]))
+    calls = []
+    async def search(*args, **kwargs):
+        return 'Phone A [магазин](https://invented.example/phone)', [], '', [source()]
+    async def repair(messages, **kwargs):
+        calls.append((messages, kwargs))
+        return 'Phone A — кандидат по камере. Цену объявления нужно проверить отдельно.', [], '', []
+    monkeypatch.setattr(kimi, 'get_kimi_chat_response', search)
+    monkeypatch.setattr(core, 'get_chat_response', repair)
+    query = 'Какой телефон выбрать к покупке с камерой до 40 тысяч рублей?'
+    result = asyncio.run(core.get_smart_response(user, query, [{'role': 'user', 'content': query}], None))
+    assert len(calls) == 1 and 'Phone A' in result[0] and 'invented.example' not in result[0]
+    assert any('https://example.com/announcement' in m.get('content', '') for m in calls[0][0])
+
+
+def test_search_tool_markup_is_not_treated_as_a_finished_recommendation(monkeypatch):
+    core, kimi, user = _mock_auto_turn(monkeypatch)
+    monkeypatch.setattr(core.conversation_manager, 'conversation_for_turn', lambda uid: NS(messages=[]))
+    async def search(*args, **kwargs):
+        return '<tool>web_search</tool><query>phone</query>', [], '', [source()]
+    async def fallback(*args, **kwargs):
+        return 'Phone A — кандидат по камере. Цены объявлений не проверены.', [], '', [source()]
+    monkeypatch.setattr(kimi, 'get_kimi_chat_response', search)
+    monkeypatch.setattr(core, 'get_chat_response', fallback)
+    query = 'Какой телефон выбрать к покупке с камерой до 40 тысяч рублей?'
+    result = asyncio.run(core.get_smart_response(user, query, [{'role': 'user', 'content': query}], None))
+    assert 'Phone A' in result[0] and '<tool>' not in result[0]
+
+
 def test_verified_catalog_entrypoints_are_selective_and_do_not_embed_versions(monkeypatch):
     from app.services.authoritative_catalogs import catalog_urls,read_catalogs,CATALOG_MARKER
     assert len(catalog_urls('а версии моделей?','Claude, GPT и Gemini'))==3
