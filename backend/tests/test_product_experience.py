@@ -193,5 +193,7 @@ def test_presentation_quality_accepts_a_goal_question_without_one_exact_word():
     assert score(case, 'Какая тема презентации, кто её аудитория и чего вы хотите добиться?')['passed']
     assert score(case, 'Какая тема презентации? Кто будет её смотреть? Какую цель она должна решить?')['passed']
     assert score(case, 'О чём презентация, для кого она и какого результата вы хотите добиться?')['passed']
+    assert score(case, 'Какая тема презентации? Для кого она и что аудитория должна понять или сделать после просмотра?')['passed']
     assert not score(case, 'Какая тема презентации и кто её аудитория?')['passed']
     assert not score(case, 'Какая тема презентации и какова её цель?')['passed']
+    assert not score(case, 'Какая тема, для кого презентация, сколько слайдов и когда её сдать?')['passed']
