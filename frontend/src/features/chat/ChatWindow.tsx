@@ -77,8 +77,9 @@ interface Suggestion {
 
 const SUGGESTIONS: Suggestion[] = [
   { label: 'Что нового в мире', text: 'Что главное произошло сегодня в мире? Коротко и по источникам.', icon: Newspaper },
-  { label: 'Разобрать файл', text: 'Я прикреплю файл. Вытащи главное и скажи, что с этим делать.', icon: Paperclip },
-  { label: 'Сравнить варианты', text: 'Сравни два подхода и скажи, что выбрать в обычном случае.', icon: ArrowsLeftRight },
+  { label: 'Разобрать документ', text: 'Разбери прикреплённый документ: краткое содержание, ключевые выводы и вопросы, требующие внимания.', icon: Paperclip },
+  { label: 'Сравнить предложения', text: 'Сравни предложения из прикреплённых файлов по цене, условиям и рискам. Сначала уточни, чего не хватает для сравнения.', icon: ArrowsLeftRight },
+  { label: 'Подготовить презентацию', text: 'Помоги подготовить презентацию. Сначала уточни тему, аудиторию, цель и количество слайдов, затем предложи план и подходящий режим.', icon: Presentation },
   { label: 'Найти ошибку в коде', text: 'Помоги найти ошибку в куске кода и как её чинить.', icon: Bug },
 ];
 
@@ -221,6 +222,26 @@ export function ChatWindow({
       : isComputer
         ? COMPUTER_SUGGESTIONS
         : SUGGESTIONS;
+  const suggestionActions = (
+    <Box sx={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 0.75, mb: 2 }} role="group" aria-label="С чего начать">
+      {suggestions.map((s: Suggestion) => (
+        <Box
+          key={s.label}
+          component="button"
+          type="button"
+          onClick={() => {
+            const prepareDraft = !isComputer && !isStudio && !isDocgen && onStartScenario;
+            if (prepareDraft) prepareDraft(s.text);
+            else onSuggestion?.(s.text);
+          }}
+          sx={suggestionChipSx}
+        >
+          {s.icon && <s.icon size={15} aria-hidden style={{ flexShrink: 0, opacity: 0.8 }} />}
+          {s.label}
+        </Box>
+      ))}
+    </Box>
+  );
   const nextChips = !thinking && !reply.typing && !clarifyDocked
     ? followUpChips(lastUserText, lastAssistantText, followUpMode(models?.selected), hasCanvas)
     : [];
@@ -491,11 +512,7 @@ export function ChatWindow({
                       : ''}
               </Box>
               )}
-              {!isComputer && !isStudio && !isDocgen && onStartScenario && <Box sx={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: .5, mb: 2 }}>{[
-                ['Разобрать документ', 'Разбери прикреплённый документ: краткое содержание, ключевые выводы и вопросы, требующие внимания.'],
-                ['Сравнить предложения', 'Сравни предложения из прикреплённых файлов по цене, условиям и рискам. Сначала уточни, чего не хватает для сравнения.'],
-                ['Подготовить презентацию', 'Помоги подготовить презентацию. Сначала уточни тему, аудиторию, цель и количество слайдов, затем предложи план и подходящий режим.'],
-              ].map(([label, prompt]) => <Button key={label} color="inherit" size="small" onClick={() => onStartScenario(prompt)}>{label}</Button>)}</Box>}
+              {!isComputer && !isStudio && !isDocgen && suggestionActions}
               {composerSlotRef && (
                 <Box ref={composerSlotRef} aria-hidden sx={{ height: 'var(--bt-composer-h, 112px)', mb: 2.5 }} />
               )}
@@ -631,20 +648,7 @@ export function ChatWindow({
                   </Box>
                 </Box>
               )}
-              <Box sx={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 0.75 }}>
-                {suggestions.map((s: Suggestion) => (
-                  <Box
-                    key={s.label}
-                    component="button"
-                    type="button"
-                    onClick={() => onSuggestion?.(s.text)}
-                    sx={suggestionChipSx}
-                  >
-                    {s.icon && <s.icon size={15} aria-hidden style={{ flexShrink: 0, opacity: 0.8 }} />}
-                    {s.label}
-                  </Box>
-                ))}
-              </Box>
+              {(isComputer || isStudio || isDocgen) && suggestionActions}
             </motion.div>
           </Box>
         )}
