@@ -37,11 +37,11 @@ class InspectRequest(BaseModel):
 @router.post('/inspect', dependencies=[Depends(agent_auth)])
 async def inspect_card(data: InspectRequest):
     # Authenticated diagnostics can only enqueue an already supported public
-    # card. No arbitrary fetches, scripts, cookies or account pages.
+    # card/listing. No arbitrary fetches, scripts, cookies or account pages.
     from marketplace_verification import public_shop_url
     found=public_shop_url(data.url)
-    if not found or found[0] not in {'card','short'}:
-        raise HTTPException(422,'Only public product cards can be inspected')
+    if not found or found[0] not in {'card','short','listing'}:
+        raise HTTPException(422,'Only public product cards and listings can be inspected')
     return {'reader_version':home_relay.reader_version,'result':await home_relay.fetch(found[1], mode=data.mode)}
 
 

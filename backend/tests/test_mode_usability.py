@@ -47,6 +47,21 @@ def test_queued_image_tools_keep_quality_that_was_submitted(account, monkeypatch
     assert manager.get_user_image_quality(uid) == 'high'
 
 
+def test_queued_generation_routes_shop_reads_to_api_and_resets_context(account, monkeypatch):
+    from app.workers import generations
+    from app.services.marketplace_relay import reader_api
+    from app.config import get_settings
+    email, uid = account
+    store.reserve(email, 'price-chat', 'message', {'content': 'Цена смартфона'})
+    observed = []
+    async def fake(*args, **kwargs): observed.append(reader_api.get())
+    monkeypatch.setattr(generations, 'run_chat', fake)
+    assert reader_api.get() is None
+    asyncio.run(generations.execute(store.claim(generations.hub.publisher)))
+    assert observed == [get_settings().HOME_RELAY_API_URL]
+    assert reader_api.get() is None
+
+
 def test_orchestrator_does_not_turn_into_studio_when_account_mode_changes(account, monkeypatch):
     from app.services import computer_tasks
     from app.bot_core.db_conversations import DatabaseConversationManager

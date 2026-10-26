@@ -74,6 +74,7 @@ class Settings(BaseSettings):
     PUBLIC_APP_URL: str = ""
     # Home browser polling credential; an empty value disables this route.
     HOME_RELAY_TOKEN: str = ""
+    HOME_RELAY_API_URL: str = "http://backend:8000/marketplace-relay"
     # "Подключить Google" for Pilot (Gmail, Drive, Calendar). Empty = button off.
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""

@@ -330,7 +330,7 @@ async def verify_marketplace_cards(task, journal, user_id=None):
                 "status": "ok" if status == "ok" else "error", "live_verification": True,
                 "result": f"URL: {url}\nПроверено: {now}\nРезультат читателя: {status}\n{body}",
                 "search": [{"query": url, "summary": url, "reader": "home", "read_status": status, "checked_at": now}] if url else []}
-    if not home_relay.online:
+    if not await home_relay.available():
         return [entry("", "offline", "Домашний читатель офлайн. Карточки через него НЕ открывались. Данные поиска не проверены.")]
     price_only = single_store_price_lookup(task)
     deadline = time.monotonic() + (75 if price_only else BUDGET_SECONDS)
