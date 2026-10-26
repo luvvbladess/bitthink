@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 import config as bot_config
 from app.auth import get_current_user
+from app.billing.quota import effective_tier
 from app.billing.plans import (
     LEGACY_MODEL_ALIASES,
     MODEL_MULTIPLIER,
@@ -16,7 +17,7 @@ router = APIRouter()
 
 # Web-only display layer: clean names + short descriptions for the picker UI.
 WEB_MODEL_INFO = {
-    "auto": {"name": "Лучший", "description": "Быстрый ответ или глубокий разбор — по переключателю"},
+    "auto": {"name": "Экспресс", "description": "Быстрый ответ с автоматическим выбором модели"},
     "correspondent": {"name": "Официальный стиль", "description": "Деловая переписка и документы"},
     "director": {"name": "Оркестратор", "description": "Раздаёт должности подходящим ИИ-агентам в песочнице и собирает результат"},
     "studio": {"name": "Студия", "description": "Картинки, слайды и инфографика на холсте"},
@@ -66,7 +67,7 @@ def _allowed_for(tier: str) -> set[str]:
 @router.get("")
 async def list_models(user_id: str = Depends(get_current_user)):
     subscription = await repo.get_subscription(user_id)
-    tier = subscription.get("tier", "free")
+    tier = effective_tier(subscription)
     allowed = _allowed_for(tier)
     selected_model = await repo.get_user_model(user_id)
     clamped = clamp_model(tier, selected_model)
@@ -89,6 +90,8 @@ async def list_models(user_id: str = Depends(get_current_user)):
             if m in PUBLIC_MODEL_IDS
         ],
         "selected": selected_model,
+        "selectedName": WEB_MODEL_INFO.get(selected_model, {}).get('name', bot_config.AVAILABLE_MODELS.get(selected_model, 'Выбранная модель')),
+        "selectedDescription": WEB_MODEL_INFO.get(selected_model, {}).get('description', ''),
         "reasoningEffort": reasoning_effort,
         "imageQuality": await repo.get_user_image_quality(user_id),
         "imageQualities": list(bot_config.IMAGE_QUALITIES),
@@ -96,10 +99,13 @@ async def list_models(user_id: str = Depends(get_current_user)):
         "xhighCapable": selected_model in XHIGH_CAPABLE_MODELS or selected_model in MAX_CAPABLE_MODELS,
         "supportsReasoningEffort": selected_model in REASONING_EFFORT_CAPABLE_MODELS,
         "researchModel": research,
+        "searchAvailable": "kimi-k2.6" in allowed,
         "computerAvailable": "director" in allowed,
         "studioAvailable": "studio" in allowed,
         "docgenAvailable": "docgen" in allowed,
         "astraAvailable": "gpt-6-astra" in allowed,
+        "modeRequirements": {'research': 'Нужен Pro', 'astra': 'Нужен Pro+', 'studio': 'Нужен Pro',
+            'computer': 'Нужен Pro', 'docgen': 'Внутренний режим Creator'},
         "multipliers": MODEL_MULTIPLIER,
     }
 
@@ -110,7 +116,7 @@ async def select_model(data: ModelSelect, user_id: str = Depends(get_current_use
     if requested not in bot_config.AVAILABLE_MODELS:
         raise HTTPException(status_code=400, detail="Unknown model")
     subscription = await repo.get_subscription(user_id)
-    allowed = _allowed_for(subscription.get("tier", "free"))
+    allowed = _allowed_for(effective_tier(subscription))
     if requested not in allowed:
         raise HTTPException(status_code=403, detail="Модель недоступна на этом тарифе")
     await repo.set_user_model(user_id, requested)

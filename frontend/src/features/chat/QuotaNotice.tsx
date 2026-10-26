@@ -1,3 +1,4 @@
+import { useModelsQuery } from '@/components/ModelSelector';
 import { Box, IconButton, Typography } from '@mui/material';
 import { useQuery } from '@tanstack/react-query';
 import { WarningCircle, X } from '@phosphor-icons/react';
@@ -74,11 +75,7 @@ export function QuotaNotice() {
     queryFn: () => apiFetch('/billing/subscription'),
     staleTime: 15_000,
   });
-  const { data: models } = useQuery<{ selected?: string }>({
-    queryKey: ['models'],
-    queryFn: () => apiFetch('/models'),
-    staleTime: 10_000,
-  });
+  const { data: models } = useModelsQuery();
   const notice = useMemo(
     () => pickNotice(sub, models?.selected === 'director'),
     [sub, models?.selected],

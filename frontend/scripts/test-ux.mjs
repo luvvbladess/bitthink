@@ -85,10 +85,29 @@ async function fixture(options = {}) {
     } else if (path === '/auth/refresh') {
       if (state.auth === 'refresh-network') return route.abort('failed');
       return route.fulfill({ status: state.auth === 'refresh-invalid' ? 401 : 503, json: {} });
-    } else if (path === '/models') data = {
-      selected: options.model || 'auto', reasoningEffort: 'medium', computerAvailable: true, studioAvailable: true,
-      models: [{ id: 'auto', name: 'Экспресс', available: true }, { id: 'director', name: 'Оркестратор', available: true }, { id: 'studio', name: 'Студия', available: true }],
-    };
+    } else if (path === '/models') {
+      if (state.modelLoadFailure) return route.fulfill({ status: 503, json: { detail: 'Каталог временно недоступен' } });
+      const selected = state.selectedModel || options.model || 'auto';
+      data = {
+        selected, selectedName: selected === 'gpt-6-luna' ? 'Быстрый' : undefined,
+        reasoningEffort: state.modelEffort || 'medium', imageQuality: state.imageQuality || 'high',
+        supportsReasoningEffort: ['auto', 'gpt-6-luna', 'gpt-6-sol', 'gpt-6-astra'].includes(selected),
+        computerAvailable: true, studioAvailable: true, searchAvailable: !state.searchLocked,
+        docgenAvailable: Boolean(options.fullModes), astraAvailable: Boolean(options.fullModes), researchModel: options.fullModes ? 'gpt-6-sol' : null,
+        models: [{ id: 'auto', name: 'Экспресс', available: true }, { id: 'gpt-6-luna', name: 'Быстрый', available: true }, { id: 'director', name: 'Оркестратор', available: true }, { id: 'studio', name: 'Студия', available: true }],
+      };
+    } else if (path === '/models/select') {
+      (state.modeSelections ||= []).push(route.request().postDataJSON().model);
+      if (state.modeDelay) await new Promise(resolve => setTimeout(resolve, state.modeDelay));
+      if (state.modeFailure) return route.fulfill({ status: 503, json: { detail: 'Временная ошибка сохранения' } });
+      state.selectedModel = route.request().postDataJSON().model;
+      data = { ok: true, model: state.selectedModel };
+    } else if (path === '/models/reasoning' || path === '/models/image-quality') {
+      if (state.preferenceDelay) await new Promise(resolve => setTimeout(resolve, state.preferenceDelay));
+      if (state.preferenceFailure) return route.fulfill({ status: 503, json: { detail: 'Временная ошибка настроек' } });
+      if (path.endsWith('reasoning')) { state.modelEffort = route.request().postDataJSON().effort; data = { ok: true, effort: state.modelEffort }; }
+      else { state.imageQuality = route.request().postDataJSON().quality; data = { ok: true, quality: state.imageQuality }; }
+    }
     else if (path === '/conversations' && method === 'POST') {
       state.createRequests = (state.createRequests || 0) + 1;
       if (state.failCreate) return route.fulfill({ status: 503, json: { detail: 'Temporary outage' } });
@@ -295,6 +314,156 @@ async function sidebarFixture(options = {}) {
 }
 
 try {
+  await test('modes: failed initial catalog offers recovery while preserving typed text', async () => {
+    const f = await fixture({ modelLoadFailure: true });
+    try {
+      await expect(f.input).toBeEnabled(); await f.input.fill('Черновик до загрузки режимов');
+      await expect(f.page.getByRole('button', { name: 'Отправить сообщение', exact: true })).toBeDisabled();
+      const retry = f.page.getByRole('button', { name: 'Повторить загрузку режимов', exact: true });
+      await expect(retry).toBeVisible(); f.state.modelLoadFailure = false; await retry.click();
+      await expect(f.page.getByRole('button', { name: 'Отправить сообщение', exact: true })).toBeEnabled();
+      await expect(f.input).toHaveValue('Черновик до загрузки режимов');
+      assert.equal(f.state.sends.length, 0);
+    } finally { await f.context.close(); }
+  });
+
+  for (const width of [320, 1440]) await test(`modes: every available mode switches without sending or losing a draft ${width}`, async () => {
+    const f = await fixture({ fullModes: true, viewport: { width, height: 900 } });
+    try {
+      await expect(f.input).toBeEnabled(); await f.input.fill('Не потерять текст при переключении');
+      const choices = [['Поиск', 'kimi-k2.6'], ['Исследование', 'gpt-6-sol'], ['Astra', 'gpt-6-astra'], ['Студия', 'studio'], ['Документы', 'docgen'], ['Оркестратор', 'director'], ['Экспресс', 'auto']];
+      for (const [label, model] of choices) {
+        await f.page.getByRole('button', { name: /^Режим ответа:/ }).click();
+        const dialog = f.page.getByRole('dialog', { name: 'Выбор режима', exact: true });
+        const row = dialog.getByRole('button', { name: new RegExp('^' + label + ' ') });
+        if (!await row.isVisible()) await dialog.getByRole('button', { name: /^Ещё/ }).click();
+        await row.click();
+        await expect(f.page.getByRole('button', { name: `Режим ответа: ${label}`, exact: true })).toBeVisible();
+        await expect(dialog).toBeHidden(); await expect(f.input).toHaveValue('Не потерять текст при переключении');
+        assert.equal(f.state.selectedModel, model);
+      }
+      assert.equal(f.state.sends.length, 0);
+      await f.page.screenshot({ path: `${output}/modes-composer-${width}.png`, fullPage: true });
+    } finally { await f.context.close(); }
+  });
+  await test('modes: an existing direct model is never silently changed to Auto', async () => {
+    const f = await fixture({ model: 'gpt-6-luna' });
+    try {
+      await expect(f.input).toBeEnabled();
+      await expect(f.page.getByRole('button', { name: 'Режим ответа: Быстрый', exact: true })).toBeVisible();
+      await f.input.fill('Проверка выбранной модели'); await f.input.press('Enter');
+      await expect.poll(() => f.state.sends.length).toBe(1);
+      assert.equal(f.state.sends[0].model, 'gpt-6-luna');
+      assert.deepEqual(f.state.modeSelections || [], []);
+    } finally { await f.context.close(); }
+  });
+  await test('modes: failed selection stays open and retry commits only after acknowledgement', async () => {
+    const f = await fixture({ modeFailure: true });
+    try {
+      await expect(f.input).toBeEnabled(); await f.input.fill('Черновик переживёт ошибку');
+      await f.page.getByRole('button', { name: 'Режим ответа: Экспресс', exact: true, includeHidden: true }).click();
+      const dialog = f.page.getByRole('dialog', { name: 'Выбор режима', exact: true });
+      await dialog.getByRole('button', { name: /^Студия / }).click();
+      await expect(dialog.getByRole('alert')).toContainText('Не удалось подтвердить выбор режима');
+      await expect(f.page.getByRole('button', { name: 'Режим ответа: Экспресс', exact: true, includeHidden: true })).toHaveCount(1);
+      f.state.modeFailure = false; await dialog.getByRole('button', { name: /^Студия / }).click();
+      await expect(dialog).toBeHidden();
+      await expect(f.page.getByRole('button', { name: 'Режим ответа: Студия', exact: true })).toBeVisible();
+      await expect(f.input).toHaveValue('Черновик переживёт ошибку');
+    } finally { await f.context.close(); }
+  });
+  await test('modes: pending preferences prevent sending in an unconfirmed mode', async () => {
+    const f = await fixture({ modeDelay: 1200 });
+    try {
+      await expect(f.input).toBeEnabled(); await f.input.fill('Подождать подтверждения');
+      await f.page.getByRole('button', { name: /^Режим ответа:/ }).click();
+      await f.page.getByRole('dialog', { name: 'Выбор режима', exact: true }).getByRole('button', { name: /^Студия / }).click();
+      await expect(f.page.getByRole('button', { name: 'Отправить сообщение', exact: true, includeHidden: true })).toBeDisabled();
+      assert.equal(f.state.sends.length, 0);
+      await expect(f.page.getByRole('button', { name: 'Режим ответа: Студия', exact: true })).toBeEnabled();
+      await f.input.press('Enter'); await expect.poll(() => f.state.sends.length).toBe(1);
+      assert.equal(f.state.sends[0].model, 'studio');
+    } finally { await f.context.close(); }
+  });
+  await test('modes: upload locks settings and preserves the mode seen before another tab changed it', async () => {
+    const f = await fixture({ uploadDelay: 1200 });
+    try {
+      await expect(f.input).toBeEnabled(); await f.input.fill('Разбери файл');
+      await f.page.locator('input[type="file"]').setInputFiles({ name: 'mode.txt', mimeType: 'text/plain', buffer: Buffer.from('Synthetic file') });
+      await f.input.press('Enter');
+      await expect.poll(() => f.state.uploads.length).toBe(1);
+      await expect(f.page.getByRole('button', { name: /^Режим ответа:/ })).toBeDisabled();
+      f.state.selectedModel = 'studio';
+      await expect.poll(() => f.state.sends.length).toBe(1);
+      assert.equal(f.state.sends[0].model, 'auto');
+    } finally { await f.context.close(); }
+  });
+  await test('modes: locked search has an explanation and cannot be selected', async () => {
+    const f = await fixture({ searchLocked: true });
+    try {
+      await expect(f.input).toBeEnabled(); await f.page.getByRole('button', { name: /^Режим ответа:/ }).click();
+      const dialog = f.page.getByRole('dialog', { name: 'Выбор режима', exact: true });
+      await dialog.getByRole('button', { name: /^Ещё/ }).click();
+      await expect(dialog.getByRole('button', { name: /^Поиск / })).toBeDisabled();
+      assert.deepEqual(f.state.modeSelections || [], []);
+      await f.page.screenshot({ path: `${output}/modes-access.png`, fullPage: true });
+    } finally { await f.context.close(); }
+  });
+  await test('modes: quality error preserves the last confirmed setting and recovers', async () => {
+    const f = await fixture({ preferenceFailure: true });
+    try {
+      await expect(f.input).toBeEnabled(); await f.page.getByRole('button', { name: /^Режим ответа:/ }).click();
+      const dialog = f.page.getByRole('dialog', { name: 'Выбор режима', exact: true });
+      await dialog.getByRole('radio', { name: 'Быстро', exact: true }).click();
+      await expect(dialog.getByRole('alert')).toContainText('Не удалось подтвердить качество картинок');
+      await expect(dialog.getByRole('radio', { name: 'Высокое', exact: true })).toHaveAttribute('aria-checked', 'true');
+      f.state.preferenceFailure = false; await dialog.getByRole('radio', { name: 'Быстро', exact: true }).click();
+      await expect(dialog.getByRole('radio', { name: 'Быстро', exact: true })).toHaveAttribute('aria-checked', 'true');
+    } finally { await f.context.close(); }
+  });
+  await test('modes: reasoning failure is visible and does not change the switch', async () => {
+    const f = await fixture({ preferenceFailure: true });
+    try {
+      await expect(f.input).toBeEnabled(); const toggle = f.page.getByRole('switch', { name: 'Глубокие размышления', exact: true });
+      await expect(toggle).toHaveAttribute('aria-checked', 'true'); await toggle.click();
+      await expect(f.page.getByRole('alert').filter({ hasText: 'Не удалось подтвердить настройку размышлений' })).toBeVisible();
+      await expect(toggle).toHaveAttribute('aria-checked', 'true');
+      f.state.preferenceFailure = false; await toggle.click();
+      await expect(toggle).toHaveAttribute('aria-checked', 'false');
+    } finally { await f.context.close(); }
+  });
+  await test('modes: accepting a suggested mode handles errors and reflects later mode changes', async () => {
+    const f = await fixture({ modeFailure: true, handleRoute: async ({ path, route }) => {
+      if (path === '/conversations/chat-a/history') {
+        await route.fulfill({ json: { items: [{ id: 'chat-a_0', role: 'assistant', content: 'Для этого подойдёт Студия.', search: [{ query: '__mode_switch__', summary: JSON.stringify({ model: 'studio', label: 'Студия', reason: 'Для визуального результата', accept: 'Перейти в Студию', done: 'Студия выбрана' }) }] }], has_more: false, before: null, has_newer: false } }); return true;
+      } return false;
+    } });
+    try {
+      const accept = f.page.getByRole('button', { name: 'Перейти в Студию', exact: true });
+      await accept.click(); await expect(f.page.getByRole('alert').filter({ hasText: 'Не удалось подтвердить переключение режима.' })).toBeVisible();
+      f.state.modeFailure = false; await accept.click();
+      await expect(f.page.getByRole('button', { name: 'Студия выбрана', exact: true })).toBeDisabled();
+      await f.page.getByRole('button', { name: /^Режим ответа:/ }).click();
+      await f.page.getByRole('dialog', { name: 'Выбор режима', exact: true }).getByRole('button', { name: /^Экспресс / }).click();
+      await expect(accept).toBeEnabled();
+    } finally { await f.context.close(); }
+  });
+  await test('modes: image edit can be cancelled without losing an attached document', async () => {
+    const f = await fixture({ imageHistory: true });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.page.getByRole('button', { name: 'Изменить', exact: true }).click();
+      await f.input.fill('Проанализируй документ');
+      await f.page.locator('input[type="file"]').setInputFiles({ name: 'proposal.pdf', mimeType: 'application/pdf', buffer: Buffer.from('Synthetic PDF') });
+      await expect(f.page.getByRole('alert')).toContainText('подходят только изображения');
+      await expect(f.page.getByRole('button', { name: 'Отправить сообщение', exact: true, includeHidden: true })).toBeDisabled();
+      await f.page.getByRole('button', { name: 'Вернуться к чату', exact: true }).click();
+      await expect(f.page.getByRole('button', { name: 'Отправить сообщение', exact: true, includeHidden: true })).toBeEnabled();
+      await expect(f.page.getByText('proposal.pdf', { exact: true })).toBeVisible();
+      await expect(f.input).toHaveValue('Проанализируй документ');
+    } finally { await f.context.close(); }
+  });
+
   await test('experience: files and draft survive refresh on this device', async () => {
     const f = await fixture();
     try {

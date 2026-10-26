@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { Box, CircularProgress, IconButton, TextField, Tooltip } from '@mui/material';
+import { Box, Button, CircularProgress, IconButton, TextField, Tooltip } from '@mui/material';
 import { File as FileIcon, PaperPlaneRight, Paperclip, Microphone, Stop, X } from '@phosphor-icons/react';
 import { useComposerDraft } from './useComposerDraft';
 import { useVoiceInput } from './useVoiceInput';
-import { ReasoningEffortSelector, SearchModeSelector, useIsComputer, useSelectedModel } from '@/components/ModelSelector';
+import { ReasoningEffortSelector, SearchModeSelector, useIsComputer, useSelectedModel, useModePreferencesBusy, useModePreferenceError, useModelsQuery } from '@/components/ModelSelector';
 import { composerIconBtnSx, composerShellSx } from '@/theme/effects';
 import { DOCGEN_LABEL, PILOT_LABEL } from '@/constants/modes';
 import { OrchestratorTools } from './OrchestratorTools';
@@ -102,6 +102,9 @@ export function MessageInput({
   const [toolsOpen, setToolsOpen] = useState(false);
   const viewportHeight = useVisualViewportHeight();
   const [submitting, setSubmitting] = useState(false);
+  const preferencesBusy = useModePreferencesBusy();
+  const { data: confirmedSettings } = useModelsQuery();
+  const preferenceError = useModePreferenceError();
   const { text, setText, pendingFiles, setPendingFiles, submission, restoring, storageWarning } = useComposerDraft(conversationId);
   useEffect(() => { if (starterPrompt && !restoring) { setText(previous => previous.trim() ? `${previous}\n\n${starterPrompt}` : starterPrompt); onStarterApplied?.(); inputRef.current?.focus(); } }, [starterPrompt, restoring]);
   const { voiceState, handleMicClick } = useVoiceInput(conversationId, transcribed => {
@@ -129,7 +132,7 @@ export function MessageInput({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (restoring || disabled || sendingRef.current || ['starting', 'recording', 'transcribing'].includes(voiceState) || (!text.trim() && !pendingFiles.length) || (imageMode && !text.trim())) return;
+    if (!confirmedSettings || (imageMode && (pendingFiles.some(file => !file.type.startsWith('image/')) || pendingFiles.length > 8)) || preferencesBusy || restoring || disabled || sendingRef.current || ['starting', 'recording', 'transcribing'].includes(voiceState) || (!text.trim() && !pendingFiles.length) || (imageMode && !text.trim())) return;
     sendingRef.current = true;
     setSubmitting(true);
     const acceptDraft = submission();
@@ -173,6 +176,7 @@ export function MessageInput({
   useEffect(() => {
     setImageMode(false);
     setToolsOpen(false);
+    onClearEditSource?.();
   }, [selectedModel, conversationId]);
 
   const pendingImages = pendingFiles.filter((file) => file.type.startsWith('image/'));
@@ -181,7 +185,10 @@ export function MessageInput({
     if (selectionQuote) { setImageMode(false); inputRef.current?.focus(); }
   }, [selectionQuote]);
 
-  const canSend = (text.trim() || pendingFiles.length > 0) && !restoring && !disabled && !submitting && !['starting', 'recording', 'transcribing'].includes(voiceState) && !(imageMode && !text.trim());
+  const imageInputError = imageMode && pendingFiles.some(file => !file.type.startsWith('image/'))
+    ? 'Для правки картинки подходят только изображения. Уберите остальные файлы или вернитесь к чату.'
+    : imageMode && pendingImages.length > 8 ? 'Для правки можно добавить до 8 изображений. Уберите лишние.' : '';
+  const canSend = (text.trim() || pendingFiles.length > 0) && !!confirmedSettings && !imageInputError && !preferencesBusy && !restoring && !disabled && !submitting && !['starting', 'recording', 'transcribing'].includes(voiceState) && !(imageMode && !text.trim());
 
   return (
     <Box sx={{ width: '100%', '&:focus-within .bt-key-hint': { opacity: 1 } }}>
@@ -229,7 +236,11 @@ export function MessageInput({
         }),
       }}
     >
+      {imageMode && <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: 1 }}><Box sx={{ fontSize: 12, color: 'text.secondary' }}>Правка изображения</Box><Button size="small" color="inherit" onClick={() => { setImageMode(false); onClearEditSource?.(); }}>Вернуться к чату</Button></Box>}
+      {imageInputError && <Box role="alert" sx={{ fontSize: 12, color: 'text.secondary', mb: 1 }}>{imageInputError}</Box>}
       {storageWarning && <Box role="status" sx={{ fontSize: 12, color: 'text.secondary', mb: 1 }}>{storageWarning}</Box>}
+      {preferenceError && <Box role="alert" sx={{ fontSize: 12, color: 'text.secondary', mb: 1 }}>{preferenceError}</Box>}
+      {preferencesBusy && <Box role="status" sx={{ fontSize: 12, color: 'text.secondary', mb: 1 }}>Сохраняем настройки режима…</Box>}
       {restoring && <Box role="status" sx={{ fontSize: 12, color: 'text.secondary', mb: 1 }}>Восстанавливаем черновик…</Box>}
       <input
         type="file"
@@ -267,7 +278,7 @@ export function MessageInput({
             <Box sx={{ fontSize: '0.75rem', color: 'text.primary', whiteSpace: 'nowrap' }}>Правка этой картинки</Box>
             <IconButton
               size="small"
-              onClick={() => onClearEditSource?.()}
+              onClick={() => { setImageMode(false); onClearEditSource?.(); }}
               aria-label="Создать новое изображение"
               sx={{ ml: 'auto', p: 0.25, color: 'text.secondary', '&:hover': { color: 'text.primary' } }}
             >
@@ -394,10 +405,10 @@ export function MessageInput({
             <Paperclip size={20} weight="bold" />
           </IconButton>
         </Tooltip>
-        <SearchModeSelector />
+        <SearchModeSelector disabled={submitting} />
         <Box sx={{ flex: '1 1 auto', minWidth: 8 }} />
         <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 0.15, sm: 0.25 }, flexShrink: 0, ml: 'auto' }}>
-        <ReasoningEffortSelector />
+        <ReasoningEffortSelector disabled={submitting} />
 
         <Tooltip title={voiceLabel} disableTouchListener enterDelay={500}>
           <span>

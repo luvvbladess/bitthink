@@ -1,28 +1,33 @@
 import { useState } from 'react';
 import { Box } from '@mui/material';
 import type { ModeSwitch } from './modeSwitch';
+import { useSelectedModel, useModePreferencesBusy } from '@/components/ModelSelector';
 
 interface Props {
   suggestion: ModeSwitch;
-  onAccept: () => void | Promise<void>;
+  onAccept: () => void | Promise<unknown>;
 }
 
 export function ModeSwitchCard({ suggestion, onAccept }: Props) {
-  const [accepted, setAccepted] = useState(false);
+  const accepted = useSelectedModel() === suggestion.model;
+  const busy = useModePreferencesBusy();
+  const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
   return (
     <Box sx={{ mt: 1.25 }}>
       <Box
         component="button"
         type="button"
-        disabled={accepted || pending}
+        disabled={accepted || pending || busy}
+        aria-busy={pending || busy}
         aria-label={accepted ? suggestion.done : suggestion.accept}
-        onClick={() => {
-          if (accepted || pending) return;
+        onClick={async () => {
+          if (accepted || pending || busy) return;
           setPending(true);
-          Promise.resolve(onAccept())
-            .then(() => setAccepted(true))
-            .finally(() => setPending(false));
+          setError('');
+          try { await onAccept(); }
+          catch { setError('Не удалось подтвердить переключение режима. Проверьте подключение и повторите действие.'); }
+          finally { setPending(false); }
         }}
         sx={{
           border: 0,
@@ -45,6 +50,7 @@ export function ModeSwitchCard({ suggestion, onAccept }: Props) {
       >
         {accepted ? suggestion.done : suggestion.accept}
       </Box>
+      {error && !accepted && <Box role="alert" sx={{ fontSize: 13, color: 'text.secondary', mt: 1 }}>{error}</Box>}
     </Box>
   );
 }

@@ -12,7 +12,7 @@ import json
 
 from sqlalchemy import select, update, or_
 from app.db.engine import SyncSessionLocal
-from app.db.models import ComputerTask, ComputerEvent, User, Conversation
+from app.db.models import ComputerTask, ComputerEvent, User, Conversation, Subscription
 from app.services.computer_context import computer_task_id
 
 log = logging.getLogger(__name__)
@@ -69,10 +69,24 @@ def create_task(user: str, prompt: str, title: str = "", interval: int = 0, star
             next_run_at=max(now, start_at), lease_until=0, run_number=0, progress="", error="",
             created_at=now, updated_at=now)
         session.add(row)
+        sub = session.scalar(select(Subscription).where(Subscription.user_id == owner.bot_user_id)) if owner else None
+        session.add(ComputerEvent(task_id=row.id, run_number=0, kind='preferences',
+            detail=json.dumps({'selected_model': 'director', 'reasoning_effort': sub.reasoning_effort if sub else None,
+                'image_quality': sub.image_quality if sub and sub.image_quality else 'high'}), created_at=now))
         if key:
             session.add(ComputerEvent(task_id=row.id, run_number=0, kind='enrollment', detail=json.dumps({'key': key, 'request': request_hash}), created_at=now))
         session.commit()
         return public(row)
+
+
+def task_preferences(task_id: str, user_id: int) -> dict:
+    with SyncSessionLocal() as session:
+        saved = session.scalar(select(ComputerEvent.detail).where(ComputerEvent.task_id == task_id,
+            ComputerEvent.kind == 'preferences').order_by(ComputerEvent.id).limit(1))
+        preferences = json.loads(saved) if saved else {}
+        # This endpoint enrolls an Orchestrator task, independently of whatever
+        # mode the account chooses in another chat before the worker starts.
+        return {**preferences, 'user_id': user_id, 'selected_model': 'director'}
 
 
 def event(task_id: str, kind: str, detail: str = "") -> None:
@@ -88,7 +102,7 @@ def events(user: str, task_id: str) -> list[dict]:
     if get_task(user, task_id) is None:
         raise ValueError("Задача не найдена.")
     with SyncSessionLocal() as session:
-        rows = session.scalars(select(ComputerEvent).where(ComputerEvent.task_id == task_id, ComputerEvent.kind.not_in(['checkpoint', 'action_receipt', 'enrollment', 'run_scope']))
+        rows = session.scalars(select(ComputerEvent).where(ComputerEvent.task_id == task_id, ComputerEvent.kind.not_in(['checkpoint', 'action_receipt', 'enrollment', 'run_scope', 'preferences']))
                                .order_by(ComputerEvent.id.desc()).limit(200)).all()
         return [{"id": r.id, "run": r.run_number, "kind": r.kind, "detail": r.detail,
                  "created_at": r.created_at} for r in reversed(rows)]
@@ -247,6 +261,7 @@ class ComputerWorker:
         beat = None
         cid = None
         busy = False
+        preference_token = None
         try:
             uid = await repo.ensure_user(user)
             group, journal = await asyncio.to_thread(task_checkpoints.begin, task_id, row['run_number'], row['resume_history'])
@@ -255,6 +270,8 @@ class ComputerWorker:
             sub = await asyncio.to_thread(repo.billing.get_subscription, uid)
             if "director" not in allowed_models(effective_tier(sub)):
                 raise QuotaError("Режим Оркестратора доступен с тарифа Pro.", "plan")
+            from app.core.request_context import generation_preferences
+            preference_token = generation_preferences.set(await asyncio.to_thread(task_preferences, task_id, uid))
             cid = row["conversation_id"]
             # A new recurring run gets a clean context. A user-resumed run uses its transcript.
             if not cid or (not row['resume_history'] and row['run_number'] > 1):
@@ -311,6 +328,7 @@ class ComputerWorker:
             task_checkpoints.task_run_number.reset(run_token)
             if group_token is not None: task_checkpoints.logical_run.reset(group_token)
             if journal_token is not None: task_checkpoints.resumed_journal.reset(journal_token)
+            if preference_token is not None: generation_preferences.reset(preference_token)
 
 
 worker = ComputerWorker()

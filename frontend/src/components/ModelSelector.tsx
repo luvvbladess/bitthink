@@ -1,7 +1,7 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
-import { Box, Collapse, Drawer, Popover, Button, IconButton, Typography, Tooltip, useMediaQuery } from '@mui/material';
+import { useId, useLayoutEffect, useState } from 'react';
+import { Alert, Box, Collapse, Drawer, Popover, Button, IconButton, Typography, Tooltip, useMediaQuery } from '@mui/material';
 import { CaretDown, Check, Lightning, MagnifyingGlass, Books, Desktop, Presentation, Atom, FileText, Lock, Brain, X, Image as ImageIcon } from '@phosphor-icons/react';
-import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, useIsMutating, useMutationState, type QueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/api/client';
 import { composerChipSelectedSx, composerChipSx } from '@/theme/effects';
 import { GlowSwitch } from '@/components/GlowSwitch';
@@ -19,6 +19,8 @@ interface Model {
 interface ModelsCache {
   models: Model[];
   selected: string;
+  selectedName?: string; selectedDescription?: string; searchAvailable?: boolean;
+  modeRequirements?: Record<string, string>;
   reasoningEffort: string;
   reasoningEfforts?: string[];
   xhighCapable?: boolean;
@@ -63,8 +65,8 @@ const REASONING_CAPABLE = new Set([
 ]);
 const XHIGH_CAPABLE = new Set(['gpt-6-sol', 'gpt-6-astra']);
 
-function useModelsQuery() {
-  return useQuery({ queryKey: ['models'], queryFn: () => apiFetch('/models'), staleTime: 10_000 });
+export function useModelsQuery() {
+  return useQuery<ModelsCache>({ queryKey: ['models'], queryFn: ({ signal }) => apiFetch('/models', { signal, timeoutMs: 15000 }), staleTime: 10_000, retry: 1 });
 }
 
 function patchModelsCache(queryClient: QueryClient, patch: Partial<ModelsCache>) {
@@ -80,22 +82,34 @@ function patchModelsCache(queryClient: QueryClient, patch: Partial<ModelsCache>)
   });
 }
 
-export function useSelectModel() {
+export const MODE_PREFERENCES_KEY = ['mode-preferences'];
+export function useModePreferencesBusy() { return useIsMutating({ mutationKey: MODE_PREFERENCES_KEY }) > 0; }
+export function useModePreferenceError() {
+  const { data } = useModelsQuery();
+  const mutations = useMutationState({ filters: { mutationKey: MODE_PREFERENCES_KEY }, select: mutation => ({ status: mutation.state.status, submittedAt: mutation.state.submittedAt, setting: mutation.meta?.setting, value: mutation.state.variables }) });
+  const latest = mutations.reduce<(typeof mutations)[number] | undefined>((last, current) => !last || current.submittedAt >= last.submittedAt ? current : last, undefined);
+  if (latest?.status !== 'error') return '';
+  const confirmed = latest.setting === 'selected' ? data?.selected : latest.setting === 'reasoningEffort' ? data?.reasoningEffort : data?.imageQuality;
+  if (confirmed === latest.value) return '';
+  return latest.setting === 'reasoningEffort' ? 'Не удалось подтвердить настройку размышлений. Проверьте переключатель и повторите действие.'
+    : latest.setting === 'imageQuality' ? 'Не удалось подтвердить качество картинок. Проверьте выбранное качество и повторите действие.'
+    : 'Не удалось подтвердить выбор режима. Проверьте текущий выбор и повторите действие.';
+}
+
+/** Commit only confirmed settings. All three controls share one ordered lane. */
+function usePreferenceMutation(path: string, field: 'selected' | 'reasoningEffort' | 'imageQuality', bodyKey: string, resultKey: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (model: string) => apiFetch('/models/select', { method: 'POST', body: JSON.stringify({ model }) }),
-    onMutate: async (model) => {
-      const previous = queryClient.getQueryData(['models']);
-      patchModelsCache(queryClient, { selected: model });
-      await queryClient.cancelQueries({ queryKey: ['models'] });
-      return { previous };
-    },
-    onError: (_err, _model, ctx) => {
-      if (ctx?.previous) queryClient.setQueryData(['models'], ctx.previous);
-    },
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['models'] }),
+    meta: { setting: field },
+    mutationKey: MODE_PREFERENCES_KEY, scope: { id: 'mode-preferences' },
+    mutationFn: (value: string) => apiFetch(path, { method: 'POST', body: JSON.stringify({ [bodyKey]: value }), timeoutMs: 15000 }),
+    onMutate: () => queryClient.cancelQueries({ queryKey: ['models'] }),
+    onSuccess: (result, value) => patchModelsCache(queryClient, { [field]: result[resultKey] || value }),
+    onSettled: () => { void queryClient.invalidateQueries({ queryKey: ['models'] }); },
   });
 }
+
+export function useSelectModel() { return usePreferenceMutation('/models/select', 'selected', 'model', 'model'); }
 
 export function useIsComputer() {
   const { data } = useModelsQuery();
@@ -107,11 +121,13 @@ export function useSelectedModel() {
   return data?.selected || 'auto';
 }
 
-export function SearchModeSelector() {
+export function SearchModeSelector({ disabled = false }: { disabled?: boolean }) {
   const viewportHeight = useVisualViewportHeight();
   const [anchor, setAnchor] = useState<null | HTMLElement>(null);
-  const normalizationStarted = useRef(false);
-  const { data } = useModelsQuery();
+  const modelsQuery = useModelsQuery();
+  const { data } = modelsQuery;
+  const preferencesBusy = useModePreferencesBusy();
+  const blocked = disabled || preferencesBusy || !data;
   const selected = data?.selected || 'auto';
   const researchModel = data?.researchModel || null;
   const computerAvailable = Boolean(data?.computerAvailable);
@@ -119,28 +135,24 @@ export function SearchModeSelector() {
   const docgenAvailable = Boolean(data?.docgenAvailable);
   const astraAvailable = Boolean(data?.astraAvailable);
   const multipliers = data?.multipliers || {};
-  const modes = ANSWER_MODES.map((mode) => {
+  const baseModes: ModeItem[] = ANSWER_MODES.map((mode) => {
     if (mode.id === 'research') {
       return { ...mode, model: researchModel || 'gpt-6-sol', description: 'Глубокий разбор и проверка источников' };
     }
     return mode;
   });
-  const matchedMode = modes.find((mode) => {
-    if (mode.id === 'research') {
-      return selected === researchModel || selected === 'gpt-6-sol' || selected === 'gpt-5.6-sol' || selected === 'gpt-5.6-terra' || selected === 'gpt-5.6-sol-pro';
-    }
-    return mode.model === selected;
-  });
+  const currentInCatalog = data?.models?.find(model => model.id === selected);
+  const isRepresented = baseModes.some(mode => mode.model === selected)
+    || (['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-sol-pro'].includes(selected));
+  const customMode: ModeItem | null = selected !== 'auto' && !isRepresented ? {
+    id: 'selected-model', model: selected, label: currentInCatalog?.name || data?.selectedName || 'Выбранная модель',
+    description: data?.selectedDescription || currentInCatalog?.description || 'Сохранённый выбор для следующих сообщений', icon: Brain,
+  } : null;
+  const modes = customMode ? [...baseModes, customMode] : baseModes;
+  const matchedMode = modes.find(mode => mode.model === selected || (mode.id === 'research' && ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-sol-pro'].includes(selected)));
   const selectedMode = matchedMode || modes[0];
   const ActiveIcon = selectedMode.icon;
   const select = useSelectModel();
-
-  useEffect(() => {
-    if (data?.selected && !matchedMode && !normalizationStarted.current) {
-      normalizationStarted.current = true;
-      select.mutate('auto');
-    }
-  }, [data?.selected, matchedMode]);
 
   const lit = selectedMode.id !== 'auto';
   const primaryModes = PRIMARY_MODE_IDS.map((id) => modes.find((mode) => mode.id === id)!);
@@ -176,7 +188,8 @@ export function SearchModeSelector() {
             const Icon = mode.icon;
             const available =
               mode.id === 'auto' ||
-              mode.id === 'search' ||
+              (mode.id === 'search' && data?.searchAvailable !== false) ||
+              mode.id === 'selected-model' ||
               (mode.id === 'research' && Boolean(researchModel)) ||
               (mode.id === 'astra' && astraAvailable) ||
               (mode.id === 'studio' && studioAvailable) ||
@@ -195,24 +208,24 @@ export function SearchModeSelector() {
                       : mode.id === 'auto'
                         ? 1
                         : undefined;
-            const lockedHint =
+            const lockedHint = data?.modeRequirements?.[mode.id] || (
               mode.id === 'astra'
                 ? 'Нужен Pro+'
                 : mode.id === 'docgen'
                   ? 'Нужен Creator'
                   : mode.id === 'studio' || mode.id === 'computer'
                     ? 'Нужен Pro'
-                    : 'Нужен Pro';
+                    : 'Нужен Pro');
             return (
               <Box
                 key={mode.id}
                 component="button"
                 type="button"
-                disabled={!available}
+                disabled={!available || blocked}
                 aria-pressed={isActive}
                 onClick={() => {
-                  if (mode.model !== selected) select.mutate(mode.model);
-                  setAnchor(null);
+                  if (mode.model === selected) setAnchor(null);
+                  else select.mutate(mode.model, { onSuccess: () => setAnchor(null) });
                 }}
                 sx={{
                   display: 'flex',
@@ -255,7 +268,7 @@ export function SearchModeSelector() {
                     {mode.label}
                   </Typography>
                   <Typography sx={{ color: 'text.secondary', fontSize: '0.75rem', lineHeight: 1.35, mt: 0.2 }}>
-                    {available ? mode.description : lockedHint}
+                    {mode.description}{!available && ` · ${lockedHint}`}
                   </Typography>
                 </Box>
                 {available && typeof factor === 'number' && <CostDots factor={factor} active={isActive} />}
@@ -273,7 +286,9 @@ export function SearchModeSelector() {
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
           {primaryModes.map(renderMode)}
         </Box>
-        <ImageQualityControl />
+        <Typography sx={{ px: 1, pt: 1, fontSize: 12, color: 'text.secondary' }}>Выбор применяется к следующим сообщениям. Текущий ответ продолжит работу.</Typography>
+        {select.error && selected !== select.variables && <Alert severity="error" sx={{ mt: 1 }}>Не удалось подтвердить выбор режима. Повторите действие. {select.error.message}</Alert>}
+        <ImageQualityControl disabled={disabled} />
         <MoreModes
           modes={moreModes}
           open={moreOpen}
@@ -293,6 +308,8 @@ export function SearchModeSelector() {
           setMoreOpen(hiddenSelected);
           setAnchor(e.currentTarget);
         }}
+        disabled={blocked}
+        aria-busy={preferencesBusy}
         aria-label={`Режим ответа: ${selectedMode.label}`}
         aria-haspopup="dialog"
         aria-expanded={Boolean(anchor)}
@@ -313,6 +330,7 @@ export function SearchModeSelector() {
           <CaretDown size={14} weight="bold" />
         </Box>
       </Button>
+      {modelsQuery.isError && !data && <Button size="small" onClick={() => void modelsQuery.refetch()}>Повторить загрузку режимов</Button>}
       {isPhone ? (
         <Drawer
           anchor="bottom"
@@ -350,6 +368,9 @@ export function SearchModeSelector() {
           transformOrigin={{ vertical: 'bottom', horizontal: 'left' }}
           slotProps={{
             paper: {
+              role: 'dialog',
+              'aria-label': 'Выбор режима',
+              'aria-modal': true,
               sx: {
                 ...(menuPosition && {
                   top: menuPosition.above ? 'auto !important' : `${menuPosition.edge}px !important`,
@@ -443,31 +464,18 @@ function MoreModes({
 }
 
 const IMAGE_QUALITY_OPTIONS = [
-  { id: 'low', label: 'Быстро', hint: 'Черновик за считанные секунды' },
+  { id: 'low', label: 'Быстро', hint: 'Для простых эскизов и черновиков' },
   { id: 'medium', label: 'Стандарт', hint: 'Баланс скорости и деталей' },
   { id: 'high', label: 'Высокое', hint: 'Максимум деталей, генерация дольше' },
 ] as const;
 
 /** One dial for every picture the assistant draws: in chat, in Studio, and when editing a picture. */
-function ImageQualityControl() {
-  const queryClient = useQueryClient();
+function ImageQualityControl({ disabled = false }: { disabled?: boolean }) {
   const { data } = useModelsQuery();
   const current = data?.imageQuality || 'high';
-  const select = useMutation({
-    mutationFn: (quality: string) => apiFetch('/models/image-quality', { method: 'POST', body: JSON.stringify({ quality }) }),
-    onMutate: async (quality) => {
-      const previous = queryClient.getQueryData(['models']);
-      patchModelsCache(queryClient, { imageQuality: quality });
-      await queryClient.cancelQueries({ queryKey: ['models'] });
-      return { previous };
-    },
-    onError: (_err, _quality, ctx) => {
-      if (ctx?.previous) queryClient.setQueryData(['models'], ctx.previous);
-    },
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['models'] }),
-  });
-  const active = IMAGE_QUALITY_OPTIONS.find((option) => option.id === current) || IMAGE_QUALITY_OPTIONS[2];
-
+  const busy = useModePreferencesBusy();
+  const select = usePreferenceMutation('/models/image-quality', 'imageQuality', 'quality', 'quality');
+  const active = IMAGE_QUALITY_OPTIONS.find(option => option.id === current) || IMAGE_QUALITY_OPTIONS[2];
   return (
     <Box sx={{ mt: 1.25, pt: 1.25, px: 0.25, borderTop: '1px solid var(--bt-hairline)' }}>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 0.75, pb: 1, color: 'text.secondary' }}>
@@ -489,6 +497,7 @@ function ImageQualityControl() {
               component="button"
               type="button"
               role="radio"
+              disabled={disabled || busy}
               aria-checked={checked}
               onClick={() => {
                 if (!checked) select.mutate(option.id);
@@ -515,6 +524,7 @@ function ImageQualityControl() {
           );
         })}
       </Box>
+      {select.error && current !== select.variables && <Alert severity="error" sx={{ mt: 1 }}>Не удалось подтвердить качество картинок. {select.error.message}</Alert>}
       <Typography sx={{ px: 0.75, pt: 0.9, color: 'text.secondary', fontSize: '0.75rem', lineHeight: 1.4 }} aria-live="polite">
         {active.hint}
       </Typography>
@@ -547,22 +557,10 @@ function CostDots({ factor, active }: { factor: number; active?: boolean }) {
   );
 }
 
-export function ReasoningEffortSelector() {
-  const queryClient = useQueryClient();
+export function ReasoningEffortSelector({ disabled = false }: { disabled?: boolean }) {
   const { data } = useModelsQuery();
-  const selectEffort = useMutation({
-    mutationFn: (effort: string) => apiFetch('/models/reasoning', { method: 'POST', body: JSON.stringify({ effort }) }),
-    onMutate: async (effort) => {
-      const previous = queryClient.getQueryData(['models']);
-      patchModelsCache(queryClient, { reasoningEffort: effort });
-      await queryClient.cancelQueries({ queryKey: ['models'] });
-      return { previous };
-    },
-    onError: (_err, _effort, ctx) => {
-      if (ctx?.previous) queryClient.setQueryData(['models'], ctx.previous);
-    },
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['models'] }),
-  });
+  const busy = useModePreferencesBusy();
+  const selectEffort = usePreferenceMutation('/models/reasoning', 'reasoningEffort', 'effort', 'effort');
 
   const selected = data?.selected || 'auto';
   const currentEffort = data?.reasoningEffort || 'none';
@@ -581,6 +579,7 @@ export function ReasoningEffortSelector() {
       : 'Включить глубокий многошаговый анализ';
 
   return (
+    <>
     <Tooltip title={tooltip} disableTouchListener enterDelay={500}>
       <Box
         component="button"
@@ -588,6 +587,8 @@ export function ReasoningEffortSelector() {
         role="switch"
         aria-checked={enabled}
         aria-label="Глубокие размышления"
+        disabled={disabled || busy}
+        aria-busy={busy}
         onMouseDown={(e) => e.preventDefault()}
         onClick={() =>
           selectEffort.mutate(
@@ -650,5 +651,6 @@ export function ReasoningEffortSelector() {
         </Box>
       </Box>
     </Tooltip>
+    </>
   );
 }

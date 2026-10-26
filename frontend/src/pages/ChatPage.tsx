@@ -9,6 +9,7 @@ import { ConversationTools, type ToolsMode } from '@/features/chat/ConversationT
 import { useConversationHistory } from '@/features/chat/useConversationHistory';
 import { measure } from '@/api/performance';
 import { submissionId, confirmSubmission } from '@/features/chat/submissionReceipt';
+import { useModePreferencesBusy, useModelsQuery } from '@/components/ModelSelector';
 import { useConversationNavigation } from '@/features/chat/useConversationNavigation';
 import { ChatSidebar, type ConversationItem } from '@/features/chat/ChatSidebar';
 import { AccountMenu } from '@/components/AccountMenu';
@@ -104,7 +105,8 @@ export default function ChatPage() {
   const [forcedEditUrl, setForcedEditUrl] = useState<string | null>(null);
   const [skipLastImage, setSkipLastImage] = useState(false);
   const [imageModeRequest, setImageModeRequest] = useState(0);
-  const { data: models } = useQuery({ queryKey: ['models'], queryFn: () => apiFetch('/models'), staleTime: 10_000 });
+  const { data: models } = useModelsQuery();
+  const preferencesBusy = useModePreferencesBusy();
   const isStudio = models?.selected === 'studio';
   const isDocgen = models?.selected === 'docgen';
   const canvasSource = useMemo(() => findStudioCanvas(displayMessages), [displayMessages]);
@@ -395,6 +397,7 @@ export default function ChatPage() {
   };
 
   const handleSend = async (rawText: string, files: File[] = [], mode: 'chat' | 'image' = 'chat'): Promise<boolean> => {
+    if (preferencesBusy || !models) { setProjectNotice({ text: 'Дождитесь загрузки и сохранения режима, затем отправьте сообщение.', warning: true }); return false; }
     if (locationParams.has('m') && activeConvId) setSearchParams({ c: activeConvId });
     const text = rawText || (files.length ? 'Проанализируй прикреплённые файлы.' : '');
     const sendKey = activeConvId || 'new';
@@ -515,10 +518,10 @@ export default function ChatPage() {
       // completes before treating the send as delivered.
       const ready = await waitUntilReady(45000);
       if (!ready) throw new Error('нет соединения с сервером, попробуйте ещё раз');
-      const operation = JSON.stringify({ content: text, conversation_id: conversationId });
+      const operation = JSON.stringify({ content: text, conversation_id: conversationId, model: models.selected });
       if (deliveryRef.current.payload !== operation) deliveryRef.current = { payload: operation, key: submissionId(operation) };
       patchJob(conversationId, { statusText: 'Отправляется…' });
-      await submit('message', { content: text, conversation_id: conversationId }, deliveryRef.current.key);
+      await submit('message', { content: text, conversation_id: conversationId, model: models.selected }, deliveryRef.current.key);
       confirmSubmission(operation);
       deliveryRef.current = { payload: '', key: '' };
       queryClient.invalidateQueries({ queryKey: ['messages', conversationId] });
@@ -579,7 +582,7 @@ export default function ChatPage() {
       reasoning: undefined,
       search: undefined,
     });
-    send('regenerate', { conversation_id: activeConvId });
+    send('regenerate', { conversation_id: activeConvId, model: models?.selected });
   };
 
   const handleEditMessage = async (messageId: string, newContent: string) => {
@@ -1144,7 +1147,7 @@ export default function ChatPage() {
           statusText={statusText}
           liveReasoning={pendingContent.convId === activeConvId ? pendingContent.reasoning : undefined}
           onRemoveAttachment={handleRemoveAttachment}
-          onRegenerate={canRegenerateReply ? handleRegenerate : undefined}
+          onRegenerate={canRegenerateReply && !preferencesBusy ? handleRegenerate : undefined}
           onStop={handleStop}
           onEditMessage={handleEditMessage}
           onEditImage={
