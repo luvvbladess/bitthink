@@ -544,14 +544,30 @@ try {
       await expect(f.page).toHaveURL(/c=chat-a/);
     } finally { await writeFile(`${output}/history-debug.txt`, JSON.stringify({ requests: f.state.historyRequests, text: await f.page.locator('body').innerText() })); await f.page.screenshot({ path: `${output}/history-debug.png` }); await f.context.close(); }
   });
-  await test('experience: a guided scenario prepares a draft without sending it', async () => {
-    const f = await fixture({ handleRoute: async ({ path, route, history }) => {
+  for (const width of [320, 1440]) await test('experience: a guided scenario prepares a draft without sending it ' + width, async () => {
+    const f = await fixture({ viewport: { width, height: 900 }, handleRoute: async ({ path, route, history }) => {
       if (path.endsWith('/history')) { await route.fulfill({ json: { items: [], has_more: false, before: null, has_newer: false } }); return true; } return false;
     } });
     try {
-      await expect(f.input).toBeEnabled(); await f.page.getByRole('button', { name: 'Разобрать документ', exact: true }).click();
-      await expect(f.input).toHaveValue(/Разбери прикреплённый документ/);
-      assert.equal(f.state.sends.length, 0);
+      await expect(f.input).toBeEnabled();
+      const group = f.page.getByRole('group', { name: 'С чего начать', exact: true });
+      await expect(group).toHaveCount(1);
+      await expect(group.getByRole('button')).toHaveCount(5);
+      for (const [label, prompt] of [
+        ['Разобрать документ', /Разбери прикреплённый документ/],
+        ['Сравнить предложения', /Сравни предложения/],
+        ['Подготовить презентацию', /Помоги подготовить презентацию/],
+        ['Что нового в мире', /Что главное произошло сегодня/],
+        ['Найти ошибку в коде', /Помоги найти ошибку/],
+      ]) {
+        await expect(f.page.getByRole('button', { name: label, exact: true })).toHaveCount(1);
+        await group.getByRole('button', { name: label, exact: true }).click();
+        await expect(f.input).toHaveValue(prompt);
+        assert.equal(f.state.sends.length, 0);
+      }
+      assert.ok(await group.evaluate(el => el.scrollWidth <= el.clientWidth + 1));
+      await f.input.fill('');
+      await f.page.screenshot({ path: `${output}/unified-starters-${width}.png` });
     } finally { await f.context.close(); }
   });
   await test('switching: restoring an existing conversation never mounts the welcome screen', async () => {
@@ -1313,10 +1329,12 @@ try {
       const create = f.page.getByRole('button', { name: 'Новый вопрос', exact: true });
       await create.click();
       await expect.poll(() => f.state.created.length).toBe(1);
+      await expect(f.page).toHaveURL(/c=chat-new-1/);
       await expect(f.input).toBeEnabled();
       await f.input.fill('Черновик первого нового чата');
       await create.click();
       await expect.poll(() => f.state.created.length).toBe(2);
+      await expect(f.page).toHaveURL(/c=chat-new-2/);
       await expect(f.input).toBeEnabled();
       await expect(f.input).toHaveValue('');
       await expect(f.page.getByRole('button', { name: 'Открыть беседу Новый чат', exact: true })).toHaveCount(2);
