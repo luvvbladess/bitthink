@@ -185,3 +185,10 @@ def test_activity_is_account_scoped_and_terminal_tasks_are_visible(people):
     assert activity(emails[0])[0]['status'] == 'completed'
     assert activity(emails[0])[0]['prompt'] == 'Release task'
     assert not stop(emails[0], job)
+
+
+def test_presentation_quality_accepts_a_goal_question_without_one_exact_word():
+    from evals.product_journeys import CASES, score
+    case = next(row for row in json.loads(CASES.read_text(encoding='utf-8')) if row['id'] == 'clarify-presentation')
+    assert score(case, 'Какая тема презентации, кто её аудитория и чего вы хотите добиться?')['passed']
+    assert not score(case, 'Какая тема презентации и кто её аудитория?')['passed']
