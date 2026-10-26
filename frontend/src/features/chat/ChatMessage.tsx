@@ -54,7 +54,7 @@ interface Props {
   onEditResult?: (result: ProjectResultRef) => void;
   onOpenProjectCitation?: (citation: ProjectCitation) => void;
   onEditImage?: (url: string) => void;
-  onAcceptMode?: (model: string) => void;
+  onAcceptMode?: (model: string) => void | Promise<unknown>;
   people?: boolean;
   author?: { name: string; avatar_url?: string | null } | null;
   mine?: boolean;

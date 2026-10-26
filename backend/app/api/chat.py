@@ -104,6 +104,19 @@ async def chat_websocket(websocket: WebSocket):
                 continue
             try:
                 preferences = await repo.capture_generation_preferences(user_id)
+                # Bind this message to the mode the sender actually saw, even
+                # if another tab changes the account setting during an upload.
+                requested_model = payload.get('model')
+                if requested_model is not None:
+                    from app.billing.plans import LEGACY_MODEL_ALIASES, allowed_models
+                    from app.billing.quota import effective_tier
+                    import config as bot_config
+                    if not isinstance(requested_model, str):raise RuntimeError('Некорректный режим ответа.')
+                    requested_model = LEGACY_MODEL_ALIASES.get(requested_model, requested_model)
+                    if requested_model not in bot_config.AVAILABLE_MODELS:raise RuntimeError('Этот режим ответа не поддерживается.')
+                    subscription = await repo.get_subscription(user_id)
+                    if requested_model not in allowed_models(effective_tier(subscription)):raise RuntimeError('Режим недоступен на текущем тарифе. Выберите другой режим.')
+                    preferences['selected_model'] = requested_model
                 generation_id = await asyncio.to_thread(store.reserve, user_id, cid, kind,
                     {'preferences': preferences, **({'content': content.strip()} if kind == 'message' else {})}, request_id=request_id)
             except RuntimeError as exc:

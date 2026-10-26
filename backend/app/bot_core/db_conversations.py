@@ -1284,7 +1284,8 @@ class DatabaseConversationManager:
         with SyncSessionLocal() as session:
             sub = session.query(Subscription).filter_by(user_id=user_id).first()
             return {'user_id': user_id, 'selected_model': sub.selected_model if sub and sub.selected_model else 'auto',
-                'reasoning_effort': sub.reasoning_effort if sub else None}
+                'reasoning_effort': sub.reasoning_effort if sub else None,
+                'image_quality': sub.image_quality if sub and sub.image_quality else 'high'}
 
     def set_user_model(self, user_id: int, model: str) -> None:
         with SyncSessionLocal() as session:
@@ -1310,6 +1311,10 @@ class DatabaseConversationManager:
     def get_user_image_quality(self, user_id: int) -> str:
         """low / medium / high; high when the person never chose (how pictures were always drawn)."""
         from config import DEFAULT_IMAGE_QUALITY, IMAGE_QUALITIES
+        from app.core.request_context import preference
+        captured, value = preference(user_id, 'image_quality')
+        if captured and value in IMAGE_QUALITIES:
+            return value
 
         with SyncSessionLocal() as session:
             sub = session.query(Subscription).filter_by(user_id=user_id).first()

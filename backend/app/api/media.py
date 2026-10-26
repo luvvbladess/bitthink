@@ -197,7 +197,7 @@ def _friendly_image_error(detail: object) -> str:
         return "Запрос отклонен системой безопасности. Измените описание."
     if "таймаут" in lower or "timeout" in lower:
         return "Генерация заняла слишком много времени. Попробуйте упростить описание."
-    if text.startswith("Не получилось") or text.startswith("Запрос отклонен") or text.startswith("Генерация заняла"):
+    if text.startswith("Не получилось") or text.startswith("Запрос отклонен") or text.startswith("Генерация заняла") or text.startswith('Генерация остановлена'):
         return text
     return f"Не получилось нарисовать изображение: {text}"
 
@@ -213,13 +213,55 @@ async def _gate_image(user_id: str) -> int:
     return bot_id
 
 
+async def _await_image_operation(operation, user_id: str, conversation_id: str | None):
+    """A Stop frame may arrive in another HTTP/WebSocket process."""
+    from sqlalchemy import select
+    from app.db.engine import SyncSessionLocal
+    from app.db.generation_models import Generation
+    from app.services.generation_hub import hub
+    def cancelled():
+        with SyncSessionLocal() as session:
+            return bool(session.scalar(select(Generation.id).where(Generation.user_email == user_id,
+                Generation.conversation_id == conversation_id, Generation.kind == 'external',
+                Generation.owner == hub.publisher, Generation.cancel_requested.is_(True),
+                Generation.status.in_(['queued', 'running', 'external'])).limit(1)))
+    task = asyncio.create_task(operation)
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=.25)
+            if done:return await task
+            if conversation_id and await asyncio.to_thread(cancelled):
+                raise HTTPException(409, 'Генерация остановлена. Можно отправить новый запрос.')
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+async def _persist_image_failure(user_id: str, conversation_id: str, detail: object):
+    try:
+        await repo.add_message(user_id, 'assistant', _friendly_image_error(detail), conv_id=conversation_id)
+    except (ValueError, PermissionError):
+        # Moving a running image request to Trash also requests cancellation.
+        # Do not turn that expected loss of chat access into an HTTP 500.
+        return
+
+
 @router.post("/images/generate")
 async def generate_image(data: dict, user_id: str = Depends(get_current_user)):
     from config import IMAGE_MODEL
 
-    prompt = (data.get("prompt") or "").strip()
+    raw_prompt = data.get('prompt')
+    if not isinstance(raw_prompt, str) or len(raw_prompt) > 120000:
+        raise HTTPException(400, 'Введите описание изображения до 120 000 символов')
+    prompt = raw_prompt.strip()
     conversation_id = data.get("conversation_id")
-    source_urls = [str(item).strip() for item in (data.get("source_urls") or []) if str(item).strip()]
+    if conversation_id is not None and (not isinstance(conversation_id, str) or not 1 <= len(conversation_id) <= 64):
+        raise HTTPException(400, 'Некорректная беседа')
+    raw_sources = data.get('source_urls') or []
+    if not isinstance(raw_sources, list) or len(raw_sources) > 8 or any(not isinstance(item, str) for item in raw_sources):
+        raise HTTPException(400, 'Для правки можно выбрать до 8 изображений')
+    source_urls = [item.strip() for item in raw_sources if item.strip()]
     if not prompt:
         raise HTTPException(status_code=400, detail="Опишите изображение")
 
@@ -233,7 +275,7 @@ async def generate_image(data: dict, user_id: str = Depends(get_current_user)):
     try:
         sources: list[bytes] = []
         if source_urls:
-            sources = [await _load_source_bytes(user_id, url) for url in source_urls[:8]]
+            sources = [await _load_source_bytes(user_id, url) for url in source_urls]
         saved_user = await _begin_image_job(
             user_id,
             conversation_id,
@@ -241,10 +283,10 @@ async def generate_image(data: dict, user_id: str = Depends(get_current_user)):
             "Меняю изображение" if sources else "Рисую изображение",
         )
         if sources:
-            url_or_data, revised = await edit_image(sources, prompt, quality=quality)
+            url_or_data, revised = await _await_image_operation(edit_image(sources, prompt, quality=quality), user_id, conversation_id)
             kind = "edit"
         else:
-            url_or_data, revised = await openai_generate(prompt, quality=quality)
+            url_or_data, revised = await _await_image_operation(openai_generate(prompt, quality=quality), user_id, conversation_id)
             kind = "generate"
         if not url_or_data:
             raise HTTPException(status_code=500, detail=revised or "Image generation failed")
@@ -257,7 +299,7 @@ async def generate_image(data: dict, user_id: str = Depends(get_current_user)):
         return {"url": stored_url, "revised_prompt": revised, "message": assistant, "kind": kind}
     except HTTPException as exc:
         if saved_user and conversation_id:
-            await repo.add_message(user_id, "assistant", _friendly_image_error(exc.detail), conv_id=conversation_id)
+            await _persist_image_failure(user_id, conversation_id, exc.detail)
         raise
     finally:
         if not tracked:
@@ -280,6 +322,8 @@ async def edit_image_endpoint(
     from openai_client import edit_image
 
     text = (prompt or "").strip()
+    if len(text) > 120000:raise HTTPException(400, 'Введите описание до 120 000 символов')
+    if conversation_id is not None and not 1 <= len(conversation_id) <= 64:raise HTTPException(400, 'Некорректная беседа')
     if not text:
         raise HTTPException(status_code=400, detail="Опишите, что изменить")
 
@@ -290,8 +334,10 @@ async def edit_image_endpoint(
     tracked = False
     try:
         uploads = [item for item in ([file] if file else []) + list(files or []) if item is not None]
+        if len(uploads) + bool(source_url) > 8:
+            raise HTTPException(400, 'Для правки можно выбрать до 8 изображений')
         sources: list[bytes] = []
-        for upload in uploads[:8]:
+        for upload in uploads:
             raw = await upload.read()
             try:
                 sources.append(await asyncio.to_thread(_normalize_image_bytes, raw, upload.filename or "image.png"))
@@ -303,7 +349,7 @@ async def edit_image_endpoint(
             raise HTTPException(status_code=400, detail="Прикрепите изображение или выберите картинку из чата")
 
         saved_user = await _begin_image_job(user_id, conversation_id, text, "Меняю изображение")
-        url_or_data, revised = await edit_image(sources, text, quality=quality)
+        url_or_data, revised = await _await_image_operation(edit_image(sources, text, quality=quality), user_id, conversation_id)
         if not url_or_data:
             raise HTTPException(status_code=500, detail=revised or "Image edit failed")
 
@@ -315,7 +361,7 @@ async def edit_image_endpoint(
         return {"url": stored_url, "revised_prompt": revised, "message": assistant, "kind": "edit"}
     except HTTPException as exc:
         if saved_user and conversation_id:
-            await repo.add_message(user_id, "assistant", _friendly_image_error(exc.detail), conv_id=conversation_id)
+            await _persist_image_failure(user_id, conversation_id, exc.detail)
         raise
     finally:
         if not tracked:
