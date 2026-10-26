@@ -53,6 +53,64 @@ def test_offline_or_unrelated_pages_do_not_wait(relay):
     asyncio.run(run())
 
 
+def test_generation_worker_uses_the_api_readers_queue_and_reuses_snapshot(relay, monkeypatch):
+    """Simulate the process boundary, including real private API validation."""
+    from turn_scope import turn_conversation
+    async def run():
+        app = FastAPI(); app.include_router(api.router, prefix='/marketplace-relay')
+        @app.middleware('http')
+        async def api_process_context(request, call_next):
+            token = service.reader_api.set(None)
+            try: return await call_next(request)
+            finally: service.reader_api.reset(token)
+        factory = httpx.AsyncClient
+        transport = httpx.ASGITransport(app=app)
+        requests = []
+        def worker_client(**kwargs):
+            assert kwargs['trust_env'] is False and kwargs['follow_redirects'] is False
+            return factory(transport=transport, **kwargs)
+        monkeypatch.setattr(service.httpx, 'AsyncClient', worker_client)
+        worker_relay = service.HomeRelay()
+        relay.heartbeat()
+        assert not worker_relay.online
+        token = service.reader_api.set('http://api/marketplace-relay')
+        try:
+            assert await worker_relay.available()
+            for url in ['https://www.ozon.ru/my/orders', 'https://127.0.0.1/', 'https://ozon.ru.evil.test/product/123/', 'https://user:pass@www.ozon.ru/product/123/']:
+                assert await worker_relay.fetch(url) is None
+            with turn_conversation('remote-price-check', reader_detail='overview'):
+                reading = asyncio.create_task(worker_relay.fetch(URL))
+                job = await relay.pull(wait=1)
+                assert job['url'] == URL and job['mode'] == 'overview'
+                assert not worker_relay.jobs
+                data = {'status': 'ok', 'url': URL, 'text': 'Смартфон. Цена 35 990 ₽. Продавец: магазин.', 'reader_version': '1.8.0'}
+                relay.complete(job['id'], data)
+                assert await reading == data
+                assert await worker_relay.fetch(URL) == data
+                assert relay.queue.empty() and not relay.jobs
+        finally: service.reader_api.reset(token)
+        assert service.reader_api.get() is None
+    asyncio.run(run())
+
+
+def test_remote_reader_failure_is_bounded_and_keeps_credentials_out_of_redirects(relay, monkeypatch):
+    async def run():
+        factory = httpx.AsyncClient
+        calls = []
+        async def handler(request):
+            calls.append(request)
+            return httpx.Response(302, headers={'Location': 'https://outside.example/steal'})
+        monkeypatch.setattr(service.httpx, 'AsyncClient', lambda **kwargs: factory(transport=httpx.MockTransport(handler), **kwargs))
+        token = service.reader_api.set('http://api/marketplace-relay')
+        try:
+            assert not await relay.available()
+            assert await relay.fetch(URL) is None
+            assert len(calls) == 2 and all(r.url.host == 'api' for r in calls)
+            assert not relay.jobs
+        finally: service.reader_api.reset(token)
+    asyncio.run(run())
+
+
 def test_component_store_is_routed_to_home_reader(relay):
     url = 'https://www.chipdip.ru/product/stm32f103c8t6'
     async def run():

@@ -23,6 +23,8 @@ async def execute(row):
     senders = hub.bind(user, cid, generation_id=row['id'])
     status = 'completed'
     preference_token = generation_preferences.set(row['request'].get('preferences'))
+    from app.services.marketplace_relay import reader_api
+    reader_token = reader_api.set(get_settings().HOME_RELAY_API_URL)
     callbacks = {name: getattr(senders, name) for name in ('send_status', 'send_chunk', 'send_file', 'send_meta', 'send_extras', 'send_reasoning_delta')}
     try:
         if row['cancel']:
@@ -49,6 +51,7 @@ async def execute(row):
             await asyncio.to_thread(store.finish, user, senders.conversation_id or row['cid'], status, row['id'])
         finally:
             generation_preferences.reset(preference_token)
+            reader_api.reset(reader_token)
 
 
 async def serve(stop=None):
