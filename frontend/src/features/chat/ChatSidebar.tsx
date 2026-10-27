@@ -31,7 +31,7 @@ interface Props {
   onSelect: (id: string) => void;
   onCreate: () => void;
   onDelete: (id: string) => void;
-  onRename: (id: string, title: string) => void;
+  onRename: (id: string, title: string) => Promise<unknown>;
   onClose?: () => void;
   onLibrary?: () => void;
   generatingIds?: string[];
@@ -84,6 +84,9 @@ export function ChatSidebar({ hasMore, loadingMore, onLoadMore, onTools, convers
   const [moveMenu, setMoveMenu] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState('');
+  const editPending = useRef(false);
   const [confirmDelete, setConfirmDelete] = useState<ConversationItem | null>(null);
   const [search, setSearch] = useState('');
   const [rowMenu, setRowMenu] = useState<{ el: HTMLElement; conv: ConversationItem } | null>(null);
@@ -113,14 +116,19 @@ export function ChatSidebar({ hasMore, loadingMore, onLoadMore, onTools, convers
     onDragLeave: (e: React.DragEvent) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragTarget(null); },
     onDrop: (e: React.DragEvent) => { e.preventDefault(); setDragTarget(null); const id = e.dataTransfer.getData('application/x-bitthink-chat'); if (conversations.some(c => c.id === id && !c.shared)) void move(id, pid); },
   });
-  const startEdit = (conv: ConversationItem) => { setEditingId(conv.id); setEditTitle(conv.title); };
+  const startEdit = (conv: ConversationItem) => { if (editPending.current) return; setEditError(''); setEditingId(conv.id); setEditTitle(conv.title); };
   const focusAction = (id: string | null) => { if (id) window.requestAnimationFrame(() => rowActions.current.get(id)?.focus()); };
-  const cancelEdit = () => { focusAction(editingId); setEditingId(null); };
-  const saveEdit = () => {
-    if (!editTitle.trim()) return;
-    if (editingId) onRename(editingId, editTitle.trim());
-    focusAction(editingId);
-    setEditingId(null);
+  const cancelEdit = () => { if (editPending.current) return; setEditError(''); focusAction(editingId); setEditingId(null); };
+  const saveEdit = async () => {
+    if (!editTitle.trim() || !editingId || editPending.current) return;
+    const id = editingId;
+    editPending.current = true; setEditBusy(true); setEditError('');
+    try {
+      await onRename(id, editTitle.trim());
+      focusAction(id); setEditingId(null);
+    } catch {
+      setEditError('Не удалось сохранить название. Проверьте соединение и повторите сохранение.');
+    } finally { editPending.current = false; setEditBusy(false); }
   };
   const closeMenu = () => { setRowMenu(null); setMoveMenu(false); };
   const chooseProject = (pid: string | null) => { const id = rowMenu?.conv.id; closeMenu(); if (id) void move(id, pid); };
@@ -133,8 +141,8 @@ export function ChatSidebar({ hasMore, loadingMore, onLoadMore, onTools, convers
     const projectName = searching ? projects.find(p => p.id === membership.get(conv.id))?.name : undefined;
     return <Box key={conv.id} {...dragProps(conv)} sx={{ ...rowSx, bgcolor: active ? 'var(--bt-overlay)' : 'transparent', '&:hover, &:focus-within': { bgcolor: active ? 'var(--bt-overlay)' : 'var(--bt-overlay-faint)' } }}>
       {editingId === conv.id ? <TextField
-        autoFocus inputRef={renameInput} fullWidth size="small" value={editTitle}
-        onChange={e => setEditTitle(e.target.value)} inputProps={{ 'aria-label': 'Название беседы' }}
+        autoFocus inputRef={renameInput} fullWidth size="small" value={editTitle} disabled={editBusy}
+        onChange={e => setEditTitle(e.target.value)} inputProps={{ 'aria-label': 'Название беседы', maxLength: 255 }}
         onKeyDown={e => {
           if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); }
           if (e.key === 'Enter' && !e.nativeEvent.isComposing) saveEdit();
@@ -142,8 +150,8 @@ export function ChatSidebar({ hasMore, loadingMore, onLoadMore, onTools, convers
         }}
         sx={{ '& .MuiInputBase-root': { px: 0.5, fontSize: '0.875rem', borderRadius: '8px' }, '& input': { px: 0.75, py: 1 } }}
         InputProps={{ endAdornment: <Box sx={{ display: 'flex' }}>
-          <IconButton aria-label="Сохранить название" disabled={!editTitle.trim()} onClick={saveEdit} sx={actionSx}><Check size={16} weight="bold" /></IconButton>
-          <IconButton aria-label="Отменить редактирование" onClick={cancelEdit} sx={actionSx}><X size={16} weight="bold" /></IconButton>
+          <IconButton aria-label="Сохранить название" disabled={editBusy || !editTitle.trim()} onClick={() => void saveEdit()} sx={actionSx}><Check size={16} weight="bold" /></IconButton>
+          <IconButton aria-label="Отменить редактирование" disabled={editBusy} onClick={cancelEdit} sx={actionSx}><X size={16} weight="bold" /></IconButton>
         </Box> }}
       /> : <>
         <ListItemButton component="button" aria-label={`Открыть беседу ${conv.title}`} aria-current={active ? 'page' : undefined} selected={active} onClick={() => onSelect(conv.id)}
@@ -216,6 +224,7 @@ export function ChatSidebar({ hasMore, loadingMore, onLoadMore, onTools, convers
         {!projects.length && <Typography sx={{ px: 1, py: 0.75, fontSize: '0.8125rem', color: 'text.muted' }}>Проектов пока нет</Typography>}
       </Box>}
       {moveError && <Alert severity="error" closeText="Закрыть" onClose={() => setMoveError('')} sx={{ mb: 1 }} role="alert">{moveError}</Alert>}
+      {editError && <Alert severity="error" closeText="Закрыть" onClose={() => setEditError('')} sx={{ mb: 1 }}>{editError}</Alert>}
       <Box {...dropProps(null)} sx={{ minHeight: 44, borderRadius: '8px', bgcolor: dragTarget === 'unassigned' ? 'var(--bt-overlay-strong)' : 'transparent' }}>
         <Typography component="h2" sx={{ ...sectionSx, pt: 0.5, pb: 0.75 }}>{searching ? 'Результаты поиска' : 'Беседы'}</Typography>
         {searching && !ordered.length && <Typography sx={{ px: 1, py: 1, fontSize: '0.8125rem', color: 'text.secondary' }}>Беседа не найдена</Typography>}

@@ -1030,7 +1030,7 @@ export default function ChatPage() {
               finishJob(id);
               deleteMutation.mutate(id);
             }}
-            onRename={(id, title) => renameMutation.mutate({ id, title })}
+            onRename={(id, title) => renameMutation.mutateAsync({ id, title })}
             onClose={() => setSidebarOpen(false)}
             onLibrary={() => { setFilesScope('all'); setFilesOpen(true); if (isMobile) setSidebarOpen(false); }}
             generatingIds={generatingIds}
@@ -1059,7 +1059,7 @@ export default function ChatPage() {
               finishJob(id);
               deleteMutation.mutate(id);
             }}
-            onRename={(id, title) => renameMutation.mutate({ id, title })}
+            onRename={(id, title) => renameMutation.mutateAsync({ id, title })}
             onLibrary={() => { setFilesScope('all'); setFilesOpen(true); if (isMobile) setSidebarOpen(false); }}
             generatingIds={generatingIds}
             onProjectDeleted={handleProjectDeleted}

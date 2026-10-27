@@ -21,7 +21,7 @@ export const IslandButton = styled(Button)(({ theme }) => ({
     backdropFilter: 'blur(16px) saturate(1.15)',
     WebkitBackdropFilter: 'blur(16px) saturate(1.15)',
   },
-}));
+})) as typeof Button;
 
 export const PrimaryButton = styled(Button)(({ theme }) => ({
   borderRadius: 10,
@@ -37,4 +37,4 @@ export const PrimaryButton = styled(Button)(({ theme }) => ({
     },
   },
   '&:active': { transform: 'scale(0.98)' },
-}));
+})) as typeof Button;

@@ -66,9 +66,7 @@ export function FluidNav() {
           <Box sx={{ ml: 1.25, display: 'flex', alignItems: 'center', gap: 0.75 }}>
             <ColorModeToggle />
             {!token ? (
-              <Link to="/login" style={{ textDecoration: 'none' }}>
-                <PrimaryButton size="small" sx={{ py: 0.6 }}>Войти</PrimaryButton>
-              </Link>
+              <PrimaryButton component={Link} to="/login" size="small" sx={{ py: 0.6 }}>Войти</PrimaryButton>
             ) : (
               <AccountMenu />
             )}

@@ -7,7 +7,7 @@ import { GlassSurface } from '@/components/GlassSurface';
 import { PrimaryButton } from '@/components/IslandButton';
 import { BrandMark } from '@/components/BrandMark';
 import { useAuthStore } from '@/stores/authStore';
-import { apiFetch } from '@/api/client';
+import { apiFetch, ApiError } from '@/api/client';
 import { BRAND_FONT, BRAND_NAME } from '@/brand';
 import { applyPageMeta } from '@/seo';
 import { loginDestination } from '@/stores/loginDestination';
@@ -47,15 +47,20 @@ export default function LoginPage({ mode }: Props) {
     setLoading(true);
     try {
       const endpoint = mode === 'login' ? '/auth/login' : '/auth/register';
-      const body: Record<string, string> = { email, password };
-      if (mode === 'register') body.first_name = firstName;
+      const body: Record<string, string> = { email: email.trim(), password };
+      if (mode === 'register') body.first_name = firstName.trim();
       const data = await apiFetch(endpoint, { method: 'POST', body: JSON.stringify(body), timeoutMs: 30000 });
       setUser(null);
       setTokens(data.access_token, data.refresh_token);
       // App owns the bounded profile request; committing tokens can unmount this page.
       navigate(loginDestination(searchParams.toString()), { replace: true });
     } catch (err: any) {
-      setError(err.message || 'Ошибка входа');
+      const status = err instanceof ApiError ? err.status : null;
+      setError(status === 401 ? 'Неверный email или пароль. Проверьте данные и попробуйте ещё раз.'
+        : status === 409 ? 'Аккаунт с этим email уже существует. Перейдите ко входу.'
+        : status === 422 ? 'Проверьте email и заполнение полей. Пароль должен содержать не менее 6 символов.'
+        : status === 429 ? 'Слишком много попыток. Подождите немного и попробуйте снова.'
+        : 'Не удалось подключиться. Проверьте соединение и повторите попытку. Введённые данные сохранены.');
     } finally {
       setLoading(false);
     }
@@ -74,7 +79,7 @@ export default function LoginPage({ mode }: Props) {
               <BrandMark variant="nav" />
             </Box>
             <Typography
-              variant="h3"
+              component="h1" variant="h3"
               sx={{
                 mb: 1,
                 fontFamily: BRAND_FONT,
@@ -126,6 +131,7 @@ export default function LoginPage({ mode }: Props) {
                   fullWidth
                   required
                   inputProps={{ minLength: 6 }}
+                  helperText={mode === 'register' ? 'Не менее 6 символов' : undefined}
                   InputProps={{
                     endAdornment: (
                       <IconButton

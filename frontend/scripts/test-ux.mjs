@@ -140,7 +140,7 @@ async function fixture(options = {}) {
       data = history[path.split('/')[2]] || [];
       if (path.endsWith('/history')) data = { items: data, has_more: false, before: null, has_newer: false };
     } else if (path === '/chat/jobs') data = { jobs: [] };
-    else if (path === '/projects' || path === '/computer/tasks' || path === '/connectors') data = [];
+    else if (['/projects', '/computer/tasks', '/chat/activity', '/conversations/search', '/conversations/trash', '/connectors'].includes(path)) data = [];
     else if (path.startsWith('/projects/chat/')) data = { project_id: null };
     else if (path === '/billing/subscription') data = { tier: 'pro', name: 'Pro', chat: { used: 0, limit: 1000000 }, computer: { used: 0, limit: 1000000 }, windows: {} };
     else if (path === '/models/prompts') data = { prompts: [], active_index: null };
@@ -161,7 +161,7 @@ async function fixture(options = {}) {
     state.socketConnections = (state.socketConnections || 0) + 1;
     let silent = false;
     socket.onClose(() => { state.socketCloses = (state.socketCloses || 0) + 1; });
-    socket.onMessage(raw => {
+    socket.onMessage(async raw => {
       const event = JSON.parse(String(raw));
       if (event.type === 'auth') {
         state.socketAuths = (state.socketAuths || 0) + 1;
@@ -180,6 +180,7 @@ async function fixture(options = {}) {
           } else socket.send(JSON.stringify({ type: 'accepted', payload: { conversation_id: event.payload.conversation_id, request_id: event.payload.request_id, status: 'completed' } }));
           return;
         }
+        if (state.receiptDelay) await new Promise(resolve => setTimeout(resolve, state.receiptDelay));
         if (event.payload.request_id) socket.send(JSON.stringify({ type: 'accepted', payload: { conversation_id: event.payload.conversation_id, request_id: event.payload.request_id } }));
         state.sends.push(event.payload);
         const id = event.payload.conversation_id;
@@ -300,6 +301,9 @@ async function sidebarFixture(options = {}) {
       await route.fulfill({ json: { project_id: project.chat_ids.includes(id) ? 'demo' : null } }); return true;
     }
     if (path === '/conversations/chat-a' && method === 'PATCH') {
+      state.renameAttempts = (state.renameAttempts || 0) + 1;
+      if (state.renameDelay) await new Promise(resolve => setTimeout(resolve, state.renameDelay));
+      if (state.renameFailure) { await route.fulfill({ status: 503, json: { detail: 'Temporary outage' } }); return true; }
       conversations[0].title = route.request().postDataJSON().title;
       state.renames = [...(state.renames || []), conversations[0].title];
       await route.fulfill({ json: conversations[0] }); return true;
@@ -314,6 +318,84 @@ async function sidebarFixture(options = {}) {
 }
 
 try {
+  for (const width of [390, 1440]) await test(`ux27: landing navigation scrolls between sections ${width}`, async () => {
+    const f = await fixture({ signedOut: true, startPath: '/', viewport: { width, height: 844 }, touch: width < 600 });
+    try {
+      for (const [label, id] of [['Тарифы', 'pricing'], ['Вопросы', 'faq'], ['Возможности', 'features']]) {
+        if (width < 600) await f.page.getByRole('button', { name: 'Меню', exact: true }).click();
+        await f.page.getByRole('link', { name: label, exact: true }).filter({ visible: true }).click();
+        await expect.poll(() => f.page.locator(`#${id}`).evaluate(el => { const r = el.getBoundingClientRect(); return r.top >= 55 && r.top < Math.max(90, innerHeight / 2); })).toBe(true);
+      }
+    } finally { await f.context.close(); }
+  });
+  await test('ux27: first delivery clears its migrated draft and keeps it clear after reload', async () => {
+    const f = await fixture({ receiptDelay: 500, handleRoute: async ({ path, method, route, state }) => {
+      if (path === '/conversations' && method === 'GET' && !state.created.length) { await route.fulfill({ json: [] }); return true; }
+    } });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('Первый вопрос нового пользователя');
+      await f.page.getByRole('button', { name: 'Отправить сообщение', exact: true }).click();
+      await expect(f.page.getByText('Проверенный новый ответ.', { exact: true })).toBeVisible();
+      await expect(f.input).toHaveValue('');
+      await f.page.reload(); await expect(f.input).toBeEnabled();
+      await expect(f.input).toHaveValue('');
+      assert.equal(f.state.sends.length, 1);
+    } finally { await f.context.close(); }
+  });
+  for (const [status, mode, expected] of [[401, 'login', 'Неверный email или пароль'], [409, 'register', 'Аккаунт с этим email уже существует'], [422, 'register', 'Проверьте email'], [429, 'login', 'Слишком много попыток'], [503, 'login', 'Не удалось подключиться']]) await test(`ux27: actionable ${mode} error ${status} preserves input`, async () => {
+    const f = await fixture({ signedOut: true, startPath: mode === 'login' ? '/login' : '/register', handleRoute: async ({ path, route }) => {
+      if (path === `/auth/${mode}`) { await route.fulfill({ status, json: { detail: status === 401 ? 'Invalid credentials' : 'User already exists' } }); return true; }
+    } });
+    try {
+      if (mode === 'register') await f.page.getByRole('textbox', { name: 'Имя', exact: true }).fill('Анна');
+      await f.page.getByRole('textbox', { name: 'Email', exact: true }).fill('audit@example.com');
+      await f.page.getByRole('textbox', { name: 'Пароль', exact: true }).fill('test-password');
+      await f.page.getByRole('button', { name: mode === 'login' ? 'Войти' : 'Зарегистрироваться', exact: true }).click();
+      await expect(f.page.getByRole('alert')).toContainText(expected);
+      await expect(f.page.getByRole('textbox', { name: 'Email', exact: true })).toHaveValue('audit@example.com');
+      await expect(f.page.getByRole('textbox', { name: 'Пароль', exact: true })).toHaveValue('test-password');
+      await expect(f.page.getByRole('heading', { level: 1 })).toBeVisible();
+    } finally { await f.context.close(); }
+  });
+  for (const width of [320, 1440]) await test(`ux27: failed rename keeps its draft and retry saves once ${width}`, async () => {
+    const f = await sidebarFixture({ viewport: { width, height: 844 }, touch: width < 600, renameFailure: true });
+    try {
+      await f.sidebar.getByRole('button', { name: 'Действия с беседой Первая беседа', exact: true }).click();
+      await f.page.getByRole('menuitem', { name: 'Переименовать', exact: true }).click();
+      const input = f.sidebar.getByRole('textbox', { name: 'Название беседы', exact: true });
+      await input.fill('План показа продукта');
+      await input.press('Enter');
+      await expect(f.sidebar.getByRole('alert')).toContainText('Не удалось сохранить название');
+      await expect(input).toHaveValue('План показа продукта');
+      f.state.renameFailure = false; f.state.renameDelay = 350;
+      await input.press('Enter'); await input.press('Enter');
+      await expect(f.sidebar.getByRole('button', { name: 'Открыть беседу План показа продукта', exact: true })).toBeVisible();
+      assert.equal(f.state.renameAttempts, 2);
+      await expect(f.sidebar.getByRole('alert')).toHaveCount(0);
+    } finally { await f.context.close(); }
+  });
+  await test('ux27: search survives tabs and a failed restore stays in trash', async () => {
+    const f = await fixture({ handleRoute: async ({ path, route }) => {
+      if (path === '/conversations/trash') { await route.fulfill({ json: [{ id: 'deleted', title: 'Удалённая беседа' }] }); return true; }
+      if (path === '/conversations/deleted/restore') { await route.fulfill({ status: 503, json: { detail: 'Не удалось восстановить тестовую беседу' } }); return true; }
+    } });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.page.getByRole('button', { name: 'Корзина', exact: true }).click();
+      await f.page.getByRole('tab', { name: 'Поиск', exact: true }).click();
+      const search = f.page.getByRole('textbox', { name: 'В переписке и названиях файлов', exact: true });
+      await search.fill('план презентации');
+      await f.page.getByRole('tab', { name: 'Задачи', exact: true }).click();
+      await f.page.getByRole('tab', { name: 'Поиск', exact: true }).click();
+      await expect(search).toHaveValue('план презентации');
+      await f.page.getByRole('tab', { name: 'Корзина', exact: true }).click();
+      await f.page.getByRole('button', { name: 'Восстановить', exact: true }).click();
+      await expect(f.page.getByRole('alert')).toContainText('Не удалось восстановить');
+      await f.page.getByRole('tab', { name: 'Задачи', exact: true }).click();
+      await expect(f.page.getByRole('alert')).toHaveCount(0);
+    } finally { await f.context.close(); }
+  });
   await test('modes: failed initial catalog offers recovery while preserving typed text', async () => {
     const f = await fixture({ modelLoadFailure: true });
     try {
@@ -653,7 +735,7 @@ try {
       await expect(nested).toBeVisible();
       const nestedActions = f.sidebar.getByRole('button', { name: 'Действия с беседой План презентации', exact: true });
       if (width < 900) {
-        const bounds = await nestedActions.boundingBox(); assert(bounds.width >= 44 && bounds.height >= 44);
+        await expect.poll(async () => { const bounds = await nestedActions.boundingBox(); return Boolean(bounds && bounds.width >= 44 && bounds.height >= 44); }).toBe(true);
         assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
       }
       await nestedActions.focus(); await nestedActions.press('Enter');
