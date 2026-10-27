@@ -939,29 +939,12 @@ async def _run_html_studio(
             "canvas": True,
         }
     ]
-    img_note = f", AI-картинок: {img_n}" if img_n else ""
-    if skip_note and prompts and not img_n:
-        img_note = f" ({skip_note})"
-    vibe = direction.get("vibe") or "свой"
-    kind_label = {
-        "slides": "Презентация",
-        "infographic": "Инфографика",
-        "dashboard": "Дашборд",
-        "app": "Прототип",
-        "landing": "Макет",
-        "image": "Картинка",
-    }.get(kind, "Макет")
     if iterating:
-        answer = (
-            f"На холсте справа обновлён макет «{title}», язык «{vibe}»{img_note}. "
-            f"Напишите, что ещё поменять: слайд, цвет, факты. Не нужно собирать заново."
-        )
+        answer = f'Обновил «{title}». Посмотрите результат на холсте; предыдущие версии доступны в его меню.'
     else:
-        answer = (
-            f"{kind_label} «{title}», язык «{vibe}»{img_note} – справа на холсте. "
-            f"Готовый макет правится следующим сообщением (темнее шапка, другой стиль, поправить слайд). "
-            f"Скачивается как PPTX, PDF или PNG."
-        )
+        answer = f'Готово: «{title}». Откройте холст, чтобы посмотреть результат или изменить нужный элемент. Файл можно скачать кнопкой «Скачать».'
+    if skip_note and prompts and not img_n:
+        answer += '\n\n' + skip_note
     return sanitize_response_text(answer), files, "", source_items
 
 

@@ -370,6 +370,7 @@ def test_html_canvas_extract_sanitize_and_kind():
     assert detect_kind("слайды про кофейню") == "slides"
     assert detect_kind("сделай презентацию") == "slides"
     assert detect_kind("лендинг кофейни") == "landing"
+    assert detect_kind("Создай интерактивное приложение: счётчик гостей") == "app"
     assert detect_kind("дашборд подписки") == "dashboard"
     assert detect_kind("инфографика путь зерна") == "infographic"
     assert detect_kind("нарисуй рыжего кота на крыше") == "image"
