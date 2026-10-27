@@ -171,7 +171,6 @@ async def get_deepseek_response(
     max_loops = 6
     search_count = 0
     MAX_SEARCHES = 5
-    last_text = ""
     total_input_tokens = 0
     total_output_tokens = 0
     total_cached_tokens = 0
@@ -186,6 +185,16 @@ async def get_deepseek_response(
             active_tools.append(WEB_SEARCH_TOOL_DEEPSEEK)
         if extra_tools and (use_tools or use_skills):
             active_tools = active_tools + extra_tools
+
+        final_pass = loop_i == max_loops - 1
+        if final_pass:
+            # Reserve the existing last call for synthesis, rather than execute
+            # one more lookup and return an empty tool-only assistant message.
+            active_tools = []
+            current_messages.append({'role': 'system', 'content':
+                'Заверши работу готовым ответом на вопрос пользователя по уже полученным данным. '
+                'Новые поиски и проверки источников не нужны. Если часть данных недоступна, '
+                'кратко укажи конкретный пробел и дай полезную доступную часть ответа.'})
 
         content_parts: List[str] = []
         loop_reasoning_parts: List[str] = []
@@ -249,9 +258,6 @@ async def get_deepseek_response(
         elif loop_i == 0:
             logger.info(f"DeepSeek stream had no reasoning_content deltas for model={model}")
 
-        if message_content:
-            last_text = message_content
-
         tool_calls = None
         if tool_call_chunks:
             from types import SimpleNamespace
@@ -292,7 +298,12 @@ async def get_deepseek_response(
         # Если вызова функций нет — возвращаем итоговый ответ
         if not tool_calls:
             logger.info(f"DeepSeek completed successfully on loop {loop_i+1}")
-            return message_content or "Нет ответа от модели", generated_files, "\n\n".join(reasoning_parts), search_results[:20]
+            return message_content or "❌ Модель не вернула текст ответа.", generated_files, "\n\n".join(reasoning_parts), search_results[:20]
+
+        if final_pass:
+            # A provider ignoring the absent tool catalog cannot perform any
+            # extra actions. Return a failure marker so Auto can use its reserve.
+            return "❌ Модель не завершила ответ.", generated_files, "\n\n".join(reasoning_parts), search_results[:20]
 
         # Выполняем каждый tool call
         for tc in tool_calls:
@@ -370,4 +381,4 @@ async def get_deepseek_response(
             })
 
     logger.warning("DeepSeek API: exhausted max loops")
-    return last_text or "Нет ответа от модели", generated_files, "\n\n".join(reasoning_parts), search_results[:20]
+    return "❌ Модель не завершила ответ.", generated_files, "\n\n".join(reasoning_parts), search_results[:20]
