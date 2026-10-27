@@ -21,10 +21,15 @@ def test_volatile_briefs_require_a_search(text):
 
 @pytest.mark.parametrize("text", [
     "Сделай шапку темнее", "Нарисуй кота", "Перенеси готовое ТЗ в слайды",
-    "Актуальные тарифы из ТЗ, без интернета",
+    "Актуальные тарифы из ТЗ, без интернета", "Аниме-постер: персонаж в центре",
 ])
 def test_cosmetic_and_offline_jobs_do_not_require_search(text):
     assert not needs_current_web(text)
+
+
+@pytest.mark.parametrize("text", ["Плакат: цены на билеты", "Сравнение цен", "Инфографика с ценами", "Ценовая политика"])
+def test_price_inflections_still_require_search(text):
+    assert needs_current_web(text)
 
 
 class Stream:
