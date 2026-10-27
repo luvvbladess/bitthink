@@ -1,5 +1,6 @@
 """Поисковый слой: Kimi REST search/search_pro с резервом OpenAI web search."""
 
+from app.services.search_budget import limited_search, LIMIT_NOTE
 import re
 import logging
 import asyncio
@@ -225,6 +226,7 @@ async def _search_kimi_pro(query: str, max_results: int) -> List[Dict[str, Any]]
         return []
 
 
+@limited_search(list)
 async def search_web(query: str, max_results: int = 14) -> List[Dict[str, str]]:
     """
     Выполняет поиск и возвращает структурированные источники.

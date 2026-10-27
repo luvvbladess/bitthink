@@ -1125,6 +1125,28 @@ async def _studio_build(user_id: int, args: dict[str, Any]) -> str:
 async def run_computer_tool(name: str, args: dict[str, Any], user_id: int | None) -> str:
     from app.services.run_protocol import current_run
     record = current_run.get()
+    from app.services.search_budget import current_search_budget, LIMIT_NOTE
+    budget = current_search_budget.get()
+    if name == 'browse_page' and budget:
+        import json
+        key = json.dumps(args, sort_keys=True, ensure_ascii=False)
+        cache_key = ('page', key)
+        if cache_key in budget.pending:
+            return await budget.pending[cache_key]
+        if not budget.read_left:
+            return LIMIT_NOTE
+        budget.pages.add(key)
+        async def read_page():
+            return await _run_budgeted_computer_tool(name, args, user_id)
+        task = asyncio.create_task(read_page())
+        budget.pending[cache_key] = task
+        return await task
+    return await _run_budgeted_computer_tool(name, args, user_id)
+
+
+async def _run_budgeted_computer_tool(name: str, args: dict[str, Any], user_id: int | None) -> str:
+    from app.services.run_protocol import current_run
+    record = current_run.get()
     from app.services.read_batches import PARALLEL_READS
     import time
     read_started = time.monotonic()

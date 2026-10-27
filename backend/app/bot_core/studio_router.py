@@ -1,6 +1,7 @@
 """Studio mode: presentations and infographics via structured specs + render engine."""
 
 from __future__ import annotations
+from app.services.search_budget import search_turn
 
 import json
 import logging
@@ -461,6 +462,7 @@ def _fallback_board(user_text: str, theme_id: str, direction: dict[str, Any] | N
     }
 
 
+@search_turn
 async def get_studio_response(
     messages: List[Dict[str, Any]],
     user_text: str,

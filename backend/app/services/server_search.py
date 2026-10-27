@@ -3,6 +3,7 @@
 Public result pages can rate-limit us. Empty/blocked results stay empty rather
 than silently invoking a paid provider. Search snippets are not page evidence.
 """
+from app.services.search_budget import limited_search, LIMIT_NOTE
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -160,6 +161,7 @@ async def _fetch(provider: str, query: str) -> tuple[list[dict], str]:
         return [], 'unavailable'
 
 
+@limited_search(lambda: {'results': [], 'status': 'budget_exhausted', 'note': LIMIT_NOTE, 'paid_api_used': False})
 async def _search(query: str, sites: list[str]) -> dict:
     qualified = query + (' (' + ' OR '.join('site:' + site for site in sites) + ')' if sites else '')
     statuses = {}
@@ -225,6 +227,7 @@ async def _search_with_recovery(query, sites):
     return result
 
 
+@limited_search(lambda: {'results': [], 'status': 'budget_exhausted', 'note': LIMIT_NOTE, 'paid_api_used': False})
 async def server_search(query: str, *, limit: int = 10, sites: list[str] | None = None) -> dict:
     try:
         limit = max(1, min(20, int(limit)))

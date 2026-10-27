@@ -60,7 +60,10 @@ async def compose_with_web(
     from openai_client import get_chat_response
     from app.services.run_protocol import current_run
 
-    enabled = not _NO_WEB.search(user_text or "")
+    from web_scraper import URL_PATTERN
+    from app.services.search_budget import SEARCH_PLAN
+    web_allowed = not _NO_WEB.search(user_text or "")
+    enabled = web_allowed and (needs_current_web(user_text) or bool(URL_PATTERN.search(user_text or "")))
     pages = await _provided_pages(user_text, user_id) if enabled else ""
     record = current_run.get()
     evidence = record.evidence_prompt() if record else ""
@@ -82,12 +85,12 @@ async def compose_with_web(
         "Сначала инструменты, затем единственный полный результат в требуемом формате. "
         "Не выводи промежуточный HTML/JSON до окончания проверки."
         if enabled else
-        "Пользователь запретил интернет: используй предоставленные данные, не объявляй их актуальность проверенной."
+        "Для этой задачи поиск не нужен или отключён. Используй предоставленные материалы; внешние данные не запрашивай."
     )
-    prepared = [*messages, {"role": "system", "content": instructions + evidence + pages}]
+    prepared = [*messages, {"role": "system", "content": SEARCH_PLAN + instructions + evidence + pages}]
     text, _, _, found = await get_chat_response(
-        prepared, model=model, user_id=user_id, use_tools=enabled, chat_tools=True,
-        allowed_tools=STUDIO_TOOLS, use_skills=False, reasoning_effort=effort,
+        prepared, model=model, user_id=user_id, use_tools=True, chat_tools=True,
+        allowed_tools=STUDIO_TOOLS if enabled else STUDIO_TOOLS - {'web_search', 'server_search', 'browse_page'}, use_skills=False, reasoning_effort=effort,
         force_web_search=enabled and needs_current_web(user_text) and not bool(
             record and any(s["status"] in {"retrieved", "read"} for s in record.sources)
         ),

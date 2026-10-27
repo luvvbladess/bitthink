@@ -2,6 +2,7 @@
 Клиент для работы с DeepSeek API (Chat Completions API)
 """
 
+from app.services.search_budget import search_turn
 import asyncio
 import logging
 import json
@@ -93,6 +94,7 @@ WEB_SEARCH_TOOL_DEEPSEEK = {
 
 
 @billing_scope
+@search_turn
 async def get_deepseek_response(
     messages: List[Dict[str, Any]],
     model: str = "deepseek-v4-pro",
@@ -168,7 +170,7 @@ async def get_deepseek_response(
     generated_files: List[Dict[str, Any]] = []
     reasoning_parts: List[str] = []
     search_results: List[Dict[str, str]] = []
-    max_loops = 6
+    max_loops = 4 if chat_tools else 6
     search_count = 0
     MAX_SEARCHES = 5
     total_input_tokens = 0
@@ -186,6 +188,8 @@ async def get_deepseek_response(
         if extra_tools and (use_tools or use_skills):
             active_tools = active_tools + extra_tools
 
+        from app.services.search_budget import search_tools_allowed
+        active_tools = [t for t in active_tools if search_tools_allowed(t['function']['name'])]
         final_pass = loop_i == max_loops - 1
         if final_pass:
             # Reserve the existing last call for synthesis, rather than execute

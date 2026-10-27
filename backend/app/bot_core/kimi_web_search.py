@@ -6,6 +6,7 @@ fetch $0.002. Empty or failed calls are free.
 """
 
 from __future__ import annotations
+from app.services.search_budget import limited_search, LIMIT_NOTE
 
 import logging
 from typing import Any, Dict, List, Optional
@@ -201,6 +202,7 @@ def evidence_from_results(results: List[Dict[str, Any]], max_chars: int = 6000) 
     return content
 
 
+@limited_search(list)
 async def kimi_search(
     query: str,
     *,
@@ -228,6 +230,7 @@ async def kimi_search(
     return results
 
 
+@limited_search(list)
 async def kimi_search_pro(
     query: str,
     *,

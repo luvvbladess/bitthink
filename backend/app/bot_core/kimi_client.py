@@ -2,6 +2,7 @@
 Клиент Kimi/Moonshot для встроенного web search.
 """
 
+from app.services.search_budget import search_turn
 import asyncio
 import json
 import logging
@@ -145,7 +146,7 @@ async def _execute_kimi_tool(
 
     if name in {"web_search", "$web_search"}:
         query = str(arguments.get("query") or arguments.get("text_query") or arguments.get("q") or "").strip()
-        default_limit = 12 if research else 8
+        default_limit = 8 if research else 6
         limit = arguments.get("limit", default_limit)
         results = await kimi_search_pro(
             query,
@@ -171,7 +172,7 @@ def _search_today_note() -> str:
     now = datetime.now()
     return (
         f" Сегодня {now.strftime('%d.%m.%Y')} ({now.year} год). "
-        f"В поисковых запросах указывай {now.year}, не прошлый год. "
+        f"Добавляй год в запрос только если пользователь задаёт период. "
         "Не опирайся на мету или рейтинги прошедшего года, если не проверял их поиском."
     )
 
@@ -241,6 +242,7 @@ async def _append_tool_results(
 
 
 @billing_scope
+@search_turn
 async def get_kimi_search_brief(messages: List[Dict[str, Any]], user_text: str, user_id: int = None) -> str:
     """Ищет внешние факты и источники через Kimi REST web search."""
     global client
@@ -282,17 +284,13 @@ async def get_kimi_search_brief(messages: List[Dict[str, Any]], user_text: str, 
     total_cached_tokens = 0
 
     step_limit = 4
-    try:
-        from computer_skills.loader import match_skills
-        if 'marketplaces' in match_skills(user_text,user_id=user_id,sandbox=False,limit=3):
-            step_limit = 8  # Search -> listing discovery -> exact cards -> comparison.
-    except Exception:
-        pass
-    for _ in range(step_limit):
+    from app.services.search_budget import search_tools_allowed
+    for step in range(step_limit):
         try:
             response = await asyncio.wait_for(
                 model_call(client, {
-                    "model": KIMI_MODEL, "messages": current_messages, "tools": KIMI_SEARCH_TOOLS,
+                    "model": KIMI_MODEL, "messages": current_messages,
+                    **({"tools": [t for t in KIMI_SEARCH_TOOLS if search_tools_allowed(t["function"]["name"])]} if step < step_limit - 1 else {}),
                     "extra_body": {"thinking": {"type": "disabled"}},
                     "max_tokens": max_output_tokens(KIMI_MODEL),
                 }, model=KIMI_MODEL, user_id=user_id),
@@ -535,7 +533,7 @@ def extract_domain_sources(text: str) -> List[Dict[str, str]]:
 
 def kimi_result_is_usable(answer: str) -> bool:
     """Reject transport failures/tool markup, without judging source coverage."""
-    return bool(answer and answer.strip() and not answer.lstrip().startswith('❌')
+    return bool(answer and answer.strip() and answer.strip() != "Нет ответа от модели" and not answer.lstrip().startswith('❌')
                 and not re.search(r'<(?:tool|tool_call|function_call)>', answer, re.I))
 
 
@@ -546,6 +544,7 @@ def kimi_result_is_grounded(answer: str, sources: List[Dict[str, str]], minimum_
 
 
 @billing_scope
+@search_turn
 async def get_kimi_chat_response(
     messages: List[Dict[str, Any]], user_id: int = None, on_reasoning_delta: Optional[Any] = None,
     research: bool = False,
@@ -592,10 +591,11 @@ async def get_kimi_chat_response(
         return _merge_ui_sources(collected_sources)
 
     deadline = asyncio.get_running_loop().time() + (120 if research else 75)
-    precise_comparison = any(re.search(r'верс\w*|цифр\w*', str(m.get('content') or ''), re.I)
-                             for m in current_messages[-1:] if m.get('role') == 'user')
-    steps = 5 if research or precise_comparison else 3
+    steps = 4 if research else 3
+    from app.services.search_budget import search_tools_allowed
     for step in range(steps):
+        if step == steps - 1:
+            current_messages.append({'role': 'system', 'content': 'Дай готовый ответ по собранным данным. Новые поиски и проверки не нужны; обозначь лишь конкретные пробелы.'})
         remaining = deadline - asyncio.get_running_loop().time()
         if remaining <= 0:
             break
@@ -603,7 +603,7 @@ async def get_kimi_chat_response(
             response = await asyncio.wait_for(
                 model_call(client, {
                     "model": KIMI_MODEL, "messages": current_messages,
-                    **({'tools': KIMI_SEARCH_TOOLS} if step < steps - 1 else {}),
+                    **({'tools': [t for t in KIMI_SEARCH_TOOLS if search_tools_allowed(t['function']['name'])]} if step < steps - 1 else {}),
                     "extra_body": {"thinking": {"type": "disabled"}},
                     "max_tokens": max_output_tokens(KIMI_MODEL),
                 }, model=KIMI_MODEL, user_id=user_id),
