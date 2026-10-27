@@ -533,11 +533,15 @@ def extract_domain_sources(text: str) -> List[Dict[str, str]]:
     return results
 
 
+def kimi_result_is_usable(answer: str) -> bool:
+    """Reject transport failures/tool markup, without judging source coverage."""
+    return bool(answer and answer.strip() and not answer.lstrip().startswith('❌')
+                and not re.search(r'<(?:tool|tool_call|function_call)>', answer, re.I))
+
+
 def kimi_result_is_grounded(answer: str, sources: List[Dict[str, str]], minimum_sources: int = 2) -> bool:
-    """Строгая проверка перед тем, как доверить пользователю результат Kimi."""
+    """Legacy diagnostic helper; never used to gate delivery of an answer."""
     from app.services.source_quality import evidence_issues, source_urls
-    # minimum_sources is retained for caller compatibility. Quantity cannot
-    # establish grounding: a direct primary page can be sufficient by itself.
     return bool(source_urls(sources) and not evidence_issues(answer, sources))
 
 

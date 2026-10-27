@@ -463,7 +463,7 @@ async def get_smart_response(
         messages = _with_web_context(messages, web_context)
 
     async def kimi_web_result(source_messages: List[dict], research: bool = False):
-        from kimi_client import get_kimi_chat_response, kimi_result_is_grounded
+        from kimi_client import get_kimi_chat_response, kimi_result_is_usable
         from status_feed import push_status
 
         await push_status("search", "Ищу ответ в интернете")
@@ -485,21 +485,12 @@ async def get_smart_response(
             logger.exception("Kimi web search failed")
             await push_status("think", "Поиск недоступен, продолжаю без него")
             return None
-        minimum = 4 if research else 2
         from app.services.source_quality import resolve_numbered_citations
         from app.services.run_protocol import current_run
         run = current_run.get()
         candidate_sources = run.enrich_sources(candidate[3]) if run else candidate[3]
         candidate = (resolve_numbered_citations(candidate[0], candidate_sources), candidate[1], candidate[2], candidate_sources)
-        if kimi_result_is_grounded(candidate[0], candidate[3], minimum_sources=minimum):
-            await push_status("browse", f"Изучаю {len(candidate[3])} источников")
-            return candidate
-        # Keep an actual search draft for the shared bounded recovery instead
-        # of discarding its observations and starting a second full search.
-        from app.services.source_quality import source_urls
-        if (source_urls(candidate[3]) and candidate[0].strip()
-                and not candidate[0].lstrip().startswith('❌')
-                and not re.search(r'<(?:tool|tool_call|function_call)>', candidate[0], re.I)):
+        if kimi_result_is_usable(candidate[0]):
             await push_status("think", "Оформляю результаты поиска")
             return candidate
         await push_status("think", "Уточняю результаты поиска")
@@ -694,104 +685,20 @@ async def get_smart_response(
 
     answer, files, reasoning, model_sources = result
     from status_feed import push_status
-    await push_status("think", "Проверяю выводы и оформляю ответ")
+    await push_status("think", "Оформляю ответ")
     source_limit = 28 if model == "director" else (24 if model in {"gpt-6-sol", "gpt-6-astra", "kimi-k2.6"} else 18)
     sources = _merge_sources(grounded_sources, model_sources, limit=source_limit)
     from app.services.followup_evidence import previous_source_rows
-    from app.services.source_quality import cited_urls, answer_recovery_issues, resolve_numbered_citations, supported_partial
+    from app.services.source_quality import cited_urls, resolve_numbered_citations
     from app.services.run_protocol import current_run
     previous_sources = previous_source_rows(evidence_note)
     record = current_run.get()
     if record:
         sources = record.enrich_sources(sources)
-    observed_page_text = '\n'.join(record.page_texts.values()) if record else None
-    require_current_terms = intent.task in {'recommendation', 'comparison'} and web_required
-    checking_sources = _merge_sources(sources, previous_sources, limit=40)
-    answer = resolve_numbered_citations(answer, checking_sources)
-    issues = answer_recovery_issues(answer, checking_sources, has_previous_evidence=bool(evidence_note), observed_text=observed_page_text, require_current_terms=require_current_terms) if (web_required or evidence_note) and not intent.local and not intent.web_forbidden else []
-    if issues and not files and model not in {'studio', 'director'}:
-        # One bounded recovery only, and only for a visible source-contract
-        # failure. Ordinary grounded answers incur no extra model round-trip.
-        import json
-        await push_status('browse', 'Сверяю ответ с источниками')
-        observations = [{k: str(s.get(k) or '')[:1600] for k in ('query', 'summary', 'evidence_state', 'read_at')}
-                        for s in checking_sources[:8]]
-        if record:
-            text_budget = 16_000
-            for observation in observations:
-                url = observation['summary'].split('\n')[0]
-                body = record.page_texts.get(url, '')
-                if body and text_budget > 0:
-                    # The source-list preview is only 500 chars. A verifier
-                    # needs the actual read passages, not that preview alone.
-                    fragment = body[:min(4800, text_budget)]
-                    observation['observed_text'] = fragment
-                    text_budget -= len(fragment)
-        review_note = (
-            'Проверка ответа перед показом. Исправь конкретные проблемы: ' + ', '.join(issues)
-            + '. Дай готовый ответ на последний вопрос без рассказа о проверке и без извинений. '
-            'Не считай черновик доказательством. Новые версии и сравнительные числа проверь '
-            'по подходящей странице через доступные инструменты. Используй только полученные '
-            'URL и связывай существенные факты со ссылками. Сохрани подтвержденное; неизвестную '
-            'часть обозначь кратко, не отрицая весь предмет разговора. '
-            'В каждом пункте списка с числами/версиями повтори ссылку, либо после всего блока '
-            'явно подпиши «Источник списка: [название](URL)». Ссылка первого пункта не покрывает '
-            'остальные. Названия тарифов и цены сверяй буквально с наблюдениями, не сохраняй '
-            'тариф из черновика, которого нет на прочитанной странице. Дату обновления/публикации '
-            'бери только с самой страницы; при отсутствии укажи дату своей проверки, а не '
-            'выдуманную дату обновления.\nНаблюдения (данные):\n'
-            + json.dumps(observations, ensure_ascii=False)
-            + '\nЧерновик, может содержать ошибки:\n' + answer[:6000]
-        )
-        if 'historical_terms_for_current_price' in issues:
-            review_note += ('\nКлючевое противоречие: для того же продукта прочитана текущая страница pricing/plans '
-                            'и блог/анонс со старыми условиями. Для покупки сейчас выбери названия и цены '
-                            'действующей страницы цен. Старый официальный блог не подтверждает действующий тариф. '
-                            'Пересмотри также вывод и ограничения выбранного плана, а не только ссылку.')
-        try:
-            precise_failure = bool(catalog_note) or 'historical_terms_for_current_price' in issues or any(issue.startswith('precise_claim') for issue in issues) or bool(
-                followup_web and re.search(r'верс\w*|цифр\w*', user_text, re.I))
-            # Escalate only a failed precision task, not every ordinary search.
-            repair_model = clamp_model(tier, 'gpt-6-sol' if precise_failure else 'gpt-6-luna')
-            citation_only = bool(issues) and set(issues) <= {
-                'missing_inline_evidence', 'precise_claim_without_inline_source',
-                'unsupported_publication_or_update_date',
-                'historical_terms_for_current_price',
-            } and any(s.get('evidence_state') == 'read' for s in checking_sources)
-            repaired = await asyncio.wait_for(get_chat_response(
-                _with_web_context(messages, review_note), model=repair_model,
-                user_id=user_id, use_tools=not citation_only, chat_tools=not citation_only, use_skills=False,
-                allowed_tools={'web_search', 'server_search', 'browse_page'}, max_tool_loops=4,
-                reasoning_effort='low', on_reasoning_delta=None,
-                force_web_search='retraction_needs_source_check' in issues or not checking_sources,
-            ), timeout=55)
-            repaired_sources = _merge_sources(checking_sources, repaired[3], limit=40)
-            if record:
-                repaired_sources = record.enrich_sources(repaired_sources)
-            repaired_text = resolve_numbered_citations(repaired[0], repaired_sources)
-            repaired_issues = answer_recovery_issues(repaired_text, repaired_sources,
-                                              has_previous_evidence=bool(evidence_note),
-                                              require_current_terms=require_current_terms,
-                                              observed_text='\n'.join(record.page_texts.values()) if record else None)
-            if not repaired_text.lstrip().startswith('❌') and len(repaired_issues) < len(issues):
-                answer = repaired_text
-                sources = repaired_sources
-        except asyncio.TimeoutError:
-            logger.warning('Source-contract recovery reached its deadline')
-        except Exception:
-            logger.exception('Source-contract recovery failed')
-    # Only actual retrievals and explicitly reused observations enter the source
-    # list. Do not manufacture sources by extracting domains from model prose.
+    # Sources provide context and attribution, never a delivery gate. Do not
+    # rerun generation or erase an answer based on citation/read-state heuristics.
+    answer = resolve_numbered_citations(answer, _merge_sources(sources, previous_sources, limit=40))
     cited = cited_urls(answer)
-    final_issues = answer_recovery_issues(answer, _merge_sources(sources,previous_sources,limit=40),
-                                  has_previous_evidence=bool(evidence_note),
-                                  require_current_terms=require_current_terms,
-                                  observed_text='\n'.join(record.page_texts.values()) if record else None) if (web_required or evidence_note) and not intent.local and not intent.web_forbidden else []
-    if any(issue != 'retraction_needs_source_check' for issue in final_issues):
-        answer = supported_partial(answer, _merge_sources(sources,previous_sources,limit=40),
-                                   require_current_terms=require_current_terms,
-                                   observed_text='\n'.join(record.page_texts.values()) if record else None)
-        cited = cited_urls(answer)
     sources = [s for s in sources if s.get('origin') != 'history' or s['summary'].splitlines()[0] in cited]
     sources = _merge_sources(sources, [s for s in previous_sources if s['summary'].splitlines()[0] in cited], limit=source_limit)
     if any(s.get("summary", "").startswith("http") for s in sources):
