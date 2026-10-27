@@ -86,3 +86,41 @@ def test_pro_stays_on_its_existing_quality_route(monkeypatch):
     ))
     assert result[0] == '138'
     assert calls[0]['request']['model'] == calls[0]['billing_model'] == 'deepseek-v4-pro'
+
+
+@pytest.mark.parametrize('final_tool', [False, True])
+def test_tool_budget_reserves_final_call_for_answer_without_more_actions(monkeypatch, final_tool):
+    fake_provider(monkeypatch)
+    calls=[];executed=[]
+    async def tool(name, args, user_id):
+        executed.append(name)
+        return 'Прочитанные параметры: камера 50 МП, цена 35 000 ₽.'
+    async def generate(client, request, **kwargs):
+        calls.append(deepcopy(request))
+        if len(calls)<6 or final_tool:
+            chunks=[chunk(tool_calls=[NS(index=0,id='read-'+str(len(calls)),
+                function=NS(name='workspace_read',arguments='{"path":"sample.txt"}'))])]
+        else:
+            chunks=[chunk(content='Рекомендую Phone A по собранным параметрам.')]
+        return await kwargs['consume'](Stream(chunks))
+    monkeypatch.setattr(computer_tools,'run_computer_tool',tool)
+    monkeypatch.setattr(call_budget,'model_call',generate)
+    result=asyncio.run(deepseek_client.get_deepseek_response(
+        [{'role':'user','content':'Сравни варианты.'}],model='deepseek-v4-flash',use_skills=False))
+    assert len(calls)==6 and len(executed)==5
+    assert calls[-1]['tools'] is None
+    assert any(m['role']=='tool' and '35 000' in m['content'] for m in calls[-1]['messages'])
+    assert calls[-1]['messages'][-1]['role']=='system'
+    assert 'Новые поиски и проверки источников не нужны' in calls[-1]['messages'][-1]['content']
+    if final_tool:assert result[0].startswith('❌')
+    else:assert result[0]=='Рекомендую Phone A по собранным параметрам.'
+
+
+def test_empty_provider_message_is_failure_for_auto_reserve(monkeypatch):
+    fake_provider(monkeypatch)
+    async def generate(client, request, **kwargs):
+        return await kwargs['consume'](Stream([chunk(content='')]))
+    monkeypatch.setattr(call_budget,'model_call',generate)
+    result=asyncio.run(deepseek_client.get_deepseek_response(
+        [{'role':'user','content':'Вопрос'}],use_tools=False,use_skills=False))
+    assert result[0].startswith('❌') and 'Нет ответа от модели' not in result[0]
