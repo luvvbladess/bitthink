@@ -6,6 +6,7 @@ from app.services.source_quality import resolve_numbered_citations
 from model_context import search_hop_messages
 from kimi_client import kimi_result_is_grounded
 import asyncio
+import pytest
 from uuid import uuid4
 
 
@@ -145,23 +146,20 @@ def test_auto_followup_searches_with_prior_page_not_offline_memory(monkeypatch):
     assert any('New Model Full' in m['content'] for m in seen)
 
 
-def test_false_retraction_has_one_bounded_read_only_recovery(monkeypatch):
+def test_followup_response_does_not_trigger_a_source_verification_round(monkeypatch):
     core,kimi,user=_mock_auto_turn(monkeypatch)
     requests=[]
-    async def empty(*args,**kwargs):return 'Не нашёл',[],'',[]
+    async def empty(*args,**kwargs):return '',[],'',[]
+    answer_text='Предыдущие сведения требуют уточнения. Вот доступные варианты.'
     async def answer(messages,**kwargs):
         requests.append(kwargs)
-        if len(requests)==1:return 'Предыдущие ответы были выдуманными. Модель не существует.',[],'',[]
-        return 'Модель выпущена. [Анонс](https://example.com/announcement). Версии конкурентов нужно проверить отдельно.',[],'',[source()]
+        return answer_text,[],'',[]
     monkeypatch.setattr(kimi,'get_kimi_chat_response',empty)
     monkeypatch.setattr(core,'get_chat_response',answer)
     query='а скажи именно версии моделей, циферные'
     result=asyncio.run(core.get_smart_response(user,query,[{'role':'user','content':query}],None))
-    assert 'Модель выпущена' in result[0] and 'выдуман' not in result[0]
-    assert len(requests)==2
-    assert requests[-1]['model']=='gpt-6-sol'
-    assert requests[-1]['max_tool_loops']==4
-    assert requests[-1]['allowed_tools']=={'web_search','server_search','browse_page'}
+    assert result[0]==answer_text
+    assert len(requests)==1
 
 
 def test_kimi_keeps_verified_numbered_links_before_cleanup(monkeypatch):
@@ -227,21 +225,39 @@ def test_phone_recommendation_with_read_pages_survives_without_inline_links(monk
     assert result[0] == answer and result[3]
 
 
-def test_search_draft_with_bad_link_has_one_repair_and_keeps_observations(monkeypatch):
+def test_search_answer_is_not_rewritten_by_source_contract(monkeypatch):
     core, kimi, user = _mock_auto_turn(monkeypatch)
     monkeypatch.setattr(core.conversation_manager, 'conversation_for_turn', lambda uid: NS(messages=[]))
-    calls = []
-    async def search(*args, **kwargs):
-        return 'Phone A [магазин](https://invented.example/phone)', [], '', [source()]
-    async def repair(messages, **kwargs):
-        calls.append((messages, kwargs))
-        return 'Phone A — кандидат по камере. Цену объявления нужно проверить отдельно.', [], '', []
+    answer = 'Phone A — кандидат по камере. [Подробнее](https://shop.example/phone)'
+    async def search(*args, **kwargs): return answer, [], '', [source('retrieved')]
+    async def forbidden(*args, **kwargs): raise AssertionError('No source verification model call')
     monkeypatch.setattr(kimi, 'get_kimi_chat_response', search)
-    monkeypatch.setattr(core, 'get_chat_response', repair)
+    monkeypatch.setattr(core, 'get_chat_response', forbidden)
     query = 'Какой телефон выбрать к покупке с камерой до 40 тысяч рублей?'
     result = asyncio.run(core.get_smart_response(user, query, [{'role': 'user', 'content': query}], None))
-    assert len(calls) == 1 and 'Phone A' in result[0] and 'invented.example' not in result[0]
-    assert any('https://example.com/announcement' in m.get('content', '') for m in calls[0][0])
+    assert 'Phone A' in result[0] and 'Подробнее' in result[0]
+    assert result[3][0]['evidence_state']=='retrieved'
+
+
+def test_usable_search_answer_does_not_depend_on_sources():
+    from kimi_client import kimi_result_is_usable
+    for text in ['Совет без ссылок.', 'Version 4.7 [страница](https://example.com)', 'Цены уточняются.']:
+        assert kimi_result_is_usable(text)
+    for text in ['', '  ', '❌ Ошибка API', '<tool>web_search</tool>']:
+        assert not kimi_result_is_usable(text)
+
+
+def test_search_answer_without_sources_is_delivered_once(monkeypatch):
+    core, kimi, user = _mock_auto_turn(monkeypatch)
+    monkeypatch.setattr(core.conversation_manager, 'conversation_for_turn', lambda uid: NS(messages=[]))
+    answer = 'Рассмотрите Phone A для камеры и Phone B для автономности. Цена зависит от продавца.'
+    async def search(*args, **kwargs): return answer, [], '', []
+    async def forbidden(*args, **kwargs): raise AssertionError('No duplicate search or source recovery')
+    monkeypatch.setattr(kimi, 'get_kimi_chat_response', search)
+    monkeypatch.setattr(core, 'get_chat_response', forbidden)
+    query = 'Какой телефон выбрать к покупке с камерой до 40 тысяч рублей?'
+    result = asyncio.run(core.get_smart_response(user, query, [{'role':'user','content':query}], None))
+    assert result[0] == answer and result[3] == []
 
 
 def test_search_tool_markup_is_not_treated_as_a_finished_recommendation(monkeypatch):
@@ -308,3 +324,32 @@ def test_cited_table_caption_covers_table_and_survives_partial_filter():
 def test_one_list_item_citation_does_not_cover_other_items():
     text='- Model 4.7 [source](https://example.com/announcement)\n\n- Model 9.9'
     assert 'precise_claim_without_inline_source' in evidence_issues(text,[source()])
+
+
+@pytest.mark.parametrize('mode', ['auto', 'kimi-k2.6', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6-astra', 'director', 'studio'])
+@pytest.mark.parametrize('state', ['read', 'retrieved', 'failed', None])
+def test_all_modes_preserve_answer_without_source_validation(monkeypatch, mode, state):
+    core, kimi, user = _mock_auto_turn(monkeypatch)
+    monkeypatch.setattr(core.conversation_manager, 'get_user_model', lambda uid: mode)
+    monkeypatch.setattr(core.conversation_manager, 'conversation_for_turn', lambda uid: NS(messages=[]))
+    answer = 'Phone A: камера 50 МП, ориентир 35 000 ₽. Условия зависят от продавца.'
+    rows = [source(state)] if state else []
+    calls = []
+    async def generate(*args, **kwargs):
+        assert 'allowed_tools' not in kwargs, 'A source recovery pass must not run'
+        calls.append(kwargs)
+        return answer, [], '', rows
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Source checks must not gate any mode')
+    import app.services.source_quality as quality
+    monkeypatch.setattr(quality, 'answer_recovery_issues', forbidden)
+    monkeypatch.setattr(quality, 'supported_partial', forbidden)
+    monkeypatch.setattr(kimi, 'get_kimi_chat_response', generate)
+    monkeypatch.setattr(core, 'get_chat_response', generate)
+    import director_router, studio_router
+    monkeypatch.setattr(director_router, 'get_director_response', generate)
+    monkeypatch.setattr(studio_router, 'get_studio_response', generate)
+    query = 'Какой телефон выбрать к покупке с камерой до 40 тысяч рублей?'
+    result = asyncio.run(core.get_smart_response(user, query, [{'role': 'user', 'content': query}], None))
+    assert result[0] == answer
+    assert len(calls) == (2 if mode == 'gpt-6-sol' else 1)
