@@ -11,6 +11,8 @@ _FRONT = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.S)
 CHAT_SKILLS = frozenset(
     {
         "brief",
+        "ui_ux_pro_max",
+        "emil_design_eng",
         "eng_bom",
         "eng_calc_check",
         "eng_diff",

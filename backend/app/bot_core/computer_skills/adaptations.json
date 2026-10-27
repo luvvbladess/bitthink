@@ -746,5 +746,32 @@
     "adaptation": "template",
     "description": "Сохранность исходных материалов — применяется только после добавления в личные навыки.",
     "source_sha256": "3a93d1ca6f9c2a90d874a04cf4ffdc8e84c397fc030432e0541c1ee579801357"
+  },
+  {
+    "name": "ui_ux_pro_max",
+    "source_name": "ui-ux-pro-max",
+    "title": "UI UX Pro Max",
+    "scope": "chat",
+    "capabilities": [],
+    "triggers": [
+      "ui ux pro max",
+      "дизайн интерфейса"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "2558ae1f814837077e7afaebb59362316af8a3c79a9a99eceb02dd1935aaf4f3"
+  },
+  {
+    "name": "emil_design_eng",
+    "source_name": "emil-design-eng",
+    "title": "Emil Kowalski — Design Engineering",
+    "scope": "chat",
+    "capabilities": [],
+    "triggers": [
+      "emil kowalski",
+      "emil design eng",
+      "микровзаимодействия"
+    ],
+    "adaptation": "builtin",
+    "source_sha256": "0c4c055b26fa0d3c91ba95a25b11ab3db1990911162cc38608c7af3ad4979684"
   }
 ]

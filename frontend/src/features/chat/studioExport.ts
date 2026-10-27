@@ -54,39 +54,10 @@ function prepareCaptureHtml(html: string): string {
   const freeze =
     '<style data-studio-capture="1">.slide.is-on,.slide.is-on *{animation:none!important;transition:none!important}'
     + '.slide.is-on{opacity:1!important;visibility:visible!important}'
-    + '.nav,.counter,[data-deck-ui]{display:none!important}</style>';
+    + (canvasKindFromHtml(html) === 'slides' ? '.nav,.counter,[data-deck-ui]{display:none!important}' : '') + '</style>';
   const next = html || '';
   if (/<\/head>/i.test(next)) return next.replace(/<\/head>/i, `${freeze}</head>`);
   return freeze + next;
-}
-
-function rgbToHex(color: string): string {
-  const match = /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(color || '');
-  if (!match) return '';
-  return [match[1], match[2], match[3]]
-    .map((part) => Number(part).toString(16).padStart(2, '0'))
-    .join('')
-    .toUpperCase();
-}
-
-function readSlideCopy(slide: HTMLElement): { title: string; body: string[]; background: string; color: string } {
-  const title = (slide.querySelector('h1, h2, h3')?.textContent || '').replace(/\s+/g, ' ').trim();
-  const body = [...slide.querySelectorAll('p, li')]
-    .map((node) => (node.textContent || '').replace(/\s+/g, ' ').trim())
-    .filter((text) => text && text !== title)
-    .slice(0, 8);
-  const style = getComputedStyle(slide);
-  return {
-    title,
-    body,
-    background: rgbToHex(style.backgroundColor) || rgbToHex(getComputedStyle(slide.ownerDocument.body).backgroundColor) || '111111',
-    color: rgbToHex(style.color) || 'F4F1EA',
-  };
-}
-
-function captureLooksEmpty(dataUrl: string): boolean {
-  const payload = (dataUrl.split(',')[1] || '').length;
-  return payload < 32000;
 }
 
 function thawSlide(slide: HTMLElement) {
@@ -98,25 +69,6 @@ function thawSlide(slide: HTMLElement) {
     const opacity = node.style.opacity;
     if (opacity === '0') node.style.opacity = '1';
     if (node.style.visibility === 'hidden') node.style.visibility = 'visible';
-  });
-}
-
-function flattenColors(doc: Document) {
-  const win = doc.defaultView;
-  if (!win) return;
-  doc.querySelectorAll('link[rel="stylesheet"]').forEach((node) => node.remove());
-  doc.querySelectorAll<HTMLElement>('*').forEach((node) => {
-    const style = win.getComputedStyle(node);
-    node.style.backgroundColor = style.backgroundColor;
-    node.style.color = style.color;
-    node.style.borderTopColor = style.borderTopColor;
-    node.style.borderRightColor = style.borderRightColor;
-    node.style.borderBottomColor = style.borderBottomColor;
-    node.style.borderLeftColor = style.borderLeftColor;
-    node.style.outlineColor = style.outlineColor;
-    node.style.caretColor = style.caretColor;
-    node.style.columnRuleColor = style.columnRuleColor;
-    node.style.textDecorationColor = style.textDecorationColor;
   });
 }
 
@@ -148,7 +100,7 @@ async function withCaptureFrame<T>(html: string, run: (doc: Document, frame: HTM
     const doc = frame.contentDocument;
     if (!doc?.body) throw new Error('макет пустой');
     try {
-      await doc.fonts?.ready;
+      await Promise.race([doc.fonts?.ready, wait(5000)]);
     } catch {
       /* ignore */
     }
@@ -164,7 +116,6 @@ async function withCaptureFrame<T>(html: string, run: (doc: Document, frame: HTM
               }),
       ),
     );
-    flattenColors(doc);
     await wait(80);
     return await run(doc, frame);
   } finally {
@@ -179,41 +130,28 @@ async function nodeToImage(node: HTMLElement, width: number, height: number): Pr
   node.style.maxHeight = `${height}px`;
   node.style.visibility = 'visible';
   node.style.opacity = '1';
-  const { toJpeg, toPng } = await import('html-to-image');
-  const opts = {
-    width,
-    height,
-    canvasWidth: width,
-    canvasHeight: height,
-    pixelRatio: 1,
-    cacheBust: false,
-    skipFonts: false,
-    backgroundColor: getComputedStyle(node).backgroundColor || '#111111',
-    quality: 0.86,
-  };
+  const { toPng } = await import('html-to-image');
+  // 4K for 16:9 slides; dense long pages retain at least native resolution.
+  const desiredRatio = width === SLIDE_W && height === SLIDE_H ? 2.4 : 2;
+  const pixelRatio = Math.min(desiredRatio, Math.sqrt(24_000_000 / (width * height)));
+  if (pixelRatio < 1 || Math.max(width, height) * pixelRatio > 32760) {
+    throw new Error('Макет слишком большой для картинки. Скачайте HTML.');
+  }
+  const clear = (color: string) => !color || color === 'transparent' || /rgba\([^)]*,\s*0\)$/.test(color);
+  let backgroundColor = getComputedStyle(node).backgroundColor;
+  if (clear(backgroundColor)) backgroundColor = getComputedStyle(node.ownerDocument.body).backgroundColor;
+  if (clear(backgroundColor)) backgroundColor = getComputedStyle(node.ownerDocument.documentElement).backgroundColor;
+  if (clear(backgroundColor)) backgroundColor = '#ffffff';
+  const opts = { width, height, pixelRatio, cacheBust: false, skipFonts: false, backgroundColor };
   try {
-    return await toJpeg(node, opts);
+    return await toPng(node, opts);
   } catch {
-    try {
-      return await toPng(node, { ...opts, quality: undefined });
-    } catch (error) {
-      const mod = await import('html2canvas');
-      const html2canvas = (mod as { default: (el: HTMLElement, opts?: Record<string, unknown>) => Promise<HTMLCanvasElement> }).default;
-      const canvas = await html2canvas(node, {
-        scale: 1,
-        width,
-        height,
-        windowWidth: width,
-        windowHeight: height,
-        backgroundColor: '#111111',
-        useCORS: true,
-        allowTaint: true,
-        logging: false,
-        foreignObjectRendering: false,
-      });
-      if (!canvas.width || !canvas.height) throw error;
-      return canvas.toDataURL('image/jpeg', 0.86);
-    }
+    const mod = await import('html2canvas');
+    const canvas = await mod.default(node, { scale: pixelRatio, width, height,
+      windowWidth: width, windowHeight: height, backgroundColor: opts.backgroundColor,
+      useCORS: true, allowTaint: false, logging: false });
+    if (!canvas.width || !canvas.height) throw new Error('Не удалось снять макет. Скачайте HTML.');
+    return canvas.toDataURL('image/png');
   }
 }
 
@@ -228,36 +166,32 @@ function showOnly(slides: HTMLElement[], index: number) {
   });
 }
 
-type SlideCopy = { title: string; body: string[]; background: string; color: string };
-
-async function capturePages(html: string): Promise<{ kind: CanvasKind; images: string[]; copies: SlideCopy[] }> {
+async function capturePages(html: string): Promise<{ kind: CanvasKind; images: string[]; width: number; height: number }> {
   return withCaptureFrame(html, async (doc, frame) => {
     const slides = [...doc.querySelectorAll<HTMLElement>('.slide')];
     if (slides.length) {
-      frame.style.width = `${SLIDE_W}px`;
-      frame.style.height = `${SLIDE_H}px`;
       const images: string[] = [];
-      const copies: SlideCopy[] = [];
       for (let index = 0; index < slides.length; index += 1) {
         showOnly(slides, index);
         const slide = slides[index];
-        slide.style.position = 'absolute';
-        slide.style.inset = '0';
+        slide.style.position = 'absolute'; slide.style.inset = '0';
         thawSlide(slide);
-        copies.push(readSlideCopy(slide));
         await wait(40);
         images.push(await nodeToImage(slide, SLIDE_W, SLIDE_H));
       }
-      return { kind: 'slides' as const, images, copies };
+      return { kind: 'slides' as const, images, width: SLIDE_W, height: SLIDE_H };
     }
-    const root = doc.documentElement;
     const width = 1080;
-    const height = Math.min(Math.max(root.scrollHeight || SLIDE_H, 640), 2400);
     frame.style.width = `${width}px`;
+    frame.style.height = `${SLIDE_H}px`;
+    await wait(80);
+    const root = doc.documentElement;
+    const height = Math.max(root.scrollHeight, doc.body.scrollHeight, 640);
+    if (height > 20000) throw new Error('Макет слишком большой для картинки. Скачайте HTML.');
     frame.style.height = `${height}px`;
     await wait(40);
-    const target = (doc.body as HTMLElement) || root;
-    return { kind: 'page' as const, images: [await nodeToImage(target, width, height)], copies: [] };
+    const target = doc.body as HTMLElement;
+    return { kind: 'page' as const, images: [await nodeToImage(target, width, height)], width, height };
   });
 }
 
@@ -349,31 +283,25 @@ export async function exportCanvas(html: string, format: ExportFormat, name?: st
     return;
   }
   try {
-    const { images, kind, copies } = await capturePages(html);
+    const { images, kind, width, height } = await capturePages(html);
     if (!images.length) throw new Error('не удалось снять кадры макета');
     if (format === 'png') {
-      const png = images[0].startsWith('data:image/png')
-        ? images[0]
-        : await jpegToPng(images[0]);
-      downloadBlob(dataUrlToBlob(png), `${stem}.png`);
+      downloadBlob(dataUrlToBlob(images[0]), `${stem}.png`);
       return;
     }
-    const imageType = images[0].startsWith('data:image/png') ? 'PNG' : 'JPEG';
     if (format === 'pdf') {
       const { jsPDF } = await import('jspdf');
-      const landscape = kind === 'slides';
-      const pdf = new jsPDF({
-        orientation: landscape ? 'landscape' : 'portrait',
-        unit: 'px',
-        format: landscape ? [SLIDE_W, SLIDE_H] : [1080, Math.max(640, Math.min(2400, SLIDE_H * 2))],
-        hotfixes: ['px_scaling'],
-      });
-      images.forEach((image, index) => {
-        if (index) pdf.addPage();
-        const pageW = pdf.internal.pageSize.getWidth();
-        const pageH = pdf.internal.pageSize.getHeight();
-        pdf.addImage(image, imageType, 0, 0, pageW, pageH, undefined, 'FAST');
-      });
+      const pageHeight = kind === 'slides' ? height : Math.min(height, Math.round(width * Math.SQRT2));
+      const pdf = new jsPDF({ orientation: width > pageHeight ? 'landscape' : 'portrait',
+        unit: 'px', format: [width, pageHeight], hotfixes: ['px_scaling'], compress: true });
+      let pageIndex = 0;
+      for (const image of images) {
+        for (let offset = 0; offset < height; offset += pageHeight) {
+          if (pageIndex++) pdf.addPage([width, pageHeight], width > pageHeight ? 'landscape' : 'portrait');
+          // Same aspect ratio on every page; PDF clips at its page boundary.
+          pdf.addImage(image, 'PNG', 0, -offset, width, height, undefined, 'FAST');
+        }
+      }
       pdf.save(`${stem}.pdf`);
       return;
     }
@@ -381,59 +309,12 @@ export async function exportCanvas(html: string, format: ExportFormat, name?: st
     const deck = new PptxGenJS();
     deck.defineLayout({ name: 'WIDE16', width: 13.333, height: 7.5 });
     deck.layout = 'WIDE16';
-    images.forEach((image, index) => {
+    images.forEach((image) => {
       const slide = deck.addSlide();
-      const copy = copies[index] || { title: '', body: [], background: '111111', color: 'F4F1EA' };
-      if (captureLooksEmpty(image) && (copy.title || copy.body.length)) {
-        slide.addShape('rect', { x: 0, y: 0, w: 13.333, h: 7.5, fill: { color: copy.background } });
-        if (copy.title) {
-          slide.addText(copy.title, {
-            x: 0.7,
-            y: 0.55,
-            w: 12,
-            h: 1.3,
-            fontSize: 28,
-            fontFace: 'Georgia',
-            color: copy.color,
-            bold: true,
-          });
-        }
-        if (copy.body.length) {
-          slide.addText(copy.body.join('\n'), {
-            x: 0.7,
-            y: 2.1,
-            w: 12,
-            h: 4.6,
-            fontSize: 16,
-            fontFace: 'Calibri',
-            color: copy.color,
-          });
-        }
-        return;
-      }
       slide.addImage({ data: image, x: 0, y: 0, w: 13.333, h: 7.5 });
     });
     await deck.writeFile({ fileName: `${stem}.pptx` });
   } catch (error) {
     throw friendlyExportError(error);
   }
-}
-
-async function jpegToPng(dataUrl: string): Promise<string> {
-  if (dataUrl.startsWith('data:image/png')) return dataUrl;
-  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
-    const node = new Image();
-    node.onload = () => resolve(node);
-    node.onerror = () => reject(new Error('не удалось подготовить PNG'));
-    node.src = dataUrl;
-  });
-  const canvas = document.createElement('canvas');
-  canvas.width = image.naturalWidth || SLIDE_W;
-  canvas.height = image.naturalHeight || SLIDE_H;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return dataUrl;
-  ctx.fillStyle = '#111111';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(image, 0, 0);
-  return canvas.toDataURL('image/png');
 }

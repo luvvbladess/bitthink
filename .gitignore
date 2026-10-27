@@ -58,3 +58,7 @@ test-results/
 Stolzl (1).zip
 _staffing_*.jpg
 testov/
+
+# Reviewed, pinned design knowledge shipped with Studio (not runtime data).
+!backend/app/bot_core/computer_skills/ui_ux_pro_max/vendor/data/
+!backend/app/bot_core/computer_skills/ui_ux_pro_max/vendor/data/**
