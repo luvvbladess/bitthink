@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/emilkowalski/skills",
+  "commit": "2d228630ba1446365f614a108cb8252f1feda202",
+  "license": "MIT",
+  "retrieved_at": "2026-10-28",
+  "files": {
+    "LICENSE.txt": "4ff5bdb7887ec1435c9cab0e8d1a7caee704d894d65c2a008ccc68b1cc2f260b",
+    "references/upstream.md": "ffbe68e6007fb42cb8149f089b400a1ca007d59ba23e8948e2be4476f3175939"
+  },
+  "normalization": "LF line endings for reproducible Linux/Windows packaging"
+}

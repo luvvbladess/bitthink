@@ -31,8 +31,8 @@ def account():
 
 def test_catalog_is_complete_but_personal_rules_are_opt_in():
     rows = registry()
-    assert len(rows) == 46
-    assert len({r['source_name'] for r in rows.values()}) == 46
+    assert len(rows) == 48
+    assert len({r['source_name'] for r in rows.values()}) == 48
     assert len(templates()) == 8
     builtins = set(builtin_names())
     for name, row in rows.items():

@@ -356,7 +356,16 @@ try {
       const frame = f.page.frameLocator('iframe[title="Холст Студии"]');
       await expect(frame.getByRole('heading', { name: 'Новый заголовок' })).toBeVisible();
       const versions = f.page.getByRole('combobox', { name: 'Версия макета' });
-      await versions.selectOption('0');
+      await versions.click();
+      const versionMenu = f.page.getByRole('listbox', { name: 'Версии макета' });
+      await expect(versionMenu).toBeVisible();
+      if (width === 1440 && theme === 'dark') {
+        const surface = await versionMenu.evaluate(node => getComputedStyle(node.closest('.MuiPaper-root')).backgroundColor);
+        assert.equal(surface, 'rgb(22, 28, 30)');
+        assert.equal(await versionMenu.evaluate(node => getComputedStyle(node.closest('.MuiPaper-root')).opacity), '1');
+        await f.page.screenshot({ path: `${output}/studio-version-menu-dark.png`, fullPage: true });
+        await versionMenu.press('Home'); await f.page.keyboard.press('Enter');
+      } else await f.page.getByRole('option', { name: /^Версия 1/ }).click();
       await expect(frame.getByRole('heading', { name: 'Первый заголовок' })).toBeVisible();
       await expect(f.page.getByText('Просмотр предыдущей версии')).toBeVisible();
       await f.page.getByRole('button', { name: 'К последней', exact: true }).click();

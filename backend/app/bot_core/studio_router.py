@@ -184,7 +184,8 @@ async def _compose_spec(
     from studio.quality import target_slide_count
 
     direction = direction or pick_direction(user_text, infographic=(kind == "infographic"))
-    skills = _studio_skills_blurb(html_canvas=False)
+    from studio.design_skills import design_guidance
+    skills = _studio_skills_blurb(html_canvas=False) + "\n\n" + design_guidance(user_text, kind, user_id)
     doc_block = format_studio_documents(document_context)
     hist_block = f"\n\nИстория:\n{history_text}" if history_text else ""
     repair_block = f"\n\nИсправь прошлую ошибку схемы: {repair_hint}" if repair_hint else ""
@@ -339,7 +340,8 @@ async def _compose_html(
     from studio.briefing import format_studio_documents
     from studio.html_canvas import assert_slide_density, clip_previous_html, extract_html, prepare_artifact
 
-    skills = _studio_skills_blurb(html_canvas=True)
+    from studio.design_skills import design_guidance
+    skills = _studio_skills_blurb(html_canvas=True) + "\n\n" + design_guidance(user_text, kind, user_id)
     theme = direction.get("theme") or {}
     task = _KIND_TASK.get(kind) or _KIND_TASK["landing"]
     doc_block = format_studio_documents(document_context)

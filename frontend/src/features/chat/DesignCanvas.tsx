@@ -1,4 +1,4 @@
-import { Box, Button, CircularProgress, IconButton, Menu, MenuItem, TextField, Tooltip } from '@mui/material';
+import { Box, Button, CircularProgress, IconButton, Menu, MenuItem, Select, TextField, Tooltip } from '@mui/material';
 import {
   ArrowsOut,
   CaretDown,
@@ -8,6 +8,7 @@ import {
   DownloadSimple,
   Monitor,
   CursorClick,
+  Check,
   X,
 } from '@phosphor-icons/react';
 import { useEffect, useRef, useState } from 'react';
@@ -269,12 +270,22 @@ export function DesignCanvas({ source, thinking = false, statusText = '', compac
         {compact && onClose && <IconButton onClick={onClose} aria-label="Закрыть холст" sx={{ ...navBtnSx, ml: 'auto' }}><X size={18} /></IconButton>}
         <Box sx={{ ml: 'auto', width: compact ? '100%' : undefined, display: 'flex', alignItems: 'center', justifyContent: compact ? 'space-between' : undefined, gap: 0.5, flexWrap: 'wrap' }}>
           {versions.length > 1 && onVersion && (
-            <Box component="select" aria-label="Версия макета" value={versionIndex < 0 ? versions.length - 1 : versionIndex}
+            <Select size="small" value={versionIndex < 0 ? versions.length - 1 : versionIndex}
+              inputProps={{ 'aria-label': 'Версия макета' }}
+              renderValue={(value) => `Версия ${Number(value) + 1}`}
               onChange={(event) => onVersion(versions[Number(event.target.value)])}
               disabled={thinking}
-              sx={{ font: 'inherit', fontSize: '0.8125rem', color: 'text.primary', bgcolor: 'var(--bt-panel)', border: '1px solid var(--bt-line)', borderRadius: '8px', minHeight: 40, maxWidth: 160, px: 1 }}>
-              {versions.map((item, index) => <option key={item.url || index} value={index}>Версия {index + 1}{index === versions.length - 1 ? ' · последняя' : ''}</option>)}
-            </Box>
+              MenuProps={{ disableScrollLock: true, transitionDuration: 0, anchorOrigin: { vertical: 'bottom', horizontal: 'right' }, transformOrigin: { vertical: 'top', horizontal: 'right' },
+                PaperProps: { sx: { bgcolor: 'var(--bt-paper)', color: 'text.primary', backgroundImage: 'none', border: '1px solid var(--bt-line)', borderRadius: '12px', mt: 0.75, minWidth: 212, maxHeight: 'min(360px, 60dvh)' } },
+                MenuListProps: { 'aria-label': 'Версии макета', sx: { p: 0.5 } } }}
+              sx={{ fontSize: '0.8125rem', color: 'text.primary', bgcolor: 'var(--bt-panel)', borderRadius: '10px', minHeight: 40, minWidth: 112,
+                '& .MuiOutlinedInput-notchedOutline': { borderColor: 'var(--bt-line)' }, '& .MuiSelect-icon': { color: 'text.secondary' } }}>
+              {versions.map((item, index) => <MenuItem key={item.url || index} value={index}
+                sx={{ minHeight: 48, borderRadius: '8px', gap: 1.5, fontSize: '0.875rem', '&.Mui-selected': { bgcolor: 'var(--bt-glow)', '&:hover': { bgcolor: 'var(--bt-glow-strong)' } } }}>
+                <Box sx={{ flex: 1 }}><Box>Версия {index + 1}</Box><Box sx={{ fontSize: '0.75rem', color: 'text.secondary' }}>{index === versions.length - 1 ? 'Последняя' : 'Предыдущая'}</Box></Box>
+                {index === versionIndex && <Check size={16} aria-hidden style={{ color: 'inherit' }} />}
+              </MenuItem>)}
+            </Select>
           )}
           {!compact && (
             <Tooltip title={mobileFrame ? 'Ширина десктопа' : 'Ширина телефона'}>
