@@ -96,10 +96,10 @@ const COMPUTER_SUGGESTIONS = [
 ];
 
 const STUDIO_SUGGESTIONS = [
-  { label: 'Картинка', text: 'Нарисуй рыжего кота на крыше на закате, кинематографичный кадр, без текста.' },
-  { label: 'Пичч запуска', text: 'Собери презентацию запуска умной кофейни в центре: свой визуальный язык, живые кадры, не шаблон из буллетов.' },
-  { label: 'Лендинг', text: 'Собери лендинг умной кофейни: hero, меню и бронь. Свой визуальный язык, не шаблон SaaS.' },
-  { label: 'Инфографика', text: 'Собери одноэкранную инфографику: путь зерна от фермы до чашки. Свой макет, не ряд одинаковых карточек.' },
+  { label: 'Презентация', text: 'Создай презентацию на тему: ' },
+  { label: 'Сайт', text: 'Создай сайт: ' },
+  { label: 'Приложение', text: 'Создай интерактивное приложение: ' },
+  { label: 'Инфографика', text: 'Создай инфографику на тему: ' },
 ];
 
 const DOCGEN_SUGGESTIONS = [
@@ -230,7 +230,7 @@ export function ChatWindow({
           component="button"
           type="button"
           onClick={() => {
-            const prepareDraft = !isComputer && !isStudio && !isDocgen && onStartScenario;
+            const prepareDraft = !isComputer && !isDocgen && onStartScenario;
             if (prepareDraft) prepareDraft(s.text);
             else onSuggestion?.(s.text);
           }}
@@ -469,19 +469,6 @@ export function ChatWindow({
                   {PILOT_LABEL} включён
                 </Box>
               )}
-              {isStudio && (
-                <Box
-                  sx={{
-                    color: 'primary.light',
-                    fontSize: '0.8125rem',
-                    fontWeight: 600,
-                    letterSpacing: '-0.01em',
-                    mb: 0.75,
-                  }}
-                >
-                  {STUDIO_LABEL} включена
-                </Box>
-              )}
               {isDocgen && (
                 <Box
                   sx={{
@@ -499,14 +486,14 @@ export function ChatWindow({
                 <Box sx={{ color: 'text.secondary', fontSize: '0.875rem', mb: 0.75 }}>{greeting(firstName)}</Box>
               )}
               <Box sx={{ fontSize: { xs: '1.5rem', md: '1.85rem' }, fontWeight: 600, letterSpacing: '-0.035em', mb: isComputer || isStudio || isDocgen ? 0.75 : { xs: 2.5, md: 3 }, lineHeight: 1.15, textWrap: 'balance', color: 'text.primary' }}>
-                {isDocgen ? 'Что собрать?' : isStudio ? 'Что визуализируем?' : isComputer ? 'Над чем поработаем?' : 'С чего начнём?'}
+                {isDocgen ? 'Что собрать?' : isStudio ? 'Что создадим?' : isComputer ? 'Над чем поработаем?' : 'С чего начнём?'}
               </Box>
               {(isComputer || isStudio || isDocgen) && (
               <Box sx={{ color: 'text.secondary', mb: 2.25, fontSize: '0.9375rem', mx: 'auto', maxWidth: '40ch', lineHeight: 1.5 }}>
                 {isDocgen
                   ? 'Прикрепите шаблоны и базу — Word, PDF, Excel или zip. Соберёт .docx. Перед генерацией покажет план и спросит подтверждение.'
                   : isStudio
-                    ? 'Прикрепите образец PPTX и ТЗ — повторит стиль и соберёт слайды. Или опишите картинку и макет.'
+                    ? 'Опишите идею — результат появится на холсте. Затем меняйте его сообщением или выберите нужный элемент.'
                     : isComputer
                       ? 'Опишите нужный результат и прикрепите материалы, если они есть. Оркестратор выполнит работу с файлами, поиском и инструментами, а затем покажет итог.'
                       : ''}
@@ -575,7 +562,7 @@ export function ChatWindow({
                   </Box>
                 </Box>
               )}
-              {!isComputer && !isDocgen && computerAvailable && (
+              {!isComputer && !isStudio && !isDocgen && computerAvailable && (
                 <Box
                   component="button"
                   type="button"

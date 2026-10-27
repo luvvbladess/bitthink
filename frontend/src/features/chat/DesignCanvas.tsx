@@ -1,4 +1,4 @@
-import { Box, CircularProgress, IconButton, Menu, MenuItem, Tooltip } from '@mui/material';
+import { Box, Button, CircularProgress, IconButton, Menu, MenuItem, TextField, Tooltip } from '@mui/material';
 import {
   ArrowsOut,
   CaretDown,
@@ -7,9 +7,11 @@ import {
   DeviceMobile,
   DownloadSimple,
   Monitor,
+  CursorClick,
   X,
 } from '@phosphor-icons/react';
 import { useEffect, useRef, useState } from 'react';
+import { selectionPrompt, withCanvasSelection, type CanvasSelection } from './studioSelection';
 import { ActivityFeed, latestActivityLabel } from '@/components/ActivityFeed';
 import { countSlides, ensureSlideRuntime } from './studioDeck';
 import {
@@ -38,6 +40,9 @@ type Props = {
   statusText?: string;
   compact?: boolean;
   onClose?: () => void;
+  versions?: StudioCanvasSource[];
+  onVersion?: (source: StudioCanvasSource) => void;
+  onEdit?: (prompt: string) => void;
 };
 
 function decodeHtmlFile(data: string): string {
@@ -61,11 +66,21 @@ const canvasIconSx = {
 const STAGE_W = 1600;
 const STAGE_H = 900;
 
-export function DesignCanvas({ source, thinking = false, statusText = '', compact = false, onClose }: Props) {
+export function DesignCanvas({ source, thinking = false, statusText = '', compact = false, onClose, versions = [], onVersion, onEdit }: Props) {
   const shellRef = useRef<HTMLDivElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
-  const [doc, setDoc] = useState('');
+  const sourceKey = source?.url || source?.html || '';
+  const [documentState, setDocumentState] = useState({ key: '', html: '', loading: false, error: '' });
+  const doc = documentState.key === sourceKey ? documentState.html : '';
+  const loadError = documentState.key === sourceKey ? documentState.error : '';
+  const loading = Boolean(sourceKey) && (documentState.key !== sourceKey || documentState.loading);
+  const [reload, setReload] = useState(0);
+  const [selecting, setSelecting] = useState(false);
+  const [selection, setSelection] = useState<CanvasSelection | null>(null);
+  const [change, setChange] = useState('');
+  const versionIndex = versions.findIndex(item => (item.url || item.html) === sourceKey);
+  const isLatest = versionIndex < 0 || versionIndex === versions.length - 1;
   const [mobileFrame, setMobileFrame] = useState(false);
   const [menuEl, setMenuEl] = useState<HTMLElement | null>(null);
   const [exporting, setExporting] = useState<ExportFormat | null>(null);
@@ -74,47 +89,56 @@ export function DesignCanvas({ source, thinking = false, statusText = '', compac
   const [stageScale, setStageScale] = useState(1);
 
   useEffect(() => {
+    setSelecting(false); setSelection(null); setChange(''); setExportError('');
     if (source?.html) {
-      setDoc(ensureSlideRuntime(source.html));
+      setDocumentState({ key: sourceKey, html: ensureSlideRuntime(source.html), loading: false, error: '' });
       return;
     }
     if (!source?.url) {
-      setDoc('');
+      setDocumentState({ key: sourceKey, html: '', loading: false, error: '' });
       return;
     }
-    let cancelled = false;
-    fetch(source.url, { credentials: 'same-origin' })
-      .then((response) => (response.ok ? response.text() : Promise.reject(new Error(String(response.status)))))
-      .then((text) => {
-        if (!cancelled) setDoc(ensureSlideRuntime(text));
+    const controller = new AbortController();
+    setDocumentState({ key: sourceKey, html: '', loading: true, error: '' });
+    fetch(source.url, { credentials: 'same-origin', signal: controller.signal })
+      .then(response => {
+        if (!response.ok) throw new Error(String(response.status));
+        return response.text();
+      })
+      .then(text => {
+        if (!text.trim() || !/<(?:html|body|section|div|svg)\b/i.test(text)) throw new Error('Empty canvas');
+        if (!controller.signal.aborted) setDocumentState({ key: sourceKey, html: ensureSlideRuntime(text), loading: false, error: '' });
       })
       .catch(() => {
-        if (!cancelled) setDoc('');
+        if (!controller.signal.aborted) setDocumentState({ key: sourceKey, html: '', loading: false, error: 'Не удалось открыть макет. Попробуйте загрузить его ещё раз.' });
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [source?.html, source?.url]);
+    return () => controller.abort();
+  }, [source?.html, source?.url, reload]);
 
   useEffect(() => {
     const frame = iframeRef.current;
     if (!frame) return;
-    frame.srcdoc = doc;
+    frame.srcdoc = withCanvasSelection(doc);
     setSlideIndex(0);
   }, [doc]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       if (event.source !== iframeRef.current?.contentWindow) return;
-      if (event.data?.type === 'bt-deck-at' && typeof event.data.index === 'number') {
+      if (event.data?.type === 'bt-canvas-selection' && selecting && typeof event.data.text === 'string'
+          && typeof event.data.tag === 'string' && /^[a-z][a-z0-9-]{0,20}$/.test(event.data.tag)) {
+        setSelection({ text: event.data.text.slice(0, 240), tag: event.data.tag,
+          slide: Number.isInteger(event.data.slide) && event.data.slide > 0 && event.data.slide <= 200 ? event.data.slide : undefined });
+      }
+      if (event.data?.type === 'bt-deck-at' && Number.isInteger(event.data.index) && event.data.index >= 0 && event.data.index < countSlides(doc)) {
         setSlideIndex(event.data.index);
       }
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [doc]);
+  }, [doc, selecting]);
 
-  const empty = !doc && !thinking;
+  const empty = !doc && !thinking && !loading && !loadError;
   const kind = canvasKindFromHtml(doc);
   const slideCount = countSlides(doc);
   const useStage = slideCount > 1;
@@ -160,14 +184,14 @@ export function DesignCanvas({ source, thinking = false, statusText = '', compac
     }
   };
 
-  const fullscreen = () => {
+  const fullscreen = async () => {
     const node = shellRef.current;
     if (!node) return;
     if (document.fullscreenElement) {
-      void document.exitFullscreen();
+      await document.exitFullscreen().catch(() => setExportError('Не удалось выйти из полноэкранного режима.'));
       return;
     }
-    void node.requestFullscreen();
+    try { await node.requestFullscreen(); } catch { setExportError('Браузер не разрешил полный экран. Можно увеличить окно или скачать макет.'); }
   };
 
   const goSlide = (next: number) => {
@@ -204,6 +228,7 @@ export function DesignCanvas({ source, thinking = false, statusText = '', compac
           display: 'flex',
           alignItems: 'center',
           gap: 0.75,
+          flexWrap: 'wrap',
           px: compact ? 1 : 1.25,
           py: 0.7,
           minHeight: compact ? 56 : 52,
@@ -212,7 +237,7 @@ export function DesignCanvas({ source, thinking = false, statusText = '', compac
           bgcolor: 'var(--bt-panel)',
         }}
       >
-        <Box sx={{ fontSize: '0.8125rem', fontWeight: 600, letterSpacing: '-0.02em', flexShrink: 0 }}>Холст</Box>
+        <Box sx={{ fontSize: '0.875rem', fontWeight: 600, flexShrink: 0 }}>Холст</Box>
         {slideCount > 1 ? (
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.15, minWidth: 0 }}>
             <IconButton size="small" onClick={() => goSlide(slideIndex - 1)} disabled={slideIndex <= 0} aria-label="Предыдущий слайд" sx={navBtnSx}>
@@ -231,6 +256,7 @@ export function DesignCanvas({ source, thinking = false, statusText = '', compac
               color: 'text.secondary',
               fontSize: '0.8125rem',
               minWidth: 0,
+              flex: '1 1 60px',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
@@ -240,7 +266,16 @@ export function DesignCanvas({ source, thinking = false, statusText = '', compac
             {headerHint}
           </Box>
         )}
-        <Box sx={{ ml: 'auto', display: 'flex', alignItems: 'center', gap: 0.15 }}>
+        {compact && onClose && <IconButton onClick={onClose} aria-label="Закрыть холст" sx={{ ...navBtnSx, ml: 'auto' }}><X size={18} /></IconButton>}
+        <Box sx={{ ml: 'auto', width: compact ? '100%' : undefined, display: 'flex', alignItems: 'center', justifyContent: compact ? 'space-between' : undefined, gap: 0.5, flexWrap: 'wrap' }}>
+          {versions.length > 1 && onVersion && (
+            <Box component="select" aria-label="Версия макета" value={versionIndex < 0 ? versions.length - 1 : versionIndex}
+              onChange={(event) => onVersion(versions[Number(event.target.value)])}
+              disabled={thinking}
+              sx={{ font: 'inherit', fontSize: '0.8125rem', color: 'text.primary', bgcolor: 'var(--bt-panel)', border: '1px solid var(--bt-line)', borderRadius: '8px', minHeight: 40, maxWidth: 160, px: 1 }}>
+              {versions.map((item, index) => <option key={item.url || index} value={index}>Версия {index + 1}{index === versions.length - 1 ? ' · последняя' : ''}</option>)}
+            </Box>
+          )}
           {!compact && (
             <Tooltip title={mobileFrame ? 'Ширина десктопа' : 'Ширина телефона'}>
               <IconButton size="small" onClick={() => setMobileFrame((value) => !value)} aria-label="Ширина холста" sx={canvasIconSx}>
@@ -250,17 +285,18 @@ export function DesignCanvas({ source, thinking = false, statusText = '', compac
           )}
           <Tooltip title="Скачать">
             <span>
-              <IconButton
+              <Button
                 size="small"
                 onClick={(event) => setMenuEl(event.currentTarget)}
                 disabled={!doc || Boolean(exporting)}
                 aria-label="Скачать макет"
                 aria-haspopup="menu"
-                sx={compact ? navBtnSx : canvasIconSx}
+                sx={{ ...canvasIconSx, minHeight: 40, gap: 0.75, px: 1 }}
               >
                 {exporting ? <CircularProgress size={14} thickness={5} /> : <DownloadSimple size={16} />}
+                Скачать
                 <CaretDown size={10} style={{ marginLeft: 1 }} />
-              </IconButton>
+              </Button>
             </span>
           </Tooltip>
           <Menu
@@ -299,7 +335,7 @@ export function DesignCanvas({ source, thinking = false, statusText = '', compac
               </span>
             </Tooltip>
           )}
-          {onClose && (
+          {onClose && !compact && (
             <Tooltip title="Закрыть холст">
               <IconButton size="small" onClick={onClose} aria-label="Закрыть холст" sx={navBtnSx}>
                 <X size={18} />
@@ -320,32 +356,16 @@ export function DesignCanvas({ source, thinking = false, statusText = '', compac
           position: 'relative',
         }}
       >
-        {empty && (
-          <Box
-            sx={{
-              m: 'auto',
-              textAlign: 'left',
-              px: 3,
-              py: 3,
-              width: 'min(340px, 92%)',
-              borderRadius: '20px',
-              bgcolor: 'var(--bt-panel)',
-              border: '1px solid var(--bt-hairline)',
-              boxShadow: 'var(--bt-shadow)',
-            }}
-          >
-            <Box sx={{ fontSize: '0.7rem', letterSpacing: '0.16em', textTransform: 'uppercase', color: 'text.secondary', mb: 1 }}>
-              Студия
-            </Box>
-            <Box sx={{ fontSize: '1.15rem', fontWeight: 600, color: 'text.primary', letterSpacing: '-0.03em', mb: 0.75 }}>
-              Живой макет
-            </Box>
-            <Box sx={{ fontSize: '0.875rem', lineHeight: 1.5, color: 'text.secondary' }}>
-              Опишите слайды в чате или прикрепите образец PPTX/PDF и файл ТЗ. Макет появится здесь. Готовую презу правит следующее сообщение: «темнее шапка», «другой стиль», «поправь слайд 3».
-            </Box>
-          </Box>
-        )}
-        {!empty && (
+        {loadError && <Box role="alert" sx={{ m: 'auto', p: 3, maxWidth: 360, textAlign: 'center' }}>
+          <Box sx={{ mb: 1.5, color: 'text.secondary' }}>{loadError}</Box>
+          <Button variant="outlined" onClick={() => setReload(value => value + 1)}>Повторить загрузку</Button>
+        </Box>}
+        {loading && <Box role="status" sx={{ m: 'auto', display: 'flex', alignItems: 'center', gap: 1.5 }}><CircularProgress size={20} />Открываем макет…</Box>}
+        {empty && <Box sx={{ m: 'auto', p: 3, maxWidth: 360, textAlign: 'center' }}>
+          <Box sx={{ fontSize: '1.25rem', fontWeight: 600, mb: 1 }}>Здесь будет ваш результат</Box>
+          <Box sx={{ color: 'text.secondary', lineHeight: 1.6 }}>Опишите идею в чате. Готовый макет можно рассмотреть, изменить и скачать.</Box>
+        </Box>}
+        {!empty && !loading && !loadError && (
           <Box
             ref={stageRef}
             sx={{
@@ -465,6 +485,31 @@ export function DesignCanvas({ source, thinking = false, statusText = '', compac
           </Box>
         )}
       </Box>
+      {doc && onEdit && <Box sx={{ flexShrink: 0, borderTop: '1px solid var(--bt-hairline)', bgcolor: 'var(--bt-panel)', p: 1.25 }}>
+        {!isLatest ? <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
+          <Box sx={{ fontSize: '0.8125rem', color: 'text.secondary' }}>Просмотр предыдущей версии</Box>
+          <Button onClick={() => onVersion?.(versions[versions.length - 1])}>К последней</Button>
+        </Box> : <>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.75 }}>
+            <Button size="small" disabled={thinking} variant={selecting ? 'outlined' : 'text'} startIcon={<CursorClick size={16} />}
+              aria-pressed={selecting} onClick={() => { const next = !selecting; setSelecting(next); if (!next) setSelection(null); iframeRef.current?.contentWindow?.postMessage({ type: 'bt-select-mode', enabled: next }, '*'); }}>
+              {selecting ? 'Завершить выбор' : 'Выбрать элемент'}
+            </Button>
+            <Box role="status" sx={{ fontSize: '0.8125rem', color: 'text.secondary', minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {selection ? (selection.text || selection.tag) : selecting ? 'Нажмите на нужное место в макете' : 'Или опишите изменение целиком'}
+            </Box>
+          </Box>
+          <Box component="form" onSubmit={(event) => { event.preventDefault(); if (!change.trim() || thinking) return;
+            onEdit(selection ? selectionPrompt(selection, change) : `В текущем макете: ${change.trim()}. Сохрани остальные элементы и содержание.`); setChange(''); }}
+            sx={{ display: 'flex', alignItems: 'flex-end', gap: 1 }}>
+            <TextField fullWidth multiline maxRows={3} size="small" value={change} disabled={thinking}
+              onChange={(event) => setChange(event.target.value)} placeholder={selection ? 'Что изменить в выбранном элементе?' : 'Например: сделай фон светлее'}
+              inputProps={{ 'aria-label': 'Что изменить в макете?' }} />
+            <Button type="submit" variant="contained" disabled={thinking || !change.trim()} sx={{ minHeight: 40 }}>Применить</Button>
+          </Box>
+        </>}
+      </Box>}
+
     </Box>
   );
 }
@@ -498,10 +543,23 @@ export function findStudioCanvas(
     const file = message.file;
     if (!file) continue;
     const htmlName = isHtmlAttachment(file.filename) || Boolean(file.canvas);
-    if (!htmlName && !file.url) continue;
+    if (!htmlName && !isHtmlAttachment(undefined, file.url)) continue;
     if (file.url) return { url: file.url, name: file.filename || 'maket.html' };
     const html = decodeHtmlFile(file.data || '');
     if (html) return { html, name: file.filename };
   }
   return null;
+}
+
+
+export function studioCanvasVersions(messages: Parameters<typeof findStudioCanvas>[0]): StudioCanvasSource[] {
+  const result: StudioCanvasSource[] = [];
+  const seen = new Set<string>();
+  for (const message of messages) {
+    const source = findStudioCanvas([message]);
+    if (!source) continue;
+    const key = source.url || source.html || '';
+    if (!seen.has(key)) { seen.add(key); result.push(source); }
+  }
+  return result;
 }

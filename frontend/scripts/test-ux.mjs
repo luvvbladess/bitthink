@@ -53,6 +53,7 @@ async function fixture(options = {}) {
   });
   page.on('console', message => { if (message.type() === 'error') console.error('CONSOLE', message.text()); });
   await page.addInitScript(({ profile, theme }) => {
+    if (window !== window.top) return; // Preview frames intentionally have an opaque origin.
     localStorage.setItem('bit-think-color-mode', theme);
     if (profile) localStorage.setItem('gpt-ultra-auth', JSON.stringify({ state: { accessToken: 'audit-access', refreshToken: 'audit-refresh', user: profile }, version: 0 }));
   }, { profile: options.signedOut ? null : profile, theme: options.theme || 'dark' });
@@ -317,7 +318,73 @@ async function sidebarFixture(options = {}) {
   return f;
 }
 
+function studioFixture({ width = 1440, empty = false, failCanvas = false, theme = 'dark' } = {}) {
+  const canvas = version => `<!doctype html><html><head><title>Макет ${version}</title><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;padding:24px;background:#fff;color:#122024;font:16px Arial"><h1>${version === 1 ? 'Первый заголовок' : 'Новый заголовок'}</h1><button>Кнопка макета</button></body></html>`;
+  return fixture({ model: 'studio', theme, startPath: empty ? '/chat?new=1' : '/chat?c=chat-a', viewport: { width, height: 900 }, touch: width < 600,
+    handleRoute: async ({ path, method, route, state }) => {
+      if (empty && path === '/conversations' && method === 'GET') { await route.fulfill({ json: [] }); return true; }
+      if (path === '/conversations/chat-a/history') {
+        await route.fulfill({ json: { items: [1, 2].map(version => ({ id: 'canvas-' + version, role: 'assistant', content: 'Готов макет', attachment: { name: 'canvas-' + version + '.html', url: '/api/qa/canvas-' + version, mime_type: 'text/html', canvas: true } })), has_more: false, before: null, has_newer: false } }); return true;
+      }
+      if (path.startsWith('/qa/canvas-')) {
+        state.canvasReads = (state.canvasReads || 0) + 1;
+        if (failCanvas && state.canvasFail !== false) await route.fulfill({ status: 503, body: '' });
+        else await route.fulfill({ contentType: 'text/html', body: canvas(Number(path.slice(-1))) });
+        return true;
+      }
+    },
+  });
+}
+
 try {
+  for (const width of [320, 913, 1440]) await test(`studio28: start is clear and a format prepares a draft ${width}`, async () => {
+    const f = await studioFixture({ width, empty: true });
+    try {
+      await expect(f.page.getByText('Что создадим?', { exact: true })).toBeVisible();
+      await expect(f.page.getByRole('button', { name: /^Включить Оркестратор/ })).toHaveCount(0);
+      await expect(f.page.locator('iframe[title="Холст Студии"]')).toHaveCount(0);
+      await f.page.getByRole('button', { name: 'Презентация', exact: true }).click();
+      await expect(f.input).toHaveValue('Создай презентацию на тему: ');
+      assert.equal(f.state.sends.length, 0);
+      assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      await f.page.screenshot({ path: `${output}/studio-start-${width}.png`, fullPage: true });
+    } finally { await f.context.close(); }
+  });
+  for (const width of [320, 913, 1440]) for (const theme of ['dark', 'light']) await test(`studio28: versions and selected-element edits work ${width} ${theme}`, async () => {
+    const f = await studioFixture({ width, theme });
+    try {
+      const frame = f.page.frameLocator('iframe[title="Холст Студии"]');
+      await expect(frame.getByRole('heading', { name: 'Новый заголовок' })).toBeVisible();
+      const versions = f.page.getByRole('combobox', { name: 'Версия макета' });
+      await versions.selectOption('0');
+      await expect(frame.getByRole('heading', { name: 'Первый заголовок' })).toBeVisible();
+      await expect(f.page.getByText('Просмотр предыдущей версии')).toBeVisible();
+      await f.page.getByRole('button', { name: 'К последней', exact: true }).click();
+      await expect(frame.getByRole('heading', { name: 'Новый заголовок' })).toBeVisible();
+      await f.page.getByRole('button', { name: 'Выбрать элемент', exact: true }).click();
+      await frame.getByRole('heading', { name: 'Новый заголовок' }).click();
+      await expect(f.page.getByPlaceholder('Что изменить в выбранном элементе?')).toBeVisible();
+      await f.page.getByRole('textbox', { name: 'Что изменить в макете?', exact: true }).fill('Сделай текст короче');
+      assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      await expect(f.page.getByRole('button', { name: 'Применить', exact: true })).toBeEnabled();
+      await f.page.screenshot({ path: `${output}/studio-canvas-${width}-${theme}.png`, fullPage: true });
+      await f.page.getByRole('button', { name: 'Применить', exact: true }).click();
+      await expect.poll(() => f.state.sends.length).toBe(1);
+      assert.match(f.state.sends[0].content, /Новый заголовок/);
+      assert.match(f.state.sends[0].content, /Сделай текст короче/);
+      assert.equal(f.state.sends[0].model, 'studio');
+    } finally { await f.context.close(); }
+  });
+  await test('studio28: a failed canvas shows retry and can recover', async () => {
+    const f = await studioFixture({ failCanvas: true });
+    try {
+      await expect(f.page.getByRole('alert')).toContainText('Не удалось открыть макет');
+      await expect(f.page.getByRole('button', { name: 'Скачать макет', exact: true })).toBeDisabled();
+      f.state.canvasFail = false;
+      await f.page.getByRole('button', { name: 'Повторить загрузку', exact: true }).click();
+      await expect(f.page.frameLocator('iframe[title="Холст Студии"]').getByRole('heading', { name: 'Новый заголовок' })).toBeVisible();
+    } finally { await f.context.close(); }
+  });
   for (const width of [390, 1440]) await test(`ux27: landing navigation scrolls between sections ${width}`, async () => {
     const f = await fixture({ signedOut: true, startPath: '/', viewport: { width, height: 844 }, touch: width < 600 });
     try {

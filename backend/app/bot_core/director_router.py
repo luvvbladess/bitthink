@@ -6,6 +6,7 @@
 как у любой другой модели — не отчёт.
 """
 
+from app.services.search_budget import search_turn
 import json
 import logging
 import re
@@ -1515,6 +1516,7 @@ async def _run_package_one_by_one(
     return "\n\n".join(lines), [], reasoning, search
 
 
+@search_turn
 async def get_director_response(
     messages: List[Dict[str, Any]],
     user_text: str,

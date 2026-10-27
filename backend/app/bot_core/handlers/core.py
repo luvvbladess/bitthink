@@ -1,3 +1,4 @@
+from app.services.search_budget import search_turn
 import asyncio
 import logging
 import re
@@ -271,6 +272,7 @@ from app.billing.quota import billing_scope
 
 
 @billing_scope
+@search_turn
 async def get_smart_response(
     user_id: int,
     user_text: str,
@@ -405,6 +407,9 @@ async def get_smart_response(
         messages = list(messages)
         messages.insert(-1 if messages and messages[-1].get('role') == 'user' else len(messages),
                         {'role': 'system', 'content': evidence_note})
+    from app.services.search_budget import current_search_budget
+    if model == 'gpt-6-sol' and current_search_budget.get():
+        current_search_budget.get().searches, current_search_budget.get().reads = 4, 6
     from app.services.authoritative_catalogs import read_catalogs
     prior_answer = next((str(getattr(m,'content','') if not isinstance(m,dict) else m.get('content',''))
                          for m in reversed(conv.messages if conv else [])
@@ -419,6 +424,8 @@ async def get_smart_response(
         has_documents = True
 
     research_mode = model == "gpt-6-sol"
+    from app.services.search_budget import SEARCH_PLAN
+    messages.insert(0, {'role': 'system', 'content': SEARCH_PLAN})
     # Files first only for this turn's uploads in Auto. Search/Research still
     # go to the web even if an older photo or PDF is sitting in the thread.
     web_required = not intent.web_forbidden and (bool(catalog_note) or intent.needs_web or (followup_web and not intent.local) or turn_requires_web(

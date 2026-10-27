@@ -106,8 +106,10 @@ def test_pptx_compose_and_pure_edit_have_tools_without_forced_search(monkeypatch
     assert sources[0]["summary"].startswith("https://example.org/")
     asyncio.run(compose_with_web([], user_text="Шапку темнее", user_id=1, model="gpt-6-sol", effort="low"))
     assert calls[-1][1]["use_tools"] and not calls[-1][1]["force_web_search"]
+    assert not {"web_search", "server_search", "browse_page"} & calls[-1][1]["allowed_tools"]
     asyncio.run(compose_with_web([], user_text="Актуальные тарифы без интернета", user_id=1, model="gpt-6-sol", effort="low"))
-    assert not calls[-1][1]["use_tools"] and not calls[-1][1]["force_web_search"]
+    assert not calls[-1][1]["force_web_search"]
+    assert not {"web_search", "server_search", "browse_page"} & calls[-1][1]["allowed_tools"]
 
 
 def test_failed_read_and_empty_search_are_not_claimed_as_verified(monkeypatch):
