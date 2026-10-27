@@ -75,7 +75,10 @@ export function useComposerDraft(conversationId: string | null | undefined) {
     setRestoring(true);
     void loadDraft(scope).then(saved => {
       if (!disposed && saved && read(scope) === original) {
-        const next = { text: original.text || saved.text, files: original.files.length ? original.files : saved.files };
+        // Keep the live file-array identity when restoring no attachments. A new
+        // chat's delivery receipt uses it to distinguish the sent draft from
+        // newer work while IndexedDB restoration finishes in the background.
+        const next = { text: original.text || saved.text, files: original.files.length || !saved.files.length ? original.files : saved.files };
         drafts.set(scope, next); setDraft(next);
       }
     }).catch(() => { if (!disposed) setStorageWarning('Не удалось сохранить черновик на устройстве. Не закрывайте вкладку до отправки.'); })

@@ -1,7 +1,7 @@
 import { Box, Container, Typography, Stack, useTheme } from '@mui/material';
 import { useEffect } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { ArrowRight, Check, FileText, Images, MagnifyingGlass, Desktop } from '@phosphor-icons/react';
 import { IslandButton } from '@/components/IslandButton';
 import { BrandMark, BrandLink } from '@/components/BrandMark';
@@ -45,6 +45,7 @@ const plans = [
 export default function LandingPage() {
   const theme = useTheme();
   const navigate = useNavigate();
+  const { hash } = useLocation();
   const token = useAuthStore((s) => s.accessToken);
   const reduce = useReducedMotion();
   const fade = {
@@ -64,12 +65,14 @@ export default function LandingPage() {
   }, []);
 
   useEffect(() => {
-    const hash = window.location.hash;
-    if (hash) {
-      const el = document.querySelector(hash);
-      if (el) setTimeout(() => el.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80);
-    }
-  }, []);
+    if (!hash) return;
+    let id: string;
+    try { id = decodeURIComponent(hash.slice(1)); } catch { return; }
+    const el = document.getElementById(id);
+    if (!el) return;
+    const timer = window.setTimeout(() => el.scrollIntoView({ behavior: reduce ? 'instant' : 'smooth', block: 'start' }), 80);
+    return () => window.clearTimeout(timer);
+  }, [hash, reduce]);
 
   const goAsk = () => navigate(token ? '/chat' : '/register');
 
@@ -149,16 +152,14 @@ export default function LandingPage() {
             </motion.div>
             {!token && (
               <motion.div {...fade} transition={{ ...fade.transition, delay: 0.16 }}>
-                <Link to="/login" style={{ textDecoration: 'none' }}>
-                  <IslandButton>Уже есть аккаунт</IslandButton>
-                </Link>
+                <IslandButton component={Link} to="/login">Уже есть аккаунт</IslandButton>
               </motion.div>
             )}
           </Stack>
         </Container>
       </Box>
 
-      <Box id="features" sx={{ py: { xs: 8, md: 10 } }}>
+      <Box id="features" sx={{ py: { xs: 8, md: 10 }, scrollMarginTop: '72px' }}>
         <Container maxWidth="md" sx={{ px: { xs: 2, sm: 3 } }}>
           <Typography variant="h2" sx={{ mb: 4, textWrap: 'balance', textAlign: 'center' }}>
             ИИ, поиск и файлы в одном окне
@@ -197,7 +198,7 @@ export default function LandingPage() {
         </Container>
       </Box>
 
-      <Box id="pricing" sx={{ py: { xs: 8, md: 10 } }}>
+      <Box id="pricing" sx={{ py: { xs: 8, md: 10 }, scrollMarginTop: '72px' }}>
         <Container maxWidth="md" sx={{ px: { xs: 2, sm: 3 } }}>
           <Typography variant="h2" sx={{ mb: 1.5, textAlign: 'center' }}>
             Тарифы
@@ -258,9 +259,7 @@ export default function LandingPage() {
             У каждого тарифа окно 5 часов и недельный лимит, они обновляются сами.
           </Typography>
           <Box sx={{ textAlign: 'center' }}>
-            <Link to={token ? '/billing' : '/register'} style={{ textDecoration: 'none' }}>
-              <IslandButton>Смотреть кабинет</IslandButton>
-            </Link>
+            <IslandButton component={Link} to={token ? '/billing' : '/register'}>Смотреть кабинет</IslandButton>
           </Box>
         </Container>
       </Box>
@@ -286,7 +285,7 @@ export default function LandingPage() {
         </Container>
       </Box>
 
-      <Box id="faq" component="section" aria-labelledby="faq-heading" sx={{ py: { xs: 7, md: 9 } }}>
+      <Box id="faq" component="section" aria-labelledby="faq-heading" sx={{ py: { xs: 7, md: 9 }, scrollMarginTop: '72px' }}>
         <Container maxWidth="sm" sx={{ px: { xs: 2, sm: 3 } }}>
           <Typography id="faq-heading" component="h2" variant="h2" sx={{ mb: 3, textAlign: 'center', textWrap: 'balance' }}>
             Вопросы
