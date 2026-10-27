@@ -91,8 +91,48 @@ STUDIO_IMAGE_MARK = "data-studio-image"
 _HTML_KINDS = frozenset({"slides", "landing", "infographic", "dashboard", "app", "pptx"})
 
 
+def image_brief_text(user_text: str) -> str:
+    """Negative constraints are still sent to the provider, but cannot route a job."""
+    return re.split(r'(?im)^\s*(?:негативный\s+промпт|negative\s+prompt)\s*:', user_text or '', maxsplit=1)[0]
+
+
+def descriptive_image_brief(user_text: str) -> bool:
+    text = image_brief_text(user_text).strip()
+    if re.match(r'(?i)^(?:напиши|опиши|объясни|расскажи|переведи|проанализируй|оцени|сравни|проверь|почему|как\b|что\b|write\b|explain\b|describe\b)', text):
+        return False
+    if re.match(r'(?i)^(?:измени|поправь|замени|добавь|убери|отредактируй|edit\b|change\b|adjust\b)', text):
+        return False
+    # A pasted image brief commonly starts with several adjectives, not a verb.
+    # Its first artifact wins: "постер для сайта" is an image, "сайт с постером" is a site.
+    head = re.split(r'[.!?\n]', text, maxsplit=1)[0][:220]
+    picture = re.search(r'(?i)\b' + _IMAGE_NOUN, head)
+    if not picture or len(head[:picture.start()].split()) > 8:
+        return False
+    other = [m for pattern in (_SLIDE_HINT, _PPTX_FILE, _INFO_HINT, _DASH_HINT, _APP_HINT, _LANDING_HINT)
+             if (m := pattern.search(head))]
+    if other and min(m.start() for m in other) < picture.start():
+        return False
+    # A short modification of the current picture is not a new descriptive brief.
+    if _EDIT_HINT.search(head):
+        return False
+    return True
+
+
+def requested_image_size(user_text: str) -> str:
+    text = image_brief_text(user_text)
+    if re.search(r'(?i)\b1\s*[:×x/]\s*1\b|квадратн\w*|\bsquare\b', text):
+        return '1024x1024'
+    if re.search(r'(?i)\b(?:2\s*[:/]\s*3|9\s*[:/]\s*16)\b|вертикальн\w*|\bportrait\b', text):
+        return '1024x1536'
+    if re.search(r'(?i)\b(?:3\s*[:/]\s*2|16\s*[:/]\s*9)\b|горизонтальн\w*|\blandscape\b', text):
+        return '1536x1024'
+    return '1024x1024'
+
+
 def detect_kind_explicit(user_text: str) -> str | None:
-    text = user_text or ""
+    text = image_brief_text(user_text)
+    if descriptive_image_brief(text):
+        return 'image'
     if _PPTX_FILE.search(text) and not _EDIT_HINT.search(text):
         return "pptx"
     if _INFO_HINT.search(text) and not _SLIDE_HINT.search(text):
@@ -127,6 +167,9 @@ def resolve_studio_job(user_text: str, previous_html: str | None) -> tuple[str, 
     iterating = should_iterate(user_text, prev)
     explicit = detect_kind_explicit(user_text)
     kind = explicit or "landing"
+
+    if kind == 'image' and descriptive_image_brief(user_text):
+        return 'image', '', False
 
     if prev and is_image_canvas(prev):
         if explicit in _HTML_KINDS:
@@ -177,7 +220,7 @@ def extract_embedded_image_bytes(html: str) -> bytes | None:
 
 
 def wants_pptx_file(user_text: str) -> bool:
-    return bool(_PPTX_FILE.search(user_text or ""))
+    return bool(_PPTX_FILE.search(image_brief_text(user_text)))
 
 
 def should_iterate(user_text: str, previous_html: str | None) -> bool:
