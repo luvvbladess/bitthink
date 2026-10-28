@@ -85,7 +85,7 @@ export default function App() {
 
   return (
     <ChatConnectionProvider>
-    <Box sx={{ minHeight: '100dvh', bgcolor: 'background.default', color: 'text.primary', position: 'relative' }}>
+    <Box sx={{ minHeight: location.pathname === '/chat' ? 0 : '100dvh', bgcolor: 'background.default', color: 'text.primary', position: 'relative' }}>
       <PageAtmosphere />
       <Box
         component="a"
@@ -130,7 +130,7 @@ export default function App() {
             path="/chat"
             element={
               <PrivateRoute>
-                <motion.div key="chat" {...pageTransition} style={{ height: '100dvh', overflow: 'hidden' }}>
+                <motion.div key="chat" {...pageTransition} style={{ position: 'fixed', inset: 0, overflow: 'hidden' }}>
                   <ChatPage />
                 </motion.div>
               </PrivateRoute>

@@ -43,7 +43,7 @@ import { CloudTaskBar, type CloudTask } from '@/features/chat/CloudTaskBar';
 import type { ResultEditRequest } from '@/features/chat/projectResultLinks';
 import type { ProjectCitation } from '@/features/chat/EvidenceLink';
 import { applyPageMeta } from '@/seo';
-import { useVisualViewportHeight } from '@/features/chat/useVisualViewportHeight';
+import { useVisualViewport } from '@/features/chat/useVisualViewportHeight';
 
 function keepLiveUploads(current: DisplayMessage[], derived: DisplayMessage[]): DisplayMessage[] {
   const uploads = current.filter((message) => (
@@ -66,7 +66,7 @@ export default function ChatPage() {
       onExternalSelection: () => setProjectPanel(null),
       onPersistError: text => setProjectNotice({ text, warning: true }),
     });
-  const visualViewportHeight = useVisualViewportHeight();
+  const { height: visualViewportHeight, offsetTop: visualViewportTop } = useVisualViewport();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const compactCanvas = useMediaQuery(theme.breakpoints.down('lg'));
@@ -998,8 +998,13 @@ export default function ChatPage() {
   return (
     <Box
       sx={{
+        position: 'absolute',
+        top: visualViewportTop,
+        left: 0,
+        right: 0,
         height: `min(100dvh, ${visualViewportHeight}px)`,
         '--bt-viewport-h': `${visualViewportHeight}px`,
+        '--bt-viewport-top': `${visualViewportTop}px`,
         display: 'flex',
         overflow: 'hidden',
       }}
