@@ -88,13 +88,15 @@ export function RoomChat({
         overflow: 'hidden',
         ...floatingPanelSx,
         // Phone: a full screen of its own, clear of the notch and the home bar.
-        // dvh follows the on-screen keyboard, so the input stays visible.
+        // Safari keyboard panning changes the visual viewport's origin as well.
         '@media (max-width: 899.95px)': {
           position: 'fixed',
           inset: 0,
           zIndex: 1300,
           width: '100%',
-          height: '100dvh',
+          top: 'var(--bt-viewport-top, 0px)',
+          bottom: 'auto',
+          height: 'var(--bt-viewport-h, 100dvh)',
           borderRadius: 0,
           border: 'none',
           // The panel colour is translucent glass; full screen needs a solid page under it.

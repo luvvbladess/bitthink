@@ -1,4 +1,4 @@
-import { chromium, expect as baseExpect } from '@playwright/test';
+import { chromium, webkit, expect as baseExpect } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 
@@ -6,12 +6,13 @@ const base = process.env.BITTHINK_UI_BASE || 'http://127.0.0.1:5187';
 const expect = baseExpect.configure({ timeout: 15000 });
 const output = process.env.BITTHINK_UI_OUTPUT || 'test-results/ux';
 await mkdir(output, { recursive: true });
-const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL || 'chrome', headless: true });
+const useWebKit = process.env.PLAYWRIGHT_ENGINE === 'webkit';
+const browser = await (useWebKit ? webkit.launch({ headless: true }) : chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL || 'chrome', headless: true }));
 let passed = 0;
 const errors = [];
 
 async function fixture(options = {}) {
-  const context = await browser.newContext({ viewport: options.viewport || { width: 1440, height: 900 }, hasTouch: Boolean(options.touch) });
+  const context = await browser.newContext({ viewport: options.viewport || { width: 1440, height: 900 }, hasTouch: Boolean(options.touch), ...(useWebKit ? { isMobile: Boolean(options.touch) } : {}) });
   const page = await context.newPage();
   if (options.clock) await page.clock.install();
   if (options.observeWelcome) await page.addInitScript(() => {
@@ -1146,6 +1147,83 @@ try {
       const input = await f.input.boundingBox(); assert(input.y >= 54 && input.y + input.height <= 360);
       await f.page.getByRole('button', { name: 'Закрыть инструменты', exact: true }).click();
       await expect(f.input).toHaveValue('Текст при открытой клавиатуре. '.repeat(30));
+    } finally { await f.context.close(); }
+  });
+  for (const [width, model, empty] of [[390, 'director', false], [390, 'director', true], [320, 'auto', false]]) await test(`journey: iPhone keyboard pan keeps header and composer in the visible viewport ${width} ${empty ? 'new' : 'existing'}`, async () => {
+    const f = await fixture({ model, startPath: empty ? '/chat?new=1' : '/chat', viewport: { width, height: 844 }, touch: true });
+    try {
+      await expect(f.input).toBeEnabled();
+      const draft = 'дрейн няшка это. ответь на это используя знания из интернета\n' + 'Ещё одна строка. '.repeat(30);
+      await f.input.fill(draft);
+      await f.input.focus();
+      await f.page.evaluate(() => {
+        window.auditKeyboard = { height: 360, offsetTop: 140 };
+        for (const key of ['height', 'offsetTop']) Object.defineProperty(window.visualViewport, key, { configurable: true, get: () => window.auditKeyboard[key] });
+        window.visualViewport.dispatchEvent(new Event('resize'));
+        window.visualViewport.dispatchEvent(new Event('scroll'));
+      });
+      const header = f.page.getByRole('button', { name: 'Открыть список бесед', exact: true });
+      const send = f.page.getByRole('button', { name: 'Отправить сообщение', exact: true });
+      const check = async (top, height) => {
+        await expect.poll(async () => (await header.boundingBox()).y).toBeGreaterThanOrEqual(top);
+        await expect.poll(async () => (await header.boundingBox()).y).toBeLessThan(top + 54);
+        await expect.poll(async () => { const b = await send.boundingBox(); return b.y + b.height; }).toBeLessThanOrEqual(top + height);
+        await expect.poll(async () => { const b = await send.boundingBox(); return top + height - b.y - b.height; }, { message: 'Composer must stay near the keyboard, not jump to the top' }).toBeLessThan(110);
+        const input = await f.input.boundingBox();
+        assert(input.y >= top + 54 && input.y + input.height <= top + height);
+        assert(await f.input.evaluate(el => parseFloat(getComputedStyle(el).fontSize)) >= 16, 'iOS focus must not trigger small-input zoom');
+        assert.equal(await f.page.evaluate(() => document.scrollingElement.scrollHeight > innerHeight + 1), false, 'Chat must not introduce document-level scrolling');
+      };
+      await check(140, 360);
+      // Safari can pan without a height change while moving the caret.
+      await f.page.evaluate(() => { window.auditKeyboard.offsetTop = 220; window.visualViewport.dispatchEvent(new Event('scroll')); });
+      await check(220, 360);
+      await f.input.press('End'); await f.input.press('Shift+Enter'); await f.page.keyboard.insertText('й');
+      await check(220, 360);
+      await f.page.screenshot({ path: `${output}/iphone-keyboard-pan-${width}-${empty ? 'new' : 'existing'}.png`, clip: { x: 0, y: 220, width, height: 360 }, animations: 'disabled' });
+      // Closing the keyboard must restore the full screen without losing the draft.
+      await f.input.blur();
+      await f.page.evaluate(() => {
+        window.auditKeyboard = { height: 844, offsetTop: 0 };
+        window.visualViewport.dispatchEvent(new Event('resize'));
+        window.visualViewport.dispatchEvent(new Event('scroll'));
+      });
+      await check(0, 844);
+      assert((await f.input.inputValue()).includes('дрейн няшка это.'));
+      await f.page.evaluate(() => { window.auditKeyboard.height = 390; });
+      await f.page.setViewportSize({ width: 844, height: 390 });
+      await check(0, 390);
+      await f.page.evaluate(() => { window.auditKeyboard.height = 844; });
+      await f.page.setViewportSize({ width, height: 844 });
+      await check(0, 844);
+      await f.page.getByRole('button', { name: 'Аккаунт', exact: true }).last().click();
+      await f.page.getByRole('menuitem', { name: 'Настройки', exact: true }).click();
+      await expect(f.page.getByRole('heading', { name: 'Настройки', exact: true })).toBeVisible();
+      await expect.poll(() => f.page.evaluate(() => getComputedStyle(document.body).overflow)).toBe('visible');
+    } finally { await f.context.close(); }
+  });
+  await test('journey: iPhone keyboard pan also fits people-only room', async () => {
+    const f = await fixture({ viewport: { width: 390, height: 844 }, touch: true, handleRoute: async ({ path, method, route }) => {
+      if (path === '/conversations' && method === 'GET') { await route.fulfill({ json: [{ id: 'chat-a', title: 'Общая беседа', is_active: true, shared: true, role: 'owner', message_count: 2 }] }); return true; }
+      if (path === '/conversations/chat-a/asides') { await route.fulfill({ json: [] }); return true; }
+    } });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.page.getByRole('button', { name: 'Переписка между людьми', exact: true }).click();
+      const room = f.page.getByRole('dialog', { name: 'Переписка между людьми', exact: true });
+      await room.getByRole('textbox').fill('Сообщение людям\nВторая строка');
+      await f.page.evaluate(() => {
+        Object.defineProperty(window.visualViewport, 'height', { configurable: true, get: () => 360 });
+        Object.defineProperty(window.visualViewport, 'offsetTop', { configurable: true, get: () => 140 });
+        window.visualViewport.dispatchEvent(new Event('resize'));
+      });
+      await expect.poll(async () => Math.round((await room.boundingBox()).y)).toBe(140);
+      await expect.poll(async () => Math.round((await room.boundingBox()).height)).toBe(360);
+      const send = await room.getByRole('button', { name: 'Отправить людям', exact: true }).boundingBox();
+      assert(send.y >= 140 && send.y + send.height <= 500);
+      await room.getByRole('button', { name: 'Закрыть переписку', exact: true }).click();
+      await expect(room).toBeHidden();
+      assert.equal(f.state.sends.length, 0);
     } finally { await f.context.close(); }
   });
   await test('journey: quota notice, attachments and tools remain dismissible on a short phone', async () => {

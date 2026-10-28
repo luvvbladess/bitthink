@@ -1,18 +1,37 @@
-import { useEffect, useState } from 'react';
+import { useLayoutEffect, useState } from 'react';
 
-/** The usable area can shrink for a software keyboard without a layout resize. */
-export function useVisualViewportHeight() {
-  const read = () => Math.round(window.visualViewport?.height || window.innerHeight);
-  const [height, setHeight] = useState(read);
-  useEffect(() => {
-    const update = () => setHeight(read());
+/** iOS can both shrink AND pan the visual viewport without a layout resize. */
+export function useVisualViewport() {
+  const read = () => ({
+    height: Math.round(window.visualViewport?.height || window.innerHeight),
+    offsetTop: Math.max(0, Math.round(window.visualViewport?.offsetTop || 0)),
+  });
+  const [bounds, setBounds] = useState(read);
+  useLayoutEffect(() => {
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      const next = read();
+      setBounds(previous => previous.height === next.height && previous.offsetTop === next.offsetTop ? previous : next);
+    };
+    const schedule = () => { if (!frame) frame = window.requestAnimationFrame(update); };
     const viewport = window.visualViewport;
-    window.addEventListener('resize', update);
-    viewport?.addEventListener('resize', update);
+    update();
+    window.addEventListener('resize', schedule);
+    window.addEventListener('orientationchange', schedule);
+    viewport?.addEventListener('resize', schedule);
+    viewport?.addEventListener('scroll', schedule, { passive: true });
     return () => {
-      window.removeEventListener('resize', update);
-      viewport?.removeEventListener('resize', update);
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener('resize', schedule);
+      window.removeEventListener('orientationchange', schedule);
+      viewport?.removeEventListener('resize', schedule);
+      viewport?.removeEventListener('scroll', schedule);
     };
   }, []);
-  return height;
+  return bounds;
+}
+
+export function useVisualViewportHeight() {
+  return useVisualViewport().height;
 }
