@@ -1960,7 +1960,7 @@ class DatabaseConversationManager:
             try:
                 with SyncSessionLocal() as session:
                     self._lock_conversation_selection(session, user_id)
-                    session.query(Conversation).filter_by(user_id=user_id, is_active=True).update({"is_active": False})
+                    self._clear_active_flag(session, user_id)
                     conv = Conversation(
                         id=self._conv_id(),
                         user_id=user_id,
@@ -1976,6 +1976,16 @@ class DatabaseConversationManager:
         if last_error:
             raise last_error
         raise RuntimeError("Не удалось создать беседу")
+
+    @staticmethod
+    def _clear_active_flag(session: Session, user_id: int) -> None:
+        # Leaving updated_at out of this UPDATE makes SQLAlchemy fill it with
+        # now(). The chat you just left then ties with the new one, and the
+        # older id is listed first, so each new chat appears underneath.
+        session.query(Conversation).filter_by(user_id=user_id, is_active=True).update(
+            {"is_active": False, "updated_at": Conversation.updated_at},
+            synchronize_session="fetch",
+        )
 
     @staticmethod
     def _lock_conversation_selection(session: Session, user_id: int) -> None:
@@ -1997,7 +2007,7 @@ class DatabaseConversationManager:
             # переключал бы его личные чаты. Писать в неё всё равно можно по id.
             if conv.user_id != user_id:
                 return ConversationData.from_model(conv)
-            session.query(Conversation).filter_by(user_id=user_id, is_active=True).update({"is_active": False})
+            self._clear_active_flag(session, user_id)
             conv.is_active = True
             session.commit()
             session.refresh(conv)

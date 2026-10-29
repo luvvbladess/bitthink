@@ -36,7 +36,7 @@ def summaries(uid, limit=None, offset=0, trash=False, cid=None):
         query = query.where(Conversation.user_id == uid, Conversation.deleted_at > int(time.time()) - TRASH_DAYS * 86400)
     else:
         query = query.where(accessible(uid), Conversation.deleted_at.is_(None))
-    query = query.order_by(Conversation.updated_at.desc(), Conversation.id).offset(offset)
+    query = query.order_by(Conversation.updated_at.desc(), Conversation.created_at.desc(), Conversation.id.desc()).offset(offset)
     if cid:query = query.where(Conversation.id == cid)
     if limit is not None:query = query.limit(limit)
     with SyncSessionLocal() as session:return [_summary(row, uid) for row in session.execute(query)]
@@ -85,7 +85,7 @@ def search(uid, query, limit=30, offset=0):
         filename = select(Document.filename).where(Document.conversation_id == Conversation.id, matches(Document.filename)).limit(1).correlate(Conversation).scalar_subquery()
         rows = session.execute(select(Conversation.id, Conversation.title, message.label('message_id'), snippet.label('snippet'), filename.label('filename'))
             .where(accessible(uid), Conversation.deleted_at.is_(None), or_(matches(Conversation.title), message.is_not(None), filename.is_not(None)))
-            .order_by(Conversation.updated_at.desc(), Conversation.id).limit(limit).offset(offset))
+            .order_by(Conversation.updated_at.desc(), Conversation.created_at.desc(), Conversation.id.desc()).limit(limit).offset(offset))
         return [dict(id=r.id, title=r.title, message_id=r.message_id, snippet=r.snippet or r.filename or 'Совпадение в названии', filename=r.filename) for r in rows]
 
 
