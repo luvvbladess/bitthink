@@ -313,6 +313,9 @@ class ComputerWorker:
             await asyncio.to_thread(finish, task_id, "interrupted", "Работа остановлена; можно продолжить по истории.", row["run_number"])
             raise
         except Exception as exc:
+            from app.services.improvement_journal import capture_error
+            await asyncio.to_thread(capture_error, 'background', type(exc).__name__, account=user,
+                                    event_key='background:' + task_id + ':' + str(row['run_number']))
             await asyncio.to_thread(finish, task_id, "blocked" if isinstance(exc, QuotaError) else "failed",
                                     str(exc) if isinstance(exc, (QuotaError, ValueError)) else "Не удалось выполнить задачу. Проверьте журнал и повторите.", row["run_number"])
             await asyncio.to_thread(event, task_id, "error", type(exc).__name__)

@@ -163,6 +163,10 @@ def emit(user, publisher, message, generation_id=None):
             payload.pop('data', None)
         session.add(GenerationEvent(user_email=user, publisher=publisher,
             payload=json.dumps({**message, 'payload': payload}, ensure_ascii=False), created_at=int(time.time())))
+    if message.get('type') == 'error':
+        from app.services.improvement_journal import capture_error
+        capture_error('generation', 'GenerationError', account=user,
+                      event_key='generation:' + str(generation_id or uuid.uuid4().hex))
 
 
 def events(after, users, limit=500):

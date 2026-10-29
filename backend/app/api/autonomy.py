@@ -7,6 +7,27 @@ from app.services.autonomy import CHARTER, recall
 router = APIRouter(prefix='/autonomy', tags=['autonomy'])
 
 
+@router.get('/issues')
+async def improvement_issues(_: str = Depends(require_admin)):
+    from app.services.improvement_journal import issues
+    return {'issues': await asyncio.to_thread(issues)}
+
+
+@router.get('/issues/{issue_id}')
+async def improvement_issue(issue_id: str, _: str = Depends(require_admin)):
+    from app.services.improvement_journal import issue
+    try:
+        return await asyncio.to_thread(issue, issue_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.get('/reviews')
+async def daily_reviews(_: str = Depends(require_admin)):
+    from app.services.improvement_journal import reports
+    return {'reports': await asyncio.to_thread(reports)}
+
+
 @router.get('/identity')
 async def identity(_: str = Depends(get_current_user)):
     return CHARTER

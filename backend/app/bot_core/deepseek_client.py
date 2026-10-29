@@ -244,10 +244,14 @@ async def get_deepseek_response(
                 "stream_options": {"include_usage": True},
             }, model=model, user_id=user_id, consume=_consume_stream, usage_is_result=True)
         except asyncio.TimeoutError:
+            from app.services.improvement_journal import capture_error
+            await asyncio.to_thread(capture_error, 'provider.deepseek', 'TimeoutError', account=user_id)
             logger.error("DeepSeek API call timed out after 420s")
             return "❌ Модель DeepSeek не ответила за 420 секунд (таймаут)", [], "\n\n".join(reasoning_parts), search_results
         except Exception as e:
             logger.error(f"DeepSeek API call failed: {e}", exc_info=True)
+            from app.services.improvement_journal import capture_error
+            await asyncio.to_thread(capture_error, 'provider.deepseek', type(e).__name__, account=user_id)
             return f"❌ Ошибка API DeepSeek: {str(e)}", [], "\n\n".join(reasoning_parts), search_results
 
         if stream_usage:

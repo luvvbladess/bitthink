@@ -24,7 +24,7 @@ def validate_proposal(source, proposal):
             raise ValueError('Алгоритму разрешён только модуль re.')
         if isinstance(node, ast.Name) and (node.id.startswith('__') or node.id in {'open', 'exec', 'eval', 'compile', 'getattr', 'setattr', 'globals', 'locals', 'vars', 'input', 'breakpoint'}):
             raise ValueError('Динамический доступ к среде в алгоритме запрещён.')
-        if isinstance(node, ast.Attribute) and node.attr.startswith('_'):
+        if isinstance(node, ast.Attribute) and (node.attr.startswith('_') or node.attr in {'format', 'format_map'}):
             raise ValueError('Доступ к внутренним атрибутам запрещён.')
     # These checks are a narrowing policy, not a Python security boundary.
     # Candidate imports and tests must still run in a disposable container.

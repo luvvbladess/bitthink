@@ -46,6 +46,10 @@ async def client_error(data: ClientError, user: str = Depends(get_current_user))
         raise HTTPException(429, 'Too many diagnostic reports')
     queue.append(now)
     log.warning('client_error %s', json.dumps({**data.model_dump(mode='json'), 'account': account}, ensure_ascii=True))
+    from app.services.improvement_journal import capture_error
+    import asyncio
+    await asyncio.to_thread(capture_error, 'frontend.' + data.category, 'ClientError', account=user,
+                            event_key='browser:' + str(data.report_id))
     return {'report_id': str(data.report_id)}
 
 
