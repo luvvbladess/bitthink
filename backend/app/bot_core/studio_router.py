@@ -898,6 +898,7 @@ async def _run_html_studio(
     )
 
     html = ""
+    released = False
     source_items: list[dict] = []
     last_exc: Exception | None = None
     repair_hint = ""
@@ -914,6 +915,7 @@ async def _run_html_studio(
                 repair_hint=repair_hint,
                 source_items=source_items,
             )
+            released = bool(html)
             break
         except Exception as exc:
             last_exc = exc
@@ -921,6 +923,7 @@ async def _run_html_studio(
             logger.info("Studio HTML compose attempt %s failed: %s", attempt + 1, exc)
     if not html:
         logger.info("Studio HTML falling back: %s", last_exc)
+        released = False
         html = fallback_html(user_text, kind, direction)
 
     prompts = collect_ai_image_prompts(html)
@@ -944,7 +947,9 @@ async def _run_html_studio(
             "canvas": True,
         }
     ]
-    if iterating:
+    if not released:
+        answer = f'«{title}» не сдан: сборка макета не прошла. Во вложении запасной каркас, его нельзя считать готовой работой.'
+    elif iterating:
         answer = f'Обновил «{title}». Посмотрите результат на холсте; предыдущие версии доступны в его меню.'
     else:
         answer = f'Готово: «{title}». Откройте холст, чтобы посмотреть результат или изменить нужный элемент. Файл можно скачать кнопкой «Скачать».'
@@ -1026,6 +1031,7 @@ async def _run_pptx_studio(
             logger.info("Studio compose failed (%s), using fallback", exc)
             break
 
+    released = spec is not None
     if spec is None:
         logger.info("Studio falling back after compose errors: %s", last_exc)
         raw_spec = _fallback_board(user_text, theme_id, direction) if kind == "infographic" else _fallback_deck(user_text, theme_id, direction)
@@ -1056,7 +1062,9 @@ async def _run_pptx_studio(
         img_note = " (картинки пропущены: лимит генерации)"
 
     vibe = (spec.get("theme") or {}).get("label") or direction.get("vibe") or spec.get("theme_id")
-    if spec["kind"] == "deck":
+    if not released:
+        answer = "Презентация не сдана: спецификация не прошла проверку. Запасной каркас не является готовой работой."
+    elif spec["kind"] == "deck":
         n = len(spec.get("slides") or [])
         answer = (
             f"Готова презентация «{spec.get('title') or 'Deck'}»: {n} слайдов, визуальный язык «{vibe}»{img_note}. "

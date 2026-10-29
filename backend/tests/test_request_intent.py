@@ -109,6 +109,7 @@ def test_search_and_recovery_prompts_agree_on_inline_citations():
     from kimi_client import KIMI_WEB_SEARCH_SYSTEM_PROMPT
     from handlers.core import _with_web_context
     assert 'Панель источников не заменяет' in KIMI_WEB_SEARCH_SYSTEM_PROMPT
+    assert 'пока страница не открыта' in KIMI_WEB_SEARCH_SYSTEM_PROMPT
     assert 'не заменяет ссылки у утверждений' in _with_web_context([], 'Observed text')[0]['content']
 
 

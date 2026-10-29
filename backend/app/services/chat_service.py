@@ -215,6 +215,9 @@ async def _generate_and_send(
     except Exception:
         logger.exception("Failed to package reply archive")
 
+    from app.services.autonomy import release_guard
+    from app.services.run_protocol import current_run
+    response_text = release_guard(response_text, generated_files, current_run.get())
     response_text = sanitize_response_text(response_text)
     response_text = await asyncio.to_thread(chat_access.redact_for_user, bot_user_id, response_text)
 

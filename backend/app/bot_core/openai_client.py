@@ -517,6 +517,8 @@ async def get_chat_response(
         )
         if is_astra:
             messages = _with_astra_agent_prompt(messages)
+        from app.services.autonomy import attach_company
+        messages = attach_company(messages)
         instructions, input_items = _build_responses_input(
             messages, image_base64, image_mime_type
         )

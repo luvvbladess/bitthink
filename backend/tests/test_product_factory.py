@@ -192,6 +192,28 @@ def test_explicit_product_requests(text):
     assert is_product_request(text)
 
 
+def test_company_standard_is_shared_and_blocks_unproven_delivery():
+    plain = [{'role': 'system', 'content': 'Обычный чат'}]
+    once = autonomy.attach_company(plain)
+    assert once[1]['content'].startswith('Компания BitThink')
+    assert autonomy.attach_company(once) == once
+    assert 'company-tps-v1' in autonomy.RULES
+    bare = autonomy.release_guard('Архив готов, скачайте кнопкой в чате.', [])
+    assert 'не приложен' in bare and 'Скачивать нечего' in bare
+    kept = autonomy.release_guard('Архив готов, скачайте кнопкой в чате.', [{'bytes': b'zip'}])
+    assert 'скачайте кнопкой' in kept
+    published = autonomy.release_guard('Я опубликовал сайт.', [])
+    assert 'публикация не выполнялась' in published and 'Публикация не подтверждена' in published
+    story = autonomy.release_guard('Автор опубликовал роман в 1866 году.', [])
+    assert 'роман' in story and 'не выполнялась' not in story
+
+    class Record:
+        engineering = {'last_build_failed': True}
+
+    stopped = autonomy.release_guard('Предварительная модель собрана.', [], Record())
+    assert 'не допущенный комплект' in stopped
+
+
 def test_self_improvement_does_not_grant_permission_to_edit_release_policy():
     source = Path(__file__).parents[1].joinpath('app/services/product_strategy.py').read_text(encoding='utf-8')
     proposal = {'path': ALLOWED_PATH, 'base_sha256': hashlib.sha256(source.encode()).hexdigest(), 'source': source}
@@ -207,6 +229,7 @@ def test_tool_catalog_and_dispatch(workspace):
     assert {'product_lifecycle', 'autonomy'} <= COMPUTER_TOOL_NAMES
     charter = json.loads(asyncio.run(run_computer_tool('autonomy', {'action': 'identity'}, 92001)))
     assert charter['version'] == autonomy.VERSION and 'PDCA' in ' '.join(charter['principles'])
+    assert {item['name'] for item in charter['departments']} >= {'Оркестратор', 'Сайт', 'Документы и Студия', 'Поиск', 'Качество'}
     state = json.loads(fs.dispatch(92001, 'product', {'action': 'start', 'brief': 'Сделай лендинг'}))
     assert state['stack'] == 'static'
 

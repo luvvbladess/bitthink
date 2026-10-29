@@ -133,6 +133,8 @@ async def get_deepseek_response(
         user_id=user_id,
         sandbox=bool(use_tools and not chat_tools),
     )
+    from app.services.autonomy import attach_company
+    messages = attach_company(messages)
     from computer_tools import COMPUTER_TOOLS_CHAT, SKILL_TOOL_NAMES, response_tool_names
 
     # Авто получает чтение и свои скилы, не почту и SSH.
