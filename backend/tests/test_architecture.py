@@ -134,6 +134,28 @@ def test_web_restart_does_not_stop_worker_and_reconnect_does_not_duplicate_chunk
     asyncio.run(scenario())
 
 
+def test_failed_delivery_closes_the_socket_so_the_browser_reconnects(account):
+    class Dead:
+        def __init__(self):
+            self.closed = False
+        async def send_json(self, message):
+            raise RuntimeError('client stopped reading')
+        async def close(self):
+            self.closed = True
+
+    async def scenario():
+        api = persistent_hub(GenerationHub, LiveJob)
+        await api.start()
+        socket = Dead()
+        await api.subscribe(account, socket)
+        store.emit(account, 'owner', {'type': 'done', 'payload': {'conversation_id': 'chat'}})
+        await until(lambda: socket.closed)
+        assert account not in api._sockets
+        await api.stop()
+
+    asyncio.run(scenario())
+
+
 def test_events_never_reach_another_account(account):
     store.reserve(account, 'chat', 'external', owner='owner')
     store.emit(account, 'owner', {'type': 'chunk', 'payload': {'conversation_id': 'chat', 'text': 'private'}})

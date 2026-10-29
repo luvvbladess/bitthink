@@ -30,7 +30,14 @@ export function projectConversation({ messages, pending, conversationId, regener
     ? [...base, { id: 'pending-user', role: 'user', content: pending.userText, mine: true }]
     : base;
   const lastAssistant = [...withUser].reverse().find(message => message.role === 'assistant');
-  const holdSavedAnswer = pending.thinking && socketOpen && !httpJob;
+  const pendingUserAt = pending.userText ? base.map(message => message.role === 'user' ? message.content : '').lastIndexOf(pending.userText) : -1;
+  const finalAnswer = (message: DisplayMessage) => message.role === 'assistant' && !message.attachment?.interim;
+  const recoveredAnswer = imageBaseline
+    ? base.some(message => finalAnswer(message) && !imageBaseline.has(message.id))
+    : pendingUserAt >= 0 && base.slice(pendingUserAt + 1).some(finalAnswer);
+  // The saved reply is the result. Hiding it until a "done" event arrives left the
+  // chat on "Думаю" after the archive was already stored; Stop only uncovered it.
+  const holdSavedAnswer = pending.thinking && socketOpen && !httpJob && !recoveredAnswer;
   const lastUserAt = withUser.map(message => message.role).lastIndexOf('user');
   const view = holdSavedAnswer
     ? withUser.filter((message, index) => !(index > lastUserAt && message.role === 'assistant' && !message.attachment?.interim))
@@ -45,11 +52,6 @@ export function projectConversation({ messages, pending, conversationId, regener
     ? withAssistant.map((message, index) => index === withAssistant.length - 1 ? { ...message, file: pending.file } : message)
     : [...withAssistant, { id: 'pending-file', role: 'assistant', content: `Файл готов: ${pending.file.filename}`, file: pending.file,
       ...(withAssistant === view ? { reasoning: pending.reasoning, search: pending.search } : {}) }];
-  const pendingUserAt = pending.userText ? base.map(message => message.role === 'user' ? message.content : '').lastIndexOf(pending.userText) : -1;
-  const finalAnswer = (message: DisplayMessage) => message.role === 'assistant' && !message.attachment?.interim;
-  const recoveredAnswer = imageBaseline
-    ? base.some(message => finalAnswer(message) && !imageBaseline.has(message.id))
-    : pendingUserAt >= 0 && base.slice(pendingUserAt + 1).some(finalAnswer);
   const persistence = pending.text && lastAssistant?.content === pending.text
     ? lastAssistant.attachment?.url || !pending.file ? 'drop' : 'keep-file'
     : !pending.thinking && lastAssistant?.attachment?.url && pending.file ? 'drop' : 'none';

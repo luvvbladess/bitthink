@@ -96,10 +96,19 @@ def persistent_hub(base, job_type):
                                     if socket not in self.cursors:
                                         return
                                     if owner == user and sequence > self.cursors.get(socket, sequence):
-                                        await asyncio.wait_for(socket.send_json(message), timeout=2)
+                                        await asyncio.wait_for(socket.send_json(message), timeout=15)
                                     if socket in self.cursors:
                                         self.cursors[socket] = max(self.cursors[socket], sequence)
                             except Exception:
+                                # Leave the browser socket open and it keeps "Думаю"
+                                # forever: the server has stopped sending, the client
+                                # still believes the connection is live.
+                                close = getattr(socket, 'close', None)
+                                if close:
+                                    try:
+                                        await close()
+                                    except Exception:
+                                        pass
                                 await self.unsubscribe(user, socket)
                         await asyncio.gather(*(deliver(user, socket) for user, sockets in list(self._sockets.items()) for socket in list(sockets)))
                 except asyncio.CancelledError:
