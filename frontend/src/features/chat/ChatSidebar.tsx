@@ -63,6 +63,18 @@ const rowSx = {
 } as const;
 const sectionSx = { px: 1, fontSize: '0.75rem', fontWeight: 500, color: 'text.muted', lineHeight: 1.5 } as const;
 
+function timeValue(iso?: string): number {
+  const value = iso ? Date.parse(iso) : Number.NaN;
+  return Number.isNaN(value) ? 0 : value;
+}
+
+/** Newest activity first. A brand-new chat shares updated_at with the one it replaced, so creation time breaks the tie. */
+export function compareConversations(a: ConversationItem, b: ConversationItem): number {
+  return timeValue(b.updated_at) - timeValue(a.updated_at)
+    || timeValue(b.created_at) - timeValue(a.created_at)
+    || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+}
+
 function dateGroup(iso?: string): string {
   const then = iso ? new Date(iso) : null;
   if (!then || Number.isNaN(then.getTime())) return 'Недавние';
@@ -96,8 +108,7 @@ export function ChatSidebar({ hasMore, loadingMore, onLoadMore, onTools, convers
   const searching = Boolean(search.trim());
   const filtered = conversations.filter(c => searching
     ? c.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()) : !membership.has(c.id));
-  const ordered = filtered.every(c => c.updated_at)
-    ? [...filtered].sort((a, b) => Date.parse(b.updated_at!) - Date.parse(a.updated_at!)) : filtered;
+  const ordered = [...filtered].sort(compareConversations);
 
   const move = async (id: string, pid: string | null) => {
     if (!onMoveChat || moveBusy || conversations.find(c => c.id === id)?.shared) return;
@@ -196,7 +207,7 @@ export function ChatSidebar({ hasMore, loadingMore, onLoadMore, onTools, convers
           {onCreateProject && <Tooltip title="Создать проект"><IconButton aria-label="Создать проект" onClick={onCreateProject} sx={actionSx}><Plus size={16} weight="bold" /></IconButton></Tooltip>}
         </Box>
         {projects.map(project => {
-          const chats = conversations.filter(c => !c.shared && membership.get(c.id) === project.id);
+          const chats = conversations.filter(c => !c.shared && membership.get(c.id) === project.id).sort(compareConversations);
           const open = expanded[project.id] ?? activeProjectId === project.id;
           return <Box key={project.id} {...dropProps(project.id)} sx={{ borderRadius: '8px', bgcolor: dragTarget === project.id ? 'var(--bt-overlay-strong)' : 'transparent', outline: dragTarget === project.id ? '1px solid' : 'none', outlineColor: 'primary.main' }}>
             <Box sx={rowSx}>

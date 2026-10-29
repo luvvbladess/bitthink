@@ -3,6 +3,7 @@ import asyncio
 import json
 import time
 import uuid
+from datetime import datetime, timezone
 import pytest
 from sqlalchemy import delete, event, select, update
 from fastapi.testclient import TestClient
@@ -50,6 +51,34 @@ def test_sidebar_reads_only_metadata_and_paginates(people):
     assert {r['id'] for r in first}.isdisjoint({r['id'] for r in second})
     assert not any('messages.content' in sql or 'documents.content' in sql for sql in statements)
     assert sum(item['message_count'] for item in first + second) == 1
+
+
+def test_new_chat_is_listed_above_the_chat_it_replaced(people):
+    emails, ids = people
+    first = make_chat(emails[0], 'first')
+    with SyncSessionLocal.begin() as session:
+        session.execute(update(Conversation).where(Conversation.id == first).values(
+            updated_at=datetime(2020, 1, 1, tzinfo=timezone.utc)))
+    second = make_chat(emails[0], 'second')
+    with SyncSessionLocal() as session:
+        kept = session.get(Conversation, first).updated_at
+        if kept.tzinfo is None:
+            kept = kept.replace(tzinfo=timezone.utc)
+        assert kept == datetime(2020, 1, 1, tzinfo=timezone.utc)
+    assert [row['id'] for row in library.summaries(ids[0])] == [second, first]
+
+
+def test_equal_activity_lists_the_newer_chat_first(people):
+    emails, ids = people
+    first = make_chat(emails[0], 'first')
+    second = make_chat(emails[0], 'second')
+    stamp = datetime(2026, 10, 29, 12, tzinfo=timezone.utc)
+    with SyncSessionLocal.begin() as session:
+        session.execute(update(Conversation).where(Conversation.id == first).values(
+            updated_at=stamp, created_at=datetime(2026, 10, 29, 11, tzinfo=timezone.utc)))
+        session.execute(update(Conversation).where(Conversation.id == second).values(
+            updated_at=stamp, created_at=stamp))
+    assert [row['id'] for row in library.summaries(ids[0])][:2] == [second, first]
 
 
 def test_history_pages_preserve_absolute_indices_and_access(people):
