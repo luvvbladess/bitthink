@@ -116,6 +116,17 @@ export function useChatGeneration({ activeConvId, setActiveConvId, setSearchPara
       .catch(() => undefined);
   }, [wsStatus]);
 
+  const thinkingKey = generatingIds.join('\0');
+  useEffect(() => {
+    if (!thinkingKey) return;
+    const ids = thinkingKey.split('\0');
+    const pull = () => {
+      ids.forEach((id) => queryClient.invalidateQueries({ queryKey: ['messages', id] }));
+    };
+    const timer = window.setInterval(pull, 2500);
+    return () => window.clearInterval(timer);
+  }, [thinkingKey, queryClient]);
+
   useEffect(() => {
     wsMessages.forEach((msg) => {
       if (msg.deliveryId <= processedThrough.current) return;
@@ -151,7 +162,10 @@ export function useChatGeneration({ activeConvId, setActiveConvId, setSearchPara
         patchJob(convId, { thinking: true });
       }
       if (msg.type === 'status' && convId) {
-        patchJob(convId, { thinking: true, statusText: msg.payload.text || '' });
+        const text = msg.payload.text || '';
+        // An empty status is the tail of a finished turn. It must not turn the
+        // spinner back on after the reply has already been stored.
+        patchJob(convId, text ? { thinking: true, statusText: text } : { statusText: '' });
       }
       if (msg.type === 'reasoning_delta' && convId) {
         setJobs((prev) => upsertJob(prev, convId, { reasoning: (prev[convId]?.reasoning || '') + (msg.payload.text || '') }));
