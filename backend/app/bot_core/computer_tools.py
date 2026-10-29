@@ -1178,6 +1178,8 @@ async def _run_budgeted_computer_tool(name: str, args: dict[str, Any], user_id: 
                 if record: record.observe(name, previous)
                 return previous
         result = await _run_computer_tool(name, args, user_id)
+        from app.services.orchestrator_policy import observe_validation
+        observe_validation(name, args, result)
         if action_key:
             await asyncio.to_thread(task_checkpoints.complete, action_key, name, result, user_id)
         if record:

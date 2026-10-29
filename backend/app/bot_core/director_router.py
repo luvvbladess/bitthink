@@ -7,6 +7,8 @@
 """
 
 from app.services.search_budget import search_turn
+from app.services.orchestrator_policy import ROUTINE_MODEL, ECONOMY_RULES, routine_task, routine_tool_task, routine_employee, needs_recovery, economy_enabled, critical_task
+from app.services.orchestrator_metrics import model_phase, trace_director
 import json
 import logging
 import re
@@ -20,8 +22,21 @@ logger = logging.getLogger(__name__)
 
 def _desktop_work_instructions() -> str:
     # Kept out of original_task: format names/rules must not affect routing or pricing.
-    from app.services.desktop_context import desktop_work_context, desktop_mode
-    return desktop_work_context.get() if desktop_mode.get() == "director" else ""
+    from app.services.desktop_context import desktop_work_context, desktop_mode, desktop_executor, desktop_cwd, local_skills_instructions
+    if desktop_mode.get() != "director":
+        return ""
+    context = desktop_work_context.get()
+    if desktop_executor.get() is not None:
+        context += (
+            f"\n\n[Среда BitClient: Windows, PowerShell. Рабочая папка: {desktop_cwd.get()}. "
+            "Все workspace_* выполняются ЛОКАЛЬНО в этой папке, а не в контейнере. "
+            "Для git/npm/сборки/тестов вызывай desktop_run_command. Файлы сразу доступны пользователю на диске. "
+            "Не утверждай, что работаешь в Linux, не используй /workspace. "
+            "Сначала исследуй проект, затем внеси изменения и проверь результат. "
+            "Запрашивай уточнение, если без него невозможно выполнить задачу. "
+            "Не предлагай другой режим: в BitClient используется только Оркестратор.]"
+        ) + local_skills_instructions()
+    return context
 
 MODEL_POOL = [
     "gpt-5-nano",
@@ -95,6 +110,8 @@ def _is_light_task(text: str, document_context: str, has_images: bool, user_id: 
     Planning it on Sol cost ~20x Luna and a whole extra round trip before any work started."""
     if document_context or has_images or _wants_file(text) or _is_document_package_task(text):
         return False
+    if routine_tool_task(text):
+        return False
     if len(text or "") > LIGHT_TASK_CHARS or _BUILD_RE.search(text or ""):
         return False
     if _is_shopping_task(text, user_id):
@@ -104,6 +121,15 @@ def _is_light_task(text: str, document_context: str, has_images: bool, user_id: 
 
 def _needs_strong_model(text: str, document_context: str, has_images: bool, user_id: int | None) -> bool:
     """Only these earn Sol / DeepSeek Pro (9-20x Luna): files, long briefs, several tools, real code."""
+    if economy_enabled() and critical_task(text):
+        return True
+    if routine_task(text, document_context) and not has_images and not _is_document_package_task(text):
+        return False
+    return _legacy_needs_strong_model(text, document_context, has_images, user_id)
+
+
+def _legacy_needs_strong_model(text: str, document_context: str, has_images: bool, user_id: int | None) -> bool:
+    """Baseline routing: economy must not upgrade an already-cheap routine."""
     if document_context or has_images or len(text or "") > COMPLEX_TASK_CHARS:
         return True
     if _wants_file(text) or _is_document_package_task(text):
@@ -112,19 +138,22 @@ def _needs_strong_model(text: str, document_context: str, has_images: bool, user
     return len(skills) >= 2 or bool(_CODE_SKILLS & set(skills))
 
 
-def _clamped_planner_model(user_id: int, first_round: bool = True, complex_task: bool = True) -> str:
+def _clamped_planner_model(user_id: int, first_round: bool = True, complex_task: bool = True, *, routine: bool = False, recovery: bool = False) -> str:
     """Оркестратор целится в Sol, но не должен выдавать модель дороже тарифа
     пользователя — как и composer, откатываемся на Luna, если Sol недоступен.
 
     Sol (20x Luna) решает, как разрезать задачу. Следующие раунды только отвечают
     «хватает ли сделанного или нужен ещё шаг» – это по силам Luna, а промпт
     планировщика (правила, каталог, журнал) отправляется каждый раунд заново."""
-    wanted = PLANNER_MODEL if first_round and complex_task else DIRECT_ANSWER_MODEL
+    wanted = PLANNER_MODEL if recovery or (first_round and complex_task) else ROUTINE_MODEL if first_round and routine else DIRECT_ANSWER_MODEL
     try:
         from conversations import conversation_manager
         from app.billing.plans import clamp_model
 
-        return clamp_model(conversation_manager.get_subscription(user_id).get("tier"), wanted)
+        tier = conversation_manager.get_subscription(user_id).get("tier")
+        if wanted == ROUTINE_MODEL and ROUTINE_MODEL not in _employee_models(user_id):
+            wanted = PLANNER_MODEL
+        return clamp_model(tier, wanted)
     except Exception:
         return wanted
 
@@ -258,6 +287,7 @@ def _clamp_employee_plan(
     original_task: str = "",
     document_context: str = "",
     journal: List[Dict[str, Any]] | None = None,
+    *, has_images: bool = False,
 ) -> Dict[str, Any]:
     allowed = _employee_models(user_id)
     # BitClient CAD Astra routing
@@ -266,10 +296,13 @@ def _clamp_employee_plan(
     cad_astra = desktop_executor.get() is not None and bool(required_cad_extensions(original_task))
     allow_astra = "gpt-6-astra" in allowed and _task_warrants_astra(original_task, document_context)
     already = any(entry.get("model") == "gpt-6-astra" for entry in (journal or []))
-    strong = _needs_strong_model(original_task, document_context, False, user_id)
+    strong = _needs_strong_model(original_task, document_context, has_images, user_id)
     from app.services.desktop_context import desktop_executor
     from app.services.desktop_cad_completion import required_cad_extensions
     strong = strong or (desktop_executor.get() is not None and bool(required_cad_extensions(original_task)))
+    routine = not has_images and not _is_document_package_task(original_task) and routine_task(original_task, document_context)
+    routine_was_strong = routine and _legacy_needs_strong_model(original_task, document_context, has_images, user_id)
+    recovery = economy_enabled() and needs_recovery(journal)
     employees = []
     astra_used = already
     for item in plan.get("new_employees") or []:
@@ -290,14 +323,27 @@ def _clamp_employee_plan(
             # The research worker uses the shared search/read tools. The selected
             # backend controls whether web_search is our metasearch or hosted.
             model, extra = FALLBACK_EMPLOYEE_MODEL, {"web": True}
-        elif model in ("gpt-6-sol", "deepseek-v4-pro") and not strong:
-            model = FALLBACK_EMPLOYEE_MODEL
+        elif model in ("gpt-6-sol", "deepseek-v4-pro") and not strong and not recovery:
+            if model == PLANNER_MODEL and routine_was_strong:
+                if routine_employee(item, original_task, document_context) and ROUTINE_MODEL in allowed:
+                    model = ROUTINE_MODEL
+            else:
+                model = FALLBACK_EMPLOYEE_MODEL
         if model == "gpt-6-astra" and (not allow_astra or (astra_used and not cad_astra) or (cad_astra and any(e.get("model") == "gpt-6-astra" for e in employees))):
             model = _astra_fallback(allowed)
         elif model not in allowed:
             model = FALLBACK_EMPLOYEE_MODEL if FALLBACK_EMPLOYEE_MODEL in allowed else (allowed[0] if allowed else FALLBACK_EMPLOYEE_MODEL)
         if model == "gpt-6-astra":
             astra_used = True
+        if not cad_astra and routine_was_strong and routine_employee(item, original_task, document_context) and not recovery:
+            if model == PLANNER_MODEL and ROUTINE_MODEL in allowed:
+                model = ROUTINE_MODEL
+        if routine and not routine_was_strong and model == ROUTINE_MODEL and not recovery and FALLBACK_EMPLOYEE_MODEL in allowed:
+            model = FALLBACK_EMPLOYEE_MODEL
+        if routine and critical_task(str(item.get('role') or '') + ' ' + str(item.get('task') or '')) and model in {ROUTINE_MODEL,FALLBACK_EMPLOYEE_MODEL} and PLANNER_MODEL in allowed:
+            model = PLANNER_MODEL
+        if recovery and (model == ROUTINE_MODEL or (model == FALLBACK_EMPLOYEE_MODEL and re.search(r'(?i)исправ|repair|fix|валид|тест|компиля', str(item.get('task') or '')))) and PLANNER_MODEL in allowed:
+            model = PLANNER_MODEL
         employees.append({**item, "model": model, **extra})
     return {**plan, "new_employees": employees}
 
@@ -593,10 +639,11 @@ def _clamp_result(text: str) -> str:
     return text[:MAX_RESULT_CHARS_IN_PROMPT] + "... [обрезано]"
 
 
-def _parse_director_plan(response_text: str) -> Dict[str, Any]:
+def _parse_director_plan(response_text: str, *, strict: bool = False) -> Dict[str, Any]:
     """
-    Разбирает JSON-ответ дирижёра в раунде. Никогда не бросает исключение:
-    любая проблема с разбором трактуется как "задача завершена" — это
+    Разбирает JSON-ответ дирижёра в раунде. В режиме совместимости ошибка
+    трактуется как "задача завершена"; strict вызывает ValueError для
+    ограниченной повторной попытки планировщика. Это
     безопасный дефолт, который просто отдаёт накопленное в обычный ответ.
     """
     try:
@@ -610,6 +657,8 @@ def _parse_director_plan(response_text: str) -> Dict[str, Any]:
             data = json.loads(match.group(0))
 
         status = data.get("status")
+        if strict and status not in {"continue", "done", "clarify"}:
+            raise ValueError('Unknown plan status')
         raw_employees = data.get("new_employees", [])
 
         valid_employees = []
@@ -633,15 +682,23 @@ def _parse_director_plan(response_text: str) -> Dict[str, Any]:
             questions = normalize_questions(data.get("questions"))
             if questions:
                 return {"status": "clarify", "new_employees": [], "questions": questions}
+            if strict:
+                raise ValueError('No valid clarification questions')
             status = "done"
+        if strict and status == 'done' and valid_employees:
+            raise ValueError('Completed plan cannot contain unfinished employees')
 
         if status not in ("continue", "done"):
             status = "continue" if valid_employees else "done"
         if status == "continue" and not valid_employees:
+            if strict:
+                raise ValueError('No valid employees in continuing plan')
             status = "done"
 
         return {"status": status, "new_employees": valid_employees}
     except Exception as e:
+        if strict:
+            raise ValueError('Invalid orchestrator plan') from None
         logger.error(f"Director plan parsing failed: {e}. Treating as done.")
         return {"status": "done", "new_employees": []}
 
@@ -780,6 +837,7 @@ async def _update_status(status_msg: Any, text: str) -> None:
         logger.debug(f"Failed to edit director status message: {e}")
 
 
+@model_phase('employee')
 async def _execute_employee(
     employee: Dict[str, Any],
     round_num: int,
@@ -824,6 +882,7 @@ async def _execute_employee(
 
     base_prompt = (
         f"{date_note}{history_block}{doc_block}{skills_block}{prefs_note}\n\n{WORKFLOW_RULES}\n\n"
+        f"{ECONOMY_RULES if economy_enabled() else ''}\n"
         f"Твоя роль: {role}.\nТвоя задача: {task}\n\n"
         "Ты сотрудник Оркестратора. Делай только свою задачу. "
         "Если выше есть память или правило «как отвечать» – соблюдай язык, тон и формат "
@@ -895,6 +954,9 @@ async def _execute_employee(
     from app.services.desktop_context import desktop_executor, desktop_cwd
     from app.services.desktop_cad_completion import CadToolEvidence
     cad_evidence = CadToolEvidence(desktop_cwd.get())
+    from app.services.orchestrator_policy import validation, ValidationState
+    validation_state = ValidationState()
+    validation_token = validation.set(validation_state)
     cad_original_executor = desktop_executor.get()
     cad_executor_token = None
     if cad_original_executor is not None:
@@ -925,8 +987,13 @@ async def _execute_employee(
                 reasoning_effort="high" if cad_build and model == "gpt-6-astra" else None,
             )
 
+        provider_failed = answer.startswith('❌ Ошибка OpenAI:') or answer == 'Нет ответа от модели'
         return {
             "round": round_num, "role": role, "task": task, "model": model, "cad_phase": employee.get("cad_phase"), "cad_errors": cad_evidence.errors, "cad_resolved": sorted(cad_evidence.resolved), "status": "error" if cad_evidence.errors else "ok", "result": answer + ("\nCAD compiler diagnostics:\n" + "\n".join(cad_evidence.errors) if cad_evidence.errors else ""),
+            **({'status':'error'} if provider_failed else {}),
+            **({'validation_checks':dict(validation_state.checks)} if validation_state.checks else {}),
+            **({'status':'error', 'validation_failed':True,
+                'result':answer + '\nПроверка результата не пройдена: исправь ошибку теста/сборки и повтори только проверку, сначала проверь сохранённые изменения.'} if validation_state.failed else {}),
             "reasoning": reasoning, "search": search,
         }
     except Exception as e:
@@ -937,6 +1004,7 @@ async def _execute_employee(
         }
 
     finally:
+        validation.reset(validation_token)
         if cad_executor_token is not None:
             desktop_executor.reset(cad_executor_token)
 
@@ -988,7 +1056,8 @@ def _select_composer_model(
 def _pool_description(user_id: int, original_task: str = "", document_context: str = "") -> str:
     lines = [
         ("gpt-5-nano", "самая дешёвая, тривиальные микро-задачи и форматирование"),
-        ("gpt-6-luna", "дешёвая, простой анализ, черновики, короткие ответы"),
+        ("gpt-6-luna", "дешёвая, простой анализ, черновики, короткие ответы; короткое чтение, извлечение и фильтрация файлов"),
+        *([(ROUTINE_MODEL, "точные небольшие правки и ограниченные преобразования вместо Sol, когда Luna недостаточно; наличие файла само по себе не причина выбирать Terra")] if economy_enabled() else []),
         ("deepseek-v4-pro", "средняя-выше, сложные рассуждения и код"),
         ("gpt-6-sol", "дорогая, сложный код и анализ, только если Luna заметно недостаточно"),
         (
@@ -1003,6 +1072,7 @@ def _pool_description(user_id: int, original_task: str = "", document_context: s
     return "\n".join(f"{mid} — {desc}" for mid, desc in lines if mid in allowed)
 
 
+@model_phase('planner')
 async def _plan_round(
     original_task: str,
     journal: List[Dict[str, Any]],
@@ -1147,30 +1217,39 @@ async def _plan_round(
     from app.services.run_protocol import current_run
     if current_run.get():
         prompt += current_run.get().evidence_prompt()
+    if economy_enabled():
+        prompt += '\n\n' + ECONOMY_RULES
     messages = [
         {"role": "system", "content": "Ты Computer - оркестратор команды моделей. Отвечаешь только валидным JSON."},
         {"role": "user", "content": prompt + _desktop_work_instructions()},
     ]
 
     try:
-        response_text, _, _, _ = await get_chat_response(
-            messages,
-            model=_clamped_planner_model(
-                user_id,
-                first_round=not journal,
-                complex_task=_needs_strong_model(original_task, document_context_full, bool(image_names), user_id),
-            ),
-            user_id=user_id,
-            use_tools=False,
-            reasoning_effort="none",
-            use_skills=False,
-        )
+        recovery = economy_enabled() and needs_recovery(journal)
+        routine = not image_names and not _is_document_package_task(original_task) and routine_task(original_task, document_context_full) and _legacy_needs_strong_model(original_task, document_context_full, False, user_id)
+        planner_model = _clamped_planner_model(user_id, first_round=not journal,
+            complex_task=_needs_strong_model(original_task, document_context_full, bool(image_names), user_id), routine=routine, recovery=recovery)
+        async def request_plan(selected):
+            response_text, _, _, _ = await get_chat_response(messages, model=selected,
+                user_id=user_id, use_tools=False, use_skills=False,
+                reasoning_effort='medium' if selected == PLANNER_MODEL else 'low')
+            return _parse_director_plan(response_text, strict=True)
+        try:
+            parsed = await request_plan(planner_model)
+        except ValueError:
+            fallback = _clamped_planner_model(user_id, recovery=True)
+            if planner_model == fallback:
+                raise
+            # Planning has no tools: one stronger retry cannot replay an action.
+            logger.info('orchestrator_planner_recovery from=%s to=%s', planner_model, fallback)
+            parsed = await request_plan(fallback)
         return _clamp_employee_plan(
-            _parse_director_plan(response_text),
+            parsed,
             user_id,
             original_task,
             document_context_full,
             journal,
+            has_images=bool(image_names),
         )
     except Exception as e:
         logger.error(f"Director round planning failed: {e}. Treating as done.")
@@ -1199,6 +1278,7 @@ def _split_file_choice(answer: str, candidates: List[str] | None) -> Tuple[str, 
     return cleaned, (chosen or None)
 
 
+@model_phase('composer')
 async def _compose_answer(
     original_task: str,
     journal: List[Dict[str, Any]],
@@ -1311,7 +1391,7 @@ async def _compose_answer(
         except Exception:
             pass
         composer_effort = "medium" if composer_model == QUALITY_COMPOSER_MODEL and document_context else (
-            "low" if composer_model == QUALITY_COMPOSER_MODEL else "none"
+            "low"
         )
         answer, _, reasoning, _ = await get_chat_response(
             messages,
@@ -1330,6 +1410,7 @@ async def _compose_answer(
         return "\n\n".join(e["result"] for e in ok) or "Не удалось собрать ответ.", ""
 
 
+@model_phase('direct')
 async def _answer_directly(
     messages: List[Dict[str, Any]],
     user_id: int,
@@ -1517,6 +1598,7 @@ async def _run_package_one_by_one(
 
 
 @search_turn
+@trace_director
 async def get_director_response(
     messages: List[Dict[str, Any]],
     user_text: str,
@@ -1559,21 +1641,8 @@ async def _run_director(
     # BitClient explicit CAD intent and build opportunity
     from app.services.desktop_cad_completion import cad_task_from_history
     cad_user_task = cad_task_from_history(user_text, messages)
-    from app.services.desktop_context import desktop_executor, desktop_cwd, local_skills_instructions
-
-    if desktop_executor.get() is not None:
-        user_text = (
-            f"{user_text}\n\n[Среда BitClient: Windows, PowerShell. Рабочая папка: {desktop_cwd.get()}. "
-            "Все workspace_* выполняются ЛОКАЛЬНО в этой папке, а не в контейнере. "
-            "Для git/npm/сборки/тестов вызывай desktop_run_command. Файлы сразу доступны пользователю на диске. "
-            "Не утверждай, что работаешь в Linux, не используй /workspace. "
-            "Сначала исследуй проект, затем внеси изменения и проверь результат. "
-            "Запрашивай уточнение, если без него невозможно выполнить задачу. "
-            "Не предлагай другой режим: в BitClient используется только Оркестратор.]"
-        )
+    from app.services.desktop_context import desktop_executor
     wants_file = _wants_file(user_text)
-    if desktop_executor.get() is not None:
-        user_text += local_skills_instructions()
     forced_build = False
     # BitClient native CAD completion guard
     from app.services.desktop_cad_completion import required_cad_extensions, has_cad_deliverable, cad_builder_employee

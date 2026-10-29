@@ -71,7 +71,7 @@ def test_runtime_context_puts_skills_before_last_user_not_at_the_top():
 
 def test_sol_default_reasoning_is_medium_and_dial_still_works():
     assert _get_reasoning_config("gpt-6-sol") == {"effort": "medium"}
-    assert _get_reasoning_config("gpt-6-sol", "none") == {"effort": "medium"}
+    assert _get_reasoning_config("gpt-6-sol", "none") == {"effort": "low"}
     assert _get_reasoning_config("gpt-6-sol", "high") == {"effort": "high"}
     assert _get_reasoning_config("gpt-6-sol", "xhigh") == {"effort": "xhigh"}
     assert _get_reasoning_config("gpt-6-astra") == {"effort": "high"}
