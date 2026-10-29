@@ -81,7 +81,7 @@ async def get_user(
         "role": user.role,
         "bot_user_id": user.bot_user_id,
         "created_at": user.created_at.isoformat() if user.created_at else None,
-        "subscription": await subscription_payload_for_bot(user.bot_user_id),
+        "subscription": await subscription_payload_for_bot(user.bot_user_id, user.email),
     }
 
 

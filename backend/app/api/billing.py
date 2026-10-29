@@ -7,7 +7,7 @@ from app.billing.quota import usage_view
 from app.core.repository import repo
 
 
-async def subscription_view_from_sub(sub: dict, *, day=None, month=None) -> dict:
+async def subscription_view_from_sub(sub: dict, *, day=None, month=None, include_spend: bool | None = None) -> dict:
     view = usage_view(sub)
     view.update({
         "daily_nano_mini": sub.get("daily_nano_mini", 0),
@@ -18,7 +18,8 @@ async def subscription_view_from_sub(sub: dict, *, day=None, month=None) -> dict
         "last_reset_date": sub.get("last_reset_date", ""),
         "active_promocode": sub.get("active_promocode"),
     })
-    if view.get("unlimited"):
+    show_spend = view.get("unlimited") if include_spend is None else include_spend
+    if show_spend:
         view["spend"] = {
             "currency": "USD",
             "day": spend_summary(day or {}),
@@ -37,16 +38,19 @@ async def subscription_payload(user_id: str) -> dict:
     return await subscription_view_from_sub(sub, day=day, month=month)
 
 
-async def subscription_payload_for_bot(bot_id: int) -> dict:
+async def subscription_payload_for_bot(bot_id: int, email: str | None = None) -> dict:
     import asyncio
 
     sub = await asyncio.to_thread(repo.billing.get_subscription, bot_id)
-    day = month = None
-    from app.billing.plans import plan_for
-    if plan_for(sub.get("tier")).get("unlimited"):
+    # Admin detail shows the same dollars as /tokencost for every account,
+    # including people who are not on the unlimited creator seat.
+    if email:
+        day = await repo.get_day_usage(email)
+        month = await repo.get_month_usage(email)
+    else:
         day = await asyncio.to_thread(repo.billing.get_day_usage, bot_id)
         month = await asyncio.to_thread(repo.billing.get_month_usage, bot_id)
-    return await subscription_view_from_sub(sub, day=day, month=month)
+    return await subscription_view_from_sub(sub, day=day, month=month, include_spend=True)
 
 router = APIRouter()
 

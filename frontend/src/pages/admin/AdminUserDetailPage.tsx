@@ -177,12 +177,9 @@ export default function AdminUserDetailPage() {
             </Stack>
             <StatRow label="Тариф" value={sub.name || TIER_LABELS[sub.tier] || sub.tier || 'free'} />
             <StatRow label="Истекает" value={formatExpiry(sub.expires_at)} />
-            {sub.unlimited ? (
-              <>
-                <StatRow label="Сегодня" value={formatUsd(sub.spend?.day?.usd)} />
-                <StatRow label="Месяц" value={formatUsd(sub.spend?.month?.usd)} />
-              </>
-            ) : (
+            <StatRow label="Сегодня" value={formatUsd(sub.spend?.day?.usd)} />
+            <StatRow label="Месяц" value={formatUsd(sub.spend?.month?.usd)} />
+            {!sub.unlimited && (
               <>
                 <StatRow label="Общий запас" value={`${(sub.chat?.used ?? 0).toLocaleString('ru-RU')} / ${(sub.chat?.limit ?? 0).toLocaleString('ru-RU')}`} />
                 <StatRow

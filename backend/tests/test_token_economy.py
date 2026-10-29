@@ -127,3 +127,42 @@ def test_cost_table_uses_each_models_cached_rate():
     assert round(model_cost_usd("kimi-k2.6", one_m, 0), 4) == 0.95
     assert round(model_cost_usd("kimi-k2.6", one_m, 0, cached_input_tokens=one_m), 4) == 0.16
     assert round(model_cost_usd("gpt-6-luna", 0, one_m), 4) == 0.50
+    assert round(model_cost_usd("gpt-6.1-sol", one_m, 0), 4) == 2.0
+    assert round(model_cost_usd("gpt-6.1-sol", one_m, 0, cached_input_tokens=one_m), 4) == 0.10
+
+
+def test_bot_tokencost_uses_the_same_rates():
+    import importlib.util
+    from pathlib import Path
+
+    import pytest
+
+    from app.billing.costs import MODEL_USD, model_cost_usd
+    from app.core.repository import ConversationRepository
+
+    bot = Path(__file__).resolve().parents[3] / "botneiro" / "web_usage.py"
+    if not bot.exists():
+        pytest.skip("bot repo is not beside bitthink")
+    spec = importlib.util.spec_from_file_location("bot_web_usage", bot)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    email = "New.User@Example.com"
+    assert module.email_usage_id(email) == ConversationRepository._web_user_id_to_bot_id(email)
+    shapes = (
+        {"input": 1_000_000},
+        {"output": 1_000_000},
+        {"input": 1_000_000, "cached": 400_000},
+        {"images": 3},
+        {"input": 10, "output": 5, "cached": 100},
+    )
+    for model in list(MODEL_USD) + ["not-a-model"]:
+        for counts in shapes:
+            cabinet = model_cost_usd(
+                model,
+                counts.get("input", 0),
+                counts.get("output", 0),
+                counts.get("images", 0),
+                cached_input_tokens=counts.get("cached", 0),
+            )
+            report = module.web_model_cost_usd(model, counts)
+            assert abs(cabinet - report) < 1e-9, (model, counts, cabinet, report)

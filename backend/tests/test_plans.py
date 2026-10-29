@@ -241,3 +241,30 @@ def test_spend_summary_uses_vendor_rates():
     assert abs(summary["usd"] - 0.33) < 1e-9
     assert summary["models"][0]["model"] == "gpt-5.6-luna"
     assert abs(model_cost_usd("gpt-5.6-luna", 1_000_000, 0, cached_input_tokens=1_000_000) - 0.025) < 1e-9
+    assert abs(model_cost_usd("gpt-6.1-sol", 1_000_000, 0) - 2.0) < 1e-9
+
+
+def test_month_spend_includes_usage_under_email_hash_and_stored_bot_id():
+    """A new website user stays visible when usage is keyed by the email hash
+    and users.bot_user_id is a different number. /tokencost uses the same union."""
+    import asyncio
+    import uuid
+
+    from app.billing.costs import spend_summary
+    from app.core.repository import repo
+    from app.db.engine import SyncSessionLocal
+    from app.db.models import User
+
+    email = f"spend-{uuid.uuid4().hex[:10]}@example.test"
+    hashed = repo._bot_id(email)
+    stored = hashed + 91
+    with SyncSessionLocal() as session:
+        session.add(User(email=email, password_hash="x", role="user", bot_user_id=stored, first_name="New"))
+        session.commit()
+    repo._manager.track_tokens(hashed, "gpt-6-sol", 1_000_000, 0)
+    repo._manager.track_tokens(stored, "gpt-6-luna", 2_000_000, 0)
+    usage = asyncio.run(repo.get_month_usage(email))
+    assert usage["gpt-6-sol"]["input"] == 1_000_000
+    assert usage["gpt-6-luna"]["input"] == 2_000_000
+    assert abs(spend_summary(usage)["usd"] - 2.20) < 1e-9
+    assert repo.account_usage_ids(email) == sorted({hashed, stored})

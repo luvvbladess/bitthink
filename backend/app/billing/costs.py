@@ -14,6 +14,9 @@ MODEL_USD: dict[str, dict[str, float]] = {
     "gpt-5.6-sol": {"input": 1.75, "output": 14.00},
     "gpt-5.6-sol-pro": {"input": 1.75, "output": 14.00},
     "gpt-6-sol": {"input": 2.00, "output": 10.00, "cached": 0.10},
+    # API id of Sol. Usage is normally stored as gpt-6-sol; this alias keeps a
+    # row written under the provider name on the same list price.
+    "gpt-6.1-sol": {"input": 2.00, "output": 10.00, "cached": 0.10},
     "gpt-6.1-terra": {"input": 1.00, "output": 5.00, "cached": 0.05},
     "gpt-6-astra": {"input": 10.00, "output": 50.00, "cached": 1.00},
     "kimi-k2.6": {"input": 0.95, "output": 4.00, "cached": 0.16},
