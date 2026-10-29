@@ -11,11 +11,14 @@ STACKS = {
 }
 _CREATE = re.compile(r'(?i)созда[йт]|сдела[йт]|собери|собрать|разработ|реализ|построй|напиши|build|create|develop|implement')
 _PRODUCT = re.compile(r'(?i)сайт|лендинг|приложен|веб.?сервис|интернет.?магазин|блог|личный кабинет|дашборд|\bбот[а-я]*\b|\bwebsite\b|\blanding\b|\bapp\b|\bapplication\b|\bsaas\b|\bweb ?app\b|\bbot\b|\bdashboard\b|\bblog\b|\bapi\s+service\b')
+_API_SERVICE = re.compile(r'(?i)\bapi[\s\-\u2010-\u2015]*(?:сервис[а-яё]*|services?)\b')
 _EXPLAIN = re.compile(r'(?i)^\s*(объясни|расскажи|как\b|почему\b|сколько\b|хочу (?:узнать|понять)|explain\b|how\b|tell me)')
 
 
 def is_product_request(text):
-    return bool(not _EXPLAIN.search(text or '') and _CREATE.search(text or '') and _PRODUCT.search(text or ''))
+    text = text or ''
+    return bool(not _EXPLAIN.search(text) and _CREATE.search(text)
+                and (_PRODUCT.search(text) or _API_SERVICE.search(text)))
 
 
 def select_stack(brief):
@@ -26,7 +29,7 @@ def select_stack(brief):
                          ('node', r'node\.?js|express'), ('static', r'чист\w* html|без фреймворк|vanilla')]:
         if re.search(pattern, text):
             return key
-    if re.search(r'\bбот|\bbot\b|api.?сервис|обработк\w* данных', text):
+    if _API_SERVICE.search(text) or re.search(r'\bбот|\bbot\b|api.?сервис|обработк\w* данных', text):
         return 'python'
     if re.search(r'магазин|каталог|\bseo\b|маркетплейс|\bsaas\b', text):
         return 'next'
