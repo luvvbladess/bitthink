@@ -208,6 +208,9 @@ async def model_call(client: Any, request: dict, *, model: str, user_id: int | N
             raise
         request[cap_key] = cap
     create = client.responses.create if responses else client.chat.completions.create
+    started = time.monotonic()
+    usage = None
+    completed = False
     try:
         async def invoke():
             result = await create(**request)
@@ -219,6 +222,7 @@ async def model_call(client: Any, request: dict, *, model: str, user_id: int | N
                 if hasattr(result, "close"):
                     await result.close()
         result = await asyncio.wait_for(invoke(), timeout=timeout)
+        completed = True
         usage = result if usage_is_result else getattr(result, "usage", None)
         if usage:
             counts = token_counts(usage)
@@ -234,6 +238,10 @@ async def model_call(client: Any, request: dict, *, model: str, user_id: int | N
             reservation_id = None
         return result
     finally:
-        if reservation_id:
-            # Includes cancellation and provider failure. Refund only this call's hold.
-            await asyncio.shield(asyncio.to_thread(settle, user_id, reservation_id, 0))
+        try:
+            if reservation_id:
+                # Includes cancellation and provider failure. Refund only this call's hold.
+                await asyncio.shield(asyncio.to_thread(settle, user_id, reservation_id, 0))
+        finally:
+            from app.services.orchestrator_metrics import observe
+            observe(model, usage, time.monotonic()-started, completed)

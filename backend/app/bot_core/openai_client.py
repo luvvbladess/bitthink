@@ -106,10 +106,14 @@ def _get_reasoning_config(model: str, user_effort: Optional[str] = None) -> dict
     """Возвращает конфиг reasoning в зависимости от модели и пользовательской настройки.
 
     user_effort, если задан, переопределяет дефолт модели.
-    API Sol и Luna принимают none…max. В продукте max остаётся у Astra,
+    Luna и Terra поддерживают none; у Sol 6.1 минимальный режим low. max остаётся у Astra,
     xhigh — у Sol и Astra, остальным понижается до high.
     """
     effort = (user_effort or "").strip().lower()
+    if effort == "none" and model in {"gpt-6-luna", "gpt-6.1-terra"}:
+        return {"effort": "none"}
+    if effort == "none" and model == "gpt-6-sol":
+        return {"effort": "low"}  # Sol 6.1 has no API `none` setting.
     if effort in {"", "none"}:
         effort = ""
     if effort:
