@@ -1192,6 +1192,16 @@ async def _run_budgeted_computer_tool(name: str, args: dict[str, Any], user_id: 
         if name == 'product_lifecycle':
             from app.services.autonomy import observe_product
             observe_product(result)
+            try:
+                data = json.loads(result)
+                check = data.get('last_check') or {}
+                if check.get('passed') is False:
+                    from app.services.improvement_journal import capture_error
+                    await asyncio.to_thread(capture_error, 'product.' + str(args.get('action')), 'ValidationFailed',
+                        account=user_id, code=check.get('exit_code'),
+                        event_key='product:' + str(data.get('product_id')) + ':' + str(data.get('attempts')))
+            except (ValueError, TypeError):
+                pass
         from app.services.orchestrator_policy import observe_validation
         observe_validation(name, args, result)
         if action_key:
@@ -1210,6 +1220,9 @@ async def _run_budgeted_computer_tool(name: str, args: dict[str, Any], user_id: 
                 result = EngineeringResult(clipped,image_data_url=result.image_data_url,files=result.files) if isinstance(result,EngineeringResult) else clipped
         return result
     except BaseException as exc:
+        if not isinstance(exc, asyncio.CancelledError):
+            from app.services.improvement_journal import capture_error
+            await asyncio.to_thread(capture_error, 'tool.' + name, type(exc).__name__, account=user_id)
         if record:
             record.observe(name, 'Ошибка выполнения инструмента.')
             if read_key and not isinstance(exc, asyncio.CancelledError):
@@ -1220,6 +1233,9 @@ async def _run_budgeted_computer_tool(name: str, args: dict[str, Any], user_id: 
 
 
 async def _run_computer_tool(name: str, args: dict[str, Any], user_id: int | None) -> str:
+    if name.startswith('google_') or name in {'gmail_list', 'gmail_read', 'gmail_attachments', 'gmail_send', 'ssh_exec', 'http_request', 'site_login'}:
+        from app.services.improvement_journal import exclude_current_conversation
+        await asyncio.to_thread(exclude_current_conversation)
     if name == 'autonomy':
         if not user_id:
             return 'Нужна авторизация.'

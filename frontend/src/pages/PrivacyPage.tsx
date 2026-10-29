@@ -28,6 +28,13 @@ const SECTIONS: { title: string; body: string[] }[] = [
     ],
   },
   {
+    title: 'Улучшение качества',
+    body: [
+      'Ежедневный автоматический разбор кратких фрагментов обычных диалогов помогает находить ошибки и пожелания к продукту. Перед анализом скрываются известные секреты, адреса почты и номера телефонов. Администратору доступны короткие сводки проблем и история исправлений.',
+      'Вложения не читаются для этого разбора. Беседы с использованием личных интеграций и аккаунты с сохранёнными подключениями исключаются. Эти сводки не используются для обучения весов моделей.',
+    ],
+  },
+  {
     title: 'Удаление',
     body: ['Чаты, файлы и доступы можно удалить в приложении. Удалённое не восстанавливается.'],
   },
@@ -43,7 +50,7 @@ export default function PrivacyPage() {
       <Typography component="h1" sx={{ fontSize: '2rem', fontWeight: 700, letterSpacing: '-0.03em', mb: 1 }}>
         Политика конфиденциальности
       </Typography>
-      <Typography sx={{ color: 'text.secondary', mb: 4 }}>{BRAND_NAME} · обновлено 27 сентября 2026</Typography>
+      <Typography sx={{ color: 'text.secondary', mb: 4 }}>{BRAND_NAME} · обновлено 29 октября 2026</Typography>
       {SECTIONS.map((section) => (
         <Box key={section.title} component="section" sx={{ mb: 4 }}>
           <Typography component="h2" sx={{ fontSize: '1.2rem', fontWeight: 600, mb: 1.25 }}>

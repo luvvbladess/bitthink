@@ -935,6 +935,9 @@ async def get_chat_response(
 
     except Exception as e:
         err = str(e)
+        from app.services.improvement_journal import capture_error
+        await asyncio.to_thread(capture_error, 'provider.openai', type(e).__name__, account=user_id,
+                                code=getattr(e, 'status_code', None))
         logger.error(f"OpenAI Responses API error: {e}")
         requested = (model or DEFAULT_MODEL)
         global _sol61_unavailable

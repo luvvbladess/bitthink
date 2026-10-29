@@ -25,7 +25,9 @@ def run(argv, *, cwd=None, input=None, timeout=180, check=True):
     result = subprocess.run(argv, cwd=cwd, input=input, text=True, encoding='utf-8',
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
     if check and result.returncode:
-        raise RuntimeError(f'{argv[:4]} failed ({result.returncode}): {result.stdout[-3000:]}')
+        error = RuntimeError(f'{argv[:4]} failed ({result.returncode}): {result.stdout[-3000:]}')
+        error.output = result.stdout
+        raise error
     return result
 
 
@@ -53,24 +55,28 @@ with SyncSessionLocal() as db:
     return int(result.strip().splitlines()[-1])
 
 
-def candidate_run(image, command, *, network='none', env=None, timeout=180, root=None):
+def candidate_run(image, command, *, network='none', env=None, timeout=180, root=None, check=True):
     name = 'bt-kaizen-check-' + uuid.uuid4().hex[:12]
     argv = ['docker', 'run', '--rm', '--name', name, '--network', network, '--memory', '1536m', '--cpus', '1.5',
             '--pids-limit', '256', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
             '--tmpfs', '/tmp:rw,size=256m']
     if root is not None:
+        # Offline fixtures still exercise the URL guard against public addresses.
+        # These entries do not grant internet access to the internal network.
+        for host in ('example.com', 'www.ozon.ru', 'www.wildberries.ru', 'www.chipdip.ru'):
+            argv += ['--add-host', host + ':93.184.216.34']
         argv += ['-v', str(root / 'backend') + ':/backend:ro', '-v', str(root / 'sandbox') + ':/sandbox:ro', '-v', str(root / 'scripts') + ':/scripts:ro']
     else:
         argv += ['--read-only']
     for key, value in (env or {}).items():
         argv += ['-e', key + '=' + value]
     try:
-        return run([*argv, image, *command], timeout=timeout)
+        return run([*argv, image, *command], timeout=timeout, check=check)
     finally:
         run(['docker', 'rm', '-f', name], check=False)
 
 
-def cycle(root, apply=False, uid=None):
+def cycle(root, apply=False, uid=None, repair=True):
     root = root.resolve()
     directory = root / 'data/autonomy'
     directory.mkdir(parents=True, exist_ok=True)
@@ -92,6 +98,9 @@ def cycle(root, apply=False, uid=None):
         state['benchmark_total'] = baseline['total']
         if baseline['passed'] == baseline['total']:
             state.update(status='healthy', reason='Все контрольные сценарии пройдены; изменение кода без измеримой пользы не выполнялось.')
+            return state
+        if not repair:
+            state.update(status='deferred', reason='Сегодня уже обрабатывалось исправление по журналу.')
             return state
         if activity():
             state.update(status='deferred', reason='Есть активные пользовательские задачи.')
@@ -158,7 +167,7 @@ data=json.load(sys.stdin); validate_proposal(data['source'], data['proposal']); 
         env = {'DATABASE_URL': 'postgresql+asyncpg://kaizen:isolated-only@db:5432/kaizen',
                'SECRET_KEY': 'isolated-kaizen-checks', 'OPENAI_API_KEY': 'test-key',
                'DEEPSEEK_API_KEY': 'test-key', 'KIMI_API_KEY': 'test-key', 'MPLBACKEND': 'Agg',
-               'PYTHONDONTWRITEBYTECODE': '1', 'DATA_DIR': '/tmp/data', 'UPLOAD_DIR': '/tmp/uploads'}
+               'PYTHONDONTWRITEBYTECODE': '1', 'DATA_DIR': '/tmp/data', 'UPLOAD_DIR': '/app/uploads'}
         checks = [
             ['python', '-m', 'alembic', 'upgrade', 'head'],
             ['python', '-m', 'pytest', 'tests', '-p', 'no:cacheprovider'],
@@ -166,7 +175,11 @@ data=json.load(sys.stdin); validate_proposal(data['source'], data['proposal']); 
             ['python', '-m', 'evals.product_journeys', '--fixtures', '--report', '/tmp/journeys.json'],
         ]
         for index, command in enumerate(checks):
-            result = candidate_run(candidate_image, command, network=test_network, env=env, timeout=900, root=root)
+            try:
+                result = candidate_run(candidate_image, command, network=test_network, env=env, timeout=900, root=root)
+            except RuntimeError as exc:
+                (candidate / f'check-{index}.log').write_text(getattr(exc, 'output', str(exc)), encoding='utf-8')
+                raise
             (candidate / f'check-{index}.log').write_text(result.stdout, encoding='utf-8')
         state['checks_passed'] = True
         if not apply:
@@ -237,6 +250,7 @@ def main():
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument('--apply', action='store_true')
     parser.add_argument('--user-id', type=int)
+    parser.add_argument('--skip-feedback', action='store_true', help='Run infrastructure/stack checks only')
     args = parser.parse_args()
     def terminate(signum, frame):
         raise KeyboardInterrupt('Maintenance stopped')
@@ -249,7 +263,18 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return
-        print(json.dumps(cycle(args.root, args.apply, args.user_id), ensure_ascii=False))
+        import sys
+        feedback = None
+        if not args.skip_feedback:
+            from feedback_maintain import cycle as feedback_cycle
+            feedback = feedback_cycle(sys.modules[__name__], args.root, args.apply, args.user_id)
+        result = cycle(args.root, args.apply, args.user_id, repair=not bool(feedback and feedback.get('issue_id')))
+        if feedback is not None:
+            result['feedback'] = feedback
+            if feedback.get('status') == 'error':
+                result['status'] = 'attention'
+            write_json(directory / 'maintenance-status.json', result)
+        print(json.dumps(result, ensure_ascii=False))
 
 
 if __name__ == '__main__':

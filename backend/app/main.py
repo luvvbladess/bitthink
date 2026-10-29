@@ -61,6 +61,21 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json" if settings.DEBUG else None,
     )
 
+    @app.middleware('http')
+    async def journal_server_errors(request, call_next):
+        import asyncio
+        from app.services.improvement_journal import capture_error
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            name = getattr(request.scope.get('route'), 'name', 'unknown')
+            await asyncio.to_thread(capture_error, 'api.' + name, type(exc).__name__, code=500)
+            raise
+        if response.status_code >= 500:
+            name = getattr(request.scope.get('route'), 'name', 'unknown')
+            await asyncio.to_thread(capture_error, 'api.' + name, 'ServerResponse', code=response.status_code)
+        return response
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.CORS_ORIGINS,
