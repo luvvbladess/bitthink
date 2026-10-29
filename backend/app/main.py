@@ -15,6 +15,7 @@ from app.db.engine import sync_engine
 from app.api import marketplace_relay, desktop, computer
 from app.api import projects
 from app.api import diagnostics
+from app.api import autonomy
 
 
 def _validate_schema() -> None:
@@ -69,6 +70,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(admin.router, tags=["admin"])
+    app.include_router(autonomy.router)
     app.include_router(auth.router, prefix="/auth", tags=["auth"])
     app.include_router(conversations.router, prefix="/conversations", tags=["conversations"])
     app.include_router(share.router, prefix="/share", tags=["share"])

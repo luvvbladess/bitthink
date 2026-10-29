@@ -427,13 +427,13 @@ def confine_user_filesystem(user_id: int) -> None:
         os.close(ruleset)
 
 
-def _prepare_child(user_id: int, cpu_seconds: int, memory: bool) -> None:
-    _apply_limits(cpu_seconds, memory)
+def _prepare_child(user_id: int, cpu_seconds: int, memory: bool, process_limit: int = 64) -> None:
+    _apply_limits(cpu_seconds, memory, process_limit)
     if os.environ.get("SANDBOX_MODE") == "1" or os.environ.get("WORKSPACE_LANDLOCK") == "1":
         confine_user_filesystem(user_id)
 
 
-def _apply_limits(cpu_seconds: int, memory: bool = True) -> None:
+def _apply_limits(cpu_seconds: int, memory: bool = True, process_limit: int = 64) -> None:
     try:
         import resource
     except ImportError:
@@ -445,8 +445,10 @@ def _apply_limits(cpu_seconds: int, memory: bool = True) -> None:
             resource.setrlimit(resource.RLIMIT_AS, (RUN_MEMORY_BYTES, RUN_MEMORY_BYTES))
         except (ValueError, resource.error):
             pass
-    resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
-    resource.setrlimit(resource.RLIMIT_NPROC, (64, 64))
+    processes = max(64, min(192, int(process_limit)))
+    handles = 1024 if processes > 64 else 256
+    resource.setrlimit(resource.RLIMIT_NOFILE, (handles, handles))
+    resource.setrlimit(resource.RLIMIT_NPROC, (processes, processes))
 
 
 def _venv_python(root: Path) -> Path:
@@ -926,6 +928,12 @@ def glob_paths(user_id: int, pattern: str, path: str = ".") -> str:
 
 def dispatch(user_id: int, op: str, args: dict[str, Any]) -> str:
     op = (op or "").strip().lower()
+    if op == 'product':
+        try:
+            from product_factory import dispatch as product_dispatch
+        except ImportError:
+            from app.services.product_factory import dispatch as product_dispatch
+        return product_dispatch(user_id, args)
     path = str(args.get("path") or ".")
     if op == "diagram":
         try:

@@ -449,6 +449,7 @@ async def get_chat_response(
     max_tool_loops: Optional[int] = None,
     chat_tools: bool = False,
     allowed_tools: Optional[frozenset[str]] = None,
+    stop_after_tool: Optional[Any] = None,
 ) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
     """
     Получает ответ от OpenAI через Responses API, потоково (stream=True).
@@ -906,6 +907,13 @@ async def get_chat_response(
                     names = {file.get('filename') for file in tool_result.files}
                     generated_files[:] = [file for file in generated_files if file.get('filename') not in names]
                     generated_files.extend(tool_result.files)
+                if stop_after_tool is not None and stop_after_tool(fc_name, tool_result):
+                    # Controller-owned acceptance: skip later writes in the batch.
+                    terminal = 'Проверки продукта пройдены; упаковку выполняет контроллер.'
+                    await _settle_model_usage(user_id, use_model, total_input_tokens, total_output_tokens,
+                        total_cached_tokens, total_cache_write_tokens, terminal, generated_files,
+                        usage_already_tracked=True)
+                    return terminal, generated_files, '\n\n'.join(reasoning_parts), search_results
 
             current_input = next_input
 

@@ -16,6 +16,7 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
 from app.services.run_protocol import WORKFLOW_RULES
+from app.services.autonomy import RULES as AUTONOMY_RULES
 
 logger = logging.getLogger(__name__)
 
@@ -938,7 +939,7 @@ async def _execute_employee(
         pass
 
     employee_messages = [
-        {"role": "system", "content": _OUTPUT_RULES},
+        {"role": "system", "content": _OUTPUT_RULES + '\n\n' + AUTONOMY_RULES},
         {"role": "user", "content": prompt + _desktop_work_instructions()},
     ]
     try:
@@ -978,18 +979,24 @@ async def _execute_employee(
             from app.services.desktop_cad_completion import required_cad_extensions
             cad_build = desktop_executor.get() is not None and bool(required_cad_extensions(task))
             from app.services.desktop_cad_completion import cad_employee_phase
-            loops = (60 if cad_employee_phase(employee)=="gui_geometry" else 30) if cad_build else PACKAGE_EMPLOYEE_TOOL_LOOPS if builds_file else None
+            loops = 40 if employee.get('product_phase') else (60 if cad_employee_phase(employee)=="gui_geometry" else 30) if cad_build else PACKAGE_EMPLOYEE_TOOL_LOOPS if builds_file else None
             if employee.get('web') and not cad_build and not builds_file:
                 loops = 6  # Search, skill, selective read/retry, then synthesis.
+            def product_accepted(name, result):
+                from app.services.autonomy import product_evidence
+                evidence = product_evidence.get() or {}
+                return name == 'product_lifecycle' and evidence.get('product_id') == employee.get('product_id') and bool(evidence.get('ready'))
             answer, _, reasoning, search = await get_chat_response(
                 employee_messages, model=model, user_id=user_id, use_tools=True, max_tool_loops=loops,
                 force_web_search=bool(employee.get("web", legacy_search)),
                 reasoning_effort="high" if cad_build and model == "gpt-6-astra" else None,
+                **({'stop_after_tool': product_accepted} if employee.get('product_phase') == 'build' and employee.get('product_id') else {}),
             )
 
         provider_failed = answer.startswith('❌ Ошибка OpenAI:') or answer == 'Нет ответа от модели'
         return {
             "round": round_num, "role": role, "task": task, "model": model, "cad_phase": employee.get("cad_phase"), "cad_errors": cad_evidence.errors, "cad_resolved": sorted(cad_evidence.resolved), "status": "error" if cad_evidence.errors else "ok", "result": answer + ("\nCAD compiler diagnostics:\n" + "\n".join(cad_evidence.errors) if cad_evidence.errors else ""),
+            **({'product_phase': employee['product_phase']} if employee.get('product_phase') else {}),
             **({'status':'error'} if provider_failed else {}),
             **({'validation_checks':dict(validation_state.checks)} if validation_state.checks else {}),
             **({'status':'error', 'validation_failed':True,
@@ -1220,7 +1227,7 @@ async def _plan_round(
     if economy_enabled():
         prompt += '\n\n' + ECONOMY_RULES
     messages = [
-        {"role": "system", "content": "Ты Computer - оркестратор команды моделей. Отвечаешь только валидным JSON."},
+        {"role": "system", "content": "Ты Computer - оркестратор команды моделей. Отвечаешь только валидным JSON.\n\n" + AUTONOMY_RULES},
         {"role": "user", "content": prompt + _desktop_work_instructions()},
     ]
 
@@ -1375,7 +1382,7 @@ async def _compose_answer(
             "content": (
                 "Ты тот же ассистент, что и в остальных режимах чата. "
                 "Отвечаешь пользователю, а не пишешь документ.\n\n"
-                f"{_OUTPUT_RULES}"
+                f"{_OUTPUT_RULES}\n\n{AUTONOMY_RULES}"
             ),
         },
         {"role": "user", "content": prompt + _desktop_work_instructions()},
@@ -1429,7 +1436,7 @@ async def _answer_directly(
         "Не задавай пользователю вопросы с вариантами и не пиши «выберите 1/2/3». "
         "Если без выбора нельзя начать, это должен был сделать оркестратор через status=clarify. "
         "Действуй по уже сказанному.\n"
-        f"{_OUTPUT_RULES}\n{WORKFLOW_RULES}"
+        f"{_OUTPUT_RULES}\n{WORKFLOW_RULES}\n\n{AUTONOMY_RULES}"
     )
     chat = [{"role": "system", "content": system + _desktop_work_instructions()}, *messages]
     answer, _, reasoning, search = await get_chat_response(
@@ -1612,6 +1619,8 @@ async def get_director_response(
     from app.services.server_search import orchestrator_search
     search_token = orchestrator_search.set(True)
     token = billing_pool.set("computer")
+    from app.services.autonomy import product_evidence
+    product_token = product_evidence.set({})
     record_token = current_run.set(RunRecord(requires_sources=_is_shopping_task(user_text, user_id)))
     try:
         answer, files, reasoning, sources = await _run_director(messages, user_text, user_id, status_msg)
@@ -1623,6 +1632,7 @@ async def get_director_response(
                     current_run.get().timings)
         return answer, files, reasoning, current_run.get().enrich_sources(sources or [])
     finally:
+        product_evidence.reset(product_token)
         current_run.reset(record_token)
         billing_pool.reset(token)
         orchestrator_search.reset(search_token)
@@ -1662,10 +1672,20 @@ async def _run_director(
 
     from app.services.task_checkpoints import resumed_journal, save as save_checkpoint
     journal: List[Dict[str, Any]] = list(resumed_journal.get() or [])
+    from app.services.product_strategy import is_product_request
+    from app.services.autonomy import product_evidence, product_employee, verified_product
+    product_build = desktop_executor.get() is None and is_product_request(user_text)
+    product_state = product_evidence.get()
+    if product_state is None:
+        product_state = {}
+    if product_build:
+        for entry in journal:
+            if entry.get('product_id'):
+                product_state['product_id'] = entry['product_id']
     round_num = 0
     turn_images = packed_has_images(messages) or _turn_has_images(user_id)
     has_images = wants_photo_research(user_text, turn_images)
-    light = not cad_extensions and _is_light_task(user_text, document_context, turn_images, user_id)
+    light = not product_build and not cad_extensions and _is_light_task(user_text, document_context, turn_images, user_id)
     from marketplace_verification import single_store_price_lookup
     price_lookup = not cad_extensions and not wants_file and single_store_price_lookup(user_text)
     light = light or price_lookup
@@ -1682,9 +1702,38 @@ async def _run_director(
 
     while round_num < MAX_ROUNDS and len(journal) < MAX_EMPLOYEES:
         from app.services.task_checkpoints import consume_steering
-        user_text += await consume_steering()
+        steering = await consume_steering()
+        user_text += steering
+        if product_build and steering and product_state.get('product_id'):
+            from app.services.sandbox_client import run_workspace_tool
+            revision = json.loads(await run_workspace_tool('product_lifecycle', {
+                'action': 'revise', 'product_id': product_state['product_id'], 'brief': user_text}, user_id))
+            if revision.get('error'):
+                raise ValueError('Не удалось применить уточнение к продукту: ' + revision['error'])
+            product_state.update(revision)
         round_num += 1
-        if light and round_num == 1:
+        if product_build:
+            if round_num == 1 and not journal and not product_state.get('product_id'):
+                # Preserve essential clarification (e.g. an app with no purpose).
+                # Stack selection and routine design choices stay autonomous.
+                preflight = await _plan_round(user_text, journal, user_id, document_context, history_text)
+                if preflight.get('status') == 'clarify' and preflight.get('questions'):
+                    from clarify import pack_search
+                    return preflight['questions'][0]['prompt'], [], '', pack_search(preflight['questions'])
+            if product_state.get('product_id'):
+                try:
+                    fresh = await verified_product(user_id, product_state['product_id'], package=True)
+                    if fresh.get('error'):
+                        product_state.clear()
+                    else:
+                        product_state.update(fresh)
+                except (ValueError, TypeError):
+                    product_state.update(ready=False, packaged=False)
+            employee = product_employee(user_text, product_state, journal)
+            if employee is None:
+                break
+            plan = _clamp_employee_plan({'status': 'continue', 'new_employees': [employee]}, user_id, user_text, document_context, journal)
+        elif light and round_num == 1:
             # A short question with no files or tools: skip the Sol planner and its round trip.
             searching = needs_research(user_text, False) and not is_smalltalk(user_text)
             plan = {"status": "continue", "new_employees": [_light_research_employee(user_text)]} if searching else {
@@ -1778,6 +1827,10 @@ async def _run_director(
                     "result": f"[Ошибка при выполнении: {str(res)[:200]}]",
                 })
             else:
+                if product_build:
+                    res['product_phase'] = employee.get('product_phase', 'build')
+                    if product_state.get('product_id'):
+                        res['product_id'] = product_state['product_id']
                 journal.append(res)
         await asyncio.to_thread(save_checkpoint, journal, user_id)
 
@@ -1802,15 +1855,49 @@ async def _run_director(
     # Всегда, а не только когда просили файл: сотрудник мог собрать его по ходу дела.
     built_files = await _new_file_names(user_id, started)
     await _update_status(status_msg, "Пишу ответ")
-    answer, compose_reasoning = await _compose_answer(
-        user_text, journal, user_id, history_text, document_context, built_files=built_files
-    )
+    if product_build:
+        # Completion is derived from receipts, never from a composer's claim.
+        answer, compose_reasoning = '', ''
+    else:
+        answer, compose_reasoning = await _compose_answer(
+            user_text, journal, user_id, history_text, document_context, built_files=built_files
+        )
     if built_files and len(built_files) > 1:
         from turn_scope import choose_deliverables
 
         answer, chosen = _split_file_choice(answer, built_files)
         choose_deliverables(chosen)
     answer = _sanitize_answer(answer)
+    if product_build:
+        try:
+            final_product = await verified_product(user_id, product_state.get('product_id', ''), package=True)
+        except (ValueError, TypeError):
+            final_product = {}
+        if not final_product.get('packaged') or not final_product.get('ready'):
+            gates = final_product.get('gates') or {'build': False, 'test': False}
+            failed = [name for name, passed in gates.items() if not passed]
+            if not failed:
+                failed = ['упаковка проекта']
+            answer = ('Продукт пока не прошёл приёмку: ' + ', '.join(failed) + '. Готовность не подтверждена. '
+                      'Сохранённые исходники можно доработать в следующем запросе.\n\n' +
+                      ('Папка проекта: ' + final_product['path'] if final_product.get('path') else 'Не удалось создать проверяемый проект.'))
+        else:
+            from app.services.autonomy import learn
+            try:
+                await asyncio.to_thread(learn, user_id, {
+                    'problem': 'Сборка продукта на стеке ' + final_product['stack'],
+                    'cause': 'Готовность подтверждается командами по текущей версии исходников.',
+                    'standard': 'Для стека ' + final_product['stack'] + ' сохранять требования и запуск; выполнять build и test после правок, затем package.',
+                }, final_product)
+            except Exception:
+                logger.warning('Product lesson could not be saved', exc_info=True)
+            answer = ('Проект собран на стеке ' + final_product['stack'] + '. '
+                      'Сборка и тесты текущей версии пройдены. Архив: ' + final_product['archive'] + '. '
+                      'В README.md — команды запуска и размещения, в BRIEF.md — критерии приёмки.')
+            if final_product['stack'] != 'python':
+                answer += ' Браузерная проверка экранов 1440 и 390 px пройдена; снимки находятся в qa/ внутри архива.'
+            from turn_scope import choose_deliverables
+            choose_deliverables([final_product['archive']])
 
     if any(entry.get('live_verification') for entry in journal):
         from marketplace_verification import guard_answer_links

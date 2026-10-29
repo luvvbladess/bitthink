@@ -1,0 +1,11 @@
+[Unit]
+Description=Bit-Think measured self maintenance
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/gpt-ultra-web
+ExecStart=/usr/bin/python3 /opt/gpt-ultra-web/scripts/self_maintain.py --apply
+TimeoutStartSec=2400
+UMask=0077
