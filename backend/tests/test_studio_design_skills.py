@@ -25,8 +25,10 @@ def test_guidance_uses_real_offline_database_and_respects_disabled_skills(monkey
     text = design_guidance('Create a clear finance dashboard', 'dashboard')
     assert 'UI UX Pro Max' in text and 'Emil Kowalski' in text
     assert '"chart": [{' in text and '"style": [{' in text
-    assert len(text) < 16000
-    monkeypatch.setattr(loader, 'disabled_builtin_names', lambda uid: frozenset({'ui_ux_pro_max', 'emil_design_eng'}))
+    assert '# impeccable' in text and '#d9f16d' in text and 'visual_system' in text
+    assert len(text) < 28000
+    monkeypatch.setattr(loader, 'disabled_builtin_names', lambda uid: frozenset({
+        'ui_ux_pro_max', 'emil_design_eng', 'impeccable', 'visual_system'}))
     assert design_guidance('Create a clear finance dashboard', 'dashboard', 1) == ''
 
 
@@ -42,5 +44,6 @@ def test_actual_studio_composition_receives_design_skills_without_extra_model_ca
         user_id=1, direction={'vibe': 'minimal', 'theme': {}}))
     assert 'Working interface' in html
     prompt = '\n'.join(m['content'] for m in captured)
-    assert 'UI UX Pro Max' in prompt and 'Emil Kowalski' in prompt
+    assert 'UI UX Pro Max' in prompt and 'Emil Kowalski' in prompt and '# impeccable' in prompt
+    assert '#d9f16d' in prompt
     assert '"product": [{' in prompt

@@ -7,6 +7,24 @@ import re
 
 ROOT = Path(__file__).resolve().parents[1] / 'computer_skills'
 
+# A site or infographic to make, not a page to open.
+_VISUAL_BUILD = re.compile(
+    r'инфографик|лендинг|визитк|дашборд|landing page|'
+    r'(?:созда|сдела|собери|сверста|оформи|нарисуй|дизайн)\w*.{0,60}'
+    r'(?:сайт\w*|веб-страниц\w*|вебстраниц\w*|одностранич\w*|интерфейс\w*|\bui\b)'
+)
+
+HOUSE_STYLE = (
+    'Домашний шаблон запрещён, пока заказчик сам не назвал эти цвета и шрифт: '
+    'бумага #f3f4ed, графит #153c36 и #123c34, лайм #d9f16d, Arial, '
+    'eyebrow с точкой, четыре одинаковые карточки, тёмная форма на всю ширину. '
+    'Мир выводи из предмета. Палитра примера в скиле инфографики не является цветом по умолчанию.'
+)
+
+
+def visual_build(text: str) -> bool:
+    return bool(_VISUAL_BUILD.search((text or '').lower()))
+
 
 @lru_cache(maxsize=1)
 def _search_engine():
@@ -22,10 +40,16 @@ def _sections(text, names, limit):
     return '\n\n'.join('## ' + part[:1200] for part in chosen)[:limit]
 
 
-def design_guidance(user_text: str, kind: str, user_id: int | None = None) -> str:
+def design_guidance(user_text: str, kind: str, user_id: int | None = None, *, include_visual: bool = True) -> str:
     from computer_skills.loader import load_skill, disabled_builtin_names
     disabled = disabled_builtin_names(user_id)
     chunks = []
+    if 'impeccable' not in disabled:
+        chunks.append(load_skill('impeccable', user_id))
+    if include_visual and 'visual_system' not in disabled:
+        visual = load_skill('visual_system', user_id)
+        if visual:
+            chunks.append(visual[:2400])
     if 'ui_ux_pro_max' not in disabled:
         chunks.append(load_skill('ui_ux_pro_max', user_id))
         engine = _search_engine()
@@ -43,4 +67,7 @@ def design_guidance(user_text: str, kind: str, user_id: int | None = None) -> st
         if kind in {'app', 'dashboard', 'landing'}:
             names.add('The Animation Decision Framework')
         chunks.append('Emil Kowalski: выбранные разделы оригинального навыка:\n' + _sections(original, names, 5000))
-    return '\n\n'.join(chunks)
+    body = '\n\n'.join(chunk for chunk in chunks if chunk)
+    if body:
+        body += '\n\n' + HOUSE_STYLE
+    return body

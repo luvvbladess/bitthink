@@ -35,6 +35,7 @@ EXPECTED_SKILLS = {
     "extract",
     "humanize",
     "images",
+    "impeccable",
     "infographic",
     "legal",
     "marketplaces",
@@ -127,6 +128,12 @@ def test_match_skills_preloads_photo_and_code_playbooks():
     assert code[0] == "code"
     assert match_skills("привет") == []
     assert "infographic" in match_skills("сделать схему процесса ERS")
+    site = match_skills("Сделай сайт завода")
+    assert site[:4] == ["impeccable", "ui_ux_pro_max", "emil_design_eng", "visual_system"]
+    assert "browser" not in site
+    info = match_skills("Сделай инфографику по выпуску")
+    assert "impeccable" in info and "infographic" in info
+    assert "browser" in match_skills("зайди на сайт https://example.com")
     contract = match_skills("разбери этот договор и найди риски")
     assert "legal" in contract
     assert "documents" in contract

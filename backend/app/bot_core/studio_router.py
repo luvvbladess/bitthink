@@ -185,7 +185,7 @@ async def _compose_spec(
 
     direction = direction or pick_direction(user_text, infographic=(kind == "infographic"))
     from studio.design_skills import design_guidance
-    skills = _studio_skills_blurb(html_canvas=False) + "\n\n" + design_guidance(user_text, kind, user_id)
+    skills = _studio_skills_blurb(html_canvas=False) + "\n\n" + design_guidance(user_text, kind, user_id, include_visual=False)
     doc_block = format_studio_documents(document_context)
     hist_block = f"\n\nИстория:\n{history_text}" if history_text else ""
     repair_block = f"\n\nИсправь прошлую ошибку схемы: {repair_hint}" if repair_hint else ""
@@ -235,10 +235,11 @@ async def _compose_spec(
 
     prompt = (
         f"{skills}\n\n"
-        f"Визуальный закон этого брифа (обязателен, не тихий teal по умолчанию):\n"
+        f"Направление-черновик, не закон: замени мир, если предмет другой. Не тихий teal по умолчанию.\n"
         f"Вайб: {vibe}. {vibe_brief}\n"
         f"Повествование: {spine}\n"
-        f"Стартовая палитра (можно уточнить hex под бриф, но держи этот мир): {theme}\n\n"
+        f"Стартовые hex можно сменить: {theme}. "
+        f"Не оставляй бумагу #f3f4ed, графит #153c36 и лайм #d9f16d, если бриф сам их не задал.\n\n"
         f"{task}\nОтветь ТОЛЬКО одним JSON-объектом.\n"
         f"Схема: {schema_hint}\n"
         f"Бриф:\n{user_text}"
@@ -290,7 +291,8 @@ _HTML_SYSTEM = (
     "Ты дизайнер Студии Bit-Think. Ты собираешь живой HTML-макет на холст: "
     "один самодостаточный файл, человек правит следующим сообщением. "
     "Отвечай только HTML. Без markdown-пояснений вокруг, без JSON-спеки, без PPTX. "
-    "Не выдумывай KPI. Не ставь Bit-Think в футер. Не используй Inter, Roboto, фиолетовый неон. "
+    "Не выдумывай KPI. Не ставь Bit-Think в футер. Не используй Inter, Roboto, Arial как характер шрифта и фиолетовый неон. "
+    "Не ставь домашний шаблон (бумага #f3f4ed, графит #153c36, лайм #d9f16d), если бриф сам его не задал. "
     "Если приложен образец презентации — повтори его визуальный язык. Если приложено ТЗ — "
     "заполни слайды фактами из ТЗ, не оставляй чёрные кадры без текста."
 )
@@ -341,7 +343,7 @@ async def _compose_html(
     from studio.html_canvas import assert_slide_density, clip_previous_html, extract_html, prepare_artifact
 
     from studio.design_skills import design_guidance
-    skills = _studio_skills_blurb(html_canvas=True) + "\n\n" + design_guidance(user_text, kind, user_id)
+    skills = _studio_skills_blurb(html_canvas=True) + "\n\n" + design_guidance(user_text, kind, user_id, include_visual=False)
     theme = direction.get("theme") or {}
     task = _KIND_TASK.get(kind) or _KIND_TASK["landing"]
     doc_block = format_studio_documents(document_context)
@@ -357,9 +359,10 @@ async def _compose_html(
         )
     prompt = (
         f"{skills}\n\n"
-        f"Визуальный закон: вайб {direction.get('vibe')}. {direction.get('brief')}\n"
+        f"Направление-черновик, не закон: вайб {direction.get('vibe')}. {direction.get('brief')}\n"
         f"Повествование: {direction.get('spine')}\n"
-        f"Палитра (держи этот мир, hex можно уточнить): {theme}\n"
+        f"Стартовые hex можно сменить: {theme}. "
+        f"Не оставляй бумагу #f3f4ed, графит #153c36 и лайм #d9f16d, если бриф сам их не задал.\n"
         f"Тип макета: {kind}. {task}\n"
         f"Фото только через <img data-ai=\"english prompt, no text no logos\" alt=\"...\"> без src, максимум 4.\n"
         f"Бриф:\n{user_text}"
