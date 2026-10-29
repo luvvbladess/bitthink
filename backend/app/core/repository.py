@@ -12,6 +12,20 @@ from app.config import get_settings
 
 _PLACEHOLDER_TITLE_RE = re.compile(r"^(Новый чат|Новая беседа|Беседа #\d+)$")
 logger = logging.getLogger(__name__)
+_USAGE_FIELDS = ("input", "output", "images", "calls", "cached")
+
+
+def _merge_usage(parts: list[dict]) -> dict:
+    """Sum per-model counters. Cost is linear, so the cabinet and /tokencost match."""
+    merged: dict[str, dict] = {}
+    for part in parts:
+        for model, row in (part or {}).items():
+            if not isinstance(row, dict):
+                continue
+            bucket = merged.setdefault(model, {key: 0 for key in _USAGE_FIELDS})
+            for key in _USAGE_FIELDS:
+                bucket[key] += int(row.get(key) or 0)
+    return merged
 
 
 def derive_conversation_title(content: str) -> str:
@@ -326,13 +340,38 @@ class ConversationRepository:
         bot_id = self._bot_id(web_user_id)
         await asyncio.to_thread(self._manager.track_image, bot_id, model, count)
 
+    def account_usage_ids(self, email: str) -> list[int]:
+        """Ids under which this person's usage_records may live.
+
+        Registration stores users.bot_user_id = hash(email), and the cabinet
+        reads hash(email). Older rows keep a different bot_user_id (a Telegram
+        id, or a hash of another spelling). Spend is the union of both, once.
+        """
+        ids = {self._bot_id(email)}
+        from sqlalchemy import select
+
+        from app.db.engine import SyncSessionLocal
+        from app.db.models import User
+
+        with SyncSessionLocal() as session:
+            stored = session.scalar(select(User.bot_user_id).where(User.email == email))
+        if stored is not None:
+            ids.add(int(stored))
+        return sorted(ids)
+
     async def get_day_usage(self, web_user_id: str, day: Optional[str] = None) -> dict:
-        bot_id = self._bot_id(web_user_id)
-        return await asyncio.to_thread(self._manager.get_day_usage, bot_id, day)
+        def read() -> dict:
+            parts = [self._manager.get_day_usage(uid, day) for uid in self.account_usage_ids(web_user_id)]
+            return _merge_usage(parts)
+
+        return await asyncio.to_thread(read)
 
     async def get_month_usage(self, web_user_id: str, month: Optional[str] = None) -> dict:
-        bot_id = self._bot_id(web_user_id)
-        return await asyncio.to_thread(self._manager.get_month_usage, bot_id, month)
+        def read() -> dict:
+            parts = [self._manager.get_month_usage(uid, month) for uid in self.account_usage_ids(web_user_id)]
+            return _merge_usage(parts)
+
+        return await asyncio.to_thread(read)
 
     async def delete_last_message(self, web_user_id: str, conv_id: str, role: str) -> bool:
         bot_id = self._bot_id(web_user_id)
