@@ -62,7 +62,7 @@ def save(journal, uid):
     for entry in journal[-12:]:
         # Prices, reviews and search observations must be fetched anew on resume.
         if entry.get("status") != "ok" or entry.get("search") or entry.get("live_verification"): continue
-        item = {key: entry.get(key) for key in ("round", "role", "task", "model", "status", "result")}
+        item = {key: entry.get(key) for key in ("round", "role", "task", "model", "status", "result", "product_id", "product_phase")}
         item["result"] = redact_for_user(uid, str(item.get("result") or ""))[:6000]
         clean.append(item)
     payload = json.dumps({"logical_run": logical_run.get(), "journal": clean}, ensure_ascii=False)

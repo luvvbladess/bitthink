@@ -12,6 +12,7 @@ import aiohttp
 
 DEFAULT_SANDBOX_URL = "http://sandbox:8090"
 TOOL_OPS = {
+    "product_lifecycle": "product",
     "diagram_create": "diagram",
     "workspace_ls": "ls",
     "workspace_read": "read",
@@ -34,6 +35,10 @@ def sandbox_url() -> str:
 async def run_workspace_tool(name: str, args: dict[str, Any], user_id: int) -> str:
     from app.services.desktop_context import local_tool
 
+    if name == 'product_lifecycle':
+        from app.services.desktop_context import desktop_executor
+        if desktop_executor.get() is not None:
+            return json.dumps({'error': 'В BitClient собирай продукт в выбранной локальной папке через workspace_* и desktop_run_command. Облачный конвейер доступен в веб-Оркестраторе.'}, ensure_ascii=False)
     local = await local_tool(name, args)
     if local is not None:
         return local
@@ -51,7 +56,7 @@ async def run_workspace_tool(name: str, args: dict[str, Any], user_id: int) -> s
         from app.services.workspace_fs import dispatch
 
         return dispatch(int(user_id), op, payload)
-    if name in ("python_run", "pip_install"):
+    if name in ("python_run", "pip_install", "product_lifecycle"):
         return "Песочница сейчас недоступна. Python и pip запускаются только в изолированном контейнере."
     from app.services.workspace_fs import dispatch
 

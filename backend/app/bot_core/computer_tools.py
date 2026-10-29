@@ -583,6 +583,17 @@ _TOOL_SPECS.extend([
 # BitClient swarm tools
 from app.services.desktop_swarm import SWARM_TOOL_SPECS, SWARM_TOOL_NAMES, active_swarm, run_swarm_tool
 _TOOL_SPECS.extend(SWARM_TOOL_SPECS)
+_TOOL_SPECS.extend([
+    ('product_lifecycle', 'Создать и собрать готовый продукт в облачной песочнице. start выбирает стек и папку; install/build/test выполняют настоящие команды; package выдаёт zip только после проверок текущих исходников. status возвращает доказательства. Исходники пиши workspace_*.',
+     {'action': {'type': 'string', 'enum': ['start', 'status', 'revise', 'install', 'build', 'test', 'smoke', 'package']},
+      'product_id': {'type': 'string'}, 'brief': {'type': 'string'},
+      'stack': {'type': 'string', 'enum': ['static', 'react', 'next', 'astro', 'python', 'node']},
+      'reason': {'type': 'string'}}, ['action']),
+    ('autonomy', 'Рабочая модель Bit-Think и приватный опыт PDCA. identity: миссия/правила/границы; recall: прошлые подтверждённые уроки; learn: закрепить урок после сборки, тестов и архива продукта.',
+     {'action': {'type': 'string', 'enum': ['identity', 'recall', 'learn']},
+      'query': {'type': 'string'}, 'product_id': {'type': 'string'}, 'problem': {'type': 'string'},
+      'cause': {'type': 'string'}, 'standard': {'type': 'string'}}, ['action']),
+])
 COMPUTER_TOOLS_RESPONSES = [_responses_tool(*spec) for spec in _TOOL_SPECS]
 COMPUTER_TOOLS_CHAT = [_chat_tool(*spec) for spec in _TOOL_SPECS]
 COMPUTER_TOOL_NAMES = {spec[0] for spec in _TOOL_SPECS}
@@ -1178,6 +1189,9 @@ async def _run_budgeted_computer_tool(name: str, args: dict[str, Any], user_id: 
                 if record: record.observe(name, previous)
                 return previous
         result = await _run_computer_tool(name, args, user_id)
+        if name == 'product_lifecycle':
+            from app.services.autonomy import observe_product
+            observe_product(result)
         from app.services.orchestrator_policy import observe_validation
         observe_validation(name, args, result)
         if action_key:
@@ -1206,6 +1220,14 @@ async def _run_budgeted_computer_tool(name: str, args: dict[str, Any], user_id: 
 
 
 async def _run_computer_tool(name: str, args: dict[str, Any], user_id: int | None) -> str:
+    if name == 'autonomy':
+        if not user_id:
+            return 'Нужна авторизация.'
+        from app.services.autonomy import tool
+        try:
+            return json.dumps(await tool(user_id, args), ensure_ascii=False)
+        except (ValueError, KeyError, TypeError) as exc:
+            return json.dumps({'error': str(exc)[:1000]}, ensure_ascii=False)
     if name in {'project_result','project_result_read','project_result_patch','project_purchase_plan','project_purchase_offer','project_file_open'}:
         from app.services import project_results, project_memory
         from turn_scope import turn_conversation_id

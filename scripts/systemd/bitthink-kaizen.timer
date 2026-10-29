@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Bit-Think health and kaizen checks
+
+[Timer]
+OnCalendar=*-*-* 03:20:00 UTC
+RandomizedDelaySec=1800
+Persistent=true
+
+[Install]
+WantedBy=timers.target
