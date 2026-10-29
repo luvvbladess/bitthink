@@ -192,11 +192,34 @@ async def tool(uid, args):
     raise ValueError('Действия autonomy: identity, recall, learn.')
 
 
+def _visual_design(task):
+    """Design law for a site or infographic. Other products stay on their own brief."""
+    from studio.design_skills import design_guidance, visual_build
+    if not visual_build(task):
+        return ''
+    kind = 'infographic' if 'инфографик' in (task or '').lower() else 'landing'
+    try:
+        guidance = design_guidance(task, kind)
+    except Exception:
+        guidance = ''
+    law = (
+        'Дизайн этого заказа делает дизайнер, не домашний шаблон. '
+        'В BRIEF.md запиши визуальный мир из отрасли, места и аудитории: свои hex, шрифт с кириллицей, сетку и почему это подходит. '
+        'Пока человек сам не назвал цвета, запрещены бумага #f3f4ed, графит #153c36, лайм #d9f16d, Arial, '
+        'eyebrow с точкой, четыре одинаковые карточки и тёмная форма на всю ширину. '
+        'Если такой шаблон уже записан, а заказчик его не просил — смени визуальную систему до вёрстки. '
+        'Дальше стандарт impeccable, ui_ux_pro_max, emil_design_eng и visual_system.'
+    )
+    return law + ('\n\n' + guidance if guidance else '')
+
+
 def product_employee(task, evidence, journal):
     """A serial build dependency chain; never parallelize writers in one project."""
     attempts = sum(bool(entry.get('product_phase')) for entry in journal)
     if attempts >= 5 or evidence.get('packaged'):
         return None
+    design = _visual_design(task)
+    suffix = ('\n\n' + design) if design else ''
     if not evidence.get('product_id'):
         phase = 'brief'
         assignment = (
@@ -206,7 +229,7 @@ def product_employee(task, evidence, journal):
             'В возвращённой папке создай BRIEF.md (сценарий, функции, критерии), REFERENCES.md '
             '(действительно прочитанные аналоги/что улучшить или честная отметка об отсутствии), '
             'README.md с запуском. Передай product_id и путь. На этом этапе не пиши всю реализацию.'
-        )
+        ) + suffix
     else:
         phase = 'build'
         assignment = (
@@ -225,6 +248,6 @@ def product_employee(task, evidence, journal):
             'для браузера есть product_lifecycle smoke, не импортируй выдуманную библиотеку. '
             'Сообщи настоящее имя архива. Публикацию выполняй только с данным пользователем размещением '
             'и доступом, иначе выдай проверенный архив и точную инструкцию запуска.'
-        )
+        ) + suffix
     return {'role': 'Архитектор продукта' if phase == 'brief' else 'Разработка и проверка продукта',
             'model': 'gpt-6-sol', 'task': assignment, 'product_phase': phase, 'product_id': evidence.get('product_id')}

@@ -115,8 +115,11 @@ def test_private_lessons_require_current_checked_product(workspace):
 def test_product_dependency_chain_and_retry_limit():
     first = autonomy.product_employee('Сделай сайт', {}, [])
     assert first['product_phase'] == 'brief' and 'product_lifecycle' in first['task']
+    assert '# impeccable' in first['task'] and '#d9f16d' in first['task']
     second = autonomy.product_employee('Сделай сайт', {'product_id': 'id', 'path': 'products/id', 'stack': 'static'}, [])
-    assert second['product_phase'] == 'build'
+    assert second['product_phase'] == 'build' and '# impeccable' in second['task']
+    api = autonomy.product_employee('Сделай API-сервис учёта заявок', {}, [])
+    assert '#d9f16d' not in api['task']
     assert autonomy.product_employee('Сделай сайт', {'packaged': True}, []) is None
     assert autonomy.product_employee('Сделай сайт', {}, [{'product_phase': 'build'}] * 5) is None
 

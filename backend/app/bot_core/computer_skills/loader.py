@@ -13,6 +13,8 @@ CHAT_SKILLS = frozenset(
         "brief",
         "ui_ux_pro_max",
         "emil_design_eng",
+        "impeccable",
+        "visual_system",
         "eng_bom",
         "eng_calc_check",
         "eng_diff",
@@ -198,7 +200,8 @@ def catalog_for_prompt(user_id: int | None = None, compact: bool = False) -> str
         "[везде] работает и в обычном чате, и в песочнице. [песочница] – только Оркестратор и Astra: "
         "код, файлы, почта, сайт, SQL.\n"
         "Карта: слайды → deck; инфографика/схема процесса → infographic; таблицы/xlsx → spreadsheet; "
-        "отчёт/docx/договор → documents или legal; товар, цены по магазинам, лучшее предложение → marketplaces; код → code; почта → email; сайт → browser; "
+        "отчёт/docx/договор → documents или legal; товар, цены по магазинам, лучшее предложение → marketplaces; код → code; почта → email; "
+        "открыть сайт → browser; сделать сайт, лендинг или инфографику → impeccable, ui_ux_pro_max, emil_design_eng, visual_system; "
         "фото → images; цены → prices; сверка → verify; выжимка → brief; песочница → workspace; "
         "ошибка → debug; расчёт → science; протокол → minutes; правка текста → rewrite; PDF → pdf; SQL → sql; "
         "инженерка: прочитать чертёж → eng_drawing; начертить/восстановить аналог по материалам → eng_reverse; спецификация → eng_bom, схема → eng_schematic, допуск → eng_tolerance, "
@@ -408,6 +411,10 @@ def _custom_score(row: dict, blob: str) -> int:
 def _builtin_score(name: str, needles: tuple[str, ...], blob: str, *, sandbox: bool) -> int:
     if not sandbox and skill_scope(name) != "chat":
         return 0
+    if name == "browser":
+        from studio.design_skills import visual_build
+        if visual_build(blob) and not re.search(r"зайд|открой|логин|парол|https?://", blob):
+            return 0
     if name == 'eng_reverse' and not re.search(r'начерт|полный аналог|комплект кд|конструкторск|реверс-инжинир|обратное проектирован|(?:сдела|созда|восстанов|разработ|собер)\w*.{0,100}(?:соленоид|эмбу|черт[её]ж|конструкц)',blob):
         return 0
     if name == "marketplaces":
@@ -480,6 +487,22 @@ def match_skills(
             if name in blob or (len(row['source_name']) >= 5 and row['source_name'] in blob):
                 ranked.append((12, 0, order, name))
             order += 1
+        from studio.design_skills import visual_build
+        if visual_build(blob):
+            design_names = ['impeccable', 'ui_ux_pro_max', 'emil_design_eng', 'visual_system']
+            if 'инфографик' in blob:
+                design_names.append('infographic')
+            added = 0
+            for design_name in design_names:
+                if design_name in off or design_name not in known:
+                    continue
+                if not sandbox and skill_scope(design_name) != 'chat':
+                    continue
+                ranked.append((9, 0, order, design_name))
+                order += 1
+                added += 1
+            if added and 2 <= limit < added:
+                limit = added
     ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
     selected: list[tuple[int, int, int, str]] = []
     seen: set[str] = set()
