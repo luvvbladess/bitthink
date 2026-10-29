@@ -35,7 +35,9 @@ async def run_local_chat(user, content, cid, status, chunk, file, *, history, se
 
     async def deliver(text, files):
         if text:
-            await chunk(sanitize_response_text(text))
+            from app.services.autonomy import release_guard
+            from app.services.run_protocol import current_run
+            await chunk(sanitize_response_text(release_guard(text, files, current_run.get())))
         for item in files or []:
             if item.get("bytes"):
                 await file(_generated_filename(item), item["bytes"])
