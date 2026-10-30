@@ -343,6 +343,107 @@ function studioFixture({ width = 1440, empty = false, failCanvas = false, theme 
 }
 
 try {
+  for (const width of [320, 390, 768, 1440]) for (const theme of ['dark', 'light']) await test(`library: layout, filters, images and pinned document ${width} ${theme}`, async () => {
+    const long = 'Очень_длинное_название_договора_с_приложениями_'.repeat(5) + '.docx';
+    const imageName = 'Эскиз_фасада_' + 'длинное_название_'.repeat(8) + '.png';
+    const items = [
+      { name: long, kind: 'generated', conversation_id: 'chat-b', conversation_title: 'Название беседы '.repeat(30) },
+      { name: imageName, kind: 'image', download_url: '/qa/image' },
+      { name: 'Повреждённая.png', kind: 'image', download_url: '/qa/broken' },
+      { name: 'Бюджет.xlsx' }, { name: 'Презентация.pptx' }, { name: 'Архив.zip' },
+      ...Array.from({ length: 25 }, (_, i) => ({ name: `Материалы ${i}.pdf` })),
+    ].map(item => ({ kind: 'document', conversation_id: 'chat-a', uploaded_at: new Date().toISOString(), version: 1, editable: false, ...item }));
+    const f = await fixture({ viewport: { width, height: width < 600 ? 667 : 900 }, touch: width < 600, theme, handleRoute: async ({ path, route, state }) => {
+      if (path === '/conversations/library' || path === '/conversations/chat-a/files') {
+        if (state.libraryError) await route.fulfill({ status: 503, json: { detail: 'Библиотека временно недоступна' } });
+        else await route.fulfill({ json: state.empty ? [] : items });
+        return true;
+      }
+      if (path === '/qa/image') { await route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1600"><rect width="1200" height="1600" fill="#b7d3db"/><text x="80" y="220" font-size="70">Эскиз фасада</text></svg>' }); return true; }
+      if (path === '/qa/broken') { await route.fulfill({ status: 404, body: '' }); return true; }
+      if (path.endsWith('/files/preview')) {
+        (state.previewChats ||= []).push(path.split('/')[2]);
+        const page = new URL(route.request().url()).searchParams.get('page');
+        if (page) await route.fulfill({ contentType: 'image/svg+xml', body: `<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1273"><rect width="900" height="1273" fill="white"/><text x="40" y="100" font-size="36">Страница ${page}</text></svg>` });
+        else await route.fulfill({ json: { pages: state.manyPages ? 1000000 : 2, download_url: '/qa/download' } });
+        return true;
+      }
+    } });
+    try {
+      await expect(f.input).toBeEnabled();
+      if (!await f.page.getByRole('button', { name: 'Библиотека', exact: true }).isVisible()) await f.page.getByRole('button', { name: 'Открыть список бесед' }).click();
+      await f.page.getByRole('button', { name: 'Библиотека', exact: true }).click();
+      const library = f.page.locator('.MuiDrawer-paper').filter({ has: f.page.getByRole('heading', { name: 'Библиотека', exact: true }) });
+      await expect(library.getByRole('button', { name: new RegExp('^Очень_длинное') })).toBeVisible();
+      await expect.poll(async () => { const r = await library.boundingBox(); return r.x + r.width; }).toBeLessThanOrEqual(width + 1);
+      await f.page.screenshot({ path: `${output}/library-${width}-${theme}.png` });
+      const bounds = await library.boundingBox();
+      assert(bounds.x >= -1 && bounds.x + bounds.width <= width + 1);
+      // Text may truncate; rows and independent action targets must never overlap.
+      const row = library.getByRole('listitem').first();
+      const boxes = await row.getByRole('button').evaluateAll(nodes => nodes.map(n => { const r = n.getBoundingClientRect(); return { x: r.x, right: r.right }; }));
+      assert(boxes[0].right <= boxes[1].x + 1);
+      const search = library.getByRole('textbox', { name: 'Поиск по файлам' });
+      await search.fill('ничего-подобного');
+      await expect(library.getByText('Ничего не нашлось')).toBeVisible();
+      await search.fill('');
+      await library.getByRole('button', { name: 'Картинки', exact: true }).click();
+      await expect(library.getByRole('listitem')).toHaveCount(2);
+      await f.page.screenshot({ path: `${output}/library-images-${width}-${theme}.png` });
+      await library.getByRole('button', { name: imageName, exact: true }).click();
+      const photo = f.page.getByRole('dialog');
+      await expect(photo.getByRole('img', { name: imageName, exact: true })).toBeVisible();
+      await expect.poll(() => photo.evaluate(n => { let opacity = 1; for (let el = n; el; el = el.parentElement) opacity *= Number(getComputedStyle(el).opacity); return opacity; })).toBe(1);
+      await f.page.screenshot({ path: `${output}/library-photo-${width}-${theme}.png` });
+      await photo.getByRole('button', { name: 'Закрыть картинку' }).click();
+      await expect(library.getByRole('textbox', { name: 'Поиск по файлам' })).toBeVisible();
+      await library.getByRole('button', { name: 'Повреждённая.png', exact: true }).click();
+      await expect(photo.getByText('Не удалось загрузить картинку.', { exact: false })).toBeVisible();
+      await photo.getByRole('button', { name: 'Повторить' }).click();
+      await expect(photo.getByText('Не удалось загрузить картинку.', { exact: false })).toBeVisible();
+      await photo.getByRole('button', { name: 'Закрыть картинку' }).click();
+      await library.getByRole('button', { name: 'Все', exact: true }).click();
+      await library.getByRole('button', { name: /^Действия с Очень_длинное/ }).click();
+      f.state.manyPages = true;
+      await f.page.getByRole('menuitem', { name: 'Открыть', exact: true }).click();
+      const preview = f.page.getByRole('region', { name: 'Предпросмотр документа' });
+      await expect(preview.getByRole('img', { name: /^Страница/ })).toBeVisible();
+      assert(f.state.previewChats.every(id => id === 'chat-b'), 'Library preview stays bound to the original conversation');
+      await preview.getByRole('button', { name: 'Следующая страница' }).click();
+      await expect(preview.getByRole('img', { name: /^Страница/ })).toHaveAttribute('alt', `Страница 2 документа ${long}`);
+      for (let i = 0; i < 4; i++) await preview.getByRole('button', { name: 'Увеличить страницу', exact: true }).click();
+      await expect(preview.getByRole('button', { name: 'Увеличить страницу', exact: true })).toBeDisabled();
+      assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      await preview.getByRole('button', { name: 'Подогнать страницу по ширине' }).click();
+      await f.page.screenshot({ path: `${output}/library-preview-${width}-${theme}.png` });
+      const controls = await preview.getByRole('button').evaluateAll(nodes => nodes.filter(n => !n.disabled).map(n => { const r = n.getBoundingClientRect(); return { label: n.getAttribute('aria-label'), left: r.left, right: r.right, bottom: r.bottom }; }));
+      assert(controls.every(r => r.left >= -1 && r.right <= width + 1 && r.bottom <= (width < 600 ? 667 : 900) + 1), JSON.stringify(controls));
+      await preview.getByRole('button', { name: 'Закрыть предпросмотр' }).click();
+      await expect(f.input).toBeVisible();
+    } finally { await f.context.close(); }
+  });
+  await test('library: loading failure, retry and empty state', async () => {
+    const f = await fixture({ viewport: { width: 320, height: 568 }, touch: true, libraryFail: true, handleRoute: async ({ path, route, state }) => {
+      if (path === '/conversations/chat-a/files') { await route.fulfill({ json: [] }); return true; }
+      if (path !== '/conversations/library') return false;
+      if (state.libraryFail) await route.fulfill({ status: 503, json: { detail: 'Temporary outage' } });
+      else await route.fulfill({ json: [] });
+      return true;
+    } });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.page.getByRole('button', { name: 'Открыть список бесед' }).click();
+      await f.page.getByRole('button', { name: 'Библиотека', exact: true }).click();
+      await expect(f.page.getByText('Не удалось обновить список файлов.', { exact: false })).toBeVisible();
+      f.state.libraryFail = false;
+      await f.page.getByRole('button', { name: 'Повторить', exact: true }).click();
+      await expect(f.page.getByText('Библиотека пуста', { exact: true })).toBeVisible();
+      await f.page.getByRole('tab', { name: 'Эта беседа' }).click();
+      await expect(f.page.getByText('В этой беседе нет файлов', { exact: true })).toBeVisible();
+      await f.page.getByRole('button', { name: 'Закрыть библиотеку' }).click();
+      await expect(f.input).toBeVisible();
+    } finally { await f.context.close(); }
+  });
   for (const [tool, label] of [
     ['swarm_read', 'Сверяю промежуточные результаты'],
     ['swarm_publish', 'Передаю результаты для дальнейшей работы'],
@@ -486,7 +587,7 @@ try {
         }
       } else {
         await f.page.getByRole('button', { name: 'Библиотека', exact: true }).click();
-        await f.page.getByRole('button', { name: 'Предпросмотр Отчёт.docx', exact: true }).last().click();
+        await f.page.getByRole('button', { name: /^Отчёт\.docx/ }).click();
         await expect(panel.getByRole('img', { name: /^Страница/ })).toBeVisible();
         await panel.getByRole('button', { name: 'Закрыть предпросмотр' }).click();
       }
@@ -1292,9 +1393,9 @@ try {
       await expect(f.page.getByText('Какой формат результата нужен?', { exact: true }).first()).toBeVisible();
       const files = f.page.getByRole('button', { name: 'Файлы беседы', exact: true });
       await files.focus(); await files.press('Enter');
-      await expect(f.page.getByRole('button', { name: 'Закрыть список файлов', exact: true })).toBeVisible();
+      await expect(f.page.getByRole('button', { name: 'Закрыть библиотеку', exact: true })).toBeVisible();
       assert.deepEqual(f.state.sends, [], 'Opening files must not skip and submit clarification');
-      await f.page.getByRole('button', { name: 'Закрыть список файлов', exact: true }).click();
+      await f.page.getByRole('button', { name: 'Закрыть библиотеку', exact: true }).click();
       await expect(f.page.getByText('Какой формат результата нужен?', { exact: true }).first()).toBeVisible();
     } finally { await f.context.close(); }
   });
@@ -1467,8 +1568,8 @@ try {
       await f.input.fill('Черновик не должен пропасть');
       await f.page.getByRole('button', { name: 'Ещё действия', exact: true }).tap();
       await f.page.getByRole('menuitem', { name: 'Файлы беседы', exact: true }).tap();
-      await f.page.getByRole('button', { name: 'Закрыть список файлов', exact: true }).tap();
-      await expect(f.page.getByRole('button', { name: 'Закрыть список файлов', exact: true })).toBeHidden();
+      await f.page.getByRole('button', { name: 'Закрыть библиотеку', exact: true }).tap();
+      await expect(f.page.getByRole('button', { name: 'Закрыть библиотеку', exact: true })).toBeHidden();
       await reachable(f.input, f.page, 'Input after file drawer');
       await reachable(f.page.getByRole('button', { name: 'Отправить сообщение', exact: true }), f.page, 'Send after file drawer');
       await expect(f.input).toHaveValue('Черновик не должен пропасть');
@@ -1949,6 +2050,26 @@ try {
       await expect(f.page.getByText(/Не загружено файлов:/)).toHaveCount(0);
       await f.select('Первая беседа');
       await expect(f.input).toHaveValue('Черновик с неготовым файлом');
+    } finally { await f.context.close(); }
+  });
+  await test('preview: blob requests support cancellation and bounded waiting', async () => {
+    const f = await fixture({ handleRoute: async ({ path, route }) => {
+      if (path !== '/qa/slow-blob') return false;
+      await new Promise(resolve => setTimeout(resolve, 300));
+      await route.fulfill({ contentType: 'image/png', body: 'delayed' }).catch(() => {});
+      return true;
+    } });
+    try {
+      await expect(f.input).toBeEnabled();
+      const results = await f.page.evaluate(async () => {
+        const { apiBlob } = await import('/src/api/client.ts');
+        const controller = new AbortController(); controller.abort();
+        const cancelled = await apiBlob('/qa/slow-blob', { signal: controller.signal }).then(() => 'unexpected success', error => error.name);
+        const timedOut = await apiBlob('/qa/slow-blob', { timeoutMs: 30 }).then(() => 'unexpected success', error => error.message);
+        return { cancelled, timedOut };
+      });
+      assert.equal(results.cancelled, 'AbortError');
+      assert.match(results.timedOut, /Превышено время ожидания/);
     } finally { await f.context.close(); }
   });
   await test('pre-cancelled document upload rejects without uploading', async () => {

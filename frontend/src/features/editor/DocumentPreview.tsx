@@ -19,10 +19,11 @@ export function DocumentPreview({ file, conversationId, onClose }: { file: Previ
   const [busy, setBusy] = useState(false);
   const id = file.conversationId || conversationId;
   const path = `/conversations/${encodeURIComponent(id || '')}/files/preview?filename=${encodeURIComponent(file.name)}`;
-  const info = useQuery<{ pages: number; download_url: string }>({ queryKey: ['document-preview', id, file.name], queryFn: () => apiFetch(path, { timeoutMs: 120_000 }), enabled: !!id, retry: false, staleTime: 0 });
+  const info = useQuery<{ pages: number; download_url: string }>({ queryKey: ['document-preview', id, file.name], queryFn: ({ signal }) => apiFetch(path, { signal, timeoutMs: 120_000 }), enabled: !!id, retry: false, staleTime: 0, refetchOnWindowFocus: false });
   const [prepared, setPrepared] = useState<File | null>(null);
   useEffect(() => { setPrepared(null); }, [info.dataUpdatedAt]);
-  const pageImage = useQuery({ queryKey: ['document-preview-page', id, file.name, page, info.dataUpdatedAt], queryFn: () => apiBlob(`${path}&page=${page}`), enabled: !!info.data && !!id, retry: false, gcTime: 0 });
+  const pageImage = useQuery({ queryKey: ['document-preview-page', id, file.name, page, info.dataUpdatedAt], queryFn: ({ signal }) => apiBlob(`${path}&page=${page}`, { signal, timeoutMs: 120_000 }), enabled: !!info.data && !!id && !info.isFetching, retry: false, gcTime: 0, refetchOnWindowFocus: false });
+  useEffect(() => { if (info.data) setPage(value => Math.min(value, info.data.pages)); }, [info.data]);
   useEffect(() => {
     setImage('');
     if (!pageImage.data) return;
@@ -63,7 +64,7 @@ export function DocumentPreview({ file, conversationId, onClose }: { file: Previ
   const iconSx = { width: 44, height: 44, flexShrink: 0 };
   return <Box component="section" aria-label="Предпросмотр документа" sx={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column', bgcolor: 'background.default' }}>
     <Box sx={{ display: 'flex', alignItems: 'center', gap: .5, px: 1, pt: 'max(4px, env(safe-area-inset-top))', borderBottom: '1px solid var(--bt-hairline)', flexShrink: 0 }}>
-      <Typography noWrap sx={{ flex: 1, minWidth: 0, fontSize: '.875rem', fontWeight: 600 }}>{file.name}</Typography>
+      <Typography noWrap title={file.name} sx={{ flex: 1, minWidth: 0, fontSize: '.875rem', fontWeight: 600 }}>{file.name}</Typography>
       {(file.url || info.data?.download_url) && <><IconButton aria-label="Скачать документ" disabled={busy} onClick={() => void save()} sx={iconSx}><DownloadSimple size={20} /></IconButton><IconButton aria-label="Поделиться файлом" disabled={busy} onClick={() => void save(true)} sx={iconSx}><ShareNetwork size={20} /></IconButton></>}
       <IconButton aria-label="Закрыть предпросмотр" onClick={onClose} sx={iconSx}><X size={20} /></IconButton>
     </Box>
@@ -71,13 +72,17 @@ export function DocumentPreview({ file, conversationId, onClose }: { file: Previ
     <Box sx={{ flex: 1, minHeight: 0, overflow: 'auto', p: { xs: 1, md: 2 }, bgcolor: 'var(--bt-overlay-faint)' }}>
       {error ? <Alert severity="warning" action={<Button onClick={() => { if (info.error) void info.refetch(); else void pageImage.refetch(); }}>Повторить</Button>}>{error}</Alert> : !image || info.isFetching || pageImage.isFetching ? <Box role="status" sx={{ p: 4, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 1 }}><CircularProgress size={22} /><Typography>Готовим страницу…</Typography></Box> : <Box component="img" src={image} alt={`Страница ${page} документа ${file.name}`} sx={{ display: 'block', width: `${zoom}%`, maxWidth: 'none', height: 'auto', mx: 'auto', bgcolor: '#fff' }} />}
     </Box>
-    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: .25, borderTop: '1px solid var(--bt-hairline)', pb: 'env(safe-area-inset-bottom)', flexShrink: 0 }}>
+    <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', columnGap: 1, borderTop: '1px solid var(--bt-hairline)', pb: 'env(safe-area-inset-bottom)', flexShrink: 0 }}>
+      <Box role="group" aria-label="Страницы документа" sx={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
       <IconButton aria-label="Предыдущая страница" disabled={page <= 1 || !info.data} onClick={() => setPage(value => value - 1)} sx={iconSx}><CaretLeft size={20} /></IconButton>
       <Typography aria-live="polite" sx={{ fontSize: '.875rem', minWidth: 62, textAlign: 'center' }}>{page} / {info.data?.pages || '…'}</Typography>
       <IconButton aria-label="Следующая страница" disabled={!info.data || page >= info.data.pages} onClick={() => setPage(value => value + 1)} sx={iconSx}><CaretRight size={20} /></IconButton>
+      </Box>
+      <Box role="group" aria-label="Масштаб документа" sx={{ display: 'flex', alignItems: 'center' }}>
       <IconButton aria-label="Уменьшить страницу" disabled={zoom <= 50} onClick={() => setZoom(value => value - 25)} sx={iconSx}><MagnifyingGlassMinus size={20} /></IconButton>
       <Button aria-label="Подогнать страницу по ширине" onClick={() => setZoom(100)} sx={{ minWidth: 48, minHeight: 44, color: 'text.secondary' }}>{zoom}%</Button>
       <IconButton aria-label="Увеличить страницу" disabled={zoom >= 200} onClick={() => setZoom(value => value + 25)} sx={iconSx}><MagnifyingGlassPlus size={20} /></IconButton>
+      </Box>
     </Box>
   </Box>;
 }

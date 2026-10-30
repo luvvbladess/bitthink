@@ -278,18 +278,24 @@ export function downloadBlob(blob: Blob, filename: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export async function apiBlob(path: string): Promise<Blob> {
-  let token = useAuthStore.getState().accessToken;
-  let response = await doFetch(path, {}, token);
-  if (response.status === 401 && useAuthStore.getState().refreshToken) {
-    token = await refreshAccessToken();
-    if (token) response = await doFetch(path, {}, token);
-  }
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    throw new Error(data.detail || 'Не удалось скачать файл');
-  }
-  return response.blob();
+export async function apiBlob(path: string, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<Blob> {
+  const timed = withTimeout({ signal: options.signal }, options.timeoutMs);
+  try {
+    let token = useAuthStore.getState().accessToken;
+    let response = await doFetch(path, timed.options, token);
+    if (response.status === 401 && useAuthStore.getState().refreshToken) {
+      token = await refreshAccessToken();
+      if (token) response = await doFetch(path, timed.options, token);
+    }
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(typeof data.detail === 'string' ? data.detail : 'Не удалось скачать файл');
+    }
+    return await response.blob();
+  } catch (error) {
+    if (timed.timedOut()) throw new Error('Превышено время ожидания. Попробуйте ещё раз.');
+    throw error;
+  } finally { timed.cancel(); }
 }
 
 export async function exportDocx(markdown: string) {
