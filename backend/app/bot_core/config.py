@@ -20,6 +20,7 @@ OPENAI_API_KEY = _get_env("OPENAI_API_KEY")
 DEEPSEEK_API_KEY = _get_env("DEEPSEEK_API_KEY")
 KIMI_API_KEY = _get_env("KIMI_API_KEY")
 KIMI_MODEL = _get_env("KIMI_MODEL", "kimi-k2.6")
+OPENROUTER_API_KEY = _get_env("OPENROUTER_API_KEY")
 
 # Модель OpenAI для текстовых запросов (по умолчанию)
 DEFAULT_MODEL = "gpt-5-nano"

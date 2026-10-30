@@ -107,7 +107,7 @@ def openai_tool_flags(model: str, web_required: bool) -> tuple[bool, bool]:
     return bool(web_required), bool(web_required)
 
 
-def best_route(user_text: str, reasoning_effort: Optional[str], has_deepseek: bool) -> Tuple[str, bool]:
+def best_route(user_text: str, reasoning_effort: Optional[str], has_deepseek: bool, has_openrouter: bool = False) -> Tuple[str, bool]:
     """Choose the best quality/cost route without spending tokens on a router call."""
     text = (user_text or "").lower()
     shape = _request_shape(user_text)
@@ -139,6 +139,8 @@ def best_route(user_text: str, reasoning_effort: Optional[str], has_deepseek: bo
         or reasoning_hits
         or (shape["chars"] >= 1800 and (hard_hits or structured))
     )
+    if complex_task and has_openrouter:
+        return ("claude-haiku-5.5", deep)
     if has_deepseek:
         return ("deepseek-v4-pro" if complex_task else "deepseek-v4-flash", deep)
     if complex_task:
@@ -146,15 +148,15 @@ def best_route(user_text: str, reasoning_effort: Optional[str], has_deepseek: bo
     return ("gpt-6-luna", False)
 
 
-def route_for_turn(user_text: str, previous_user_text: str, has_deepseek: bool) -> Tuple[str, bool]:
+def route_for_turn(user_text: str, previous_user_text: str, has_deepseek: bool, has_openrouter: bool = False) -> Tuple[str, bool]:
     """Auto route. «А почему?» после разбора архитектуры – та же тема: короткое
     уточнение остаётся на сильной модели ветки, а не падает на самую дешёвую."""
-    route, deep = best_route(user_text, "none", has_deepseek)
+    route, deep = best_route(user_text, "none", has_deepseek, has_openrouter)
     from app.services.request_intent import classify_request
     related = classify_request(user_text, [{'role': 'user', 'content': previous_user_text}]).followup
     if previous_user_text and related and len(user_text or "") < 200:
-        thread_route, _ = best_route(previous_user_text, "none", has_deepseek)
-        if thread_route in {"deepseek-v4-pro", "gpt-6-sol"}:
+        thread_route, _ = best_route(previous_user_text, "none", has_deepseek, has_openrouter)
+        if thread_route in {"deepseek-v4-pro", "gpt-6-sol", "claude-haiku-5.5"}:
             route = thread_route
     return route, deep
 

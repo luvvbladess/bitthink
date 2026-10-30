@@ -19,6 +19,9 @@ MODEL_USD: dict[str, dict[str, float]] = {
     "gpt-6.1-sol": {"input": 2.00, "output": 10.00, "cached": 0.10},
     "gpt-6.1-terra": {"input": 1.00, "output": 5.00, "cached": 0.05},
     "gpt-6-astra": {"input": 10.00, "output": 50.00, "cached": 1.00},
+    "claude-haiku-5.5": {"input": 0.10, "output": 0.50, "cached": 0.01},
+    "claude-sonnet-5.5": {"input": 2.00, "output": 10.00, "cached": 0.10},
+    "claude-opus-5.5": {"input": 4.00, "output": 20.00, "cached": 0.20},
     "kimi-k2.6": {"input": 0.95, "output": 4.00, "cached": 0.16},
     # DeepSeek bills peak (UTC 01-04, 06-10 on weekdays) at twice the off-peak
     # rate. Mid-point of the two, weighted toward Russian working hours.

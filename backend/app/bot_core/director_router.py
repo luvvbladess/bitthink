@@ -39,12 +39,16 @@ def _desktop_work_instructions() -> str:
         ) + local_skills_instructions()
     return context
 
+HAIKU_MODEL = "claude-haiku-5.5"
+SONNET_MODEL = "claude-sonnet-5.5"
+OPUS_MODEL = "claude-opus-5.5"
 MODEL_POOL = [
     "gpt-5-nano",
     "gpt-6-luna",
     "gpt-6.1-terra",
-    "deepseek-v4-pro",
+    HAIKU_MODEL,
     "gpt-6-sol",
+    OPUS_MODEL,
     "gpt-6-astra",
 ]
 # The orchestrator (round planning: who to hire, how to split the task, when
@@ -52,8 +56,9 @@ MODEL_POOL = [
 # whole mode look "dumb" and inconsistent even when employees did fine work.
 # Sol is the planning default; _clamped_planner_model() falls back to Luna
 # on tiers without Sol. Ordinary single-hop synthesis stays on Luna.
-# Astra is hire-only, never the composer: one hop, and only when a contract/audit
-# brief is heavy enough that Sol would not pay for itself.
+# Astra is hire-only and only for geometry or a hard SDK error.
+# Opus takes one dense contract, audit or architecture hop. Hard code stays on
+# Sol: at the same token price Sol spends far fewer output tokens than Sonnet.
 PLANNER_MODEL = "gpt-6-sol"
 DIRECT_ANSWER_MODEL = "gpt-6-luna"
 ECONOMY_COMPOSER_MODEL = "gpt-6-luna"
@@ -157,6 +162,14 @@ def _clamped_planner_model(user_id: int, first_round: bool = True, complex_task:
         return clamp_model(tier, wanted)
     except Exception:
         return wanted
+
+
+def _task_warrants_opus(task: str, document_context: str = "") -> bool:
+    """Dense contract, audit or architecture brief. Geometry stays on Astra."""
+    blob = f"{task or ''}\n{document_context or ''}".lower()
+    if not any(marker in blob for marker in ASTRA_HIRE_MARKERS):
+        return False
+    return len((document_context or "").strip()) >= 400 or len(task or "") >= 800
 
 
 def _task_warrants_astra(task: str, document_context: str = "") -> bool:
@@ -296,6 +309,7 @@ def _clamp_employee_plan(
     from app.services.desktop_cad_completion import required_cad_extensions
     cad_astra = desktop_executor.get() is not None and bool(required_cad_extensions(original_task))
     allow_astra = "gpt-6-astra" in allowed and _task_warrants_astra(original_task, document_context)
+    allow_opus = OPUS_MODEL in allowed and not cad_astra and _task_warrants_opus(original_task, document_context)
     already = any(entry.get("model") == "gpt-6-astra" for entry in (journal or []))
     strong = _needs_strong_model(original_task, document_context, has_images, user_id)
     from app.services.desktop_context import desktop_executor
@@ -306,6 +320,7 @@ def _clamp_employee_plan(
     recovery = economy_enabled() and needs_recovery(journal)
     employees = []
     astra_used = already
+    opus_used = any(entry.get("model") in {OPUS_MODEL, "gpt-6-astra"} for entry in (journal or [])) and not cad_astra
     for item in plan.get("new_employees") or []:
         model = item.get("model")
         extra: Dict[str, Any] = {}
@@ -324,12 +339,18 @@ def _clamp_employee_plan(
             # The research worker uses the shared search/read tools. The selected
             # backend controls whether web_search is our metasearch or hosted.
             model, extra = FALLBACK_EMPLOYEE_MODEL, {"web": True}
-        elif model in ("gpt-6-sol", "deepseek-v4-pro") and not strong and not recovery:
+        elif model in ("gpt-6-sol", SONNET_MODEL, HAIKU_MODEL, "deepseek-v4-pro") and not strong and not recovery:
             if model == PLANNER_MODEL and routine_was_strong:
                 if routine_employee(item, original_task, document_context) and ROUTINE_MODEL in allowed:
                     model = ROUTINE_MODEL
             else:
                 model = FALLBACK_EMPLOYEE_MODEL
+        if model == "gpt-6-astra" and allow_opus and not cad_astra:
+            model = _astra_fallback(allowed) if opus_used else OPUS_MODEL
+        if model == OPUS_MODEL and (cad_astra or not allow_opus or opus_used):
+            model = _astra_fallback(allowed)
+        elif model == OPUS_MODEL:
+            opus_used = True
         if model == "gpt-6-astra" and (not allow_astra or (astra_used and not cad_astra) or (cad_astra and any(e.get("model") == "gpt-6-astra" for e in employees))):
             model = _astra_fallback(allowed)
         elif model not in allowed:
@@ -343,8 +364,11 @@ def _clamp_employee_plan(
             model = FALLBACK_EMPLOYEE_MODEL
         if routine and critical_task(str(item.get('role') or '') + ' ' + str(item.get('task') or '')) and model in {ROUTINE_MODEL,FALLBACK_EMPLOYEE_MODEL} and PLANNER_MODEL in allowed:
             model = PLANNER_MODEL
-        if recovery and (model == ROUTINE_MODEL or (model == FALLBACK_EMPLOYEE_MODEL and re.search(r'(?i)исправ|repair|fix|валид|тест|компиля', str(item.get('task') or '')))) and PLANNER_MODEL in allowed:
+        repair = bool(re.search(r'(?i)исправ|repair|fix|валид|тест|компиля', str(item.get('task') or '')))
+        if recovery and (model == ROUTINE_MODEL or (model == FALLBACK_EMPLOYEE_MODEL and repair)) and PLANNER_MODEL in allowed:
             model = PLANNER_MODEL
+        if model == SONNET_MODEL:
+            model = PLANNER_MODEL if PLANNER_MODEL in allowed else FALLBACK_EMPLOYEE_MODEL
         employees.append({**item, "model": model, **extra})
     return {**plan, "new_employees": employees}
 
@@ -984,17 +1008,22 @@ async def _execute_employee(
     reasoning = ""
     search: List[Dict[str, str]] = []
     try:
-        if model == "deepseek-v4-pro":
+        builds_file = _is_document_package_task(task) or _wants_file(task) or "docx" in (task or "").lower()
+        from app.services.desktop_context import desktop_executor
+        from app.services.desktop_cad_completion import required_cad_extensions
+        cad_build = desktop_executor.get() is not None and bool(required_cad_extensions(task))
+        from app.services.desktop_cad_completion import cad_employee_phase
+        loops = 40 if employee.get('product_phase') else (60 if cad_employee_phase(employee)=="gui_geometry" else 30) if cad_build else PACKAGE_EMPLOYEE_TOOL_LOOPS if builds_file else None
+        if model in {HAIKU_MODEL, SONNET_MODEL, OPUS_MODEL}:
+            from openrouter_client import get_openrouter_response
+            answer, _, reasoning, search = await get_openrouter_response(
+                employee_messages, model=model, user_id=user_id, use_tools=True, max_tool_loops=loops,
+            )
+        elif model == "deepseek-v4-pro":
             from deepseek_client import get_deepseek_response
             answer, _, reasoning, search = await get_deepseek_response(employee_messages, model=model, user_id=user_id, use_tools=True)
         else:
             from openai_client import get_chat_response
-            builds_file = _is_document_package_task(task) or _wants_file(task) or "docx" in (task or "").lower()
-            from app.services.desktop_context import desktop_executor
-            from app.services.desktop_cad_completion import required_cad_extensions
-            cad_build = desktop_executor.get() is not None and bool(required_cad_extensions(task))
-            from app.services.desktop_cad_completion import cad_employee_phase
-            loops = 40 if employee.get('product_phase') else (60 if cad_employee_phase(employee)=="gui_geometry" else 30) if cad_build else PACKAGE_EMPLOYEE_TOOL_LOOPS if builds_file else None
             if employee.get('web') and not cad_build and not builds_file:
                 loops = 6  # Search, skill, selective read/retry, then synthesis.
             def product_accepted(name, result):
@@ -1008,7 +1037,7 @@ async def _execute_employee(
                 **({'stop_after_tool': product_accepted} if employee.get('product_phase') == 'build' and employee.get('product_id') else {}),
             )
 
-        provider_failed = answer.startswith('❌ Ошибка OpenAI:') or answer == 'Нет ответа от модели'
+        provider_failed = answer.startswith('❌ Ошибка OpenAI:') or answer.startswith('❌ Ошибка OpenRouter:') or answer == 'Нет ответа от модели'
         return {
             "round": round_num, "role": role, "task": task, "model": model, "cad_phase": employee.get("cad_phase"), "cad_errors": cad_evidence.errors, "cad_resolved": sorted(cad_evidence.resolved), "status": "error" if cad_evidence.errors else "ok", "result": answer + ("\nCAD compiler diagnostics:\n" + "\n".join(cad_evidence.errors) if cad_evidence.errors else ""),
             **({'product_phase': employee['product_phase']} if employee.get('product_phase') else {}),
@@ -1080,8 +1109,9 @@ def _pool_description(user_id: int, original_task: str = "", document_context: s
         ("gpt-5-nano", "самая дешёвая, тривиальные микро-задачи и форматирование"),
         ("gpt-6-luna", "дешёвая, простой анализ, черновики, короткие ответы; короткое чтение, извлечение и фильтрация файлов"),
         *([(ROUTINE_MODEL, "точные небольшие правки и ограниченные преобразования вместо Sol, когда Luna недостаточно; наличие файла само по себе не причина выбирать Terra")] if economy_enabled() else []),
-        ("deepseek-v4-pro", "средняя-выше, сложные рассуждения и код"),
-        ("gpt-6-sol", "дорогая, сложный код и анализ, только если Luna заметно недостаточно"),
+        (HAIKU_MODEL, "дешёвая, цена как у Luna. Код, рассуждения и инструменты. Короткий ответ, без длинных размышлений."),
+        ("gpt-6-sol", "дорогая. Сложный анализ и починка кода, когда Haiku недостаточно. Пиши коротко."),
+        (OPUS_MODEL, "договор, аудит, архитектура, расследование. Один такой сотрудник. Не геометрия и не SDK."),
         (
             "gpt-6-astra",
             "самая дорогая. Только сложная геометрия/сопряжения и трудные ошибки SDK. "
@@ -1089,8 +1119,17 @@ def _pool_description(user_id: int, original_task: str = "", document_context: s
         ),
     ]
     allowed = set(_employee_models(user_id))
-    if not _task_warrants_astra(original_task, document_context):
+    from app.services.desktop_context import desktop_executor
+    from app.services.desktop_cad_completion import required_cad_extensions
+    cad = desktop_executor.get() is not None and bool(required_cad_extensions(original_task))
+    if cad:
+        allowed.discard(OPUS_MODEL)
+    elif _task_warrants_opus(original_task, document_context) and OPUS_MODEL in allowed:
         allowed.discard("gpt-6-astra")
+    else:
+        allowed.discard(OPUS_MODEL)
+        if not _task_warrants_astra(original_task, document_context):
+            allowed.discard("gpt-6-astra")
     return "\n".join(f"{mid} — {desc}" for mid, desc in lines if mid in allowed)
 
 
@@ -1167,8 +1206,10 @@ async def _plan_round(
         "- Не заказывай финальный отчёт, оглавление или нумерованные разделы.\n"
         "- Не проси разрешение искать или открыть сайт: найми сотрудника сразу.\n"
         "Экономь токены без потери результата: по умолчанию gpt-6-luna; "
-        "для актуальных фактов и поиска - gpt-6-luna с server_search и browse_page; для сложного кода и рассуждений - deepseek-v4-pro. "
-        "gpt-6-sol только если Luna заметно недостаточно.\n"
+        "для актуальных фактов и поиска - gpt-6-luna с server_search и browse_page; "
+        "для кода и рассуждений - claude-haiku-5.5, ответ короткий. "
+        "gpt-6-sol когда Haiku не тянет починку кода или сложный анализ. "
+        "Не нанимай вторую дорогую модель на ту же часть.\n"
         + (
             "В локальной CAD-задаче разделяй работу на конкретные этапы с cad_phase: "
             "inspect (файлы, фото, SDK) — Luna; simple_geometry (типовые детали, выдавливания, "
@@ -1178,8 +1219,12 @@ async def _plan_round(
             "одним заданием. Независимый анализ можно параллельно; изменения одного CAD-документа "
             "делай последовательно. Применяй уже готовые результаты коллег и передавай им "
             "конкретные пути/параметры. Астра — один сложный этап в раунде, не поиск и не финальный ответ. "
-            "В остальных задачах сохраняется один сложный договор/аудит.\n"
             if "gpt-6-astra" in pool_description
+            else ""
+        ) + (
+            "Один сотрудник claude-opus-5.5 на плотный договор, аудит, архитектуру или расследование. "
+            "Не нанимай его для геометрии, SDK и обычного анализа.\n"
+            if "claude-opus-5.5" in pool_description
             else ""
         ) +
         "Если ищут наличие электронных компонентов или план закупки BOM/спецификации – всем поисковым сотрудникам первой строкой load_skill marketplaces. "

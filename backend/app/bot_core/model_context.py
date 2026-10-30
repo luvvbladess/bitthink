@@ -54,6 +54,9 @@ MODE_WINDOWS: Dict[str, ModeWindow] = {
     "gpt-5-nano": ModeWindow(400_000, 128_000),
     "deepseek-v4-pro": ModeWindow(1_048_576, 64_000),
     "deepseek-v4-flash": ModeWindow(1_048_576, 64_000),
+    "claude-haiku-5.5": ModeWindow(1_000_000, 32_000),
+    "claude-sonnet-5.5": ModeWindow(1_000_000, 64_000),
+    "claude-opus-5.5": ModeWindow(1_000_000, 64_000),
 }
 
 LEAF_OUTPUT: Dict[str, int] = {
@@ -65,6 +68,9 @@ LEAF_OUTPUT: Dict[str, int] = {
     "kimi-k2.6": 32_768,
     "deepseek-v4-pro": 64_000,
     "deepseek-v4-flash": 64_000,
+    "claude-haiku-5.5": 32_000,
+    "claude-sonnet-5.5": 64_000,
+    "claude-opus-5.5": 64_000,
 }
 
 
@@ -120,7 +126,7 @@ def cached_prompt_tokens(usage: Any) -> int:
     def _field(obj: Any, key: str) -> Any:
         return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
 
-    for key in ("prompt_cache_hit_tokens", "cached_tokens"):
+    for key in ("prompt_cache_hit_tokens", "cached_tokens", "cache_read_input_tokens"):
         value = _field(usage, key)
         if isinstance(value, (int, float)) and value > 0:
             return int(value)

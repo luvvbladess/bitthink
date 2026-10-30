@@ -40,6 +40,7 @@ backend/users.json
 new_password*.txt
 serv.txt
 ruserv.txt
+api.txt
 home-reader/config.json
 # Google OAuth client downloaded from Cloud Console: keys live in the server .env only.
 client_secret_*.json

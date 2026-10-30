@@ -66,6 +66,8 @@ def test_free_user_cannot_select_locked_expert_model():
 def test_best_route_balances_cost_and_complexity_without_router_tokens():
     assert best_route("Привет, как приготовить омлет?", "none", True) == ("deepseek-v4-flash", False)
     assert best_route("Проанализируй архитектуру и сделай ревью кода", "none", True) == ("deepseek-v4-pro", False)
+    assert best_route("Проанализируй архитектуру и сделай ревью кода", "none", True, True) == ("claude-haiku-5.5", False)
+    assert best_route("Привет, как приготовить омлет?", "none", True, True) == ("deepseek-v4-flash", False)
     assert best_route("Объясни тему глубоко", "medium", True) == ("deepseek-v4-pro", True)
     assert best_route("Короткий вопрос", "none", False) == ("gpt-6-luna", False)
 
@@ -125,7 +127,7 @@ def test_pilot_hires_astra_only_for_dense_contract_work(monkeypatch):
     monkeypatch.setattr(
         dr,
         "_employee_models",
-        lambda _uid: ["gpt-6-luna", "gpt-6-sol", "gpt-6-astra"],
+        lambda _uid: ["gpt-6-luna", "gpt-6-sol", "gpt-6-astra", "claude-opus-5.5"],
     )
     assert not dr._task_warrants_astra("сравни три сайта")
     assert not dr._task_warrants_astra("проверь договор")
@@ -143,11 +145,11 @@ def test_pilot_hires_astra_only_for_dense_contract_work(monkeypatch):
     assert [item["model"] for item in cheap["new_employees"]] == ["gpt-6-sol", "gpt-6-sol"]
 
     heavy = dr._clamp_employee_plan(parsed, 1, "проверь договор", "пункт " * 80)
-    assert [item["model"] for item in heavy["new_employees"]] == ["gpt-6-astra", "gpt-6-sol"]
+    assert [item["model"] for item in heavy["new_employees"]] == ["claude-opus-5.5", "gpt-6-sol"]
 
-    already = [{"model": "gpt-6-astra"}]
+    already = [{"model": "claude-opus-5.5"}]
     second = dr._clamp_employee_plan(parsed, 1, "проверь договор", "пункт " * 80, already)
-    assert all(item["model"] != "gpt-6-astra" for item in second["new_employees"])
+    assert all(item["model"] not in {"gpt-6-astra", "claude-opus-5.5"} for item in second["new_employees"])
 
 
 def test_pilot_injects_memory_and_custom_prompt_into_planner_employee_and_composer(monkeypatch):
