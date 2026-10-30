@@ -100,6 +100,12 @@ function downloadFile(filename: string, data: string) {
   downloadBlob(blob, filename || 'file');
 }
 
+function liveHtml(filename: string, data: string): string | undefined {
+  if (!/\.html?$/i.test(filename) || !data) return undefined;
+  try { return new TextDecoder().decode(Uint8Array.from(atob(data), char => char.charCodeAt(0))); }
+  catch { return undefined; }
+}
+
 async function copyToClipboard(text: string) {
   if (navigator.clipboard && window.isSecureContext) {
     await navigator.clipboard.writeText(text);
@@ -509,7 +515,7 @@ const ChatMessageView = memo(function ChatMessageView({
         </Box>
       )}
       {file && canPreviewDocument(file.filename) && !attachmentItems.some(item => item.name === file.filename) && (
-        <Box sx={{ mt: 1.25 }}><DocumentAttachment name={file.filename} status="done" type="generated" /></Box>
+        <Box sx={{ mt: 1.25 }}><DocumentAttachment name={file.filename} status="done" type="generated" previewHtml={liveHtml(file.filename, file.data)} /></Box>
       )}
       {visibleContent && !editing && (
         <Box

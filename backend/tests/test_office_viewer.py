@@ -14,7 +14,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.chart import LineChart, Reference
 
 from app.config import get_settings
-from app.services.office_viewer import spreadsheet_source, spreadsheet_viewer
+from app.services.office_viewer import spreadsheet_source, office_viewer
 
 
 def workbook_bytes():
@@ -48,7 +48,7 @@ def test_viewing_copy_repairs_chart_axes_and_caches_without_changing_cells():
 
 def test_native_viewer_is_read_only_scoped_to_content_and_does_not_prompt_for_name(monkeypatch):
     settings = get_settings(); monkeypatch.setattr(settings, 'ONLYOFFICE_JWT_SECRET', 'viewer-test-secret')
-    data = workbook_bytes(); viewer = spreadsheet_viewer(data, 'Отчёт.xlsx', 'my-chat', True)
+    data = workbook_bytes(); viewer = office_viewer(data, 'Отчёт.xlsx', 'my-chat', True)
     c = viewer['config']; token = c.pop('token')
     assert jwt.decode(token, 'viewer-test-secret', algorithms=['HS256']) == c
     assert c['documentType'] == 'cell' and c['type'] == 'mobile'
@@ -59,9 +59,9 @@ def test_native_viewer_is_read_only_scoped_to_content_and_does_not_prompt_for_na
     assert query['v'] == [hashlib.sha256(data).hexdigest()]
     from app.api.editor import check_file_link
     assert check_file_link(query['t'][0]) == ('my-chat', 'Отчёт.xlsx')
-    assert spreadsheet_viewer(data+b'changed', 'Отчёт.xlsx', 'my-chat')['config']['document']['key'] != c['document']['key']
-    assert spreadsheet_viewer(data, 'Отчёт.xlsx', 'other-chat')['config']['document']['key'] != c['document']['key']
-    assert spreadsheet_viewer(data, 'Отчёт.pdf', 'my-chat') is None
+    assert office_viewer(data+b'changed', 'Отчёт.xlsx', 'my-chat')['config']['document']['key'] != c['document']['key']
+    assert office_viewer(data, 'Отчёт.xlsx', 'other-chat')['config']['document']['key'] != c['document']['key']
+    assert office_viewer(data, 'Отчёт.pdf', 'my-chat') is None
 
 
 def test_native_opt_in_bypasses_print_conversion_and_keeps_legacy_clients(monkeypatch):
@@ -98,7 +98,7 @@ def test_viewer_source_checks_signature_conversation_and_content_version(monkeyp
 
 def test_missing_configuration_unsupported_and_invalid_workbooks(monkeypatch):
     settings = get_settings(); monkeypatch.setattr(settings, 'ONLYOFFICE_JWT_SECRET', '')
-    assert spreadsheet_viewer(b'x', 'Report.xlsx', 'mine') is None
+    assert office_viewer(b'x', 'Report.xlsx', 'mine') is None
     with pytest.raises(ValueError, match='прочитать'):
         spreadsheet_source(b'not a zip', 'Report.xlsx')
     assert spreadsheet_source(b'legacy', 'Report.xls') == b'legacy'
