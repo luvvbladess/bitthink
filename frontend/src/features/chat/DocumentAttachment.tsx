@@ -57,20 +57,20 @@ export function DocumentAttachment({ name, size, status, type, url, note, progre
   const showProgress = status === 'uploading' && progress !== undefined;
   const progressValue = typeof progress === 'number' ? Math.max(0, Math.min(100, progress)) : 0;
   if (status === 'done' && !isImage) {
-    const label = html ? 'Интерактивный результат' : /\.(xlsx?|ods)$/i.test(name) ? 'Таблица' : /\.(pptx?|odp)$/i.test(name) ? 'Презентация' : canPreview ? 'Документ' : 'Файл';
-    return <Box sx={{ width: '100%', maxWidth: 420, minWidth: 0, p: 1.5, border: '1px solid var(--bt-hairline)', borderRadius: '14px', bgcolor: 'var(--bt-overlay-faint)' }}>
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, minWidth: 0, mb: 1.25 }}>
-        <Box sx={{ width: 40, height: 44, display: 'grid', placeItems: 'center', flexShrink: 0, color: 'var(--bt-ink-2)' }}><Icon size={24} /></Box>
+    const label = html ? 'Холст' : /\.(xlsx?|ods)$/i.test(name) ? 'Таблица' : /\.(pptx?|odp)$/i.test(name) ? 'Презентация' : canPreview ? 'Документ' : 'Файл';
+    return <Box data-attachment-card sx={{ width: '100%', maxWidth: 520, minWidth: 0, p: 1, border: '1px solid var(--bt-hairline)', borderRadius: '10px' }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
+        <Box sx={{ width: 24, height: 40, display: 'grid', placeItems: 'center', flexShrink: 0, color: 'var(--bt-ink-2)' }}><Icon size={20} /></Box>
         <Box sx={{ minWidth: 0, flex: 1 }}>
           <Box title={name} sx={{ fontSize: '.875rem', fontWeight: 600, lineHeight: 1.4, overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{name}</Box>
-          <Box sx={{ fontSize: '.8125rem', color: 'text.secondary', mt: .25 }}>{label}{formatSize(size) ? ` · ${formatSize(size)}` : ''}</Box>
+          <Box sx={{ fontSize: '.8125rem', color: 'text.secondary', mt: .25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}{formatSize(size) ? ` · ${formatSize(size)}` : ''}</Box>
         </Box>
-      </Box>
-      <Box sx={{ display: 'flex', gap: 1, minWidth: 0 }}>
-        {canPreview && <Button variant="contained" startIcon={<Eye size={18} />} aria-label={`Предпросмотр ${name}`} onClick={() => openPreview({ name, url, html: previewHtml })} sx={{ flex: 1, minWidth: 0, minHeight: 48, px: 1, fontWeight: 600 }}>Открыть</Button>}
-        {canDownload && <Button component="a" href={url} download={name} rel="noopener" variant={canPreview ? 'outlined' : 'contained'} startIcon={<DownloadSimple size={18} />} aria-label={`Скачать ${name}`} onClick={event => {
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: .25, flexShrink: 0 }}>
+        {canPreview && <Button aria-label={`Предпросмотр ${name}`} onClick={() => openPreview({ name, url, html: previewHtml })} sx={{ minWidth: 64, minHeight: 44, px: 1, fontSize: '.8125rem', color: 'text.primary', fontWeight: 600 }}>Открыть</Button>}
+        {canDownload && <Tooltip title="Скачать"><IconButton component="a" href={url} download={name} rel="noopener" aria-label={`Скачать ${name}`} onClick={event => {
           if (isCanvasFile) { event.preventDefault(); void downloadCanvasFromUrl(url!, name).catch(() => window.open(url, '_blank', 'noopener')); }
-        }} sx={{ flex: 1, minWidth: 0, minHeight: 48, px: 1, color: canPreview ? 'text.primary' : undefined, borderColor: 'var(--bt-hairline)', fontWeight: 600 }}>Скачать</Button>}
+        }} sx={{ width: 44, height: 44, color: 'text.secondary' }}><DownloadSimple size={18} /></IconButton></Tooltip>}
+      </Box>
       </Box>
       {(canEdit || (onRemoveFromContext && type !== 'generated')) && <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: .5, mt: .75 }}>
         {canEdit && <Button size="small" startIcon={<PencilSimpleLine size={16} />} aria-label="Открыть документ в редакторе" onClick={() => openEditor(name)} sx={{ minHeight: 44, color: 'text.secondary' }}>Редактировать</Button>}
