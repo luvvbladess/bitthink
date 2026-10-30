@@ -322,7 +322,10 @@ def usage_view(sub: dict[str, Any]) -> dict[str, Any]:
             "Luna / Nano": MODEL_MULTIPLIER["gpt-6-luna"],
             "Kimi": MODEL_MULTIPLIER["kimi-k2.6"],
             "DeepSeek": MODEL_MULTIPLIER["deepseek-v4-pro"],
+            "Haiku": MODEL_MULTIPLIER["claude-haiku-5.5"],
             "Sol": MODEL_MULTIPLIER["gpt-6-sol"],
+            "Sonnet": MODEL_MULTIPLIER["claude-sonnet-5.5"],
+            "Opus": MODEL_MULTIPLIER["claude-opus-5.5"],
             "Astra": MODEL_MULTIPLIER["gpt-6-astra"],
         },
     }

@@ -15,6 +15,7 @@ CACHE_WRITE_FRACTION = 1.25
 # $0.50 out), checked October 2026:
 #   Sol 6.1   $2 / $10      = 20x   Astra $10 / $50   = 100x
 #   Kimi K2.6 $0.95 / $4    ~  9x   DeepSeek Pro (peak/off-peak mix) ~ 9x, Flash ~ 2x
+#   Haiku 5.5 $0.10 / $0.50 = 1x    Sonnet 5.5 $2 / $10 = 20x   Opus 5.5 $4 / $20 = 40x
 # Re-derive these whenever a vendor changes prices; the stale 4x for Kimi and
 # 5x for DeepSeek were charging users roughly half of what the calls cost us.
 # Retired GPT-5.6 ids stay priced so old usage rows still debit correctly.
@@ -32,6 +33,9 @@ MODEL_MULTIPLIER: dict[str, int] = {
     "gpt-6-sol": 20,
     "gpt-6.1-terra": 10,
     "gpt-6-astra": 100,
+    "claude-haiku-5.5": 1,
+    "claude-sonnet-5.5": 20,
+    "claude-opus-5.5": 40,
 }
 
 # Saved chats and in-flight requests may still name the previous generation.
@@ -50,10 +54,11 @@ CHEAP_MODELS = [
     "gpt-6-luna",
     "deepseek-v4-pro",
     "deepseek-v4-flash",
+    "claude-haiku-5.5",
 ]
 
-PRO_MODELS = CHEAP_MODELS + ["director", "studio", "gpt-6-sol", "gpt-6.1-terra"]
-PROPLUS_MODELS = PRO_MODELS + ["gpt-6-astra"]
+PRO_MODELS = CHEAP_MODELS + ["director", "studio", "gpt-6-sol", "gpt-6.1-terra", "claude-sonnet-5.5"]
+PROPLUS_MODELS = PRO_MODELS + ["gpt-6-astra", "claude-opus-5.5"]
 ULTRA_MODELS = list(PROPLUS_MODELS)
 # Creator is the internal unlimited seat. It must never lag behind Ultra.
 # docgen (режим «Документы») is creator-only: a single run can take hours and
@@ -78,7 +83,7 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "chat_tokens": 0,
         "computer_tokens": 0,
         "images": 3,
-        "models": ["auto", "kimi-k2.6", "gpt-5-nano", "gpt-6-luna"],
+        "models": ["auto", "kimi-k2.6", "gpt-5-nano", "gpt-6-luna", "claude-haiku-5.5"],
         "daily_replies": 30,
         "daily_searches": 15,
         "features": ["30 ответов в день, из них до 15 с поиском", "3 картинки в месяц", "без Оркестратора, Студии и Исследования"],
@@ -222,7 +227,7 @@ def clamp_model(tier: str | None, model: str) -> str:
     allowed = allowed_models(tier)
     if model in allowed:
         return model
-    if model == "gpt-6-astra" and "gpt-6-sol" in allowed:
+    if model in {"gpt-6-astra", "claude-opus-5.5", "claude-sonnet-5.5"} and "gpt-6-sol" in allowed:
         return "gpt-6-sol"
     if model == "gpt-6-sol":
         return _everyday_model(allowed)
@@ -246,11 +251,15 @@ def research_model(tier: str | None) -> str | None:
 
 def computer_models(tier: str | None) -> list[str]:
     allowed = allowed_models(tier)
-    pool = [item for item in ("gpt-5-nano", "gpt-6-luna", "kimi-k2.6", "deepseek-v4-pro") if item in allowed]
+    pool = [item for item in ("gpt-5-nano", "gpt-6-luna", "kimi-k2.6", "claude-haiku-5.5", "deepseek-v4-pro") if item in allowed]
     if "gpt-6.1-terra" in allowed:
         pool.append("gpt-6.1-terra")
     if "gpt-6-sol" in allowed:
         pool.append("gpt-6-sol")
+    if "claude-sonnet-5.5" in allowed:
+        pool.append("claude-sonnet-5.5")
+    if "claude-opus-5.5" in allowed:
+        pool.append("claude-opus-5.5")
     if "gpt-6-astra" in allowed:
         pool.append("gpt-6-astra")
     return pool or ["gpt-6-luna"]

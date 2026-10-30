@@ -579,7 +579,7 @@ async def get_smart_response(
                     force_web_search=True,
                 )
         else:
-            from config import DEEPSEEK_API_KEY
+            from config import DEEPSEEK_API_KEY, OPENROUTER_API_KEY
             from routing import route_for_turn
             # Auto owns its effort decision. A stale manual toggle from another
             # mode must not make a short everyday prompt expensive.
@@ -588,12 +588,34 @@ async def get_smart_response(
                 if m.get("role") == "user" and isinstance(m.get("content"), str)
             ][-2:-1]
             route, deep_thinking = route_for_turn(
-                user_text, previous_user[0] if previous_user else "", bool(DEEPSEEK_API_KEY)
+                user_text, previous_user[0] if previous_user else "", bool(DEEPSEEK_API_KEY), bool(OPENROUTER_API_KEY)
             )
             route = clamp_model(tier, route)
             label = "глубокий анализ" if deep_thinking else "быстрый точный ответ"
             await push_status("think", f"Выбрана оптимальная модель · {label}")
-            if route.startswith("deepseek"):
+            if route.startswith("claude-"):
+                from openrouter_client import get_openrouter_response
+                result = await get_openrouter_response(
+                    messages,
+                    model=route,
+                    user_id=user_id,
+                    use_tools=True,
+                    chat_tools=True,
+                    reasoning_effort="medium",
+                    on_reasoning_delta=on_reasoning_delta,
+                )
+                if result[0].startswith("❌"):
+                    await push_status("think", "Основной маршрут недоступен · переключаюсь на резервный")
+                    result = await get_chat_response(
+                        messages,
+                        model=clamp_model(tier, "gpt-6-luna"),
+                        user_id=user_id,
+                        use_tools=True,
+                        chat_tools=True,
+                        reasoning_effort="low" if deep_thinking else "none",
+                        on_reasoning_delta=on_reasoning_delta,
+                    )
+            elif route.startswith("deepseek"):
                 from deepseek_client import get_deepseek_response
                 result = await get_deepseek_response(
                     messages,
