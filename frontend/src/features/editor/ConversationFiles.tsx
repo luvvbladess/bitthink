@@ -378,19 +378,18 @@ export function ConversationFilesDrawer({
 
         {showFilters && (
           <Box
+            role="group"
+            aria-label="Категории файлов"
             sx={{
               display: 'flex',
               gap: 0.75,
               px: 2,
+              pt: 0.5,
               pb: 1,
-              overflowX: 'auto',
-              flexWrap: 'nowrap',
+              flexWrap: 'wrap',
               flexShrink: 0,
               minWidth: 0,
               width: '100%',
-              overscrollBehaviorX: 'contain',
-              scrollbarWidth: 'none',
-              '&::-webkit-scrollbar': { display: 'none' },
             }}
           >
             {filters.map((item) => {
@@ -405,7 +404,7 @@ export function ConversationFilesDrawer({
                   sx={{
                     flex: '0 0 auto',
                     minHeight: 44,
-                    px: 1.5,
+                    px: 1.25,
                     borderRadius: '999px',
                     border: '1px solid',
                     borderColor: selected ? 'transparent' : 'var(--bt-hairline)',
@@ -498,12 +497,12 @@ export function ConversationFilesDrawer({
       >
         {menuFile && canPreviewDocument(menuFile.name) && (
           <MenuItem sx={{ minHeight: 48, gap: 1.25 }} onClick={() => { const file = menuFile; setMenu(null); void openFile(file); }}>
-            <Eye size={18} /> Открыть
+            <Eye size={18} /> Предпросмотр
           </MenuItem>
         )}
         {menuFile && fileKind(menuFile) === 'images' && hrefFor(menuFile) && (
           <MenuItem sx={{ minHeight: 48, gap: 1.25 }} onClick={() => { setPhoto(menuFile); setMenu(null); }}>
-            <Eye size={18} /> Открыть
+            <Eye size={18} /> Предпросмотр
           </MenuItem>
         )}
         {menuFile && canEdit(menuFile) && (
@@ -573,6 +572,12 @@ function FileMark({ file, broken, onBroken, large = false }: { file: Conversatio
   return <Box sx={large ? { ...tileSx, width: '100%', height: 'auto', aspectRatio: '1', borderRadius: '14px' } : tileSx}><Icon size={large ? 28 : 22} /></Box>;
 }
 
+function PreviewLabel() {
+  return <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', alignSelf: 'flex-start', gap: 0.5, px: 1, py: 0.25, mt: 0.5, maxWidth: '100%', border: '1px solid var(--bt-hairline)', borderRadius: '8px', bgcolor: 'var(--bt-overlay-faint)', color: 'var(--bt-ink)', fontSize: '0.8125rem', fontWeight: 600, lineHeight: 1.5 }}>
+    <Eye size={16} aria-hidden style={{ flexShrink: 0 }} /> Предпросмотр
+  </Box>;
+}
+
 function FileRow({ file, library, disabled, broken, onBroken, onOpen, onMenu }: {
   file: ConversationFile;
   library: boolean;
@@ -592,6 +597,7 @@ function FileRow({ file, library, disabled, broken, onBroken, onOpen, onMenu }: 
         <Box sx={{ minWidth: 0, flex: 1 }}>
           <Typography noWrap title={file.name} sx={{ fontSize: '0.9375rem', fontWeight: 600, lineHeight: 1.35 }}>{file.name}</Typography>
           {detail && <Typography noWrap sx={{ fontSize: '0.8125rem', color: 'var(--bt-ink-muted)', mt: 0.25 }}>{detail}</Typography>}
+          {(canPreviewDocument(file.name) || (fileKind(file) === 'images' && hrefFor(file))) && <PreviewLabel />}
         </Box>
       </Box>
       <IconButton aria-label={`Действия с ${file.name}`} aria-haspopup="menu" onClick={(event) => onMenu(event.currentTarget)} sx={{ width: 44, height: 44, flexShrink: 0, color: 'var(--bt-ink-muted)' }}>
@@ -613,6 +619,7 @@ function ImageCard({ file, broken, onBroken, onOpen, onMenu }: {
       <Box component="button" type="button" onClick={onOpen} aria-label={file.name} sx={{ ...rowButtonSx, flexDirection: 'column', alignItems: 'stretch', gap: 0.75, minHeight: 0, p: 0.5 }}>
         <FileMark file={file} broken={broken} onBroken={onBroken} large />
         <Typography noWrap title={file.name} sx={{ fontSize: '0.75rem', fontWeight: 600, px: 0.5, pb: 0.25 }}>{file.name}</Typography>
+        {hrefFor(file) && <PreviewLabel />}
       </Box>
       <IconButton
         aria-label={`Действия с ${file.name}`}

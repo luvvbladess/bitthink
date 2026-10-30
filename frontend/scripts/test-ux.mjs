@@ -379,6 +379,22 @@ try {
       await f.page.screenshot({ path: `${output}/library-${width}-${theme}.png` });
       const bounds = await library.boundingBox();
       assert(bounds.x >= -1 && bounds.x + bounds.width <= width + 1);
+      const categories = library.getByRole('group', { name: 'Категории файлов' });
+      const checkCategories = async () => {
+        const layout = await categories.evaluate(group => {
+          const container = group.getBoundingClientRect();
+          return { left: container.left, right: container.right, top: container.top, bottom: container.bottom, width: group.clientWidth, contentWidth: group.scrollWidth,
+            buttons: [...group.querySelectorAll('button')].map(button => { const r = button.getBoundingClientRect(); return { name: button.textContent, left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: button.clientWidth, contentWidth: button.scrollWidth }; }) };
+        });
+        assert.equal(layout.buttons.length, 6);
+        assert(layout.contentWidth <= layout.width, 'Categories must not require hidden horizontal scrolling');
+        for (const button of layout.buttons) {
+          assert(button.left >= layout.left + 3 && button.right <= layout.right - 3 && button.top >= layout.top + 3 && button.bottom <= layout.bottom - 3, `Category and focus ring must fit: ${JSON.stringify(button)}`);
+          assert(button.contentWidth <= button.width, `Category label must fit: ${button.name}`);
+        }
+      };
+      await checkCategories();
+      await expect(library.getByRole('button', { name: /^Очень_длинное/ }).getByText('Предпросмотр', { exact: true })).toBeVisible();
       // Text may truncate; rows and independent action targets must never overlap.
       const row = library.getByRole('listitem').first();
       const boxes = await row.getByRole('button').evaluateAll(nodes => nodes.map(n => { const r = n.getBoundingClientRect(); return { x: r.x, right: r.right }; }));
@@ -388,9 +404,11 @@ try {
       await expect(library.getByText('Ничего не нашлось')).toBeVisible();
       await search.fill('');
       await library.getByRole('button', { name: 'Картинки', exact: true }).click();
+      await library.getByRole('button', { name: 'Картинки', exact: true }).focus();
+      await checkCategories();
       await expect(library.getByRole('listitem')).toHaveCount(2);
       await f.page.screenshot({ path: `${output}/library-images-${width}-${theme}.png` });
-      await library.getByRole('button', { name: imageName, exact: true }).click();
+      await library.getByRole('button', { name: imageName, exact: true }).getByText('Предпросмотр', { exact: true }).click();
       const photo = f.page.getByRole('dialog');
       await expect(photo.getByRole('img', { name: imageName, exact: true })).toBeVisible();
       await expect.poll(() => photo.evaluate(n => { let opacity = 1; for (let el = n; el; el = el.parentElement) opacity *= Number(getComputedStyle(el).opacity); return opacity; })).toBe(1);
@@ -405,7 +423,7 @@ try {
       await library.getByRole('button', { name: 'Все', exact: true }).click();
       await library.getByRole('button', { name: /^Действия с Очень_длинное/ }).click();
       f.state.manyPages = true;
-      await f.page.getByRole('menuitem', { name: 'Открыть', exact: true }).click();
+      await f.page.getByRole('menuitem', { name: 'Предпросмотр', exact: true }).click();
       const preview = f.page.getByRole('region', { name: 'Предпросмотр документа' });
       await expect(preview.getByRole('img', { name: /^Страница/ })).toBeVisible();
       assert(f.state.previewChats.every(id => id === 'chat-b'), 'Library preview stays bound to the original conversation');
@@ -527,7 +545,7 @@ try {
     try {
       await expect(f.input).toBeEnabled();
       await f.input.fill('Сохранённый черновик');
-      await f.page.getByRole('button', { name: 'Предпросмотр Отчёт.docx', exact: true }).click();
+      await f.page.getByRole('button', { name: 'Предпросмотр Отчёт.docx', exact: true }).getByText('Предпросмотр', { exact: true }).click();
       const panel = f.page.getByRole('region', { name: 'Предпросмотр документа', exact: true });
       await expect(panel.getByRole('img', { name: /^Страница/ })).toHaveAttribute('alt', 'Страница 1 документа Отчёт.docx');
       assert.equal(f.state.downloads || 0, 0, 'preview never downloads the original');
