@@ -2,6 +2,7 @@
 from contextvars import ContextVar
 
 generation_preferences: ContextVar[dict | None] = ContextVar('generation_preferences', default=None)
+generation_instructions: ContextVar[dict | None] = ContextVar('generation_instructions', default=None)
 
 
 def preference(user_id, field):

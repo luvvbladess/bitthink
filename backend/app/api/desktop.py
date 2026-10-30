@@ -20,6 +20,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 from app.services.desktop_policy import context_policy
 PROTOCOL = 1
+MAX_CLIENT_FRAME = 4_000_000
 LOCAL_TOOLS = frozenset({
     "workspace_ls", "workspace_read", "workspace_write", "workspace_edit",
     "workspace_delete", "workspace_grep", "workspace_glob", "python_run",
@@ -189,9 +190,9 @@ async def desktop_socket(ws: WebSocket):
         await send("ready", protocol=PROTOCOL, mode="director", modes=["director", "chat"], local_history=True, work_context=True, context_compaction=True, context_policy=context_policy())
         while ws.application_state == WebSocketState.CONNECTED:
             raw = await ws.receive_text()
-            if len(raw) > 1_000_000:
-                await ws.close(code=1009)
-                break
+            if len(raw) > MAX_CLIENT_FRAME:
+                await send("error", code="protocol", message="Сообщение BitClient слишком большое. Сократите историю или вложение и повторите.")
+                continue
             msg = json.loads(raw)
             payload = msg.get("payload") or {}
             if not isinstance(payload, dict):

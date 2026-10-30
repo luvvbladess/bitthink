@@ -1,4 +1,5 @@
 import asyncio
+import json
 from uuid import uuid4
 
 import pytest
@@ -188,3 +189,17 @@ def test_desktop_answer_modes_follow_site_plan(monkeypatch, account, tier, model
     response = TestClient(app).get("/desktop/status", headers={"Authorization": "Bearer " + token})
     assert response.status_code == 200
     assert set(response.json()["chat_models"]) == models
+
+
+def test_oversized_desktop_frame_keeps_the_socket(account):
+    _, token = account
+    raw = json.dumps({"type": "ping", "payload": {"blob": "x" * 4_100_000}})
+    assert len(raw) > 4_000_000
+    with TestClient(app).websocket_connect("/desktop/ws") as ws:
+        ws.send_json({"type": "auth", "payload": {"token": token}})
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_text(raw)
+        error = ws.receive_json()
+        assert error["type"] == "error" and error["payload"]["code"] == "protocol"
+        ws.send_json({"type": "ping", "payload": {}})
+        assert ws.receive_json()["type"] == "pong"

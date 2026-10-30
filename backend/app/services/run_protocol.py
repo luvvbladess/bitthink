@@ -202,7 +202,7 @@ class RunRecord:
                     self.engineering['last_build_failed']=False
             except (ValueError,TypeError,AttributeError):
                 pass
-        if name != "browse_page":
+        if name not in {"browse_page", "browse_visual"}:
             return
         self.observe_page(result)
 

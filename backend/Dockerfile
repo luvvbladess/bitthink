@@ -20,6 +20,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # без пакета — тогда .doc читается как текст, без оформления.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice-writer-nogui \
+    libreoffice-calc-nogui \
+    libreoffice-impress-nogui \
     fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 

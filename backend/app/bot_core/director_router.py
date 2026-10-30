@@ -658,6 +658,18 @@ def _parse_director_plan(response_text: str, *, strict: bool = False) -> Dict[st
             data = json.loads(match.group(0))
 
         status = data.get("status")
+        from app.services.conversation_context import workspaces
+        selection = {}
+        if workspaces.get() is not None:
+            action = data.get('workspace_action')
+            if action not in {'revise', 'create', 'none'}:
+                raise ValueError('Planner must select how this request relates to the saved workspace')
+            selection['workspace_action'] = action
+            if action == 'revise':
+                pid = data.get('workspace_id')
+                if pid not in {item['product_id'] for item in workspaces.get()}:
+                    raise ValueError('Workspace must belong to the current conversation')
+                selection['workspace_id'] = pid
         if strict and status not in {"continue", "done", "clarify"}:
             raise ValueError('Unknown plan status')
         raw_employees = data.get("new_employees", [])
@@ -682,7 +694,7 @@ def _parse_director_plan(response_text: str, *, strict: bool = False) -> Dict[st
 
             questions = normalize_questions(data.get("questions"))
             if questions:
-                return {"status": "clarify", "new_employees": [], "questions": questions}
+                return {"status": "clarify", "new_employees": [], "questions": questions, **selection}
             if strict:
                 raise ValueError('No valid clarification questions')
             status = "done"
@@ -691,12 +703,12 @@ def _parse_director_plan(response_text: str, *, strict: bool = False) -> Dict[st
 
         if status not in ("continue", "done"):
             status = "continue" if valid_employees else "done"
-        if status == "continue" and not valid_employees:
+        if status == "continue" and not valid_employees and selection.get('workspace_action') not in {'revise', 'create'}:
             if strict:
                 raise ValueError('No valid employees in continuing plan')
             status = "done"
 
-        return {"status": status, "new_employees": valid_employees}
+        return {"status": status, "new_employees": valid_employees, **selection}
     except Exception as e:
         if strict:
             raise ValueError('Invalid orchestrator plan') from None
@@ -805,7 +817,8 @@ def _extract_document_context(messages: List[Dict[str, Any]]) -> str:
     for m in messages:
         if m.get("role") == "system":
             content = m.get("content", "")
-            if "документ для контекста" in content or "предоставил документ" in content:
+            if ("документ для контекста" in content or "предоставил документ" in content
+                or content.startswith(('Сохранённые материалы именно этой беседы', 'Правила пользователя для этого задания:'))):
                 doc_parts.append(content)
     return "\n\n".join(doc_parts)
 
@@ -821,12 +834,12 @@ def _format_chat_history(messages: List[Dict[str, Any]]) -> str:
     return format_chat_history_for_prompt(messages)
 
 
-async def _update_status(status_msg: Any, text: str) -> None:
+async def _update_status(status_msg: Any, text: str, kind: str = 'work') -> None:
     """Безопасно обновляет статус. Если живая лента привязана — шаг в ней, иначе старый edit."""
     try:
         from status_feed import is_bound, push_status
         if is_bound():
-            await push_status("think", re.sub(r"\*\*(.+?)\*\*", r"\1", text))
+            await push_status(kind, re.sub(r"\*\*(.+?)\*\*", r"\1", text))
             return
     except Exception:
         pass
@@ -860,7 +873,8 @@ async def _execute_employee(
     model = FALLBACK_EMPLOYEE_MODEL if legacy_search else employee["model"]
     try:
         from status_feed import push_status
-        await push_status("think", (task or role)[:120])
+        from orchestrator_activity import employee_activity
+        await push_status(*employee_activity(employee))
     except Exception:
         pass
 
@@ -893,6 +907,7 @@ async def _execute_employee(
         "Ответь по существу, без отчёта, оглавления и нумерации разделов. "
         "Не рассказывай вслух, какой инструмент выберешь. Сначала вызови его. "
         "Если нужно зайти на сайт – browse_page или site_login с логином из чата. "
+        "Дизайн, композицию и расположение заголовков смотри через browse_visual: он снимает десктоп и телефон. browse_page этого не показывает. "
         "Почта, VPS и API: сначала сохранённые подключения владельца; уже переданные доступы используй только по поручению. "
         "Перед кодом, файлом, таблицей, презентацией, письмом или входом на сайт – первым вызовом load_skill с точным именем из каталога. "
         "Не грузи все скилы. Если скил уже вложен ниже – не вызывай load_skill повторно. Если ни один не подходит, работай без скила. "
@@ -1221,6 +1236,20 @@ async def _plan_round(
         "Поле model - строго один из id моделей выше. questions: 1-3 штуки, у каждого 2-6 коротких options."
     )
 
+    from app.services.conversation_context import workspaces
+    if workspaces.get() is not None:
+        prompt += ('\n\nСохранённые рабочие проекты ИМЕННО ЭТОЙ беседы (данные сервера):\n'
+                   + json.dumps(workspaces.get(), ensure_ascii=False)
+                   + '\nОпредели по смыслу текущего сообщения и всей истории, относится ли запрос к изменению '
+                     'сохранённого проекта, созданию отдельного нового продукта или обычному ответу. '
+                     'Фразы вроде «покрупнее», «всё ещё не нравится», «сделай как обсуждали» не требуют '
+                     'повторять слово «сайт»: используй контекст. Вопрос или смена темы не разрешают править проект. '
+                     'В JSON обязательно добавь workspace_action: revise / create / none. '
+                     'Для revise укажи workspace_id строго из списка выше. Для revise/create можно вернуть '
+                     'status=continue и пустой new_employees: сборку назначит контроллер. '
+                     'Если нельзя выбрать между несколькими проектами, верни status=clarify. '
+                     'Не отвечай, что файлы недоступны, без реальной проверки их доступности.')
+
     from app.services.run_protocol import current_run
     if current_run.get():
         prompt += current_run.get().evidence_prompt()
@@ -1259,6 +1288,9 @@ async def _plan_round(
             has_images=bool(image_names),
         )
     except Exception as e:
+        from app.services.conversation_context import workspaces
+        if workspaces.get() is not None:
+            raise ValueError('Не удалось определить действие с рабочими файлами. Повторите запрос.') from e
         logger.error(f"Director round planning failed: {e}. Treating as done.")
         return {"status": "done", "new_employees": []}
 
@@ -1429,6 +1461,7 @@ async def _answer_directly(
         f"{_current_date_note()}\n"
         "Ты Оркестратор в этом чате: отвечай как обычный ассистент. "
         "Если нужно зайти на сайт – browse_page или site_login с логином из чата. "
+        "Дизайн, композицию и расположение заголовков смотри через browse_visual. "
         "Почта, VPS и API используют подключения владельца или уже переданный им доступ. "
         "Файлы этого чата – list_chat_files и read_chat_document. Прошлые чаты – search_chats. "
         "Фото – image_search в Яндексе, Google и Bing, затем browse_page по совпадениям. Не угадывай место по виду кадра. "
@@ -1556,7 +1589,7 @@ async def _run_package_one_by_one(
     done: List[str] = []
     failed: List[str] = []
     for index, doc in enumerate(docs, 1):
-        await _update_status(status_msg, f"Документ {index}/{total}: {doc['title']}")
+        await _update_status(status_msg, f"Готовлю документ {index} из {total} — {doc['title']}", 'file')
         employee = _clamp_employee_plan(
             {"new_employees": [_package_document_employee(doc, index, total, user_text)]}, user_id
         )["new_employees"][0]
@@ -1668,13 +1701,28 @@ async def _run_director(
     except Exception:
         pass
 
-    await _update_status(status_msg, "Исследую задачу")
+    await _update_status(status_msg, "Разбираю задачу — Определяю нужный результат и порядок работы", 'plan')
 
     from app.services.task_checkpoints import resumed_journal, save as save_checkpoint
     journal: List[Dict[str, Any]] = list(resumed_journal.get() or [])
     from app.services.product_strategy import is_product_request
+    from app.services.conversation_context import workspaces
     from app.services.autonomy import product_evidence, product_employee, verified_product
-    product_build = desktop_executor.get() is None and is_product_request(user_text)
+    initial_plan = None
+    followup_id = None
+    if desktop_executor.get() is None and workspaces.get() is not None and not journal:
+        initial_plan = await _plan_round(user_text, journal, user_id, document_context, history_text)
+        if initial_plan.get('status') == 'clarify' and initial_plan.get('questions'):
+            from clarify import pack_search
+            return initial_plan['questions'][0]['prompt'], [], '', pack_search(initial_plan['questions'])
+        if initial_plan.get('workspace_action') == 'revise':
+            followup_id = initial_plan.get('workspace_id')
+            if followup_id not in {item['product_id'] for item in workspaces.get()}:
+                raise ValueError('Выбранный проект не относится к этой беседе.')
+    product_build = desktop_executor.get() is None and (is_product_request(user_text) or bool(followup_id)
+                                                       or any(entry.get('product_id') for entry in journal))
+    if initial_plan is not None:
+        product_build = initial_plan.get('workspace_action') in {'revise', 'create'}
     product_state = product_evidence.get()
     if product_state is None:
         product_state = {}
@@ -1682,6 +1730,27 @@ async def _run_director(
         for entry in journal:
             if entry.get('product_id'):
                 product_state['product_id'] = entry['product_id']
+        if followup_id:
+            # A new user turn must invalidate the old acceptance receipts before
+            # the packaged-product fast path can decide there is nothing to do.
+            await _update_status(status_msg, 'Открываю исходники созданного проекта', 'file')
+            try:
+                previous = await verified_product(user_id, followup_id, package=False)
+                if previous.get('error') or not previous.get('path'):
+                    raise ValueError('Исходники проекта недоступны')
+                brief = str(previous.get('brief') or '')[:11000]
+                revised_task = f'Доработай существующий проект.\nИсходные требования:\n{brief}\n\nНовые правки пользователя:\n{user_text[:4500]}'
+                from app.services.sandbox_client import run_workspace_tool
+                revision = json.loads(await run_workspace_tool('product_lifecycle', {
+                    'action': 'revise', 'product_id': followup_id, 'brief': revised_task}, user_id))
+                if revision.get('error') or revision.get('product_id') != followup_id:
+                    raise ValueError('Не удалось открыть проект для правки')
+                product_state.update(revision)
+                user_text = revised_task
+            except (ValueError, TypeError):
+                return ('Не удалось открыть исходники ранее созданного проекта в облаке. '
+                        'Прикрепите выданный ZIP-архив, чтобы продолжить работу с его файлами. '
+                        'Новая версия пока не создана.'), [], '', []
     round_num = 0
     turn_images = packed_has_images(messages) or _turn_has_images(user_id)
     has_images = wants_photo_research(user_text, turn_images)
@@ -1693,7 +1762,7 @@ async def _run_director(
         journal = []  # Fresh card/review/availability checks on each resumed shopping run.
 
     if _is_document_package_task(user_text):
-        await _update_status(status_msg, "Составляю список документов")
+        await _update_status(status_msg, "Составляю список документов — Определяю состав будущего комплекта", 'plan')
         docs = await _plan_package_documents(user_text, user_id, history_text, document_context)
         if len(docs) >= 2:
             return await _run_package_one_by_one(
@@ -1713,7 +1782,7 @@ async def _run_director(
             product_state.update(revision)
         round_num += 1
         if product_build:
-            if round_num == 1 and not journal and not product_state.get('product_id'):
+            if round_num == 1 and not journal and not product_state.get('product_id') and initial_plan is None:
                 # Preserve essential clarification (e.g. an app with no purpose).
                 # Stack selection and routine design choices stay autonomous.
                 preflight = await _plan_round(user_text, journal, user_id, document_context, history_text)
@@ -1733,6 +1802,8 @@ async def _run_director(
             if employee is None:
                 break
             plan = _clamp_employee_plan({'status': 'continue', 'new_employees': [employee]}, user_id, user_text, document_context, journal)
+        elif initial_plan is not None and round_num == 1:
+            plan = initial_plan
         elif light and round_num == 1:
             # A short question with no files or tools: skip the Sol planner and its round trip.
             searching = needs_research(user_text, False) and not is_smalltalk(user_text)
@@ -1761,7 +1832,7 @@ async def _run_director(
         if plan.get("status") == "clarify" and plan.get("questions"):
             from clarify import pack_search
 
-            await _update_status(status_msg, "Уточняю задачу")
+            await _update_status(status_msg, "Подготавливаю уточняющие вопросы — Для продолжения нужен ваш выбор", 'plan')
             questions = plan["questions"]
             return questions[0]["prompt"], [], "", pack_search(questions)
 
@@ -1808,10 +1879,11 @@ async def _run_director(
 
         hired = plan["new_employees"]
         if len(hired) == 1:
-            await _update_status(status_msg, f"Делаю: {hired[0]['role']}")
+            from orchestrator_activity import employee_activity
+            kind, label = employee_activity(hired[0])
+            await _update_status(status_msg, label, kind)
         else:
-            roles = ", ".join(item["role"] for item in hired)
-            await _update_status(status_msg, f"Запускаю {len(hired)} сотрудников параллельно: {roles}")
+            await _update_status(status_msg, f"Работаю над {len(hired)} частями задачи параллельно — Затем объединю результаты", 'work')
 
         # BitClient live swarm collaboration
         from app.services.desktop_swarm import execute_swarm_batch
@@ -1837,7 +1909,7 @@ async def _run_director(
     if not journal:
         # This call can still search and browse. Writing belongs to the final,
         # tool-free synthesis after the observations have actually been collected.
-        await _update_status(status_msg, "Проверяю запрос")
+        await _update_status(status_msg, "Разбираю вопрос и подбираю ответ", 'work')
         try:
             answer, reasoning, search = await _answer_directly(messages, user_id)
         except Exception as e:
@@ -1848,13 +1920,13 @@ async def _run_director(
         journal.append({"round": 0, "role": "Поисковые кандидаты", "model": DIRECT_ANSWER_MODEL, "status": "ok", "result": answer, "search": search, "reasoning": reasoning})
 
     if _is_shopping_task(user_text, user_id):
-        await _update_status(status_msg, "Открываю карточки через домашний читатель и проверяю предложения")
+        await _update_status(status_msg, "Сверяю предложения на страницах магазинов — Проверяю доступные цены и условия", 'check')
         from marketplace_verification import verify_marketplace_cards
         journal.extend(await verify_marketplace_cards(user_text, journal, user_id=user_id))
 
     # Всегда, а не только когда просили файл: сотрудник мог собрать его по ходу дела.
     built_files = await _new_file_names(user_id, started)
-    await _update_status(status_msg, "Пишу ответ")
+    await _update_status(status_msg, "Собираю итоговый ответ — Объединяю выводы и подготовленные файлы", 'work')
     if product_build:
         # Completion is derived from receipts, never from a composer's claim.
         answer, compose_reasoning = '', ''

@@ -108,6 +108,30 @@ async def download_conversation_file(conv_id: str, t: str = ""):
     )
 
 
+@router.get("/{conv_id}/files/preview")
+async def preview_conversation_file(conv_id: str, filename: str, page: int | None = None,
+                                    user_id: str = Depends(get_current_user)):
+    from fastapi.responses import JSONResponse, Response
+    from app.api.editor import _conversation_for, file_bytes, sign_file_link
+    from app.services.document_preview import preview
+
+    _, conv = await _conversation_for(user_id, conv_id)
+    data = await asyncio.to_thread(file_bytes, conv, filename)
+    if not data:
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    try:
+        result = await asyncio.to_thread(preview, data, filename, page)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except IndexError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    headers = {"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"}
+    if page is None:
+        result['download_url'] = f'/conversations/{conv_id}/files/download?t={sign_file_link(conv_id, filename)}'
+    return (JSONResponse(result, headers=headers) if page is None
+            else Response(result, media_type="image/png", headers=headers))
+
+
 @router.post("/{conv_id}/activate")
 async def activate_conversation(conv_id: str, user_id: str = Depends(get_current_user)):
     ok = await repo.set_active_conversation(user_id, conv_id)

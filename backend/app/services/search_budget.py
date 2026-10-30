@@ -118,6 +118,6 @@ def search_tools_allowed(name):
         return True
     if name in {'web_search', '$web_search', 'server_search'}:
         return bool(budget.search_left)
-    if name == 'browse_page':
+    if name in {'browse_page', 'browse_visual'}:
         return bool(budget.read_left)
     return True

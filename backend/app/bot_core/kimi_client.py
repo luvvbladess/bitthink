@@ -76,7 +76,26 @@ BROWSE_PAGE_TOOL_KIMI = {
     },
 }
 
-KIMI_SEARCH_TOOLS = [WEB_SEARCH_TOOL_KIMI, BROWSE_PAGE_TOOL_KIMI]
+BROWSE_VISUAL_TOOL_KIMI = {
+    "type": "function",
+    "function": {
+        "name": "browse_visual",
+        "description": (
+            "Screenshot a public page at desktop 1280x900 and phone 390x844, then describe layout. "
+            "Use for design, heading alignment and composition. browse_page text does not show the visual."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "Public http(s) URL"},
+                "question": {"type": "string", "description": "What to look at. Optional."},
+            },
+            "required": ["url"],
+        },
+    },
+}
+
+KIMI_SEARCH_TOOLS = [WEB_SEARCH_TOOL_KIMI, BROWSE_PAGE_TOOL_KIMI, BROWSE_VISUAL_TOOL_KIMI]
 
 # System prompt for the dedicated Kimi web-search mode.
 # Search/fetch run through Kimi's standalone REST tools; we return structured
@@ -91,6 +110,7 @@ KIMI_WEB_SEARCH_SYSTEM_PROMPT = (
     "Обычный факт – 1–2 поиска; сравнение или обзор – до 3 независимых запросов; глубокая тема – до 5. Не повторяй успешные запросы синонимами. При пустой выдаче допустим один короткий запрос с именем объекта без лишних временных уточнений или с оригинальным написанием имени. Дату и период всё равно проверяй на странице. "
     "Обычные найденные ссылки не открывай массово: используй фрагменты выдачи с честным обозначением. Карточки российских магазинов проверяй домашним читателем; другие страницы — точечно по необходимости. "
     "Сниппет – не доказательство спорной цифры: открой страницу через browse_page. "
+    "Вёрстку, композицию и расположение заголовков смотри через browse_visual, текст страницы этого не показывает. "
     "После поиска отвечай на русском, с конкретными фактами и датами. "
     "Закрой задачу: как применить, ограничение, что проверить. Не обрывай тизером «могу подробнее». "
     "Каждый существенный свежий факт и точное число сопровождай кликабельной Markdown-ссылкой рядом или в строке таблицы. "
@@ -166,6 +186,16 @@ async def _execute_kimi_tool(
         sources = [{'query': match.group(1), 'summary': match.group(1)}] if match else []
         return result, sources
 
+    if name == "browse_visual":
+        from computer_tools import run_computer_tool
+        url = str(arguments.get("url") or "").strip()
+        result = await run_computer_tool(
+            "browse_visual", {"url": url, "question": arguments.get("question", "")}, user_id,
+        )
+        match = re.search(r"^URL:\s*(https?://\S+)", str(result), re.M)
+        sources = [{"query": match.group(1), "summary": match.group(1)}] if match else []
+        return str(result), sources
+
     return f"Неизвестный инструмент: {name}", []
 
 
@@ -225,7 +255,7 @@ async def _append_tool_results(
                              arguments=tc.function.arguments, original=tc) for tc in tool_calls]
     async def execute_call(call):
         return await execute(call.original)
-    results = await read_batch(calls, {'server_search', 'browse_page'}, execute_call)
+    results = await read_batch(calls, {'server_search', 'browse_page', 'browse_visual'}, execute_call)
     if results is None:
         results = [await execute(tc) for tc in tool_calls]
     for tc, result in zip(tool_calls, results):

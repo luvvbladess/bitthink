@@ -928,6 +928,12 @@ def glob_paths(user_id: int, pattern: str, path: str = ".") -> str:
 
 def dispatch(user_id: int, op: str, args: dict[str, Any]) -> str:
     op = (op or "").strip().lower()
+    if op == "page_shot":
+        try:
+            from page_shot import capture
+        except ImportError:
+            from app.services.page_shot import capture
+        return capture(str(args.get("url") or ""))
     if op == 'product':
         try:
             from product_factory import dispatch as product_dispatch

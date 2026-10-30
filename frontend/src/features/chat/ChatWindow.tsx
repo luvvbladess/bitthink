@@ -701,7 +701,7 @@ export function ChatWindow({
                 </Box>
               )}
               <Box sx={{ display: 'flex', justifyContent: 'flex-start', mb: 3 }}>
-                <ActivityFeed statusText={statusText} onStop={onStop} />
+                <ActivityFeed statusText={statusText} onStop={onStop} cloud={isComputer} />
               </Box>
             </motion.div>
           )}
