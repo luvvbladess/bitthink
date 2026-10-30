@@ -343,6 +343,35 @@ function studioFixture({ width = 1440, empty = false, failCanvas = false, theme 
 }
 
 try {
+  for (const width of [320, 390, 1440]) await test(`spreadsheet: native read-only viewer, retry and close ${width}`, async () => {
+    const f = await fixture({ viewport: { width, height: 900 }, touch: width < 600, officeFail: width === 390, handleRoute: async ({ path, route, state }) => {
+      if (path === '/conversations/chat-a/history') { await route.fulfill({ json: { items: [{ id: 'sheet', role: 'assistant', content: 'Таблица готова', attachment: { name: 'Отчёт.xlsx', type: 'generated', status: 'done', url: '/api/qa/report' } }], has_more: false } }); return true; }
+      if (path.endsWith('/files/preview')) {
+        const params = new URL(route.request().url()).searchParams;
+        assert.equal(params.get('native'), 'true');
+        assert.equal(params.has('page'), false, 'Native workbook must not request printed pages');
+        await route.fulfill({ json: { download_url: '/qa/report', viewer: { server: '/api/qa-office', config: { documentType: 'cell', type: width < 900 ? 'mobile' : 'desktop', document: { permissions: { edit: false } }, editorConfig: { mode: 'view' } } } } }); return true;
+      }
+      if (path === '/qa-office/web-apps/apps/api/documents/api.js') {
+        if (state.officeFail) { state.officeFail = false; await route.abort(); return true; }
+        await route.fulfill({ contentType: 'application/javascript', body: `window.DocsAPI={DocEditor:class { constructor(id,config) {window.auditOfficeConfig=config; const host=document.getElementById(id); const frame=document.createElement('iframe');frame.title='Книга Excel';frame.style='width:100%;height:100%;border:0';frame.srcdoc='<h1>Отчёт кофейни</h1><table><tr><th>Месяц</th><th>Выручка, ₽</th></tr><tr><td>Август</td><td>480000 ₽</td></tr></table>';host.appendChild(frame);this.frame=frame;setTimeout(()=>config.events.onDocumentReady(),20);}destroyEditor(){window.auditOfficeDestroyed=true;this.frame.remove();}}};` }); return true;
+      }
+    } });
+    try {
+      await expect(f.input).toBeEnabled(); await f.input.fill('Не потерять черновик');
+      await f.page.getByRole('button', { name: 'Предпросмотр Отчёт.xlsx', exact: true }).click();
+      const viewer = f.page.getByRole('region', { name: 'Просмотр таблицы', exact: true });
+      if (width === 390) { await expect(viewer.getByText('Не удалось открыть таблицу.', { exact: false })).toBeVisible(); await viewer.getByRole('button', { name: 'Повторить', exact: true }).click(); }
+      await expect(f.page.frameLocator('iframe[title="Книга Excel"]').getByRole('heading', { name: 'Отчёт кофейни' })).toBeVisible();
+      await expect(viewer.getByRole('status')).toHaveCount(0);
+      assert.equal(await f.page.evaluate(() => window.auditOfficeConfig.editorConfig.mode), 'view');
+      assert.equal(await f.page.evaluate(() => window.auditOfficeConfig.document.permissions.edit), false);
+      assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      await f.page.getByRole('button', { name: 'Закрыть предпросмотр' }).click();
+      await expect(f.input).toHaveValue('Не потерять черновик');
+      assert.equal(await f.page.evaluate(() => window.auditOfficeDestroyed), true);
+    } finally { await f.context.close(); }
+  });
   for (const width of [320, 390, 768, 1440]) for (const theme of ['dark', 'light']) await test(`library: layout, filters, images and pinned document ${width} ${theme}`, async () => {
     const long = 'Очень_длинное_название_договора_с_приложениями_'.repeat(5) + '.docx';
     const imageName = 'Эскиз_фасада_' + 'длинное_название_'.repeat(8) + '.png';

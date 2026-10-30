@@ -108,19 +108,50 @@ async def download_conversation_file(conv_id: str, t: str = ""):
     )
 
 
+@router.get("/{conv_id}/files/viewer-source")
+async def spreadsheet_viewer_source(conv_id: str, t: str = '', v: str = ''):
+    import hashlib
+    import mimetypes
+    from fastapi.responses import Response
+    from app.api.editor import check_file_link, file_bytes
+    from app.services.office_viewer import spreadsheet_source
+    from app.services.document_preview import MAX_BYTES
+
+    linked_conv, filename = check_file_link(t)
+    if linked_conv != conv_id:
+        raise HTTPException(status_code=403, detail='Ссылка недействительна')
+    owner = await asyncio.to_thread(repo.conversations.owner, conv_id)
+    conv = await asyncio.to_thread(repo.conversations.view, owner, conv_id) if owner else None
+    data = await asyncio.to_thread(file_bytes, conv, filename) if conv else None
+    if not data:
+        raise HTTPException(status_code=404, detail='Файл не найден')
+    if len(data) > MAX_BYTES:
+        raise HTTPException(status_code=422, detail='Таблица слишком велика для предпросмотра.')
+    if hashlib.sha256(data).hexdigest() != v:
+        raise HTTPException(status_code=409, detail='Документ изменился. Откройте предпросмотр ещё раз.')
+    try:
+        content = await asyncio.to_thread(spreadsheet_source, data, filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return Response(content, media_type=mimetypes.guess_type(filename)[0] or 'application/octet-stream',
+                    headers={'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff'})
+
+
 @router.get("/{conv_id}/files/preview")
 async def preview_conversation_file(conv_id: str, filename: str, page: int | None = None,
-                                    user_id: str = Depends(get_current_user)):
+                                    user_id: str = Depends(get_current_user), mobile: bool = False, native: bool = False):
     from fastapi.responses import JSONResponse, Response
     from app.api.editor import _conversation_for, file_bytes, sign_file_link
     from app.services.document_preview import preview
+    from app.services.office_viewer import spreadsheet_viewer
 
     _, conv = await _conversation_for(user_id, conv_id)
     data = await asyncio.to_thread(file_bytes, conv, filename)
     if not data:
         raise HTTPException(status_code=404, detail="Файл не найден")
     try:
-        result = await asyncio.to_thread(preview, data, filename, page)
+        viewer = spreadsheet_viewer(data, filename, conv_id, mobile) if page is None and native else None
+        result = {'viewer': viewer} if viewer else await asyncio.to_thread(preview, data, filename, page)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except IndexError as exc:

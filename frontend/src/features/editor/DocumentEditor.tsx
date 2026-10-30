@@ -45,7 +45,7 @@ declare global {
 
 const scriptLoads = new Map<string, Promise<void>>();
 
-function loadEditorScript(server: string): Promise<void> {
+export function loadEditorScript(server: string): Promise<void> {
   const src = `${server}/web-apps/apps/api/documents/api.js`;
   if (!scriptLoads.has(src)) {
     scriptLoads.set(
