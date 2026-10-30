@@ -137,21 +137,61 @@ async def spreadsheet_viewer_source(conv_id: str, t: str = '', v: str = ''):
                     headers={'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff'})
 
 
+@router.get("/{conv_id}/files/reader-image")
+async def document_reader_image(conv_id: str, t: str = '', image: str = '', v: str = ''):
+    import hashlib
+    from fastapi.responses import Response
+    from app.api.editor import check_file_link, file_bytes
+    from app.services.document_reader import image_bytes
+    from app.services.document_preview import MAX_BYTES
+
+    linked_conv, filename = check_file_link(t)
+    if linked_conv != conv_id or not filename.lower().endswith('.docx'):
+        raise HTTPException(status_code=403, detail='Ссылка недействительна')
+    owner = await asyncio.to_thread(repo.conversations.owner, conv_id)
+    conv = await asyncio.to_thread(repo.conversations.view, owner, conv_id) if owner else None
+    data = await asyncio.to_thread(file_bytes, conv, filename) if conv else None
+    if not data:
+        raise HTTPException(status_code=404, detail='Документ не найден')
+    if len(data) > MAX_BYTES:
+        raise HTTPException(status_code=422, detail='Документ слишком большой для режима чтения.')
+    if hashlib.sha256(data).hexdigest() != v:
+        raise HTTPException(status_code=409, detail='Документ изменился. Откройте предпросмотр ещё раз.')
+    try:
+        content, mime = await asyncio.to_thread(image_bytes, data, image)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return Response(content, media_type=mime, headers={'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff'})
+
+
 @router.get("/{conv_id}/files/preview")
 async def preview_conversation_file(conv_id: str, filename: str, page: int | None = None,
-                                    user_id: str = Depends(get_current_user), mobile: bool = False, native: bool = False):
+                                    user_id: str = Depends(get_current_user), mobile: bool = False, native: bool = False, reading: bool = False):
     from fastapi.responses import JSONResponse, Response
     from app.api.editor import _conversation_for, file_bytes, sign_file_link
     from app.services.document_preview import preview
-    from app.services.office_viewer import spreadsheet_viewer
+    from app.services.office_viewer import office_viewer
 
     _, conv = await _conversation_for(user_id, conv_id)
     data = await asyncio.to_thread(file_bytes, conv, filename)
     if not data:
         raise HTTPException(status_code=404, detail="Файл не найден")
     try:
-        viewer = spreadsheet_viewer(data, filename, conv_id, mobile) if page is None and native else None
-        result = {'viewer': viewer} if viewer else await asyncio.to_thread(preview, data, filename, page)
+        if page is None and native and reading and filename.lower().endswith('.docx'):
+            import hashlib
+            from urllib.parse import urlencode, quote
+            from app.services.document_reader import reading_content
+            from app.services.document_preview import MAX_BYTES
+            if len(data) > MAX_BYTES:
+                raise ValueError('Документ слишком большой для режима чтения. Откройте «Оригинал».')
+            token = sign_file_link(conv_id, filename)
+            digest = hashlib.sha256(data).hexdigest()
+            def image_url(relationship):
+                return f'/conversations/{quote(conv_id, safe="")}/files/reader-image?' + urlencode({'t': token, 'image': relationship, 'v': digest})
+            result = {'reader': await asyncio.to_thread(reading_content, data, image_url)}
+        else:
+            viewer = office_viewer(data, filename, conv_id, mobile) if page is None and native else None
+            result = {'viewer': viewer} if viewer else await asyncio.to_thread(preview, data, filename, page)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except IndexError as exc:

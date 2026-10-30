@@ -10,10 +10,11 @@ export function OfficePreview({ viewer }: { viewer: OfficeViewer }) {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [attempt, setAttempt] = useState(0);
+  const word = viewer.config.documentType === 'word';
   useEffect(() => {
     let cancelled = false;
     setLoading(true); setError('');
-    const fail = () => { if (!cancelled) { setLoading(false); setError('Не удалось открыть таблицу. Повторите попытку или скачайте файл.'); } };
+    const fail = () => { if (!cancelled) { setLoading(false); setError(word ? 'Не удалось открыть документ. Повторите попытку или скачайте файл.' : 'Не удалось открыть таблицу. Повторите попытку или скачайте файл.'); } };
     const timer = window.setTimeout(fail, 90_000);
     const ready = () => { if (!cancelled) { window.clearTimeout(timer); setLoading(false); setError(''); } };
     void loadEditorScript(viewer.server).then(() => {
@@ -25,12 +26,12 @@ export function OfficePreview({ viewer }: { viewer: OfficeViewer }) {
       });
     }).catch(fail);
     return () => { cancelled = true; window.clearTimeout(timer); editor.current?.destroyEditor(); editor.current = null; };
-  }, [viewer, host, attempt]);
-  return <Box role="region" aria-label="Просмотр таблицы" sx={{ flex: 1, minWidth: 0, minHeight: 0, position: 'relative', bgcolor: '#fff' }}>
+  }, [viewer, host, attempt, word]);
+  return <Box role="region" aria-label={word ? 'Просмотр документа' : 'Просмотр таблицы'} sx={{ flex: 1, minWidth: 0, minHeight: 0, position: 'relative', bgcolor: '#fff' }}>
     <Box sx={{ position: 'absolute', inset: 0 }}><div id={host} style={{ height: '100%' }} /></Box>
     {(loading || error) && <Box sx={{ position: 'absolute', inset: 0, zIndex: 1, bgcolor: 'background.default', display: 'flex', alignItems: 'center', justifyContent: 'center', p: 2 }}>
       {error ? <Alert severity="warning" action={<Button onClick={() => setAttempt(value => value + 1)}>Повторить</Button>}>{error}</Alert>
-        : <Box role="status" sx={{ display: 'flex', gap: 1, alignItems: 'center' }}><CircularProgress size={22} /><Typography>Открываем таблицу…</Typography></Box>}
+        : <Box role="status" sx={{ display: 'flex', gap: 1, alignItems: 'center' }}><CircularProgress size={22} /><Typography>{word ? 'Открываем документ…' : 'Открываем таблицу…'}</Typography></Box>}
     </Box>}
   </Box>;
 }

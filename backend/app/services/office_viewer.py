@@ -1,4 +1,4 @@
-"""Read-only spreadsheet viewing without imposing a printed page layout."""
+"""Read-only Office viewing without imposing a printed page layout."""
 import hashlib
 import io
 import zipfile
@@ -8,13 +8,13 @@ from urllib.parse import quote
 from app.config import get_settings
 
 
-def spreadsheet_viewer(data: bytes, filename: str, conversation_id: str, mobile: bool = False):
+def office_viewer(data: bytes, filename: str, conversation_id: str, mobile: bool = False):
     from app.api.editor import _ds_token, sign_file_link
     from app.services.document_preview import MAX_BYTES
 
     settings = get_settings()
     suffix = Path(filename).suffix.lower()
-    if suffix not in {'.xlsx', '.xls', '.ods'} or not settings.ONLYOFFICE_JWT_SECRET:
+    if suffix not in {'.xlsx', '.xls', '.ods', '.docx', '.doc', '.odt', '.rtf'} or not settings.ONLYOFFICE_JWT_SECRET:
         return None
     if len(data) > MAX_BYTES:
         raise ValueError('Для предпросмотра поддерживаются файлы до 30 МБ. Скачайте этот файл.')
@@ -23,7 +23,7 @@ def spreadsheet_viewer(data: bytes, filename: str, conversation_id: str, mobile:
            f'{quote(conversation_id, safe="")}/files/viewer-source?t={sign_file_link(conversation_id, filename)}'
            f'&v={hashlib.sha256(data).hexdigest()}')
     config = {
-        'documentType': 'cell',
+        'documentType': 'word' if suffix in {'.docx', '.doc', '.odt', '.rtf'} else 'cell',
         'type': 'mobile' if mobile else 'desktop',
         'document': {
             'fileType': suffix[1:], 'key': f'preview-v2-{digest}', 'title': filename, 'url': url,

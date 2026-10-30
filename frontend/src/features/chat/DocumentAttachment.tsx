@@ -1,4 +1,4 @@
-import { Box, CircularProgress, IconButton, LinearProgress, Tooltip } from '@mui/material';
+import { Box, Button, CircularProgress, IconButton, LinearProgress, Tooltip } from '@mui/material';
 import { Eye, FileText, FilePdf, FileXls, FileDoc, CheckCircle, WarningCircle, Trash, PencilSimpleLine, DownloadSimple } from '@phosphor-icons/react';
 import { canPreviewDocument, useDocumentPreview } from '@/features/editor/DocumentPreview';
 import { isEditableDocument, useEditorEnabled, useEditorStore } from '@/features/editor/DocumentEditor';
@@ -23,6 +23,7 @@ export interface AttachmentInfo {
 
 interface Props extends AttachmentInfo {
   onRemoveFromContext?: () => void;
+  previewHtml?: string;
 }
 
 function iconForFile(name: string) {
@@ -41,19 +42,42 @@ function formatSize(bytes?: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
 }
 
-export function DocumentAttachment({ name, size, status, type, url, canvas, note, progress, progressLabel, onRemoveFromContext }: Props) {
+export function DocumentAttachment({ name, size, status, type, url, note, progress, progressLabel, onRemoveFromContext, previewHtml }: Props) {
   const Icon = iconForFile(name);
   const isImage = type === 'image';
   const editorEnabled = useEditorEnabled();
   const openEditor = useEditorStore((state) => state.open);
   const canEdit = editorEnabled && status === 'done' && isEditableDocument(name);
   const canDownload = status === 'done' && !!url && type !== 'image';
-  const canPreview = status === 'done' && type !== 'image' && canPreviewDocument(name);
+  const html = /\.html?$/i.test(name);
+  const canPreview = status === 'done' && type !== 'image' && canPreviewDocument(name) && (!html || !!url || !!previewHtml);
   const openPreview = useDocumentPreview(state => state.open);
   // A Studio canvas is a page that points to its pictures by site path; saved as is it opens black.
-  const isCanvasFile = canDownload && !!canvas && /\.html?$/i.test(name);
+  const isCanvasFile = canDownload && html;
   const showProgress = status === 'uploading' && progress !== undefined;
   const progressValue = typeof progress === 'number' ? Math.max(0, Math.min(100, progress)) : 0;
+  if (status === 'done' && !isImage) {
+    const label = html ? 'Интерактивный результат' : /\.(xlsx?|ods)$/i.test(name) ? 'Таблица' : /\.(pptx?|odp)$/i.test(name) ? 'Презентация' : canPreview ? 'Документ' : 'Файл';
+    return <Box sx={{ width: '100%', maxWidth: 420, minWidth: 0, p: 1.5, border: '1px solid var(--bt-hairline)', borderRadius: '14px', bgcolor: 'var(--bt-overlay-faint)' }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, minWidth: 0, mb: 1.25 }}>
+        <Box sx={{ width: 40, height: 44, display: 'grid', placeItems: 'center', flexShrink: 0, color: 'var(--bt-ink-2)' }}><Icon size={24} /></Box>
+        <Box sx={{ minWidth: 0, flex: 1 }}>
+          <Box title={name} sx={{ fontSize: '.875rem', fontWeight: 600, lineHeight: 1.4, overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{name}</Box>
+          <Box sx={{ fontSize: '.8125rem', color: 'text.secondary', mt: .25 }}>{label}{formatSize(size) ? ` · ${formatSize(size)}` : ''}</Box>
+        </Box>
+      </Box>
+      <Box sx={{ display: 'flex', gap: 1, minWidth: 0 }}>
+        {canPreview && <Button variant="contained" startIcon={<Eye size={18} />} aria-label={`Предпросмотр ${name}`} onClick={() => openPreview({ name, url, html: previewHtml })} sx={{ flex: 1, minWidth: 0, minHeight: 48, px: 1, fontWeight: 600 }}>Открыть</Button>}
+        {canDownload && <Button component="a" href={url} download={name} rel="noopener" variant={canPreview ? 'outlined' : 'contained'} startIcon={<DownloadSimple size={18} />} aria-label={`Скачать ${name}`} onClick={event => {
+          if (isCanvasFile) { event.preventDefault(); void downloadCanvasFromUrl(url!, name).catch(() => window.open(url, '_blank', 'noopener')); }
+        }} sx={{ flex: 1, minWidth: 0, minHeight: 48, px: 1, color: canPreview ? 'text.primary' : undefined, borderColor: 'var(--bt-hairline)', fontWeight: 600 }}>Скачать</Button>}
+      </Box>
+      {(canEdit || (onRemoveFromContext && type !== 'generated')) && <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: .5, mt: .75 }}>
+        {canEdit && <Button size="small" startIcon={<PencilSimpleLine size={16} />} aria-label="Открыть документ в редакторе" onClick={() => openEditor(name)} sx={{ minHeight: 44, color: 'text.secondary' }}>Редактировать</Button>}
+        {onRemoveFromContext && type !== 'generated' && <Button size="small" startIcon={<Trash size={16} />} aria-label="Удалить документ из контекста" onClick={onRemoveFromContext} sx={{ minHeight: 44, color: 'text.secondary' }}>Убрать из контекста</Button>}
+      </Box>}
+    </Box>;
+  }
   const card = (
     <Box
       sx={{
@@ -74,7 +98,7 @@ export function DocumentAttachment({ name, size, status, type, url, canvas, note
       }}
         {...(canDownload && !canPreview ? { component: 'a' as const, href: url, download: name, rel: 'noopener' } : {})}
         onClick={event => {
-          if (canPreview) openPreview({ name, url });
+          if (canPreview) openPreview({ name, url, html: previewHtml });
           else if (isCanvasFile) {
             event.preventDefault();
             downloadCanvasFromUrl(url!, name).catch(() => window.open(url, '_blank', 'noopener'));

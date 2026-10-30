@@ -1,5 +1,6 @@
 import { chromium, webkit, expect as baseExpect } from '@playwright/test';
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { mkdir, writeFile } from 'node:fs/promises';
 
 const base = process.env.BITTHINK_UI_BASE || 'http://127.0.0.1:5187';
@@ -161,6 +162,7 @@ async function fixture(options = {}) {
   });
   await page.routeWebSocket(/\/chat\/ws$/, socket => {
     state.emitActivity = text => socket.send(JSON.stringify({ type: 'status', payload: { conversation_id: 'chat-a', text } }));
+    state.emitCanvas = () => socket.send(JSON.stringify({ type: 'file', payload: { conversation_id: 'chat-a', filename: 'Свежий.html', data: Buffer.from('<html><body><h1>Свежий результат</h1></body></html>', 'utf8').toString('base64') } }));
     state.socketConnections = (state.socketConnections || 0) + 1;
     let silent = false;
     socket.onClose(() => { state.socketCloses = (state.socketCloses || 0) + 1; });
@@ -343,6 +345,115 @@ function studioFixture({ width = 1440, empty = false, failCanvas = false, theme 
 }
 
 try {
+  for (const width of [320, 390, 1440]) await test(`mobile-open: orchestrator result has separate open/download actions for HTML and Excel ${width}`, async () => {
+    const htmlName = 'Север_демонстрационный_кейс.html';
+    const sheetName = 'Отчёт_кофейни_Север.xlsx';
+    let binaryDownloads = 0;
+    const downloadServer = createServer((request, response) => { binaryDownloads++; response.writeHead(200, { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': 'attachment; filename=Report.xlsx' }); response.end('test workbook'); });
+    await new Promise(resolve => downloadServer.listen(0, '127.0.0.1', resolve));
+    const downloadUrl = `http://127.0.0.1:${downloadServer.address().port}/report.xlsx`;
+    const f = await fixture({ model: 'director', viewport: { width, height: 900 }, touch: width < 600, handleRoute: async ({ path, route, state }) => {
+      if (path === '/conversations/chat-a/history') { await route.fulfill({ json: { items: [{ id: 'results', role: 'assistant', content: 'Результаты готовы.', attachment: { files: [{ name: htmlName, status: 'done', type: 'generated', url: '/api/qa/html' }, { name: sheetName, status: 'done', type: 'generated', size: 7000, url: downloadUrl }] } }], has_more: false } }); return true; }
+      if (path === '/qa/html') { await route.fulfill({ contentType: 'text/html', body: '<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;font:18px/1.5 system-ui;color:#122024;background:#fff}main{padding:16px}h1{font-size:26px}button{min-height:48px;font:inherit;padding:8px 16px}</style></head><body><main><h1>Результат проекта</h1><p>Интерактивный результат открыт внутри чата.</p><button onclick="document.getElementById(\'details\').hidden=false">Показать детали</button><p id="details" hidden>Детали доступны</p></main></body></html>' }); return true; }
+      if (path.endsWith('/files/preview')) {
+        const filename = new URL(route.request().url()).searchParams.get('filename');
+        assert.equal(filename, sheetName, 'HTML opens in the canvas without the office conversion endpoint');
+        await route.fulfill({ json: { download_url: '/qa/xlsx', viewer: { server: '/api/qa-cell', config: { documentType: 'cell', editorConfig: { mode: 'view' } } } } }); return true;
+      }
+      if (path === '/qa-cell/web-apps/apps/api/documents/api.js') { await route.fulfill({ contentType: 'application/javascript', body: `window.DocsAPI={DocEditor:class{constructor(id,c){let f=document.createElement('iframe');f.title='Проверка Excel';f.style='width:100%;height:100%;border:0';f.srcdoc='<h1>Отчёт кофейни</h1>';document.getElementById(id).appendChild(f);this.f=f;setTimeout(()=>c.events.onDocumentReady(),10)}destroyEditor(){this.f.remove()}}}` }); return true; }
+      if (path === '/qa/xlsx') { state.originalDownloads = (state.originalDownloads || 0) + 1; await route.fulfill({ contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers: { 'Content-Disposition': 'attachment; filename="Report.xlsx"' }, body: 'test workbook' }); return true; }
+    } });
+    try {
+      await expect(f.input).toBeEnabled(); await f.input.fill('Продолжить работу');
+      for (const name of [htmlName, sheetName]) {
+        const open = f.page.getByRole('button', { name: `Предпросмотр ${name}`, exact: true });
+        const download = f.page.getByRole('link', { name: `Скачать ${name}`, exact: true });
+        await expect(open).toHaveText('Открыть'); await expect(download).toContainText('Скачать');
+        const a = await open.boundingBox(); const b = await download.boundingBox();
+        assert(a.height >= 44 && b.height >= 44 && a.x + a.width <= b.x + 1 && b.x + b.width <= width + 1);
+      }
+      await f.page.screenshot({ path: `${output}/result-actions-${width}.png` });
+      await f.page.getByRole('button', { name: `Предпросмотр ${htmlName}`, exact: true }).click();
+      await expect.poll(async () => { const r = await f.page.getByRole('region', { name: 'Предпросмотр документа', exact: true }).boundingBox(); return r.x + r.width; }).toBeLessThanOrEqual(width + 1);
+      const canvas = f.page.frameLocator('iframe[title="Холст Студии"]');
+      await expect(canvas.getByRole('heading', { name: 'Результат проекта' })).toBeVisible();
+      assert.equal(await f.page.locator('iframe[title="Холст Студии"]').getAttribute('sandbox'), 'allow-scripts');
+      await canvas.getByRole('button', { name: 'Показать детали' }).click();
+      await expect(canvas.getByText('Детали доступны')).toBeVisible();
+      await f.page.getByRole('button', { name: 'Закрыть предпросмотр' }).click();
+      await expect(f.input).toHaveValue('Продолжить работу');
+      await f.page.getByRole('button', { name: `Предпросмотр ${sheetName}`, exact: true }).click();
+      await expect(f.page.frameLocator('iframe[title="Проверка Excel"]').getByRole('heading')).toBeVisible();
+      assert.equal(binaryDownloads, 0, 'Opening the workbook never downloads its original');
+      await f.page.getByRole('button', { name: 'Закрыть предпросмотр' }).click();
+      const pending = f.page.waitForEvent('download');
+      await f.page.getByRole('link', { name: `Скачать ${sheetName}`, exact: true }).click();
+      const download = await pending; assert(download.suggestedFilename().endsWith('.xlsx')); await download.path();
+      assert.equal(binaryDownloads, 1);
+      if (width === 390) {
+        f.state.emitCanvas();
+        await f.page.getByRole('button', { name: 'Предпросмотр Свежий.html', exact: true }).click();
+        await expect(f.page.frameLocator('iframe[title="Холст Студии"]').getByRole('heading', { name: 'Свежий результат' })).toBeVisible();
+        await f.page.getByRole('button', { name: 'Закрыть предпросмотр' }).click();
+      }
+      assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    } finally { await f.context.close(); await new Promise(resolve => downloadServer.close(resolve)); }
+  });
+  for (const width of [320, 390, 1440]) for (const theme of ['dark', 'light']) await test(`docx-reader: mobile reading and desktop original, font, tables and return ${width} ${theme}`, async () => {
+    const reader = { blocks: [
+      { type: 'paragraph', heading: 1, content: [{ text: 'Условия сотрудничества' }] },
+      { type: 'paragraph', content: [{ text: 'Документ удобно читать на телефоне. ' }, { text: 'Оплата 150 000 ₽', bold: true }, { text: ' — в течение 10 дней после подписания.' }] },
+      { type: 'paragraph', list: { label: '1.', level: 0 }, content: [{ text: 'Согласуйте состав работ и сроки.' }] },
+      { type: 'paragraph', list: { label: '2.', level: 0 }, content: [{ text: 'Подтвердите итоговые условия.' }] },
+      { type: 'table', rows: [{ header: true, cells: ['Услуга', 'Срок', 'Стоимость'].map(text => ({ span: 1, blocks: [{ type: 'paragraph', content: [{ text }] }] })) }, { header: false, cells: ['Подготовка документов', '10 рабочих дней', '150 000 ₽'].map(text => ({ span: 1, blocks: [{ type: 'paragraph', content: [{ text }] }] })) }] },
+      ...Array.from({ length: 30 }, (_, i) => ({ type: 'paragraph', content: [{ text: `Пункт ${i + 1}. Стороны согласовывают изменения в письменном виде. Документ сохраняет все условия сотрудничества и порядок приёмки результатов.` }] })),
+    ], warnings: [] };
+    const f = await fixture({ viewport: { width, height: width < 600 ? 667 : 900 }, touch: width < 600, theme, handleRoute: async ({ path, route, state }) => {
+      if (path === '/conversations/chat-a/history') { await route.fulfill({ json: { items: [{ id: 'word', role: 'assistant', content: 'Документ готов', attachment: { name: 'Условия.docx', type: 'generated', status: 'done', url: '/api/qa/report' } }], has_more: false } }); return true; }
+      if (path.endsWith('/files/preview')) {
+        const reading = new URL(route.request().url()).searchParams.get('reading') === 'true';
+        (state.wordModes ||= []).push(reading ? 'read' : 'original');
+        await route.fulfill({ json: reading ? { reader, download_url: '/qa/report' } : { viewer: { server: '/api/qa-word', config: { documentType: 'word', document: { permissions: { edit: false } }, editorConfig: { mode: 'view' } } }, download_url: '/qa/report' } }); return true;
+      }
+      if (path === '/qa-word/web-apps/apps/api/documents/api.js') {
+        await route.fulfill({ contentType: 'application/javascript', body: `window.DocsAPI={DocEditor:class {constructor(id,c){window.auditWordMode=c.editorConfig.mode; const f=document.createElement('iframe');f.title='Оригинал Word';f.style='width:100%;height:100%;border:0';f.srcdoc='<h1>Оригинал документа</h1>';document.getElementById(id).appendChild(f);this.f=f;setTimeout(()=>c.events.onDocumentReady(),20);}destroyEditor(){this.f.remove();}}};` }); return true;
+      }
+    } });
+    try {
+      await expect(f.input).toBeEnabled(); await f.input.fill('Продолжить после чтения');
+      await f.page.getByRole('button', { name: 'Предпросмотр Условия.docx', exact: true }).click();
+      assert.equal(f.state.wordModes[0], width < 900 ? 'read' : 'original');
+      if (width >= 900) {
+        await expect(f.page.getByRole('region', { name: 'Просмотр документа', exact: true })).toBeVisible();
+        await expect(f.page.frameLocator('iframe[title="Оригинал Word"]').getByRole('heading')).toBeVisible();
+        assert.equal(await f.page.evaluate(() => window.auditWordMode), 'view');
+        await f.page.getByRole('button', { name: 'Чтение', exact: true }).click();
+      }
+      const reading = f.page.getByRole('region', { name: 'Чтение документа', exact: true });
+      await expect(reading.getByRole('heading', { name: 'Условия сотрудничества' })).toBeVisible();
+      await expect.poll(async () => { const r = await f.page.getByRole('region', { name: 'Предпросмотр документа', exact: true }).boundingBox(); return r.x + r.width; }).toBeLessThanOrEqual(width + 1);
+      await f.page.screenshot({ path: `${output}/docx-reading-${width}-${theme}.png` });
+      const article = reading.getByRole('article'); await expect(article).toHaveCSS('font-size', '18px');
+      for (let i = 0; i < 3; i++) await reading.getByRole('button', { name: 'Увеличить текст' }).click();
+      await expect(article).toHaveCSS('font-size', '24px');
+      await expect(reading.getByRole('button', { name: 'Увеличить текст' })).toBeDisabled();
+      const table = reading.getByRole('region', { name: 'Таблица документа — прокрутка по горизонтали' });
+      if (width < 600) {
+        assert(await table.evaluate(n => n.scrollWidth > n.clientWidth));
+        await table.evaluate(n => { n.scrollLeft = 140; });
+        assert(await table.evaluate(n => n.scrollLeft > 0));
+      }
+      assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      await article.evaluate(n => { n.parentElement.scrollTop = 350; n.parentElement.dispatchEvent(new Event('scroll', { bubbles: true })); });
+      await f.page.getByRole('button', { name: 'Оригинал', exact: true }).click();
+      await expect(f.page.frameLocator('iframe[title="Оригинал Word"]').getByRole('heading')).toBeVisible();
+      await f.page.getByRole('button', { name: 'Чтение', exact: true }).click();
+      await expect(article).toHaveCSS('font-size', '24px');
+      await expect.poll(() => article.evaluate(n => n.parentElement.scrollTop)).toBeGreaterThanOrEqual(340);
+      await f.page.getByRole('button', { name: 'Закрыть предпросмотр' }).click();
+      await expect(f.input).toHaveValue('Продолжить после чтения');
+    } finally { await f.context.close(); }
+  });
   for (const width of [320, 390, 1440]) await test(`spreadsheet: native read-only viewer, retry and close ${width}`, async () => {
     const f = await fixture({ viewport: { width, height: 900 }, touch: width < 600, officeFail: width === 390, handleRoute: async ({ path, route, state }) => {
       if (path === '/conversations/chat-a/history') { await route.fulfill({ json: { items: [{ id: 'sheet', role: 'assistant', content: 'Таблица готова', attachment: { name: 'Отчёт.xlsx', type: 'generated', status: 'done', url: '/api/qa/report' } }], has_more: false } }); return true; }
@@ -574,7 +685,7 @@ try {
     try {
       await expect(f.input).toBeEnabled();
       await f.input.fill('Сохранённый черновик');
-      await f.page.getByRole('button', { name: 'Предпросмотр Отчёт.docx', exact: true }).getByText('Предпросмотр', { exact: true }).click();
+      await f.page.getByRole('button', { name: 'Предпросмотр Отчёт.docx', exact: true }).getByText('Открыть', { exact: true }).click();
       const panel = f.page.getByRole('region', { name: 'Предпросмотр документа', exact: true });
       await expect(panel.getByRole('img', { name: /^Страница/ })).toHaveAttribute('alt', 'Страница 1 документа Отчёт.docx');
       assert.equal(f.state.downloads || 0, 0, 'preview never downloads the original');
