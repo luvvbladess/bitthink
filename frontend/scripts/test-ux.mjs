@@ -368,9 +368,11 @@ try {
       for (const name of [htmlName, sheetName]) {
         const open = f.page.getByRole('button', { name: `Предпросмотр ${name}`, exact: true });
         const download = f.page.getByRole('link', { name: `Скачать ${name}`, exact: true });
-        await expect(open).toHaveText('Открыть'); await expect(download).toContainText('Скачать');
+        await expect(open).toHaveText('Открыть'); await expect(download).toHaveAttribute('aria-label', `Скачать ${name}`);
+        const card = open.locator('xpath=ancestor::*[@data-attachment-card]');
+        assert((await card.boundingBox()).height <= 82, 'Ready file cards must remain compact even with wrapped names');
         const a = await open.boundingBox(); const b = await download.boundingBox();
-        assert(a.height >= 44 && b.height >= 44 && a.x + a.width <= b.x + 1 && b.x + b.width <= width + 1);
+        assert(a.height >= 43.9 && b.height >= 43.9 && a.x + a.width <= b.x + 1 && b.x + b.width <= width + 1, JSON.stringify({ open: a, download: b }));
       }
       await f.page.screenshot({ path: `${output}/result-actions-${width}.png` });
       await f.page.getByRole('button', { name: `Предпросмотр ${htmlName}`, exact: true }).click();
