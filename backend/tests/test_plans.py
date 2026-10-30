@@ -43,6 +43,12 @@ def test_multipliers_and_long_context():
     assert our_tokens("gpt-6-luna", 100, 50, 0) == 150
     assert our_tokens("gpt-6-luna", 100, 0, 0, 100) == 125
     assert our_tokens("gpt-5.6-sol", 10, 0) == 320
+    assert our_tokens("claude-haiku-5.5", 10, 4) == 14
+    assert our_tokens("claude-sonnet-5.5", 10, 0) == 200
+    assert our_tokens("claude-opus-5.5", 10, 0) == 400
+    assert our_tokens("anthropic/claude-opus-5.5", 10, 0) == 400
+    assert our_tokens("claude-haiku-5.5", 100_001, 0) == 100_001 * 5
+    assert our_tokens("claude-haiku-5.5", 272_001, 0) == 272_001 * 5
 
 
 def test_clamp_and_research_access():
@@ -57,6 +63,14 @@ def test_clamp_and_research_access():
     assert research_model("proplus") == "gpt-6-sol"
     assert research_model("ultra") == "gpt-6-sol"
     assert "gpt-6-astra" in computer_models("ultra")
+    assert "claude-haiku-5.5" in plan_for("free")["models"]
+    assert "claude-haiku-5.5" in computer_models("free")
+    assert "claude-opus-5.5" not in plan_for("pro")["models"]
+    assert "claude-opus-5.5" in plan_for("proplus")["models"]
+    assert clamp_model("free", "claude-haiku-5.5") == "claude-haiku-5.5"
+    assert clamp_model("pro", "claude-opus-5.5") == "gpt-6-sol"
+    assert clamp_model("proplus", "claude-opus-5.5") == "claude-opus-5.5"
+    assert "claude-opus-5.5" in computer_models("proplus")
     assert "gpt-6-astra" in computer_models("proplus")
 
 

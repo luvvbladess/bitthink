@@ -45,15 +45,20 @@ def model_cost_usd(
     cached_input_tokens: int = 0,
 ) -> float:
     """List-price estimate. Cached prompt hits use the model's own cached rate, else 10% of input."""
+    from app.billing.plans import HAIKU_TIER_INPUT, canonical_billing_model
+
+    model = canonical_billing_model(model)
     rates = MODEL_USD.get(model) or _DEFAULT
+    # Haiku bills the whole request at 5x once the prompt crosses 100k tokens.
+    tier = 5.0 if model == "claude-haiku-5.5" and int(input_tokens or 0) > HAIKU_TIER_INPUT else 1.0
     fresh_input = max(0, int(input_tokens or 0))
     cached = min(max(0, int(cached_input_tokens or 0)), fresh_input)
     fresh_input -= cached
     usd = 0.0
-    input_rate = float(rates.get("input", _DEFAULT["input"]))
+    input_rate = float(rates.get("input", _DEFAULT["input"])) * tier
     usd += fresh_input / 1_000_000 * input_rate
-    usd += cached / 1_000_000 * float(rates.get("cached", input_rate * 0.1))
-    usd += max(0, int(output_tokens or 0)) / 1_000_000 * float(rates.get("output", _DEFAULT["output"]))
+    usd += cached / 1_000_000 * float(rates.get("cached", input_rate / tier * 0.1)) * tier
+    usd += max(0, int(output_tokens or 0)) / 1_000_000 * float(rates.get("output", _DEFAULT["output"])) * tier
     usd += max(0, int(images or 0)) * float(rates.get("image", 0.0))
     return usd
 

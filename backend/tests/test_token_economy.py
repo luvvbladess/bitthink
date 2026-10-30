@@ -129,6 +129,10 @@ def test_cost_table_uses_each_models_cached_rate():
     assert round(model_cost_usd("gpt-6-luna", 0, one_m), 4) == 0.50
     assert round(model_cost_usd("gpt-6.1-sol", one_m, 0), 4) == 2.0
     assert round(model_cost_usd("gpt-6.1-sol", one_m, 0, cached_input_tokens=one_m), 4) == 0.10
+    assert round(model_cost_usd("claude-haiku-5.5", 50_000, 0), 6) == 0.005
+    assert round(model_cost_usd("claude-haiku-5.5", one_m, 0), 4) == 0.50
+    assert round(model_cost_usd("claude-opus-5.5", one_m, one_m), 4) == 24.0
+    assert round(model_cost_usd("anthropic/claude-opus-5.5", one_m, 0), 4) == 4.0
 
 
 def test_bot_tokencost_uses_the_same_rates():
