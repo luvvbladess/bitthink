@@ -16,6 +16,8 @@ CACHE_WRITE_FRACTION = 1.25
 #   Sol 6.1   $2 / $10      = 20x   Astra $10 / $50   = 100x
 #   Kimi K2.6 $0.95 / $4    ~  9x   DeepSeek Pro (peak/off-peak mix) ~ 9x, Flash ~ 2x
 #   Haiku 5.5 $0.10 / $0.50 = 1x    Sonnet 5.5 $2 / $10 = 20x   Opus 5.5 $4 / $20 = 40x
+# Haiku's whole request jumps 5x once the prompt exceeds 100k tokens. That
+# step replaces the generic 2x long-context factor; the two do not stack.
 # Re-derive these whenever a vendor changes prices; the stale 4x for Kimi and
 # 5x for DeepSeek were charging users roughly half of what the calls cost us.
 # Retired GPT-5.6 ids stay priced so old usage rows still debit correctly.
@@ -45,6 +47,14 @@ LEGACY_MODEL_ALIASES = {
     "gpt-5.6-sol": "gpt-6-sol",
     "gpt-5.6-sol-pro": "gpt-6-sol",
 }
+
+# Usage must bill the product id even if a row keeps the provider slug.
+PROVIDER_MODEL_ALIASES = {
+    "anthropic/claude-haiku-5.5": "claude-haiku-5.5",
+    "anthropic/claude-sonnet-5.5": "claude-sonnet-5.5",
+    "anthropic/claude-opus-5.5": "claude-opus-5.5",
+}
+HAIKU_TIER_INPUT = 100_000
 
 CHEAP_MODELS = [
     "auto",
@@ -265,6 +275,23 @@ def computer_models(tier: str | None) -> list[str]:
     return pool or ["gpt-6-luna"]
 
 
+def canonical_billing_model(model: str) -> str:
+    """Map a provider slug onto the product id. Retired GPT-5.6 ids keep their own rates."""
+    return PROVIDER_MODEL_ALIASES.get(model or "", model or "")
+
+
+def billed_multiplier(model: str, input_tokens: int = 0) -> int:
+    """Plan units per blended token. Unknown models stay at 1x and are visible, not free."""
+    model = canonical_billing_model(model)
+    multiplier = MODEL_MULTIPLIER.get(model, 1)
+    tokens = max(0, int(input_tokens or 0))
+    if model == "claude-haiku-5.5" and tokens > HAIKU_TIER_INPUT:
+        return multiplier * 5
+    if tokens > LONG_CONTEXT_INPUT:
+        return multiplier * 2
+    return multiplier
+
+
 def our_tokens(
     model: str,
     input_tokens: int = 0,
@@ -285,7 +312,4 @@ def our_tokens(
     raw = blended_input + output_tokens
     if raw <= 0:
         return 0
-    multiplier = MODEL_MULTIPLIER.get(model, 1)
-    if input_tokens > LONG_CONTEXT_INPUT:
-        multiplier *= 2
-    return max(1, raw * multiplier)
+    return max(1, raw * billed_multiplier(model, input_tokens))

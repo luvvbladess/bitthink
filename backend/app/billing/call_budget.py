@@ -14,7 +14,7 @@ import time
 import uuid
 from typing import Any
 
-from app.billing.plans import LONG_CONTEXT_INPUT, MODEL_MULTIPLIER, our_tokens, plan_for
+from app.billing.plans import billed_multiplier, our_tokens, plan_for
 from app.billing.quota import (
     QuotaError, _manager, billing_pool, billing_user, effective_tier,
     raise_if_blocked, refresh_windows, release_paid_hold, usage_view,
@@ -105,7 +105,7 @@ def reserve(user_id: int, pool: str, model: str, input_tokens: int, output_cap: 
         remaining = min(int(family[kind]['remaining'] or 0) for kind in ('month', 'week', 'session'))
         # Assume all input is a cache write: real fresh/cache-hit usage refunds the difference.
         input_units = our_tokens(model, input_tokens, cache_write_tokens=input_tokens)
-        factor = MODEL_MULTIPLIER.get(model, 1) * (2 if input_tokens > LONG_CONTEXT_INPUT else 1)
+        factor = billed_multiplier(model, input_tokens)
         output_limit = min(output_cap, (remaining - input_units) // factor)
         if output_limit < 16:
             _apply_subscription_payload(sub, data)
