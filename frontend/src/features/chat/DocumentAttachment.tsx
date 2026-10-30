@@ -1,5 +1,6 @@
 import { Box, CircularProgress, IconButton, LinearProgress, Tooltip } from '@mui/material';
-import { FileText, FilePdf, FileXls, FileDoc, CheckCircle, WarningCircle, Trash, PencilSimpleLine } from '@phosphor-icons/react';
+import { FileText, FilePdf, FileXls, FileDoc, CheckCircle, WarningCircle, Trash, PencilSimpleLine, DownloadSimple } from '@phosphor-icons/react';
+import { canPreviewDocument, useDocumentPreview } from '@/features/editor/DocumentPreview';
 import { isEditableDocument, useEditorEnabled, useEditorStore } from '@/features/editor/DocumentEditor';
 import { downloadCanvasFromUrl } from './studioExport';
 
@@ -47,6 +48,8 @@ export function DocumentAttachment({ name, size, status, type, url, canvas, note
   const openEditor = useEditorStore((state) => state.open);
   const canEdit = editorEnabled && status === 'done' && isEditableDocument(name);
   const canDownload = status === 'done' && !!url && type !== 'image';
+  const canPreview = status === 'done' && type !== 'image' && canPreviewDocument(name);
+  const openPreview = useDocumentPreview(state => state.open);
   // A Studio canvas is a page that points to its pictures by site path; saved as is it opens black.
   const isCanvasFile = canDownload && !!canvas && /\.html?$/i.test(name);
   const showProgress = status === 'uploading' && progress !== undefined;
@@ -69,17 +72,18 @@ export function DocumentAttachment({ name, size, status, type, url, canvas, note
         cursor: canDownload ? 'pointer' : 'default',
         '&:hover': canDownload ? { borderColor: 'primary.main', bgcolor: 'var(--bt-glow)' } : undefined,
       }}
-        {...(canDownload ? { component: 'a' as const, href: url, download: name, rel: 'noopener' } : {})}
-        {...(isCanvasFile
-          ? {
-              onClick: (event: React.MouseEvent) => {
-                event.preventDefault();
-                downloadCanvasFromUrl(url!, name).catch(() => window.open(url, '_blank', 'noopener'));
-              },
-            }
-          : {})}
+        {...(canDownload && !canPreview ? { component: 'a' as const, href: url, download: name, rel: 'noopener' } : {})}
+        onClick={event => {
+          if (canPreview) openPreview({ name, url });
+          else if (isCanvasFile) {
+            event.preventDefault();
+            downloadCanvasFromUrl(url!, name).catch(() => window.open(url, '_blank', 'noopener'));
+          }
+        }}
     >
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, minWidth: 0 }}>
+      <Box component={canPreview ? 'button' : 'div'} {...(canPreview ? { type: 'button' as const, 'aria-label': `Предпросмотр ${name}` } : {})}
+        sx={{ display: 'flex', alignItems: 'center', gap: 1.25, minWidth: 0, flex: 1, textAlign: 'left', border: 0, p: 0, minHeight: canPreview ? 44 : undefined, font: 'inherit', color: 'inherit', bgcolor: 'transparent', cursor: canPreview ? 'pointer' : 'inherit', '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', borderRadius: '8px' } }}>
       <Box
         sx={{
           width: isImage ? 48 : 34,
@@ -105,11 +109,13 @@ export function DocumentAttachment({ name, size, status, type, url, canvas, note
         </Box>
         <Box sx={{ fontSize: '0.6875rem', color: 'text.muted' }}>
           {status === 'uploading' && (progressLabel || 'Загрузка...')}
-          {status === 'done' && `${isImage ? 'Изображение' : note || (canDownload ? 'Скачать' : 'Документ')}${!isCanvasFile && formatSize(size) ? ` · ${formatSize(size)}` : ''}`}
+          {status === 'done' && `${isImage ? 'Изображение' : canPreview ? 'Открыть предпросмотр' : note || (canDownload ? 'Скачать' : 'Документ')}${!isCanvasFile && formatSize(size) ? ` · ${formatSize(size)}` : ''}`}
           {status === 'error' && 'Ошибка загрузки'}
         </Box>
       </Box>
+      </Box>
       <Box sx={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 0.5 }}>
+        {canPreview && canDownload && <IconButton component="a" href={url} download={name} aria-label={`Скачать ${name}`} onClick={event => event.stopPropagation()} sx={{ width: 44, height: 44 }}><DownloadSimple size={18} /></IconButton>}
         {status === 'uploading' && !showProgress && <CircularProgress size={16} thickness={5} sx={{ color: 'primary.light' }} />}
         {status === 'done' && <CheckCircle size={18} weight="fill" style={{ color: 'var(--bt-success)' }} />}
         {canEdit && (

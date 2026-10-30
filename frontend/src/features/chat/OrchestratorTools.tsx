@@ -9,6 +9,7 @@ import { MCPSection } from '@/features/settings/MCPSection';
 import { GoogleSection } from '@/features/settings/GoogleSection';
 import { ComputerRulesSection } from '@/features/settings/ComputerRulesSection';
 import { ProjectMemorySection } from './ProjectMemorySection';
+import { activitySummary } from '@/components/ActivityFeed';
 
 type Task = { id: string; title: string; prompt: string; status: string; enabled: boolean; progress: string; error: string; next_run_at: number; conversation_id: string | null };
 type Skill = { name: string; title: string; description: string; origin: string; enabled: boolean };
@@ -154,7 +155,7 @@ export function OrchestratorTools({ draft, hasFiles = false, conversationId, onO
           {(tasks.data || []).map(task => <Box key={task.id} sx={{ py: 1.5, borderTop: '1px solid var(--bt-hairline)' }}>
             <Stack direction="row" gap={1} alignItems="flex-start"><Typography sx={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: 600, overflowWrap: 'anywhere' }}>{task.title}</Typography><Typography sx={{ fontSize: 11, color: task.status === 'running' ? 'primary.light' : 'text.secondary', whiteSpace: 'nowrap' }}>{statusLabels[task.status] || task.status}</Typography></Stack>
             {task.status === 'scheduled' && <Typography sx={{ fontSize: 12, color: 'text.secondary', mt: 0.5 }}>{date(task.next_run_at)}</Typography>}
-            {task.status === 'running' && task.progress && <Typography sx={{ fontSize: 12, color: 'text.secondary', mt: 0.5, whiteSpace: 'pre-wrap' }}>{task.progress}</Typography>}
+            {task.status === 'running' && task.progress && <Typography sx={{ fontSize: 12, color: 'text.secondary', mt: 0.5, overflowWrap: 'anywhere' }}>{activitySummary(task.progress)?.title}</Typography>}
             {task.error && <Typography sx={{ fontSize: 12, color: 'error.main', mt: 0.5 }}>{task.error}</Typography>}
             <Stack direction="row" gap={0.5} flexWrap="wrap" sx={{ mt: 0.5 }}>
               {task.conversation_id && <Button component={Link} to={`/chat?c=${encodeURIComponent(task.conversation_id)}`} size="small" onClick={close}>Результат</Button>}

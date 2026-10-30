@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { downloadBlob } from '@/api/client';
 import { DocumentAttachment, AttachmentInfo } from './DocumentAttachment';
+import { canPreviewDocument } from '@/features/editor/DocumentPreview';
 import { UserAvatar } from '@/components/UserAvatar';
 import { BrandIcon } from '@/components/BrandMark';
 import { BRAND_NAME } from '@/brand';
@@ -506,6 +507,9 @@ const ChatMessageView = memo(function ChatMessageView({
             ),
           )}
         </Box>
+      )}
+      {file && canPreviewDocument(file.filename) && !attachmentItems.some(item => item.name === file.filename) && (
+        <Box sx={{ mt: 1.25 }}><DocumentAttachment name={file.filename} status="done" type="generated" /></Box>
       )}
       {visibleContent && !editing && (
         <Box

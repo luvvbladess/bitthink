@@ -379,7 +379,7 @@ async def get_deepseek_response(
                     except json.JSONDecodeError:
                         args = {}
                     tool_result = await run_computer_tool(func_name, args, user_id)
-                    if func_name in ("browse_page", "connector_browse", "site_login") and args.get("url"):
+                    if func_name in ("browse_page", "browse_visual", "connector_browse", "site_login") and args.get("url"):
                         search_results.append({"query": args.get("url", ""), "summary": (tool_result or "")[:500]})
                 else:
                     tool_result = f"Инструмент {func_name} не найден."

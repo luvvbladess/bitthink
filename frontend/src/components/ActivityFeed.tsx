@@ -3,7 +3,9 @@ import { Box, Button, keyframes } from '@mui/material';
 import {
   ChartLineUp,
   CaretDown,
-  Check,
+  FileText,
+  ListChecks,
+  GearSix,
   EnvelopeSimple,
   Globe,
   MagnifyingGlass,
@@ -13,14 +15,14 @@ import {
   type Icon,
 } from '@phosphor-icons/react';
 
-type Kind = 'search' | 'browse' | 'mail' | 'ssh' | 'api' | 'chart' | 'think';
+type Kind = 'search' | 'browse' | 'mail' | 'ssh' | 'api' | 'chart' | 'think' | 'plan' | 'file' | 'check' | 'work' | 'prepare';
 
 interface Step {
   kind: Kind;
   text: string;
 }
 
-const KINDS = new Set<Kind>(['search', 'browse', 'mail', 'ssh', 'api', 'chart', 'think']);
+const KINDS = new Set<Kind>(['search', 'browse', 'mail', 'ssh', 'api', 'chart', 'think', 'plan', 'file', 'check', 'work', 'prepare']);
 
 const KIND_ICON: Record<Kind, Icon> = {
   search: MagnifyingGlass,
@@ -30,6 +32,11 @@ const KIND_ICON: Record<Kind, Icon> = {
   api: Plugs,
   chart: ChartLineUp,
   think: Sparkle,
+  plan: ListChecks,
+  file: FileText,
+  check: ListChecks,
+  work: Sparkle,
+  prepare: GearSix,
 };
 
 const EASE = 'cubic-bezier(0.23, 1, 0.32, 1)';
@@ -66,27 +73,48 @@ function capitalize(text: string): string {
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
 }
 
-function humanize(kind: Kind, text: string): string {
-  const raw = text.trim();
-  if (kind === 'search') {
-    if (/^ищу/i.test(raw)) return capitalize(raw);
-    return `Ищу: ${raw}`;
-  }
-  if (kind === 'browse') {
-    if (/^читаю|^открываю/i.test(raw)) return capitalize(raw);
-    return `Читаю ${raw}`;
-  }
-  if (kind === 'mail' || kind === 'ssh' || kind === 'think') return capitalize(raw);
-  if (kind === 'api') return raw ? `Запрос ${raw}` : 'Запрос';
-  if (kind === 'chart') return /^строю/i.test(raw) ? capitalize(raw) : 'Строю график';
-  return capitalize(raw);
-}
-
 export function latestActivityLabel(statusText?: string): string {
   const steps = parseActivitySteps(statusText || '');
   const last = steps[steps.length - 1];
   if (!last) return 'Собираю макет';
-  return humanize(last.kind, last.text);
+  return describe(last).title;
+}
+
+/** Also used by background tasks, so tagged protocol text never reaches their UI. */
+export function activitySummary(statusText?: string): { title: string; detail?: string } | null {
+  const steps = parseActivitySteps(statusText || '');
+  return steps.length ? describe(steps[steps.length - 1]) : null;
+}
+
+function legacyActivity(text: string): string {
+  const tools: Record<string, string> = {
+    swarm_read: 'Сверяю промежуточные результаты',
+    swarm_publish: 'Передаю результаты для дальнейшей работы',
+    swarm_send: 'Согласовываю детали выполнения задачи',
+    workspace_read: 'Читаю материалы задачи',
+    workspace_write: 'Сохраняю рабочий файл',
+    workspace_edit: 'Вношу изменения в файл',
+    workspace_ls: 'Смотрю доступные файлы задачи',
+    workspace_glob: 'Ищу файлы по заданию',
+    workspace_grep: 'Ищу нужные сведения в файлах',
+    python_run: 'Обрабатываю данные для задачи',
+    pip_install: 'Подготавливаю инструменты для задачи',
+    web_search: 'Ищу информацию в интернете',
+    browse_page: 'Читаю страницу',
+    load_skill: 'Изучаю инструкции по выполнению задачи',
+    mcp_call: 'Выполняю действие в подключённом сервисе',
+    product_lifecycle: 'Работаю над проектом',
+  };
+  const toolName = text.match(/\b(?:swarm|workspace|python|pip|web|browse|load|mcp|product)_[a-z_]+\b/i)?.[0].toLowerCase();
+  if (toolName) return tools[toolName] || 'Выполняю действие по задаче';
+  if (/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+(?=\s|\(|:|$)/i.test(text)) return 'Выполняю действие по задаче';
+  if (/^Запускаю \d+ сотрудников/i.test(text)) return 'Работаю над несколькими частями задачи параллельно';
+  if (/^Делаю:/i.test(text)) return 'Работаю над частью задачи';
+  if (/^Python\b/i.test(text)) return 'Обрабатываю данные для задачи';
+  if (/^pip\b|^Ставлю пакеты/i.test(text)) return 'Подготавливаю инструменты для задачи';
+  if (/^Смотрю скилы|^Скил\b|^Загружаю скил/i.test(text)) return 'Изучаю инструкции по выполнению задачи';
+  if (/песочниц/i.test(text)) return 'Работаю с файлами задачи';
+  return text;
 }
 
 export function parseActivitySteps(statusText: string): Step[] {
@@ -102,13 +130,14 @@ export function parseActivitySteps(statusText: string): Step[] {
       const tagged = piece.match(/^\[([a-z]+)\]\s*(.*)$/i);
       if (tagged) {
         const kind = tagged[1].toLowerCase() as Kind;
-        const text = tagged[2].trim();
+        const text = legacyActivity(tagged[2].trim());
         if (!text) continue;
         steps.push({ kind: KINDS.has(kind) ? kind : inferKind(text), text });
         continue;
       }
       if (/^Раунд\s+\d+/i.test(piece) || piece === 'Computer' || piece === 'Оркестратор' || piece === 'Пилот') continue;
-      steps.push({ kind: inferKind(piece), text: piece.replace(/^[✅❌⏳🔄▶⚡]\s*/, '') });
+      const text = legacyActivity(piece.replace(/^[✅❌⏳🔄▶⚡]\s*/, ''));
+      steps.push({ kind: inferKind(text), text });
     }
   }
   return steps.slice(-12);
@@ -125,26 +154,20 @@ interface Row {
 function describe(step: Step): Row {
   const { kind } = step;
   const raw = step.text.trim();
+  if (['plan', 'file', 'check', 'work', 'prepare'].includes(kind)) {
+    const [title, ...detail] = raw.split(' — ');
+    return { kind, title: capitalize(title), detail: detail.join(' — ') || undefined };
+  }
   if (kind === 'search') {
     return /^ищу/i.test(raw) ? { kind, title: capitalize(raw) } : { kind, title: 'Поиск в интернете', detail: raw };
   }
   if (kind === 'browse') {
     return /^(читаю|открываю)/i.test(raw) ? { kind, title: capitalize(raw) } : { kind, title: 'Читаю страницу', detail: raw };
   }
-  if (kind === 'ssh') {
-    return /^команда на сервере$/i.test(raw) ? { kind, title: 'Команда на сервере' } : { kind, title: 'Команда на сервере', detail: raw };
-  }
-  if (kind === 'api') return { kind, title: 'Запрос к сервису', detail: raw || undefined };
+  if (kind === 'ssh') return { kind, title: 'Выполняю действие на подключённом сервере' };
+  if (kind === 'api') return { kind, title: 'Обращаюсь к подключённому сервису' };
   if (kind === 'chart') return { kind, title: /^строю/i.test(raw) ? capitalize(raw) : 'Строю график' };
   return { kind, title: capitalize(raw) };
-}
-
-function plural(n: number): string {
-  const tail = n % 10;
-  const teen = n % 100;
-  if (tail === 1 && teen !== 11) return 'шаг';
-  if (tail >= 2 && tail <= 4 && (teen < 10 || teen >= 20)) return 'шага';
-  return 'шагов';
 }
 
 function clock(seconds: number): string {
@@ -192,8 +215,8 @@ function ActiveNode({ Glyph }: { Glyph: Icon }) {
   );
 }
 
-/** Finished: a quiet check, so the eye stays on the current action. */
-function DoneNode() {
+/** A previous activity is not a completion receipt, especially with parallel work. */
+function PreviousNode() {
   return (
     <Box
       aria-hidden
@@ -216,13 +239,13 @@ function DoneNode() {
           color: 'text.muted',
         }}
       >
-        <Check size={9} weight="bold" />
+        <Box sx={{ width: 4, height: 4, borderRadius: '50%', bgcolor: 'text.muted' }} />
       </Box>
     </Box>
   );
 }
 
-export function ActivityFeed({ statusText, onStop }: { statusText?: string; onStop?: () => void }) {
+export function ActivityFeed({ statusText, onStop, cloud = false }: { statusText?: string; onStop?: () => void; cloud?: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const historyId = useId();
   const steps = parseActivitySteps(statusText || '');
@@ -235,7 +258,7 @@ export function ActivityFeed({ statusText, onStop }: { statusText?: string; onSt
     <Box sx={{ width: '100%', maxWidth: 560, py: 0.25 }}>
       <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1, mb: .75 }}>
         {rows.length > 1 && <Button size="small" color="inherit" aria-expanded={expanded} aria-controls={historyId} onClick={() => setExpanded(value => !value)} endIcon={<CaretDown size={13} style={{ transform: expanded ? 'rotate(180deg)' : undefined }} />} sx={{ color: 'text.secondary', fontWeight: 400, px: 0 }}>
-          {expanded ? 'Свернуть шаги' : `Показать ${rows.length} ${plural(rows.length)}`}
+          {expanded ? 'Свернуть историю действий' : `История действий · ${rows.length}`}
         </Button>}
         {onStop && <Button size="small" color="inherit" onClick={onStop} sx={{ ml: 'auto', color: 'text.secondary' }}>Остановить</Button>}
       </Box>
@@ -266,7 +289,7 @@ export function ActivityFeed({ statusText, onStop }: { statusText?: string; onSt
               },
             }}
           >
-            {active ? <ActiveNode Glyph={Glyph} /> : <DoneNode />}
+            {active ? <ActiveNode Glyph={Glyph} /> : <PreviousNode />}
             <Box sx={{ minWidth: 0, pt: '1px' }}>
               <Box
                 role={active ? 'status' : undefined}
@@ -286,7 +309,7 @@ export function ActivityFeed({ statusText, onStop }: { statusText?: string; onSt
                     aria-hidden
                     sx={{ ml: 1, fontSize: '0.75rem', fontWeight: 400, color: 'text.muted', fontVariantNumeric: 'tabular-nums' }}
                   >
-                    {clock(elapsed)}
+                    {clock(elapsed)} в этом окне
                   </Box>
                 )}
               </Box>
@@ -297,9 +320,7 @@ export function ActivityFeed({ statusText, onStop }: { statusText?: string; onSt
                     fontSize: '0.8125rem',
                     lineHeight: 1.45,
                     color: 'text.muted',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
+                    overflowWrap: 'anywhere',
                   }}
                 >
                   {row.detail}
@@ -310,6 +331,7 @@ export function ActivityFeed({ statusText, onStop }: { statusText?: string; onSt
         );
       })}
       </Box>
+      {cloud && <Box sx={{ mt: 1, fontSize: '.75rem', lineHeight: 1.5, color: 'text.secondary' }}>Работа выполняется в облаке. Можно закрыть вкладку и вернуться к результату в этой беседе.</Box>}
     </Box>
   );
 }

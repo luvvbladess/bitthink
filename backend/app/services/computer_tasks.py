@@ -300,12 +300,15 @@ class ComputerWorker:
             beat = asyncio.create_task(watch())
             await asyncio.to_thread(event, task_id, "before_task", "Начало выполнения")
             instructions = await asyncio.to_thread(task_instructions, uid)
-            prompt = row["prompt"] + ("\n\nПравила рабочего процесса:\n" + instructions if instructions else "")
-            if row["conversation_id"] and row["resume_history"]:
-                prompt = "Продолжи задачу по истории. Проверь уже выполненные действия; не повторяй отправки и изменения без необходимости.\n" + prompt
-            await run_chat(user, prompt, cid, status, senders.send_chunk, senders.send_file,
-                           send_meta=senders.send_meta, send_extras=senders.send_extras,
-                           send_reasoning_delta=senders.send_reasoning_delta)
+            from app.core.request_context import generation_instructions
+            instruction_token = generation_instructions.set({'user_id': uid, 'conversation_id': cid,
+                'text': instructions, 'resuming': bool(row["resume_history"])})
+            try:
+                await run_chat(user, row["prompt"], cid, status, senders.send_chunk, senders.send_file,
+                               send_meta=senders.send_meta, send_extras=senders.send_extras,
+                               send_reasoning_delta=senders.send_reasoning_delta)
+            finally:
+                generation_instructions.reset(instruction_token)
             await asyncio.to_thread(event, task_id, "after_task", "Задача завершена")
             await asyncio.to_thread(finish, task_id, run_number=row["run_number"])
             await hub.broadcast(user, {"type": "done", "conversation_id": cid})

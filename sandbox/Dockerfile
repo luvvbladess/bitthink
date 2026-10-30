@@ -43,6 +43,7 @@ RUN pip install --no-cache-dir \
 
 WORKDIR /opt/sandbox
 COPY sandbox/server.py /opt/sandbox/server.py
+COPY backend/app/services/page_shot.py /opt/sandbox/page_shot.py
 COPY sandbox/healthcheck.py /opt/sandbox/healthcheck.py
 COPY sandbox/sitecustomize.py /usr/local/lib/python3.12/site-packages/sitecustomize.py
 # Та же сборка markdown → .docx, что у режима «Документы»: Пилот собирает

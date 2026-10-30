@@ -1,4 +1,6 @@
 import { useSearchParams } from 'react-router-dom';
+import { DocumentPreview, useDocumentPreview } from '@/features/editor/DocumentPreview';
+import { ResizablePanel } from '@/components/ResizablePanel';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Box, Button, Snackbar, Alert, Drawer, SwipeableDrawer, IconButton, Tooltip, Menu, MenuItem, ListItemIcon, ListItemText, useMediaQuery, useTheme } from '@mui/material';
 import { List as ListIcon, FileArrowDown, MagnifyingGlass, WarningCircle, SquareHalf, Users, ChatsCircle, FolderSimple, DotsThree, Sun, Moon } from '@phosphor-icons/react';
@@ -70,6 +72,12 @@ export default function ChatPage() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const compactCanvas = useMediaQuery(theme.breakpoints.down('lg'));
+  const { file: previewFile, close: closePreview } = useDocumentPreview();
+  const [panelExpanded, setPanelExpanded] = useState(false);
+  const previewConversation = previewFile?.conversationId || activeConvId;
+  const documentPanel = Boolean(previewFile && projectPanel === null);
+  useEffect(() => { setPanelExpanded(false); }, [previewFile, activeConvId]);
+  useEffect(() => { closePreview(); }, [activeConvId, closePreview]);
   // Sources dock beside the reply only when the 768px reading column plus its
   // gutters still fit next to the sidebar and a 292px panel. Narrower screens
   // open them from the header instead of squeezing the text.
@@ -78,6 +86,9 @@ export default function ChatPage() {
   const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
   const [dialogueSheetOpen, setDialogueSheetOpen] = useState(false);
   const [mobileCanvasOpen, setMobileCanvasOpen] = useState(false);
+  useEffect(() => {
+    if (previewFile) { setProjectPanel(null); setMobileCanvasOpen(false); }
+  }, [previewFile]);
   const dialogueJumpRef = useRef<DialogueJumpFn | null>(null);
   const [sourceMessageId, setSourceMessageId] = useState<string | undefined>();
   const [selectionQuote, setSelectionQuote] = useState<{ text: string } | null>(null);
@@ -1087,12 +1098,12 @@ export default function ChatPage() {
       <Box sx={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', overflow: 'hidden', position: 'relative' }}>
       <Box
         sx={{
-          ...(isStudio && !compactCanvas && Boolean(canvasSource || thinking)
-            ? { width: { lg: 340, xl: 380 }, flexShrink: 0 }
+          ...(!compactCanvas && (documentPanel || (isStudio && Boolean(canvasSource || thinking)))
+            ? { flex: 1 }
             : { flex: 1 }),
           minWidth: 0,
           minHeight: 0,
-          display: projectPanel !== null && (!projectSideBySide || !projectPanel) ? 'none' : 'flex',
+          display: (projectPanel !== null && (!projectSideBySide || !projectPanel)) || (!compactCanvas && panelExpanded && (documentPanel || (isStudio && Boolean(canvasSource || thinking)))) ? 'none' : 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
           position: 'relative',
@@ -1181,7 +1192,7 @@ export default function ChatPage() {
           onOpenProjectCitation={citation => { setProjectCitation(citation); setProjectOpenError(''); setProjectPanel(citation.projectId); }}
           clarifyDocked={clarifyQuestions.length > 0}
           jumpRef={dialogueJumpRef}
-          splitPane={Boolean(isStudio && !compactCanvas && Boolean(canvasSource || thinking))}
+          splitPane={Boolean(!compactCanvas && (documentPanel || (isStudio && Boolean(canvasSource || thinking))))}
           composerSlotRef={!isMobile && !isStudio ? setSlotEl : undefined}
         />}
         <Box
@@ -1268,12 +1279,20 @@ export default function ChatPage() {
           onCreated={project => { queryClient.invalidateQueries({ queryKey: ['projects'] }); void openProject(project.id); }}
           onSelectChat={id => { ++projectRequestRef.current; void handleSelect(id); }} />
       </Box>}
-      {projectPanel === null && isStudio && !compactCanvas && Boolean(canvasSource || thinking) && (
+      {documentPanel && !compactCanvas && previewFile && <ResizablePanel label="Документ" expanded={panelExpanded} onExpand={setPanelExpanded}>
+        <DocumentPreview key={`${previewConversation}/${previewFile.name}`} file={previewFile} conversationId={previewConversation} onClose={closePreview} />
+      </ResizablePanel>}
+      {projectPanel === null && !documentPanel && isStudio && !compactCanvas && Boolean(canvasSource || thinking) && (
+        <ResizablePanel label="Студия" expanded={panelExpanded} onExpand={setPanelExpanded}>
         <DesignCanvas source={canvasSource} thinking={thinking} statusText={statusText}
           versions={canvasVersions} onVersion={setSelectedCanvas}
           onEdit={(prompt) => { void handleSend(prompt); }} />
+        </ResizablePanel>
       )}
       </Box>
+      <Drawer anchor="right" open={documentPanel && compactCanvas} onClose={closePreview} PaperProps={{ sx: { width: '100%', height: '100dvh', bgcolor: 'background.default' } }}>
+        {previewFile && <DocumentPreview key={`${previewConversation}/${previewFile.name}`} file={previewFile} conversationId={previewConversation} onClose={closePreview} />}
+      </Drawer>
       {projectPanel === null && isStudio && compactCanvas && (
         <Drawer
           anchor="bottom"

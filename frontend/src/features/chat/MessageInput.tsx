@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Box, Button, CircularProgress, IconButton, TextField, Tooltip } from '@mui/material';
+import { Box, Button, CircularProgress, Drawer, IconButton, TextField, Tooltip } from '@mui/material';
 import { File as FileIcon, PaperPlaneRight, Paperclip, Microphone, Stop, X } from '@phosphor-icons/react';
 import { useComposerDraft } from './useComposerDraft';
 import { useVoiceInput } from './useVoiceInput';
@@ -76,7 +76,7 @@ function PendingPreview({ file, onRemove }: { file: File; onRemove: () => void }
       <Box sx={{ minWidth: 0, fontSize: '0.75rem', color: 'text.primary', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {file.name}
       </Box>
-      <IconButton size="small" onClick={onRemove} aria-label={`Убрать ${file.name}`} sx={{ ml: 'auto', p: 0.25, color: 'text.secondary', '&:hover': { color: 'text.primary' } }}>
+      <IconButton size="small" onClick={onRemove} aria-label={`Убрать ${file.name}`} sx={{ ml: 'auto', minWidth: 44, minHeight: 44, color: 'text.secondary', '&:hover': { color: 'text.primary' } }}>
         <X size={13} />
       </IconButton>
     </Box>
@@ -117,6 +117,9 @@ export function MessageInput({
   const isDocgen = selectedModel === 'docgen';
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const photoInputRef = useRef<HTMLInputElement>(null);
+  const [attachmentMenu, setAttachmentMenu] = useState(false);
 
   const addFiles = (files: File[] | FileList | null) => {
     if (!files) return;
@@ -245,6 +248,7 @@ export function MessageInput({
       <input
         type="file"
         ref={fileInputRef}
+        aria-label="Файлы для сообщения"
         multiple
         accept={imageMode ? 'image/*' : isDocgen ? '.doc,.docx,.pdf,.xls,.xlsx,.xlsm,.csv,.txt,.rtf,.odt,.zip' : undefined}
         style={{ display: 'none' }}
@@ -253,6 +257,14 @@ export function MessageInput({
           e.target.value = '';
         }}
       />
+      <input hidden type="file" accept="image/*" capture="environment" ref={cameraInputRef} aria-label="Снять фото документа" onChange={event => { addFiles(event.target.files); event.target.value = ''; }} />
+      <input hidden type="file" accept="image/*" multiple ref={photoInputRef} aria-label="Выбрать фотографии" onChange={event => { addFiles(event.target.files); event.target.value = ''; }} />
+      <Drawer anchor="bottom" open={attachmentMenu} onClose={() => setAttachmentMenu(false)} PaperProps={{ sx: { p: 1.5, pb: 'max(12px, env(safe-area-inset-bottom))', borderRadius: '16px 16px 0 0' } }}>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}><Box sx={{ fontWeight: 600 }}>Добавить к вопросу</Box><IconButton aria-label="Закрыть выбор вложения" onClick={() => setAttachmentMenu(false)} sx={{ width: 44, height: 44 }}><X size={20} /></IconButton></Box>
+        {[
+          ['Снять фото', cameraInputRef], ['Выбрать фото', photoInputRef], ['Прикрепить файл', fileInputRef],
+        ].map(([label, ref]) => <Button key={String(label)} onClick={() => { (ref as typeof fileInputRef).current?.click(); setAttachmentMenu(false); }} sx={{ justifyContent: 'flex-start', minHeight: 48, color: 'text.primary' }}>{String(label)}</Button>)}
+      </Drawer>
       {imageMode && editSourceUrl && pendingImages.length === 0 && (
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, pb: 1 }}>
           <Box
@@ -280,7 +292,7 @@ export function MessageInput({
               size="small"
               onClick={() => { setImageMode(false); onClearEditSource?.(); }}
               aria-label="Создать новое изображение"
-              sx={{ ml: 'auto', p: 0.25, color: 'text.secondary', '&:hover': { color: 'text.primary' } }}
+              sx={{ ml: 'auto', minWidth: 44, minHeight: 44, color: 'text.secondary', '&:hover': { color: 'text.primary' } }}
             >
               <X size={13} />
             </IconButton>
@@ -301,7 +313,7 @@ export function MessageInput({
       {selectionQuote && <Box component="section" aria-label="Выбранный фрагмент" sx={{ mb: 1.25, p: 1.25, borderRadius: '10px', bgcolor: 'var(--bt-overlay-faint)', minWidth: 0 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, fontSize: 12, color: 'text.secondary' }}>
           Уточнение по фрагменту
-          <IconButton size="small" type="button" aria-label="Убрать цитату" disabled={submitting} onClick={onClearSelectionQuote}><X size={15} /></IconButton>
+          <IconButton size="small" type="button" aria-label="Убрать цитату" disabled={submitting} onClick={onClearSelectionQuote} sx={{ width: 44, height: 44 }}><X size={15} /></IconButton>
         </Box>
         <Box component="blockquote" sx={{ m: 0, mt: .5, maxHeight: 72, overflowY: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 13, lineHeight: 1.5 }}>{selectionQuote.text}</Box>
       </Box>}
@@ -367,6 +379,9 @@ export function MessageInput({
           },
         }}
         onKeyDown={(e) => {
+          // Screen keyboards need Enter for paragraphs. Ctrl/Cmd+Enter remains
+          // available on tablets and touch laptops with a physical keyboard.
+          if (window.matchMedia('(pointer: coarse)').matches && !e.ctrlKey && !e.metaKey) return;
           if (e.key === 'Enter' && !e.shiftKey && !(e.nativeEvent as KeyboardEvent).isComposing && e.keyCode !== 229) {
             e.preventDefault();
             handleSubmit(e);
@@ -397,7 +412,7 @@ export function MessageInput({
         <Tooltip title="Прикрепить файл" disableTouchListener enterDelay={500}>
           <IconButton
             size="small"
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => { if (window.matchMedia('(pointer: coarse)').matches && !isDocgen) setAttachmentMenu(true); else fileInputRef.current?.click(); }}
             disabled={restoring || disabled || submitting}
             sx={composerIconBtnSx}
             aria-label="Прикрепить файл"

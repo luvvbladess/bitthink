@@ -43,6 +43,8 @@ async def _persist_generated_file(web_user_id: str, filename: str, data: bytes) 
         "status": "done",
         "type": "generated",
         "url": f"/uploads/generated/{user_key}/{stored_name}",
+        **({'workspace': {'kind': 'product', 'id': match.group(1)}}
+           if (match := re.fullmatch(r'product-([0-9a-f]{24})\.zip', filename)) else {}),
     }
 
 
@@ -181,7 +183,27 @@ async def _generate_and_send(
         from app.services.project_results import turn_results, capture_answer
         saved_project_results=[]
         results_token=turn_results.set(saved_project_results)
+        from app.services.conversation_context import artifact_context, context_message, workspaces
+        workspace_token = workspaces.set([])
         try:
+            conv = await asyncio.to_thread(repo.conversations.view, bot_user_id, conversation_id) if conversation_id else None
+            artifacts = artifact_context(conv, bot_user_id)
+            workspaces.set(artifacts['workspaces'])
+            artifact_note = context_message(artifacts)
+            from app.core.request_context import generation_instructions
+            runtime = generation_instructions.get()
+            if runtime and runtime['user_id'] == bot_user_id and runtime['conversation_id'] == conversation_id:
+                instruction = str(runtime.get('text') or '')
+                if runtime.get('resuming'):
+                    instruction += '\nПродолжи по сохранённой истории. Проверь выполненные действия; не повторяй внешние действия без необходимости.'
+                if instruction.strip():
+                    api_messages = [dict(item) for item in api_messages]
+                    api_messages.insert(1 if api_messages and api_messages[0].get('role') == 'system' else 0,
+                                        {'role': 'system', 'content': 'Правила пользователя для этого задания:\n' + instruction})
+            if artifact_note:
+                api_messages = [dict(item) for item in api_messages]
+                api_messages.insert(1 if api_messages and api_messages[0].get('role') == 'system' else 0,
+                                    {'role': 'system', 'content': artifact_note})
             # Initial messages also carry the note for providers that do not use
             # with_runtime_context; employee calls inherit the scoped ContextVar.
             if project_note:
@@ -192,6 +214,7 @@ async def _generate_and_send(
                 bot_user_id, prompt_content, api_messages, status_msg, on_reasoning_delta=None
             )
         finally:
+            workspaces.reset(workspace_token)
             project_context.reset(project_token)
             turn_results.reset(results_token)
         try:
@@ -220,6 +243,22 @@ async def _generate_and_send(
     response_text = release_guard(response_text, generated_files, current_run.get())
     response_text = sanitize_response_text(response_text)
     response_text = await asyncio.to_thread(chat_access.redact_for_user, bot_user_id, response_text)
+
+    # Long web replies used to deliver an ephemeral response.docx only through
+    # the socket. Persist it with the other files so preview and history agree.
+    from app.services.desktop_context import desktop_mode
+    auto_docx = False
+    if len(response_text) > 8000 and desktop_mode.get() is None:
+        try:
+            from docx_generator import convert_markdown_to_docx
+            base_template = await asyncio.to_thread(repo.templates.base, bot_user_id)
+            docx_bytes = await asyncio.to_thread(convert_markdown_to_docx, response_text, base_template)
+        except Exception:
+            logger.exception('Could not prepare long reply document; preserving the text')
+            docx_bytes = None
+        if docx_bytes:
+            generated_files = [*(generated_files or []), {'filename': 'response.docx', 'bytes': docx_bytes}]
+            auto_docx = True
 
     outgoing: list[tuple[str, bytes, dict]] = []
     for item in generated_files or []:
@@ -293,16 +332,7 @@ async def _generate_and_send(
 
     from app.services.desktop_context import desktop_mode
 
-    if len(response_text) > 8000 and desktop_mode.get() is None:
-        from docx_generator import convert_markdown_to_docx
-
-        base_template = await asyncio.to_thread(repo.templates.base, bot_user_id)
-        docx_bytes = await asyncio.to_thread(convert_markdown_to_docx, response_text, base_template)
-        if docx_bytes:
-            await best_effort(send_file, "response.docx", docx_bytes)
-        else:
-            await best_effort(send_chunk, response_text)
-    else:
+    if not auto_docx:
         await best_effort(send_chunk, response_text)
 
     for filename, file_bytes, meta in outgoing:

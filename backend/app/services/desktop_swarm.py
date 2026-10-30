@@ -96,7 +96,12 @@ class SwarmBoard:
                         record['finding'] = summary[:2000]
                     await emit(PREFIX + json.dumps(record, ensure_ascii=False))
                 elif state in {'working','done','error'}:
-                    await emit('[think] ' + agent['role'] + ': ' + {'working':'выполняет этап','done':'этап завершён','error':'ошибка этапа'}[state])
+                    from status_feed import push_status
+                    await push_status('work', {
+                        'working': 'Работаю над частью задачи',
+                        'done': 'Один из этапов завершён',
+                        'error': 'На одном из этапов возникла ошибка',
+                    }[state])
         except Exception:
             # UI delivery cannot cancel an employee or repeat a local action.
             pass

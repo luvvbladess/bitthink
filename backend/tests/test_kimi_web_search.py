@@ -247,7 +247,7 @@ def test_kimi_chat_uses_function_tools_not_builtin():
     assert kimi_client.WEB_SEARCH_TOOL_KIMI["type"] == "function"
     assert kimi_client.WEB_SEARCH_TOOL_KIMI["function"]["name"] == "web_search"
     names = {tool["function"]["name"] for tool in kimi_client.KIMI_SEARCH_TOOLS}
-    assert names == {"web_search", "browse_page"}
+    assert names == {"web_search", "browse_page", "browse_visual"}
 
 
 def test_kimi_chat_collects_rest_sources(monkeypatch):

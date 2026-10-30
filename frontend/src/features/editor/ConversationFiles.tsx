@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Box, Drawer, IconButton, Tooltip, Typography, CircularProgress, Tab, Tabs, TextField, Link } from '@mui/material';
-import { X, DownloadSimple, PencilSimpleLine, FileDoc, FilePdf, FileXls, FileText, Image, MagnifyingGlass } from '@phosphor-icons/react';
+import { X, DownloadSimple, PencilSimpleLine, FileDoc, FilePdf, FileXls, FileText, Image, MagnifyingGlass, Eye } from '@phosphor-icons/react';
+import { canPreviewDocument, useDocumentPreview } from './DocumentPreview';
 import { useQuery } from '@tanstack/react-query';
 import { API_BASE, apiFetch } from '@/api/client';
 import { isEditableDocument, useEditorEnabled, useEditorStore } from '@/features/editor/DocumentEditor';
@@ -57,6 +58,7 @@ export function ConversationFilesDrawer({
 }) {
   const editorEnabled = useEditorEnabled();
   const openEditor = useEditorStore((state) => state.open);
+  const openPreview = useDocumentPreview(state => state.open);
   const [scope, setScope] = useState<FilesScope>(initialScope);
   const [search, setSearch] = useState('');
   const library = scope === 'all' || !conversationId;
@@ -169,6 +171,10 @@ export function ConversationFilesDrawer({
                 )}
               </Box>
               <Box sx={{ display: 'flex', flexShrink: 0 }}>
+                {canPreviewDocument(file.name) && <IconButton aria-label={`Предпросмотр ${file.name}`} sx={{ width: 44, height: 44 }} onClick={() => {
+                  openPreview({ name: file.name, conversationId: file.conversation_id || conversationId, url: file.download_url ? `${API_BASE}${file.download_url}` : undefined });
+                  onClose();
+                }}><Eye size={18} /></IconButton>}
                 {canEdit && (!otherChat || onOpenChat) && (
                   <Tooltip title="Открыть в редакторе">
                     <IconButton

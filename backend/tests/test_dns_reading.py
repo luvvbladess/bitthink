@@ -28,10 +28,10 @@ def test_direct_answer_with_tools_does_not_announce_writing_before_search(monkey
     events=[]
     async def plan(*a,**k):return {'status':'done','new_employees':[]}
     async def direct(*a,**k):
-        assert 'Пишу ответ' not in events
+        assert not any(text.startswith('Собираю итоговый ответ') for text in events)
         events.extend(['search','browse'])
         return 'Готово','',[]
-    async def status(_,text):events.append(text)
+    async def status(_,text,kind='work'):events.append(text)
     monkeypatch.setattr(director,'_plan_round',plan)
     monkeypatch.setattr(director,'_answer_directly',direct)
     monkeypatch.setattr(director,'_update_status',status)

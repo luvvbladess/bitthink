@@ -47,8 +47,6 @@ async def push_status(kind: str, detail: str) -> None:
     generic_search = detail.lower() in {"ищу в интернете", "search"}
     if kind == "search" and generic_search and any(existing_kind == "search" for existing_kind, _ in steps):
         return
-    if (kind, detail) in steps:
-        return
     if steps and steps[-1] == (kind, detail):
         return
     steps.append((kind, detail))
@@ -60,6 +58,11 @@ async def push_status(kind: str, detail: str) -> None:
 
 async def announce_tool(name: str, args: Optional[dict] = None) -> None:
     args = args or {}
+    from orchestrator_activity import tool_activity
+    action = tool_activity(name, args)
+    if action:
+        await push_status(*action)
+        return
     if name in ("web_search", "$web_search", "server_search"):
         q = str(args.get("query") or args.get("q") or args.get("text_query") or "").strip()
         await push_status("search", q or "Ищу в интернете")
@@ -76,7 +79,7 @@ async def announce_tool(name: str, args: Optional[dict] = None) -> None:
         await push_status("think", f"Ищу в чатах: {q}" if q else "Ищу в прошлых чатах")
     elif name == "recent_chats":
         await push_status("think", "Смотрю недавние чаты")
-    elif name in ("browse_page", "connector_browse", "site_login"):
+    elif name in ("browse_page", "browse_visual", "connector_browse", "site_login"):
         url = str(args.get("url") or args.get("login_url") or "").strip()
         await push_status("browse", host_from_url(url) or url or "страницу")
     elif name == "gmail_list":
@@ -111,55 +114,13 @@ async def announce_tool(name: str, args: Optional[dict] = None) -> None:
     elif name == "google_calendar_create":
         summary = str(args.get("summary") or "").strip()
         await push_status("think", f"Добавляю в календарь: {summary}" if summary else "Добавляю событие")
-    elif name == "ssh_exec":
-        cmd = str(args.get("command") or "").strip()[:70]
-        await push_status("ssh", cmd or "Команда на сервере")
-    elif name == "http_request":
-        method = str(args.get("method") or "GET").upper()
-        path = str(args.get("path") or "/")
-        await push_status("api", f"{method} {path}")
-    elif name == "list_connectors":
-        await push_status("think", "Смотрю доступы")
-    elif name == "list_skills":
-        await push_status("think", "Смотрю скилы")
-    elif name == "load_skill":
-        skill = str(args.get("name") or "").strip()
-        await push_status("think", f"Скил {skill}" if skill else "Загружаю скил")
-    elif name == "save_skill":
-        skill = str(args.get("name") or "").strip()
-        await push_status("think", f"Сохраняю скил {skill}" if skill else "Сохраняю скил")
-    elif name == "delete_skill":
-        skill = str(args.get("name") or "").strip()
-        await push_status("think", f"Удаляю скил {skill}" if skill else "Удаляю скил")
     elif name == "forget_access":
         await push_status("think", "Забываю доступ")
-    elif name == "workspace_ls":
-        await push_status("think", "Смотрю файлы в песочнице")
-    elif name == "workspace_read":
-        await push_status("think", str(args.get("path") or "файл")[:80])
-    elif name == "workspace_write":
-        await push_status("think", f"Пишу {str(args.get('path') or 'файл')[:60]}")
-    elif name == "workspace_edit":
-        await push_status("think", f"Правлю {str(args.get('path') or 'файл')[:60]}")
-    elif name == "workspace_delete":
-        await push_status("think", f"Удаляю {str(args.get('path') or 'файл')[:60]}")
-    elif name == "workspace_grep":
-        await push_status("think", f"Ищу в песочнице {str(args.get('pattern') or '')[:50]}".strip() or "Ищу в песочнице")
-    elif name == "workspace_glob":
-        await push_status("think", f"Файлы {str(args.get('pattern') or '')[:50]}".strip() or "Ищу файлы")
-    elif name == "python_run":
-        await push_status("think", f"Python {str(args.get('path') or '')[:50]}".strip() or "Запускаю скрипт")
-    elif name == "pip_install":
-        pkgs = args.get("packages") or []
-        label = ", ".join(str(item) for item in pkgs[:4]) if isinstance(pkgs, list) else ""
-        await push_status("think", f"pip {label}".strip() or "Ставлю пакеты")
     elif name == "visualize_data":
         await push_status("chart", str(args.get("title") or "Строю график"))
     elif name == 'engineering_import':
         await push_status('think','Загружаю исходные материалы для чертежей')
     elif name == 'engineering_read_page':
         await push_status('think',f"Просматриваю лист {args.get('page',1)} чертежа")
-    elif name == 'engineering_build':
-        await push_status('think','Черчу и проверяю комплект КД')
     else:
-        await push_status("think", name)
+        await push_status("work", "Выполняю действие по задаче")

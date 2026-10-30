@@ -160,6 +160,7 @@ async function fixture(options = {}) {
     await route.fulfill({ json: data });
   });
   await page.routeWebSocket(/\/chat\/ws$/, socket => {
+    state.emitActivity = text => socket.send(JSON.stringify({ type: 'status', payload: { conversation_id: 'chat-a', text } }));
     state.socketConnections = (state.socketConnections || 0) + 1;
     let silent = false;
     socket.onClose(() => { state.socketCloses = (state.socketCloses || 0) + 1; });
@@ -186,6 +187,10 @@ async function fixture(options = {}) {
         if (event.payload.request_id) socket.send(JSON.stringify({ type: 'accepted', payload: { conversation_id: event.payload.conversation_id, request_id: event.payload.request_id } }));
         state.sends.push(event.payload);
         const id = event.payload.conversation_id;
+        if (state.liveDocument) {
+          socket.send(JSON.stringify({ type: 'file', payload: { conversation_id: id, filename: 'Свежий.docx', data: '' } }));
+          return;
+        }
         if (state.streamBurst) {
           history[id].push({ id: 'burst-user', role: 'user', content: event.payload.content });
           state.burstAnswer = 'Поток: ' + Array.from({ length: 100 }, (_, index) => `${index}, `).join('');
@@ -200,7 +205,7 @@ async function fixture(options = {}) {
             socket.send(JSON.stringify({ type: 'chunk', payload: { conversation_id: id, text: 'Ответ завершён в другом разделе.' } }));
             socket.send(JSON.stringify({ type: 'done', payload: { conversation_id: id } }));
           };
-          socket.send(JSON.stringify({ type: 'status', payload: { conversation_id: id, text: 'Готовлю ответ' } }));
+          socket.send(JSON.stringify({ type: 'status', payload: { conversation_id: id, text: state.activityStatus || 'Готовлю ответ' } }));
           return;
         }
         history[id].push({ id: 'sent-' + state.sends.length, role: 'user', content: event.payload.content }, { id: 'reply-' + state.sends.length, role: 'assistant', content: 'Проверенный новый ответ.' });
@@ -338,6 +343,168 @@ function studioFixture({ width = 1440, empty = false, failCanvas = false, theme 
 }
 
 try {
+  for (const [tool, label] of [
+    ['swarm_read', 'Сверяю промежуточные результаты'],
+    ['swarm_publish', 'Передаю результаты для дальнейшей работы'],
+    ['swarm_send', 'Согласовываю детали выполнения задачи'],
+    ['workspace_read', 'Читаю материалы задачи'],
+    ['future_internal_tool', 'Выполняю действие по задаче'],
+  ]) await test(`cloud-tools: internal name is hidden in background status ${tool}`, async () => {
+    const f = await fixture({ model: 'director', handleRoute: async ({ path, route }) => {
+      if (path === '/computer/tasks') { await route.fulfill({ json: [{ id: 'work', title: 'Отчёт', status: 'running', conversation_id: 'chat-a', prompt: 'Подготовь отчёт', enabled: true, progress: `[think] ${tool}` }] }); return true; }
+    } });
+    try {
+      const bar = f.page.getByRole('region', { name: 'Фоновая задача', exact: true });
+      await expect(bar.getByText(label, { exact: true })).toBeVisible();
+      await expect(bar.getByText(tool, { exact: false })).toHaveCount(0);
+      await f.page.getByRole('button', { name: 'Задачи и инструменты Оркестратора', exact: true }).click();
+      await f.page.getByRole('button', { name: /^Задачи Активных задач/ }).click();
+      const tools = f.page.getByRole('region', { name: 'Инструменты Оркестратора' });
+      await expect(tools.getByText(label, { exact: true })).toBeVisible();
+      await expect(tools.getByText(tool, { exact: false })).toHaveCount(0);
+    } finally { await f.context.close(); }
+  });
+  for (const width of [320, 1440]) await test(`cloud30: cloud activity explains current action and history ${width}`, async () => {
+    const activity = '[think] Python /private/script.py\n[prepare] Подготавливаю инструменты — Для обработки таблицы\n[file] Собираю документ — Отчёт по результатам сравнения предложений поставщиков.docx';
+    const f = await fixture({ model: 'director', viewport: { width, height: 900 }, touch: width < 600, handleRoute: async ({ path, method, route, state }) => {
+      if (path === '/computer/tasks' && method === 'POST') {
+        await route.fulfill({ json: { id: 'work', status: 'running', conversation_id: 'chat-a', prompt: 'Сравни предложения', progress: '', enabled: true, run_number: 1 } });
+        setTimeout(() => state.emitActivity(activity), 100);
+        return true;
+      }
+    } });
+    try {
+      await expect(f.input).toBeEnabled(); await f.input.fill('Сравни предложения и подготовь отчёт');
+      await f.page.getByRole('button', { name: 'Отправить сообщение', exact: true }).click();
+      await expect(f.page.getByText('Собираю документ', { exact: true })).toBeVisible();
+      await expect(f.page.getByText('Отчёт по результатам сравнения предложений поставщиков.docx', { exact: true })).toBeVisible();
+      await expect(f.page.getByText(/Работа выполняется в облаке/)).toBeVisible();
+      await f.page.getByRole('button', { name: 'История действий · 3', exact: true }).click();
+      await expect(f.page.getByText('Обрабатываю данные для задачи', { exact: true })).toBeVisible();
+      await expect(f.page.getByText('Подготавливаю инструменты', { exact: true })).toBeVisible();
+      await expect(f.page.getByText('/private/script.py', { exact: false })).toHaveCount(0);
+      assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      await f.page.screenshot({ path: `${output}/cloud30-activity-${width}.png` });
+      await f.page.getByRole('button', { name: 'Свернуть историю действий', exact: true }).click();
+      await expect(f.page.getByText('Обрабатываю данные для задачи', { exact: true })).toBeHidden();
+    } finally { await f.context.close(); }
+  });
+  await test('cloud30: background task shows its latest meaningful activity without protocol tags', async () => {
+    const task = { id: 'cloud-task', title: 'Отчёт', status: 'running', conversation_id: 'chat-a', prompt: 'Подготовь отчёт', progress: '[plan] Разбираю задачу\n[file] Создаю таблицу — Сравнение.xlsx', enabled: true, run_number: 1 };
+    const f = await fixture({ model: 'director', handleRoute: async ({ path, route }) => {
+      if (path === '/computer/tasks') { await route.fulfill({ json: [task] }); return true; }
+    } });
+    try {
+      const bar = f.page.getByRole('region', { name: 'Фоновая задача', exact: true });
+      await expect(bar.getByText('Создаю таблицу', { exact: true })).toBeVisible();
+      await expect(bar.getByText('Сравнение.xlsx', { exact: true })).toBeVisible();
+      await expect(bar.getByText('[file]', { exact: false })).toHaveCount(0);
+      await f.page.getByRole('button', { name: 'Задачи и инструменты Оркестратора', exact: true }).click();
+      await f.page.getByRole('button', { name: /^Задачи Активных задач/ }).click();
+      await expect(f.page.getByRole('region', { name: 'Инструменты Оркестратора' }).getByText('Создаю таблицу', { exact: true })).toBeVisible();
+    } finally { await f.context.close(); }
+  });
+  for (const width of [320, 390, 1440]) await test(`mobile30: attachment opens inline preview, paging, zoom and close ${width}`, async () => {
+    const f = await fixture({ viewport: { width, height: 900 }, touch: width < 600, handleRoute: async ({ path, route, state }) => {
+      if (path === '/conversations/chat-a/history') {
+        await route.fulfill({ json: { items: [{ id: 'report', role: 'assistant', content: 'Документ готов', attachment: { name: 'Отчёт.docx', status: 'done', type: 'generated', url: '/api/qa/report' } }], has_more: false } }); return true;
+      }
+      if (path === '/conversations/library') {
+        await route.fulfill({ json: [{ name: 'Отчёт.docx', kind: 'generated', uploaded_at: '2026-10-30', uploaded_by: 'Bit-Think', version: 1, conversation_id: 'chat-b', conversation_title: 'Вторая беседа', download_url: '/qa/report' }] }); return true;
+      }
+      if (path.endsWith('/files/preview')) {
+        const params = new URL(route.request().url()).searchParams;
+        if (params.has('page')) {
+          if (state.previewFailure) { await route.fulfill({ status: 503, json: { detail: 'Страница временно недоступна' } }); return true; }
+          (state.previewPages ||= []).push(params.get('page'));
+          await route.fulfill({ contentType: 'image/svg+xml', body: `<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1273" viewBox="0 0 900 1273"><rect width="900" height="1273" fill="white"/><g fill="#122024" font-family="Arial"><text x="70" y="100" font-size="36" font-weight="bold">Отчёт по проекту</text><text x="70" y="150" font-size="22">Предварительные результаты · страница ${params.get('page')}</text><text x="70" y="230" font-size="26" font-weight="bold">Выполненная работа</text><text x="70" y="280" font-size="21">Подготовлены документы и план следующего этапа.</text><text x="70" y="320" font-size="21">Материалы готовы к обсуждению с командой.</text><rect x="70" y="390" width="760" height="200" fill="#eef4f5"/><text x="95" y="440" font-size="22">Результат</text><text x="460" y="440" font-size="22">Статус</text><text x="95" y="505" font-size="21">Документация</text><text x="460" y="505" font-size="21">Готово</text><text x="95" y="555" font-size="21">Согласование</text><text x="460" y="555" font-size="21">Следующий этап</text><text x="70" y="1190" font-size="18">Образец для проверки интерфейса</text></g></svg>` });
+        } else await route.fulfill({ json: { pages: 2, download_url: '/qa/report' } });
+        return true;
+      }
+      if (path === '/qa/report') { state.downloads = (state.downloads || 0) + 1; await route.fulfill({ contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', body: 'document' }); return true; }
+    } });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('Сохранённый черновик');
+      await f.page.getByRole('button', { name: 'Предпросмотр Отчёт.docx', exact: true }).click();
+      const panel = f.page.getByRole('region', { name: 'Предпросмотр документа', exact: true });
+      await expect(panel.getByRole('img', { name: /^Страница/ })).toHaveAttribute('alt', 'Страница 1 документа Отчёт.docx');
+      assert.equal(f.state.downloads || 0, 0, 'preview never downloads the original');
+      await panel.getByRole('button', { name: 'Следующая страница', exact: true }).click();
+      await expect(panel.getByRole('img', { name: /^Страница/ })).toHaveAttribute('alt', 'Страница 2 документа Отчёт.docx');
+      await panel.getByRole('button', { name: 'Увеличить страницу', exact: true }).click();
+      await expect(panel.getByRole('button', { name: 'Подогнать страницу по ширине' })).toHaveText('125%');
+      await panel.getByRole('button', { name: 'Подогнать страницу по ширине' }).click();
+      assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      await f.page.screenshot({ path: `${output}/mobile30-preview-${width}.png` });
+      if (width === 390) {
+        await f.page.evaluate(() => {
+          Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => true });
+          Object.defineProperty(navigator, 'share', { configurable: true, value: async data => { window.auditSharedFiles = data.files.map(file => file.name); } });
+        });
+        await panel.getByRole('button', { name: 'Поделиться файлом', exact: true }).click();
+        await expect.poll(() => f.state.downloads).toBe(1);
+        // A slow file fetch can consume activation; the prepared second click must work.
+        if (!await f.page.evaluate(() => window.auditSharedFiles?.length)) await panel.getByRole('button', { name: 'Поделиться файлом', exact: true }).click();
+        assert.deepEqual(await f.page.evaluate(() => window.auditSharedFiles), ['Отчёт.docx']);
+        f.state.previewFailure = true;
+        await panel.getByRole('button', { name: 'Предыдущая страница' }).click();
+        await expect(panel.getByText('Страница временно недоступна')).toBeVisible();
+        f.state.previewFailure = false;
+        await panel.getByRole('button', { name: 'Повторить', exact: true }).click();
+        await expect(panel.getByRole('img', { name: /^Страница/ })).toBeVisible();
+      }
+      if (width === 1440) {
+        const separator = f.page.getByRole('separator', { name: 'Ширина панели: Документ' });
+        await separator.focus(); await separator.press('ArrowLeft');
+        await expect(separator).toHaveAttribute('aria-valuenow', '62');
+        const bounds = await separator.boundingBox();
+        await f.page.mouse.move(bounds.x + bounds.width / 2, bounds.y + 150);
+        await f.page.mouse.down(); await f.page.mouse.move(bounds.x - 70, bounds.y + 150, { steps: 5 }); await f.page.mouse.up();
+        assert(Number(await separator.getAttribute('aria-valuenow')) > 62);
+        await f.page.getByRole('button', { name: 'Развернуть на всю ширину' }).click();
+        await expect(f.input).toBeHidden();
+        await f.page.getByRole('button', { name: 'Вернуть чат' }).click();
+      }
+      await panel.getByRole('button', { name: 'Закрыть предпросмотр' }).click();
+      await expect(panel).toHaveCount(0);
+      await expect(f.input).toHaveValue('Сохранённый черновик');
+      await f.page.screenshot({ path: `${output}/mobile30-chat-${width}.png` });
+      if (width < 600) {
+        await f.input.press('Enter');
+        await expect(f.input).toHaveValue('Сохранённый черновик\n');
+        assert.equal(f.state.sends.length, 0);
+        await f.page.getByRole('button', { name: 'Прикрепить файл', exact: true }).click();
+        await expect(f.page.getByRole('button', { name: 'Снять фото', exact: true })).toBeVisible();
+        await f.page.getByRole('button', { name: 'Закрыть выбор вложения' }).click();
+        if (width === 390) {
+          f.state.liveDocument = true;
+          await f.page.getByRole('button', { name: 'Отправить сообщение', exact: true }).click();
+          await f.page.getByRole('button', { name: 'Предпросмотр Свежий.docx', exact: true }).click();
+          await expect(f.page.getByRole('img', { name: 'Страница 1 документа Свежий.docx', exact: true })).toBeVisible();
+          await f.page.getByRole('button', { name: 'Закрыть предпросмотр' }).click();
+        }
+      } else {
+        await f.page.getByRole('button', { name: 'Библиотека', exact: true }).click();
+        await f.page.getByRole('button', { name: 'Предпросмотр Отчёт.docx', exact: true }).last().click();
+        await expect(panel.getByRole('img', { name: /^Страница/ })).toBeVisible();
+        await panel.getByRole('button', { name: 'Закрыть предпросмотр' }).click();
+      }
+    } finally { await f.context.close(); }
+  });
+  await test('mobile30: Studio panel can resize and expand', async () => {
+    const f = await studioFixture();
+    try {
+      const separator = f.page.getByRole('separator', { name: 'Ширина панели: Студия' });
+      await expect(separator).toBeVisible();
+      await separator.focus(); await separator.press('ArrowLeft');
+      await expect(separator).toHaveAttribute('aria-valuenow', '62');
+      await f.page.getByRole('button', { name: 'Развернуть на всю ширину' }).click();
+      await expect(f.input).toBeHidden();
+      await f.page.getByRole('button', { name: 'Вернуть чат' }).click();
+      await expect(f.input).toBeVisible();
+    } finally { await f.context.close(); }
+  });
   for (const width of [320, 913, 1440]) await test(`studio28: start is clear and a format prepares a draft ${width}`, async () => {
     const f = await studioFixture({ width, empty: true });
     try {
@@ -548,7 +715,7 @@ try {
     const f = await fixture({ uploadDelay: 1200 });
     try {
       await expect(f.input).toBeEnabled(); await f.input.fill('Разбери файл');
-      await f.page.locator('input[type="file"]').setInputFiles({ name: 'mode.txt', mimeType: 'text/plain', buffer: Buffer.from('Synthetic file') });
+      await f.page.getByLabel('Файлы для сообщения', { exact: true }).setInputFiles({ name: 'mode.txt', mimeType: 'text/plain', buffer: Buffer.from('Synthetic file') });
       await f.input.press('Enter');
       await expect.poll(() => f.state.uploads.length).toBe(1);
       await expect(f.page.getByRole('button', { name: /^Режим ответа:/ })).toBeDisabled();
@@ -613,7 +780,7 @@ try {
       await expect(f.input).toBeEnabled();
       await f.page.getByRole('button', { name: 'Изменить', exact: true }).click();
       await f.input.fill('Проанализируй документ');
-      await f.page.locator('input[type="file"]').setInputFiles({ name: 'proposal.pdf', mimeType: 'application/pdf', buffer: Buffer.from('Synthetic PDF') });
+      await f.page.getByLabel('Файлы для сообщения', { exact: true }).setInputFiles({ name: 'proposal.pdf', mimeType: 'application/pdf', buffer: Buffer.from('Synthetic PDF') });
       await expect(f.page.getByRole('alert')).toContainText('подходят только изображения');
       await expect(f.page.getByRole('button', { name: 'Отправить сообщение', exact: true, includeHidden: true })).toBeDisabled();
       await f.page.getByRole('button', { name: 'Вернуться к чату', exact: true }).click();
@@ -628,7 +795,7 @@ try {
     try {
       await expect(f.input).toBeEnabled();
       await f.input.fill('Мой сохранённый черновик');
-      await f.page.locator('input[type="file"]').setInputFiles({ name: 'local-draft.txt', mimeType: 'text/plain', buffer: Buffer.from('Private local attachment') });
+      await f.page.getByLabel('Файлы для сообщения', { exact: true }).setInputFiles({ name: 'local-draft.txt', mimeType: 'text/plain', buffer: Buffer.from('Private local attachment') });
       await expect(f.page.getByText('local-draft.txt', { exact: true })).toBeVisible();
       await expect.poll(() => f.page.evaluate(async () => {
         const db = await new Promise((resolve, reject) => { const request = indexedDB.open('bitthink-drafts', 1); request.onsuccess = () => resolve(request.result); request.onerror = reject; });
@@ -979,7 +1146,7 @@ try {
     try {
       await expect(f.input).toBeEnabled();
       await f.input.fill('Черновик с файлом');
-      await f.page.locator('input[type=file][multiple]').setInputFiles({ name: 'draft.txt', mimeType: 'text/plain', buffer: Buffer.from('draft') });
+      await f.page.getByLabel('Файлы для сообщения', { exact: true }).setInputFiles({ name: 'draft.txt', mimeType: 'text/plain', buffer: Buffer.from('draft') });
       await f.page.getByRole('button', { name: 'Аккаунт', exact: true }).last().click();
       await f.page.getByRole('menuitem', { name: 'Настройки', exact: true }).click();
       await expect(f.page.getByRole('alert')).toContainText('Не удалось загрузить раздел');
@@ -1234,7 +1401,7 @@ try {
     try {
       await expect(f.input).toBeEnabled();
       await f.input.fill('Запрос с вложениями. '.repeat(25));
-      await f.page.locator('input[type=file][multiple]').setInputFiles([{ name: 'brief.txt', mimeType: 'text/plain', buffer: Buffer.from('brief') }, { name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('notes') }]);
+      await f.page.getByLabel('Файлы для сообщения', { exact: true }).setInputFiles([{ name: 'brief.txt', mimeType: 'text/plain', buffer: Buffer.from('brief') }, { name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('notes') }]);
       await f.page.getByRole('button', { name: 'Задачи и инструменты Оркестратора', exact: true }).click();
       await reachable(f.input, f.page, 'Input with quota and files');
       await reachable(f.page.getByRole('button', { name: 'Отправить сообщение', exact: true }), f.page, 'Send with quota and files');
@@ -1687,7 +1854,7 @@ try {
     try {
       await expect(f.input).toBeEnabled();
       await f.input.fill('Черновик первой беседы');
-      await f.page.locator('input[type=file]').setInputFiles({ name: 'draft.txt', mimeType: 'text/plain', buffer: Buffer.from('draft attachment') });
+      await f.page.getByLabel('Файлы для сообщения', { exact: true }).setInputFiles({ name: 'draft.txt', mimeType: 'text/plain', buffer: Buffer.from('draft attachment') });
       await f.select('Вторая беседа');
       await expect(f.input).toHaveValue('');
       await expect(f.page.getByRole('button', { name: 'Убрать draft.txt' })).toHaveCount(0);
@@ -1743,7 +1910,7 @@ try {
     try {
       await expect(f.input).toBeEnabled();
       await f.input.fill('Прочитай оба файла');
-      await f.page.locator('input[type=file]').setInputFiles([
+      await f.page.getByLabel('Файлы для сообщения', { exact: true }).setInputFiles([
         { name: 'ready.txt', mimeType: 'text/plain', buffer: Buffer.from('ready') },
         { name: 'failed.txt', mimeType: 'text/plain', buffer: Buffer.from('failed') },
       ]);
@@ -1774,7 +1941,7 @@ try {
     try {
       await expect(f.input).toBeEnabled();
       await f.input.fill('Черновик с неготовым файлом');
-      await f.page.locator('input[type=file]').setInputFiles({ name: 'failed.txt', mimeType: 'text/plain', buffer: Buffer.from('failed') });
+      await f.page.getByLabel('Файлы для сообщения', { exact: true }).setInputFiles({ name: 'failed.txt', mimeType: 'text/plain', buffer: Buffer.from('failed') });
       await f.page.getByRole('button', { name: 'Отправить сообщение', exact: true }).click();
       await f.select('Вторая беседа');
       await expect(f.input).toBeEnabled();
