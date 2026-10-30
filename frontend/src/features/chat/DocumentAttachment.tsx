@@ -1,5 +1,5 @@
 import { Box, CircularProgress, IconButton, LinearProgress, Tooltip } from '@mui/material';
-import { FileText, FilePdf, FileXls, FileDoc, CheckCircle, WarningCircle, Trash, PencilSimpleLine, DownloadSimple } from '@phosphor-icons/react';
+import { Eye, FileText, FilePdf, FileXls, FileDoc, CheckCircle, WarningCircle, Trash, PencilSimpleLine, DownloadSimple } from '@phosphor-icons/react';
 import { canPreviewDocument, useDocumentPreview } from '@/features/editor/DocumentPreview';
 import { isEditableDocument, useEditorEnabled, useEditorStore } from '@/features/editor/DocumentEditor';
 import { downloadCanvasFromUrl } from './studioExport';
@@ -107,9 +107,9 @@ export function DocumentAttachment({ name, size, status, type, url, canvas, note
         <Box sx={{ fontSize: '0.8125rem', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {name}
         </Box>
-        <Box sx={{ fontSize: '0.6875rem', color: 'text.muted' }}>
+        <Box sx={{ fontSize: canPreview ? '0.8125rem' : '0.6875rem', color: canPreview ? 'text.primary' : 'text.muted' }}>
           {status === 'uploading' && (progressLabel || 'Загрузка...')}
-          {status === 'done' && `${isImage ? 'Изображение' : canPreview ? 'Открыть предпросмотр' : note || (canDownload ? 'Скачать' : 'Документ')}${!isCanvasFile && formatSize(size) ? ` · ${formatSize(size)}` : ''}`}
+          {status === 'done' && <>{canPreview ? <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, mt: 0.5, fontWeight: 600 }}><Eye size={16} aria-hidden /> Предпросмотр</Box> : isImage ? 'Изображение' : note || (canDownload ? 'Скачать' : 'Документ')}{!isCanvasFile && formatSize(size) ? ` · ${formatSize(size)}` : ''}</>}
           {status === 'error' && 'Ошибка загрузки'}
         </Box>
       </Box>
