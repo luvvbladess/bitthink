@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { create } from 'zustand';
-import { Alert, Box, Button, CircularProgress, IconButton, Typography } from '@mui/material';
+import { Alert, Box, Button, CircularProgress, IconButton, Typography, useMediaQuery } from '@mui/material';
+import { OfficePreview, type OfficeViewer } from './OfficePreview';
 import { CaretLeft, CaretRight, DownloadSimple, ShareNetwork, X, MagnifyingGlassPlus, MagnifyingGlassMinus } from '@phosphor-icons/react';
 import { useQuery } from '@tanstack/react-query';
 import { apiBlob, apiFetch, downloadBlob } from '@/api/client';
@@ -18,12 +19,13 @@ export function DocumentPreview({ file, conversationId, onClose }: { file: Previ
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const id = file.conversationId || conversationId;
-  const path = `/conversations/${encodeURIComponent(id || '')}/files/preview?filename=${encodeURIComponent(file.name)}`;
-  const info = useQuery<{ pages: number; download_url: string }>({ queryKey: ['document-preview', id, file.name], queryFn: ({ signal }) => apiFetch(path, { signal, timeoutMs: 120_000 }), enabled: !!id, retry: false, staleTime: 0, refetchOnWindowFocus: false });
+  const mobile = useMediaQuery('(max-width:899px)');
+  const path = `/conversations/${encodeURIComponent(id || '')}/files/preview?filename=${encodeURIComponent(file.name)}&mobile=${mobile}&native=true`;
+  const info = useQuery<{ pages?: number; viewer?: OfficeViewer; download_url: string }>({ queryKey: ['document-preview', id, file.name, mobile], queryFn: ({ signal }) => apiFetch(path, { signal, timeoutMs: 120_000 }), enabled: !!id, retry: false, staleTime: 0, refetchOnWindowFocus: false });
   const [prepared, setPrepared] = useState<File | null>(null);
   useEffect(() => { setPrepared(null); }, [info.dataUpdatedAt]);
-  const pageImage = useQuery({ queryKey: ['document-preview-page', id, file.name, page, info.dataUpdatedAt], queryFn: ({ signal }) => apiBlob(`${path}&page=${page}`, { signal, timeoutMs: 120_000 }), enabled: !!info.data && !!id && !info.isFetching, retry: false, gcTime: 0, refetchOnWindowFocus: false });
-  useEffect(() => { if (info.data) setPage(value => Math.min(value, info.data.pages)); }, [info.data]);
+  const pageImage = useQuery({ queryKey: ['document-preview-page', id, file.name, page, info.dataUpdatedAt], queryFn: ({ signal }) => apiBlob(`${path}&page=${page}`, { signal, timeoutMs: 120_000 }), enabled: !!info.data?.pages && !!id && !info.isFetching, retry: false, gcTime: 0, refetchOnWindowFocus: false });
+  useEffect(() => { if (info.data?.pages) setPage(value => Math.min(value, info.data!.pages!)); }, [info.data]);
   useEffect(() => {
     setImage('');
     if (!pageImage.data) return;
@@ -69,6 +71,7 @@ export function DocumentPreview({ file, conversationId, onClose }: { file: Previ
       <IconButton aria-label="Закрыть предпросмотр" onClick={onClose} sx={iconSx}><X size={20} /></IconButton>
     </Box>
     {notice && <Alert severity="info" onClose={() => setNotice('')}>{notice}</Alert>}
+    {info.data?.viewer && !error ? <><Typography sx={{ px: 1.5, py: 0.5, fontSize: '0.8125rem', color: 'text.secondary', borderBottom: '1px solid var(--bt-hairline)' }}>{mobile ? 'Только просмотр. Проведите по таблице, чтобы увидеть остальные столбцы. Листы — внизу.' : 'Только просмотр · листы и масштаб — внизу таблицы'}</Typography><OfficePreview viewer={info.data.viewer} /></> : <>
     <Box sx={{ flex: 1, minHeight: 0, overflow: 'auto', p: { xs: 1, md: 2 }, bgcolor: 'var(--bt-overlay-faint)' }}>
       {error ? <Alert severity="warning" action={<Button onClick={() => { if (info.error) void info.refetch(); else void pageImage.refetch(); }}>Повторить</Button>}>{error}</Alert> : !image || info.isFetching || pageImage.isFetching ? <Box role="status" sx={{ p: 4, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 1 }}><CircularProgress size={22} /><Typography>Готовим страницу…</Typography></Box> : <Box component="img" src={image} alt={`Страница ${page} документа ${file.name}`} sx={{ display: 'block', width: `${zoom}%`, maxWidth: 'none', height: 'auto', mx: 'auto', bgcolor: '#fff' }} />}
     </Box>
@@ -76,7 +79,7 @@ export function DocumentPreview({ file, conversationId, onClose }: { file: Previ
       <Box role="group" aria-label="Страницы документа" sx={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
       <IconButton aria-label="Предыдущая страница" disabled={page <= 1 || !info.data} onClick={() => setPage(value => value - 1)} sx={iconSx}><CaretLeft size={20} /></IconButton>
       <Typography aria-live="polite" sx={{ fontSize: '.875rem', minWidth: 62, textAlign: 'center' }}>{page} / {info.data?.pages || '…'}</Typography>
-      <IconButton aria-label="Следующая страница" disabled={!info.data || page >= info.data.pages} onClick={() => setPage(value => value + 1)} sx={iconSx}><CaretRight size={20} /></IconButton>
+      <IconButton aria-label="Следующая страница" disabled={!info.data?.pages || page >= info.data.pages} onClick={() => setPage(value => value + 1)} sx={iconSx}><CaretRight size={20} /></IconButton>
       </Box>
       <Box role="group" aria-label="Масштаб документа" sx={{ display: 'flex', alignItems: 'center' }}>
       <IconButton aria-label="Уменьшить страницу" disabled={zoom <= 50} onClick={() => setZoom(value => value - 25)} sx={iconSx}><MagnifyingGlassMinus size={20} /></IconButton>
@@ -84,5 +87,6 @@ export function DocumentPreview({ file, conversationId, onClose }: { file: Previ
       <IconButton aria-label="Увеличить страницу" disabled={zoom >= 200} onClick={() => setZoom(value => value + 25)} sx={iconSx}><MagnifyingGlassPlus size={20} /></IconButton>
       </Box>
     </Box>
+    </>}
   </Box>;
 }
