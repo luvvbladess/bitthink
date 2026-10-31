@@ -76,7 +76,7 @@ export function BrandLink({ variant = 'nav' }: { variant?: BrandVariant }) {
   return (
     <Box
       component={Link}
-      to={token ? '/chat?new=1' : '/'}
+      to={token ? '/chat' : '/'}
       aria-label={BRAND_NAME}
       sx={{
         display: 'inline-flex',

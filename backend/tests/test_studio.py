@@ -407,6 +407,7 @@ def test_html_canvas_extract_sanitize_and_kind():
     picture = image_canvas_html("data:image/png;base64,QQ==", "Кот")
     assert is_image_canvas(picture)
     assert extract_embedded_image_bytes(picture) == b"A"
+    assert "createObjectURL" in picture
     landing = "<!DOCTYPE html><html><body><h1>Сайт</h1></body></html>"
     kind, prev, iterating = resolve_studio_job("темнее", picture)
     assert kind == "image" and iterating and prev == picture

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from typing import Any
+import math
+from app.services.model_registry import MODELS, model_spec
 
 # USD per 1M tokens. Images: USD per picture. Estimates of vendor list prices,
 # not a provider invoice. Unknown models use Luna rates so spend is not silent.
@@ -36,6 +38,9 @@ MODEL_USD: dict[str, dict[str, float]] = {
 
 _DEFAULT = {"input": 0.10, "output": 0.50, "image": 0.0}
 
+for _name, _spec in MODELS.items():
+    MODEL_USD[_name] = {'input': _spec.input_price, 'output': _spec.output_price, 'cached': _spec.cached_price}
+
 
 def model_cost_usd(
     model: str,
@@ -43,24 +48,74 @@ def model_cost_usd(
     output_tokens: int = 0,
     images: int = 0,
     cached_input_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    *,
+    apply_tiers: bool = True,
 ) -> float:
     """List-price estimate. Cached prompt hits use the model's own cached rate, else 10% of input."""
-    from app.billing.plans import HAIKU_TIER_INPUT, canonical_billing_model
+    from app.billing.plans import canonical_billing_model
 
     model = canonical_billing_model(model)
     rates = MODEL_USD.get(model) or _DEFAULT
-    # Haiku bills the whole request at 5x once the prompt crosses 100k tokens.
-    tier = 5.0 if model == "claude-haiku-5.5" and int(input_tokens or 0) > HAIKU_TIER_INPUT else 1.0
+    spec = model_spec(model)
+    inp_rate, out_rate, cached_rate = spec.rates(int(input_tokens or 0), apply_tiers=apply_tiers) if spec else (
+        rates['input'], rates['output'], rates.get('cached', rates['input'] * .1))
     fresh_input = max(0, int(input_tokens or 0))
     cached = min(max(0, int(cached_input_tokens or 0)), fresh_input)
     fresh_input -= cached
     usd = 0.0
-    input_rate = float(rates.get("input", _DEFAULT["input"])) * tier
-    usd += fresh_input / 1_000_000 * input_rate
-    usd += cached / 1_000_000 * float(rates.get("cached", input_rate / tier * 0.1)) * tier
-    usd += max(0, int(output_tokens or 0)) / 1_000_000 * float(rates.get("output", _DEFAULT["output"])) * tier
+    writes = min(max(0, int(cache_write_tokens or 0)), fresh_input)
+    usd += (fresh_input + writes * .25) / 1_000_000 * inp_rate
+    usd += cached / 1_000_000 * cached_rate
+    usd += max(0, int(output_tokens or 0)) / 1_000_000 * out_rate
     usd += max(0, int(images or 0)) * float(rates.get("image", 0.0))
     return usd
+
+
+def provider_cost_usd(usage):
+    """OpenRouter reports inference cost in usage; zero is a valid cached charge."""
+    value = usage.get('cost') if isinstance(usage, dict) else getattr(usage, 'cost', None)
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        value = float(value)
+        return value if math.isfinite(value) and value >= 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def usage_row_usd(model, row):
+    """Never apply a per-request threshold to day/month aggregate tokens."""
+    stored = row.get('usd')
+    if stored is not None:
+        return float(stored)
+    return model_cost_usd(model, row.get('input', 0), row.get('output', 0), row.get('images', 0),
+                          row.get('cached', 0), apply_tiers=False)
+
+
+def add_usage_cost(record, *, input_tokens=0, output_tokens=0, cached=0, writes=0, images=0, actual_usd=None):
+    if record.estimated_usd is None:
+        old = {'input': record.input_tokens or 0, 'output': record.output_tokens or 0,
+               'cached': record.cached_input_tokens or 0, 'images': record.images or 0}
+        record.estimated_usd = usage_row_usd(record.model, old)
+        record.cost_is_complete = not any(old.values())
+    record.estimated_usd += actual_usd if actual_usd is not None else model_cost_usd(
+        record.model, input_tokens, output_tokens, images, cached, writes)
+
+
+def merge_usage(parts):
+    result = {}
+    for part in parts:
+        for model, row in (part or {}).items():
+            if not isinstance(row, dict):
+                continue
+            target = result.setdefault(model, {'input': 0, 'output': 0, 'images': 0, 'calls': 0,
+                                                'cached': 0, 'usd': 0., 'cost_complete': True})
+            for field in ('input', 'output', 'images', 'calls', 'cached'):
+                target[field] += int(row.get(field) or 0)
+            target['usd'] += usage_row_usd(model, row)
+            target['cost_complete'] = target['cost_complete'] and bool(row.get('cost_complete', False))
+    return result
 
 
 def spend_summary(usage: dict[str, Any] | None) -> dict[str, Any]:
@@ -73,7 +128,7 @@ def spend_summary(usage: dict[str, Any] | None) -> dict[str, Any]:
         out = int(row.get("output") or 0)
         images = int(row.get("images") or 0)
         cached = int(row.get("cached") or 0)
-        usd = model_cost_usd(model, inp, out, images, cached_input_tokens=cached)
+        usd = usage_row_usd(model, row)
         if usd <= 0 and inp <= 0 and out <= 0 and images <= 0:
             continue
         total += usd
@@ -84,7 +139,9 @@ def spend_summary(usage: dict[str, Any] | None) -> dict[str, Any]:
                 "input": inp,
                 "output": out,
                 "images": images,
+                "cost_complete": bool(row.get('cost_complete', False)),
             }
         )
     models.sort(key=lambda item: (-float(item["usd"]), str(item["model"])))
-    return {"usd": round(total, 4), "models": models}
+    return {"usd": round(total, 4), "models": models,
+            "cost_complete": all(item['cost_complete'] for item in models)}

@@ -302,18 +302,18 @@ def test_ranking_timeout_is_reported_as_timeout_not_missing_products(monkeypatch
     asyncio.run(run())
 
 
-def test_replacement_search_survives_kimi_outage(monkeypatch):
-    monkeypatch.setenv('WEB_SEARCH_BACKEND', 'kimi')
-    import kimi_web_search, search_engine
+def test_replacement_search_uses_our_metasearch(monkeypatch):
+    import search_engine
     calls=[]
-    async def failed(*a,**k):return []
-    async def fallback(query,limit):
-        calls.append(query)
-        return [{"title":"Наушники с отзывами","url":CARD,"snippet":"Рейтинг 4.8"},{"title":"Посторонний сайт","url":"https://example.com/product/1","snippet":""}]
-    monkeypatch.setattr(kimi_web_search,"kimi_search_pro",failed)
-    monkeypatch.setattr(search_engine,"_search_openai_sources",fallback)
+    async def fake_server(query, **kwargs):
+        calls.append((query, kwargs.get('sites')))
+        return {'results':[{"title":"Наушники с отзывами","url":CARD,"snippet":"Рейтинг 4.8"},{"title":"Посторонний сайт","url":"https://example.com/product/1","snippet":""}],'status':'ok'}
+    async def forbidden(*a,**k):
+        raise AssertionError('OpenAI search must not run')
+    monkeypatch.setattr('app.services.server_search.server_search', fake_server)
+    monkeypatch.setattr(search_engine,"_search_openai_sources",forbidden)
     result=asyncio.run(REAL_REPLACEMENT_SEARCH("озон наушники",["наушники до 5000"],[]))
-    assert calls==["наушники до 5000 site:ozon.ru"]
+    assert calls==[("наушники до 5000", ["ozon.ru"])]
     assert len(result[0]["search"])==1
     assert CARD in result[0]["search"][0]["summary"]
 

@@ -61,7 +61,10 @@ def test_actual_studio_dispatch_uses_image_provider_preserves_negative_prompt_an
     result = asyncio.run(sr.get_studio_response([{'role': 'user', 'content': prompt}], prompt, 1, None))
     assert calls[0][0] == prompt and calls[0][1]['size'] == '1024x1536'
     assert len(calls) == 1
-    assert 'data-studio-image' in result[1][0]['bytes'].decode()
+    picture = next(item for item in result[1] if str(item.get('mime_type', '')).startswith('image/'))
+    page = next(item for item in result[1] if item.get('canvas'))
+    assert picture['bytes'] == b'A' and picture['filename'].endswith('.png')
+    assert 'data-studio-image' in page['bytes'].decode() and 'createObjectURL' in page['bytes'].decode()
     assert 'подтвердить не удалось' not in result[0]
 
 

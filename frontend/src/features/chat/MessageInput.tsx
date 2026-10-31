@@ -250,7 +250,7 @@ export function MessageInput({
         ref={fileInputRef}
         aria-label="Файлы для сообщения"
         multiple
-        accept={imageMode ? 'image/*' : isDocgen ? '.doc,.docx,.pdf,.xls,.xlsx,.xlsm,.csv,.txt,.rtf,.odt,.zip' : undefined}
+        accept={imageMode ? 'image/*' : undefined}
         style={{ display: 'none' }}
         onChange={(e) => {
           addFiles(e.target.files);

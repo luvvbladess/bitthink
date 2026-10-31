@@ -123,12 +123,12 @@ def test_cost_table_uses_each_models_cached_rate():
     from app.billing.costs import model_cost_usd
 
     one_m = 1_000_000
-    assert round(model_cost_usd("gpt-6-sol", one_m, 0, cached_input_tokens=one_m), 4) == 0.10
+    assert round(model_cost_usd("gpt-6-sol", one_m, 0, cached_input_tokens=one_m), 4) == 0.20
     assert round(model_cost_usd("kimi-k2.6", one_m, 0), 4) == 0.95
     assert round(model_cost_usd("kimi-k2.6", one_m, 0, cached_input_tokens=one_m), 4) == 0.16
     assert round(model_cost_usd("gpt-6-luna", 0, one_m), 4) == 0.50
-    assert round(model_cost_usd("gpt-6.1-sol", one_m, 0), 4) == 2.0
-    assert round(model_cost_usd("gpt-6.1-sol", one_m, 0, cached_input_tokens=one_m), 4) == 0.10
+    assert round(model_cost_usd("gpt-6.1-sol", one_m, 0), 4) == 4.0
+    assert round(model_cost_usd("gpt-6.1-sol", one_m, 0, cached_input_tokens=one_m), 4) == 0.20
     assert round(model_cost_usd("claude-haiku-5.5", 50_000, 0), 6) == 0.005
     assert round(model_cost_usd("claude-haiku-5.5", one_m, 0), 4) == 0.50
     assert round(model_cost_usd("claude-opus-5.5", one_m, one_m), 4) == 24.0
@@ -141,7 +141,7 @@ def test_bot_tokencost_uses_the_same_rates():
 
     import pytest
 
-    from app.billing.costs import MODEL_USD, model_cost_usd
+    from app.billing.costs import MODEL_USD, usage_row_usd
     from app.core.repository import ConversationRepository
 
     bot = Path(__file__).resolve().parents[3] / "botneiro" / "web_usage.py"
@@ -159,14 +159,9 @@ def test_bot_tokencost_uses_the_same_rates():
         {"images": 3},
         {"input": 10, "output": 5, "cached": 100},
     )
+    # The bot consumes day/month rows. Those are not individual long requests.
     for model in list(MODEL_USD) + ["not-a-model"]:
         for counts in shapes:
-            cabinet = model_cost_usd(
-                model,
-                counts.get("input", 0),
-                counts.get("output", 0),
-                counts.get("images", 0),
-                cached_input_tokens=counts.get("cached", 0),
-            )
+            cabinet = usage_row_usd(model, counts)
             report = module.web_model_cost_usd(model, counts)
             assert abs(cabinet - report) < 1e-9, (model, counts, cabinet, report)

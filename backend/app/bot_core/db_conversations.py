@@ -796,10 +796,14 @@ class DatabaseConversationManager:
         cache_write_tokens: int = 0,
         *,
         debit: bool = True,
+        actual_usd: float | None = None,
     ) -> None:
         date = _msk_today()
-        with SyncSessionLocal() as session:
+        with self.transaction_lock, SyncSessionLocal() as session:
             record = self._get_usage_record(session, user_id, date, model)
+            from app.billing.costs import add_usage_cost
+            add_usage_cost(record, input_tokens=input_tokens, output_tokens=output_tokens,
+                           cached=cached_input_tokens, writes=cache_write_tokens, actual_usd=actual_usd)
             record.input_tokens += input_tokens
             record.output_tokens += output_tokens
             record.cached_input_tokens = (record.cached_input_tokens or 0) + max(0, int(cached_input_tokens or 0))
@@ -817,8 +821,10 @@ class DatabaseConversationManager:
 
     def track_image(self, user_id: int, model: str, count: int = 1) -> None:
         date = _msk_today()
-        with SyncSessionLocal() as session:
+        with self.transaction_lock, SyncSessionLocal() as session:
             record = self._get_usage_record(session, user_id, date, model)
+            from app.billing.costs import add_usage_cost
+            add_usage_cost(record, images=count)
             record.images += count
             session.commit()
         # Plan images are reserved in assert_can_generate_image. This row is usage history only.
@@ -831,7 +837,13 @@ class DatabaseConversationManager:
             session.commit()
 
     def _get_usage_record(self, session: Session, user_id: int, date: str, model: str) -> UsageRecord:
-        record = session.query(UsageRecord).filter_by(user_id=user_id, date=date, model=model).first()
+        if session.bind.dialect.name == 'postgresql':
+            # Serialize creation too: FOR UPDATE cannot lock an absent daily row.
+            import hashlib
+            from sqlalchemy import text
+            key = int.from_bytes(hashlib.sha256(f'{user_id}:{date}:{model}'.encode()).digest()[:8], 'big', signed=True)
+            session.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': key})
+        record = session.query(UsageRecord).filter_by(user_id=user_id, date=date, model=model).with_for_update().first()
         if not record:
             record = UsageRecord(
                 user_id=user_id,
@@ -864,6 +876,8 @@ class DatabaseConversationManager:
                 "images": r.images,
                 "calls": r.calls,
                 "cached": r.cached_input_tokens or 0,
+                "usd": r.estimated_usd,
+                "cost_complete": bool(r.cost_is_complete),
             } for r in records}
 
     def get_month_usage(self, user_id: int, month: Optional[str] = None) -> dict:
@@ -873,15 +887,10 @@ class DatabaseConversationManager:
                 UsageRecord.user_id == user_id,
                 UsageRecord.date.startswith(month),
             ).all()
-            result: Dict[str, dict] = {}
-            for r in records:
-                result.setdefault(r.model, {"input": 0, "output": 0, "images": 0, "calls": 0, "cached": 0})
-                result[r.model]["input"] += r.input_tokens
-                result[r.model]["output"] += r.output_tokens
-                result[r.model]["images"] += r.images
-                result[r.model]["calls"] += r.calls
-                result[r.model]["cached"] += r.cached_input_tokens or 0
-            return result
+            from app.billing.costs import merge_usage
+            return merge_usage([{r.model: {'input': r.input_tokens, 'output': r.output_tokens,
+                'images': r.images, 'calls': r.calls, 'cached': r.cached_input_tokens or 0,
+                'usd': r.estimated_usd, 'cost_complete': bool(r.cost_is_complete)}} for r in records])
 
     # ------------------------------------------------------------------
     # Subscription
@@ -2357,7 +2366,7 @@ class DatabaseConversationManager:
         for item in images:
             lines.append(f"- {item['name']} (изображение, image_search)")
         if originals:
-            lines.append('Оригиналы вложений: для чертежей engineering_import(filename=точное имя). ZIP раскрывается с подпапками:')
+            lines.append('Оригиналы любых вложений (аудио, видео, архивы и другие): workspace_import_file(filename=точное имя, destination=путь в проекте). Для чертежей также есть engineering_import. Готовые файлы — workspace_export_files:')
             lines.extend('- ' + name for name in originals)
         return "\n".join(lines)
 

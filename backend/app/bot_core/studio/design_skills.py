@@ -60,6 +60,14 @@ def design_guidance(user_text: str, kind: str, user_id: int | None = None, *, in
         domains = ['product', 'style', 'typography', 'ux', 'chart' if kind in {'dashboard', 'infographic'} else 'landing']
         rows = {domain: engine.search(query, domain=domain, max_results=1).get('results', []) for domain in domains}
         chunks.append('UI UX Pro Max: локальные рекомендации, не замена брифу:\n' + json.dumps(rows, ensure_ascii=False)[:5500])
+        if kind in {'landing', 'app', 'dashboard'}:
+            # Motion table of the same skill: tiers, timings and do/don't, without library snippets.
+            moves = engine.search('scroll reveal parallax stagger hover ' + (user_text or '')[:300], domain='gsap', max_results=4).get('results', [])
+            compact = [{key: row.get(key, '') for key in ('Category', 'Intensity Tier', 'Trigger', 'Duration', 'Easing', 'Do', "Don't")} for row in moves]
+            if compact:
+                chunks.append('UI UX Pro Max, движение (приёмы с длительностями; без обязательной библиотеки, '
+                              'делай на CSS и IntersectionObserver, анимируй transform и opacity):\n'
+                              + json.dumps(compact, ensure_ascii=False)[:2600])
     if 'emil_design_eng' not in disabled:
         chunks.append(load_skill('emil_design_eng', user_id))
         original = (ROOT / 'emil_design_eng/references/upstream.md').read_text(encoding='utf-8')

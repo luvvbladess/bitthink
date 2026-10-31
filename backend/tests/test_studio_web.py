@@ -164,7 +164,8 @@ def test_factual_image_gets_research_but_a_cat_does_not(monkeypatch):
     researched, cat = asyncio.run(run())
     assert len(research_calls) == 1 and research_calls[0]["force_web_search"]
     assert "150 ₽" in image_prompts[0] and image_prompts[1] == "Нарисуй кота"
-    assert researched[1][0]["canvas"] and cat[1][0]["canvas"]
+    assert any(item.get("canvas") for item in researched[1]) and any(item.get("canvas") for item in cat[1])
+    assert cat[1][0]["mime_type"] == "image/png" and cat[1][0]["bytes"]
 
 
 def test_explicit_url_is_read_even_when_the_model_does_not_browse(monkeypatch):

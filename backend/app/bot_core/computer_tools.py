@@ -604,6 +604,12 @@ _TOOL_SPECS.extend([
       'query': {'type': 'string'}, 'product_id': {'type': 'string'}, 'problem': {'type': 'string'},
       'cause': {'type': 'string'}, 'standard': {'type': 'string'}}, ['action']),
 ])
+_TOOL_SPECS.extend([
+    ('workspace_import_file', 'Скопировать оригинал ЛЮБОГО вложения этой беседы в рабочую папку, включая аудио, видео, архивы, модели и исходники. Для встраивания MP3/MP4 в сайт укажи destination внутри папки assets создаваемого проекта. Байты сохраняются без преобразования. Имя бери из list_chat_files.',
+     {'filename': {'type': 'string'}, 'destination': {'type': 'string'}}, ['filename']),
+    ('workspace_export_files', 'Выдать пользователю готовые файлы любых форматов из рабочей папки в текущем ответе, включая MP3, MP4, код и файлы без расширения. Сначала создай/проверь файл, затем передай точные пути. До 100 МБ на выдачу.',
+     {'paths': {'type': 'array', 'items': {'type': 'string'}}}, ['paths']),
+])
 COMPUTER_TOOLS_RESPONSES = [_responses_tool(*spec) for spec in _TOOL_SPECS]
 COMPUTER_TOOLS_CHAT = [_chat_tool(*spec) for spec in _TOOL_SPECS]
 COMPUTER_TOOL_NAMES = {spec[0] for spec in _TOOL_SPECS}
@@ -1340,6 +1346,17 @@ async def _run_budgeted_computer_tool(name: str, args: dict[str, Any], user_id: 
 
 
 async def _run_computer_tool(name: str, args: dict[str, Any], user_id: int | None) -> str:
+    if name in {'workspace_import_file', 'workspace_export_files'}:
+        if not user_id:
+            return 'Нет пользователя для доступа к файлам.'
+        from app.services.file_exchange import import_attachment, export_files
+        try:
+            if name == 'workspace_import_file':
+                return await asyncio.to_thread(import_attachment, int(user_id), str(args.get('filename') or ''), args.get('destination'))
+            # Context selection belongs to this async task; do not create a new scope in a thread.
+            return export_files(int(user_id), args.get('paths'))
+        except (ValueError, OSError) as exc:
+            return json.dumps({'error': str(exc)}, ensure_ascii=False)
     if name.startswith('google_') or name in {'gmail_list', 'gmail_read', 'gmail_attachments', 'gmail_send', 'ssh_exec', 'http_request', 'site_login'}:
         from app.services.improvement_journal import exclude_current_conversation
         await asyncio.to_thread(exclude_current_conversation)

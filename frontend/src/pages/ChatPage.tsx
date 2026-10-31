@@ -11,7 +11,7 @@ import { ConversationTools, type ToolsMode } from '@/features/chat/ConversationT
 import { useConversationHistory } from '@/features/chat/useConversationHistory';
 import { measure } from '@/api/performance';
 import { submissionId, confirmSubmission } from '@/features/chat/submissionReceipt';
-import { useModePreferencesBusy, useModelsQuery } from '@/components/ModelSelector';
+import { useModePreferencesBusy, useModelsQuery, useSelectModel } from '@/components/ModelSelector';
 import { useConversationNavigation } from '@/features/chat/useConversationNavigation';
 import { ChatSidebar, type ConversationItem } from '@/features/chat/ChatSidebar';
 import { AccountMenu } from '@/components/AccountMenu';
@@ -46,6 +46,7 @@ import type { ResultEditRequest } from '@/features/chat/projectResultLinks';
 import type { ProjectCitation } from '@/features/chat/EvidenceLink';
 import { applyPageMeta } from '@/seo';
 import { useVisualViewport } from '@/features/chat/useVisualViewportHeight';
+import { conversationMode, rememberConversationMode, setConversationModeOwner } from '@/features/chat/conversationMode';
 
 function keepLiveUploads(current: DisplayMessage[], derived: DisplayMessage[]): DisplayMessage[] {
   const uploads = current.filter((message) => (
@@ -118,9 +119,53 @@ export default function ChatPage() {
   const [skipLastImage, setSkipLastImage] = useState(false);
   const [imageModeRequest, setImageModeRequest] = useState(0);
   const { data: models } = useModelsQuery();
+  const selectModel = useSelectModel();
   const preferencesBusy = useModePreferencesBusy();
   const isStudio = models?.selected === 'studio';
   const isDocgen = models?.selected === 'docgen';
+  const modelsRef = useRef(models);
+  modelsRef.current = models;
+  const selectModelRef = useRef(selectModel.mutate);
+  selectModelRef.current = selectModel.mutate;
+  const modeBoot = useRef(false);
+  const previousConversation = useRef<string | undefined | null>(null);
+  const requestedMode = useRef<string | null>(null);
+  const preferencesBusyRef = useRef(preferencesBusy);
+  preferencesBusyRef.current = preferencesBusy;
+  useLayoutEffect(() => {
+    setConversationModeOwner(activeConvId);
+    const current = modelsRef.current;
+    if (!current) return;
+    // A missing id is the restored chat arriving on the next commit, or a deleted chat.
+    // Only the explicit new-chat screen (?new=1) should drop to Express before an id exists.
+    if (!activeConvId && !openNewChat) return;
+    const first = !modeBoot.current;
+    const previous = previousConversation.current;
+    modeBoot.current = true;
+    previousConversation.current = activeConvId;
+    const saved = activeConvId ? conversationMode(activeConvId) : undefined;
+    if (first && activeConvId && !saved) {
+      rememberConversationMode(activeConvId, current.selected || 'auto');
+      requestedMode.current = current.selected || 'auto';
+      return;
+    }
+    // The empty new-chat screen can change mode before the server returns an id.
+    if (!first && previous === undefined && activeConvId && !saved) {
+      rememberConversationMode(activeConvId, current.selected || 'auto');
+      requestedMode.current = current.selected || 'auto';
+      return;
+    }
+    const target = activeConvId ? (saved || 'auto') : 'auto';
+    const selected = current.selected || 'auto';
+    // A fast switch can run before the previous chat's save lands in the cache.
+    // Re-issue the request while that save is still in flight.
+    if (selected === target && (requestedMode.current === target || !preferencesBusyRef.current)) {
+      requestedMode.current = target;
+      return;
+    }
+    requestedMode.current = target;
+    selectModelRef.current(target);
+  }, [activeConvId, Boolean(models), openNewChat]);
   const latestCanvas = useMemo(() => displayConversationId === activeConvId ? findStudioCanvas(displayMessages) : null, [displayMessages, displayConversationId, activeConvId]);
   const canvasVersions = useMemo(() => displayConversationId === activeConvId ? studioCanvasVersions(displayMessages) : [], [displayMessages, displayConversationId, activeConvId]);
   const [selectedCanvas, setSelectedCanvas] = useState<StudioCanvasSource | null>(null);
@@ -690,7 +735,7 @@ export default function ChatPage() {
                 return;
               }
               if (loaded >= total) {
-                paintProgress(null, 'Разбираю документ');
+                paintProgress(null, 'Подготавливаю файл');
                 return;
               }
               const pct = Math.round((loaded * 100) / total);

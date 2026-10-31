@@ -298,6 +298,9 @@ class ConversationManager:
         output_tokens: int = 0,
         cached_input_tokens: int = 0,
         cache_write_tokens: int = 0,
+        *,
+        debit: bool = True,
+        actual_usd: float | None = None,
     ) -> None:
         """Прибавляет токены к счётчику пользователя за сегодняшний день"""
         if not input_tokens and not output_tokens:
@@ -306,9 +309,18 @@ class ConversationManager:
         day = _msk_now().strftime("%Y-%m-%d")
         day_data = self._token_usage.setdefault(user_id, {}).setdefault(day, {})
         entry = day_data.setdefault(model, {"input": 0, "output": 0, "images": 0, "calls": 0})
+        from app.billing.costs import usage_row_usd, model_cost_usd
+        complete = bool(entry.get('cost_complete', not any(entry.values())))
+        entry['usd'] = usage_row_usd(model, entry) + (actual_usd if actual_usd is not None else
+            model_cost_usd(model, input_tokens, output_tokens, cached_input_tokens=cached_input_tokens,
+                           cache_write_tokens=cache_write_tokens))
+        entry['cost_complete'] = complete
         entry["input"] += input_tokens
         entry["output"] += output_tokens
+        entry['cached'] = entry.get('cached', 0) + max(0, cached_input_tokens)
         self._save_user_data(user_id)
+        if not debit:
+            return
         try:
             from app.billing.quota import debit_model_usage
 
@@ -324,6 +336,10 @@ class ConversationManager:
         day = _msk_now().strftime("%Y-%m-%d")
         day_data = self._token_usage.setdefault(user_id, {}).setdefault(day, {})
         entry = day_data.setdefault(model, {"input": 0, "output": 0, "images": 0, "calls": 0})
+        from app.billing.costs import usage_row_usd, model_cost_usd
+        complete = bool(entry.get('cost_complete', not any(entry.values())))
+        entry['usd'] = usage_row_usd(model, entry) + model_cost_usd(model, images=count)
+        entry['cost_complete'] = complete
         entry["images"] += count
         self._save_user_data(user_id)
         try:
@@ -350,15 +366,8 @@ class ConversationManager:
         """Суммирует траты пользователя {model: {input, output, images, calls}} по всем дням месяца (по умолчанию текущий)"""
         self._load_user_data(user_id)
         month = month or _msk_now().strftime("%Y-%m")
-        total: dict = {}
-        for key, day_data in self._token_usage.get(user_id, {}).items():
-            if not key.startswith(month):
-                continue
-            for model, counts in day_data.items():
-                entry = total.setdefault(model, {"input": 0, "output": 0, "images": 0, "calls": 0})
-                for field in ("input", "output", "images", "calls"):
-                    entry[field] += counts.get(field, 0)
-        return total
+        from app.billing.costs import merge_usage
+        return merge_usage([day_data for key, day_data in self._token_usage.get(user_id, {}).items() if key.startswith(month)])
 
     # ===== Методы для работы с подписками =====
     

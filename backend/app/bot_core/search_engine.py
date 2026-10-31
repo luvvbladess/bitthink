@@ -228,27 +228,10 @@ async def _search_kimi_pro(query: str, max_results: int) -> List[Dict[str, Any]]
 
 @limited_search(list)
 async def search_web(query: str, max_results: int = 14) -> List[Dict[str, str]]:
-    """
-    Выполняет поиск и возвращает структурированные источники.
-
-    Приоритет: Kimi REST `/v1/tools/search`. Если Kimi не вернул как минимум два
-    пригодных источника, автоматически используем OpenAI web search.
-    """
-    from app.services.server_search import use_server_search, server_search
-    if use_server_search():
-        result = await server_search(query, limit=max_results)
-        return result['results']
-    sources = await _search_kimi_sources(query, max_results)
-    if _sources_look_useful(sources, query):
-        return sources
-
-    logger.info(f"Kimi results poor for '{query[:60]}', trying OpenAI web search fallback")
-    openai_sources = await _search_openai_sources(query, max_results)
-    if openai_sources and _sources_look_useful(openai_sources, query):
-        return openai_sources
-    # Если и OpenAI не дал релевантных источников, лучше ничего не показывать,
-    # чем показывать мусорные/заглушечные результаты.
-    return []
+    """Источники из нашего метапоиска. Платный поиск Kimi и OpenAI не вызывается."""
+    from app.services.server_search import server_search
+    result = await server_search(query, limit=max_results)
+    return result['results']
 
 
 async def get_web_search_sources(query: str, max_results: int = 14) -> List[Dict[str, str]]:
@@ -257,30 +240,20 @@ async def get_web_search_sources(query: str, max_results: int = 14) -> List[Dict
 
 
 async def build_grounded_web_context(query: str, max_results: int = 14, pages_to_read: int = 6) -> tuple[str, List[Dict[str, str]]]:
-    """Perplexity-style shared retrieval stage used before every normal answer.
-
-    Kimi Search Pro gathers ranked passages; we scrape only pages that came
-    back without chunks. OpenAI search is the automatic fallback.
-    """
-    from kimi_web_search import evidence_from_results, to_engine_sources
+    """Shared retrieval before an answer. Sources come from our metasearch, not a hosted search API."""
+    from kimi_web_search import evidence_from_results
     from status_feed import push_status
 
     await push_status("search", f"Ищу: {query[:90]}")
-    from app.services.server_search import use_server_search
-    pro_results = await _search_kimi_pro(query, max_results) if not use_server_search() else []
-    sources = to_engine_sources(pro_results)
-    if not sources:
-        logger.info(f"Kimi Pro empty for '{query[:60]}', falling back to search_web")
-        sources = await search_web(query, max_results=max_results)
-        pro_results = []
+    sources = await search_web(query, max_results=max_results)
+    pro_results = []
     if not sources:
         await push_status("search", "Свежих источников не найдено — отвечаю по контексту")
         return "", []
 
     await push_status("search", f"Нашёл {len(sources)} источников")
-    # Fast default: no automatic crawl of ordinary search results. The model can
-    # explicitly browse a specific primary page when its content is necessary.
-    selected = sources[:pages_to_read] if not use_server_search() else []
+    # Snippets only. The model opens a specific page itself when the text is required.
+    selected = []
     content_by_url = evidence_from_results(pro_results)
     to_scrape = [source for source in selected if not content_by_url.get(source.get("url", ""))]
     for source in selected:
@@ -326,7 +299,7 @@ async def smart_web_search(
     sources: List[Dict[str, str]] | None = None,
 ) -> str:
     """
-    Выполняет поиск через Kimi REST, получает сниппеты и докачивает контент по топовым ссылкам.
+    Собирает сниппеты нашего метапоиска. Страницы сами не открывает.
     
     Args:
         query: Поисковой запрос

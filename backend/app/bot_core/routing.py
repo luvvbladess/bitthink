@@ -140,7 +140,7 @@ def best_route(user_text: str, reasoning_effort: Optional[str], has_deepseek: bo
         or (shape["chars"] >= 1800 and (hard_hits or structured))
     )
     if complex_task and has_openrouter:
-        return ("claude-haiku-5.5", deep)
+        return ("gpt-6-sol" if hard_hits or reasoning_hits or explicit_deep else "claude-haiku-5.5", deep)
     if has_deepseek:
         return ("deepseek-v4-pro" if complex_task else "deepseek-v4-flash", deep)
     if complex_task:

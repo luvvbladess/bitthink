@@ -193,6 +193,8 @@ def image_canvas_html(src: str, title: str) -> str:
     safe_src = (src or "").replace("\0", "").replace('"', "").strip()
     if not (safe_src.startswith("data:image/") or safe_src.startswith("https://") or safe_src.startswith("/")):
         safe_src = ""
+    # A data URL displays, but the browser will not save or copy it. After load the
+    # picture becomes a real file in memory, so Save image and Copy image work.
     return (
         f'<!DOCTYPE html><html lang="ru" {STUDIO_IMAGE_MARK}="1">'
         "<head><meta charset=\"utf-8\">"
@@ -200,7 +202,11 @@ def image_canvas_html(src: str, title: str) -> str:
         f"<title>{safe_title}</title>"
         "<style>html,body{margin:0;height:100%;background:#111}img{display:block;width:100%;height:100%;"
         "object-fit:contain;background:#111}</style></head><body>"
-        f'<img src="{safe_src}" alt="{safe_title}">'
+        f'<img id="bt-picture" src="{safe_src}" alt="{safe_title}">'
+        "<script>(function(){var img=document.getElementById('bt-picture');"
+        "if(!img)return;var src=img.getAttribute('src')||'';if(src.indexOf('data:')!==0)return;"
+        "fetch(src).then(function(r){return r.blob()}).then(function(blob){"
+        "img.src=URL.createObjectURL(blob)}).catch(function(){})})();</script>"
         "</body></html>"
     )
 

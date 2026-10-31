@@ -1,7 +1,7 @@
 import { chromium, webkit, expect as baseExpect } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile } from 'node:fs/promises';
 
 const base = process.env.BITTHINK_UI_BASE || 'http://127.0.0.1:5187';
 const expect = baseExpect.configure({ timeout: 15000 });
@@ -345,6 +345,36 @@ function studioFixture({ width = 1440, empty = false, failCanvas = false, theme 
 }
 
 try {
+  for (const width of [390, 1440]) for (const kind of ['audio', 'video']) await test(`media-files: ${kind} opens and plays ${width}`, async () => {
+    const name = kind === 'audio' ? 'Оригинальная_звуковая_дорожка.wav' : 'Исходный_ролик_для_проекта.mp4';
+    const bytes = await readFile(new URL(`../test-fixtures/${kind === 'audio' ? 'tone.wav' : 'clip.mp4'}`, import.meta.url));
+    const f = await fixture({ startPath: '/chat?c=chat-a', viewport: { width, height: 900 }, touch: width < 900, handleRoute: async ({ path, route }) => {
+      if (path === '/conversations/chat-a/history') { await route.fulfill({ json: { items: [{ id: 'asset', role: 'user', content: 'Используй этот файл в проекте', attachment: { name, status: 'done', type: kind, url: '/api/qa/media', size: bytes.length } }], has_more: false, has_newer: false, before: null } }); return true; }
+      if (path === '/qa/media') { await route.fulfill({ contentType: kind === 'audio' ? 'audio/wav' : 'video/mp4', body: bytes }); return true; }
+    } });
+    try {
+      await expect(f.input).toBeEnabled();
+      await reachable(f.page.getByRole('button', { name: `Предпросмотр ${name}`, exact: true }), f.page, 'Open media');
+      await f.page.getByRole('button', { name: `Предпросмотр ${name}`, exact: true }).click();
+      const player = f.page.locator(kind);
+      await expect(player).toBeVisible();
+      await expect.poll(() => player.evaluate(element => element.readyState)).toBeGreaterThanOrEqual(1);
+      await player.evaluate(async element => { element.muted = true; await element.play(); });
+      await expect.poll(() => player.evaluate(element => element.currentTime)).toBeGreaterThan(0);
+      await expect.poll(() => player.evaluate(element => {
+        const bounds = element.getBoundingClientRect();
+        return bounds.left >= 0 && bounds.right <= innerWidth + 1;
+      })).toBe(true);
+      assert(await f.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+      const mediaSize = await player.evaluate(element => ({ width: element.getBoundingClientRect().width,
+        parentWidth: element.parentElement.getBoundingClientRect().width, style: element.getAttribute('style'),
+        cssWidth: getComputedStyle(element).width, flex: getComputedStyle(element).flex }));
+      assert(mediaSize.width >= Math.min(280, width - 64), JSON.stringify(mediaSize));
+      await f.page.screenshot({ path: `${output}/media-${kind}-${width}.png` });
+      await f.page.getByRole('button', { name: 'Закрыть предпросмотр', exact: true }).click();
+      await expect(player).toHaveCount(0);
+    } finally { await f.context.close(); }
+  });
   for (const width of [320, 390, 1440]) await test(`mobile-open: orchestrator result has separate open/download actions for HTML and Excel ${width}`, async () => {
     const htmlName = 'Север_демонстрационный_кейс.html';
     const sheetName = 'Отчёт_кофейни_Север.xlsx';

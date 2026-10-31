@@ -75,6 +75,122 @@ def test_already_cheap_routine_is_not_upgraded(monkeypatch):
     assert result['new_employees'][0]['model']=='gpt-6-sol'
 
 
+def test_planner_chooses_product_spend_inside_a_ceiling(monkeypatch):
+    monkeypatch.setattr('config.OPENROUTER_API_KEY', 'present')
+    brief = dr._clamp_employee_plan(
+        {'new_employees': [{'role': 'Бриф', 'task': 'Сделай сайт', 'model': 'gpt-6-luna', 'product_phase': 'brief'}]},
+        1, 'Исправь опечатку', '')
+    assert brief['new_employees'][0]['model'] == 'gpt-6-luna'
+    page = dr._clamp_employee_plan(
+        {'new_employees': [{'role': 'Сборка', 'task': 'Собери страницу', 'model': 'claude-haiku-5.5', 'product_phase': 'build'}]},
+        1, 'Сделай сайт', '')
+    assert page['new_employees'][0]['model'] == 'claude-haiku-5.5'
+    build = dr._clamp_employee_plan(
+        {'new_employees': [{'role': 'Сборка', 'task': 'Собери продукт', 'model': 'gpt-6-sol', 'product_phase': 'build'}]},
+        1, 'Исправь опечатку', '')
+    assert build['new_employees'][0]['model'] == 'gpt-6-sol'
+    over = dr._clamp_employee_plan(
+        {'new_employees': [{'role': 'Сборка', 'task': 'Собери', 'model': 'claude-opus-5.5', 'product_phase': 'build'}]},
+        1, 'Сделай сайт', '')
+    assert over['new_employees'][0]['model'] == 'gpt-6-sol'
+    pair = dr._clamp_employee_plan(
+        {'new_employees': [
+            {'role': 'A', 'task': 'a', 'model': 'gpt-6-sol', 'product_phase': 'build'},
+            {'role': 'B', 'task': 'b', 'model': 'gpt-6-sol', 'product_phase': 'build'},
+        ]},
+        1, 'Сделай сайт', '')
+    assert [item['model'] for item in pair['new_employees']] == ['gpt-6-sol', 'claude-haiku-5.5']
+    cheap = dr._clamp_employee_plan(
+        {'new_employees': [{'role': 'Правка', 'task': 'Исправь опечатку', 'model': 'claude-haiku-5.5'}]},
+        1, 'Исправь опечатку', 'данные')
+    assert cheap['new_employees'][0]['model'] == 'claude-haiku-5.5'
+    monkeypatch.setattr('config.OPENROUTER_API_KEY', '')
+    no_key = dr._clamp_employee_plan(
+        {'new_employees': [{'role': 'Бриф', 'task': 'Сделай сайт', 'model': 'claude-haiku-5.5', 'product_phase': 'brief'}]},
+        1, 'Сделай сайт', '')
+    assert no_key['new_employees'][0]['model'] == 'gpt-6-luna'
+
+
+def test_product_phase_uses_the_model_the_planner_hired(monkeypatch):
+    from app.services import autonomy
+    seen = []
+
+    planned = []
+
+    async def plan(*args, **kwargs):
+        planned.append(len(args[1]) if len(args) > 1 else 0)
+        return {'status': 'continue', 'new_employees': [
+            {'role': 'Разбор', 'model': 'gpt-6-luna', 'task': 'аналоги'},
+            {'role': 'Сборка', 'model': 'gpt-6-sol', 'task': 'страница'},
+        ]}
+
+    async def employee(item, round_num, journal, uid, *args):
+        seen.append((item['product_phase'], item['model']))
+        state = autonomy.product_evidence.get()
+        if item['product_phase'] == 'brief':
+            state.update(product_id='pid', path='products/pid', stack='static', ready=False, packaged=False)
+        else:
+            state.update(ready=True, packaged=True)
+        return {'round': round_num, 'role': item['role'], 'status': 'ok', 'result': 'ok',
+                'model': item['model'], 'product_phase': item['product_phase'], 'product_id': 'pid'}
+
+    async def verified(*args, **kwargs):
+        done = len(seen) >= 2
+        return {'product_id': 'pid', 'path': 'products/pid', 'stack': 'static',
+                'ready': done, 'packaged': done, 'archive': 'product-pid.zip'}
+
+    async def no_files(*args):
+        return []
+
+    monkeypatch.setattr('config.OPENROUTER_API_KEY', 'present')
+    monkeypatch.setattr(dr, '_plan_round', plan)
+    monkeypatch.setattr(dr, '_execute_employee', employee)
+    monkeypatch.setattr(dr, '_new_file_names', no_files)
+    monkeypatch.setattr(dr, '_is_document_package_task', lambda *args: False)
+    monkeypatch.setattr(dr, '_is_shopping_task', lambda *args: False)
+    monkeypatch.setattr(autonomy, 'verified_product', verified)
+    monkeypatch.setattr(autonomy, 'learn', lambda *args: None)
+    token = autonomy.product_evidence.set({})
+    try:
+        answer, _, _, _ = asyncio.run(dr._run_director([], 'Сделай сайт', 92001, None))
+    finally:
+        autonomy.product_evidence.reset(token)
+    # The brief does not inherit the build's Sol, and the build needs no second Sol planner call.
+    assert seen == [('brief', 'gpt-6-luna'), ('build', 'gpt-6-sol')]
+    assert planned == [0]
+    assert 'Сборка и тесты текущей версии пройдены' in answer
+
+
+def test_design_product_gets_motion_guidance_once_and_offline_assets():
+    from app.services import autonomy
+    from computer_skills.loader import preload_skills_block
+    ask = 'Напиши красивый лендинг для кофейни в стиле Apple с анимациями «вау»'
+    brief = autonomy.product_employee(ask, {}, [])
+    assert 'apple.com' in brief['task'] and 'движения с эффектом «вау»' in brief['task']
+    assert 'transform и opacity' in brief['task'] and 'assets/' in brief['task']
+    assert '"Parallax Scroll"' in brief['task'] or '"Scroll Reveal"' in brief['task']
+    build = autonomy.product_employee(ask, {'product_id': 'id', 'path': 'p', 'stack': 'static'}, [])
+    block = preload_skills_block(build['task'], user_id=None)
+    # The inline guidance is the single copy; only the code playbook is preloaded.
+    assert 'impeccable' not in block.lower()[:400] and block.count('Скилы уже подобраны') == 1
+    plain = autonomy.product_employee('Сделай сайт для сантехника', {}, [])
+    assert 'движения с эффектом «вау»' not in plain['task']
+
+
+def test_new_product_build_is_sol_and_a_failed_cheap_build_escalates():
+    assert dr._strongest_hired_model(
+        [{'model': 'gpt-6-luna'}, {'model': 'gpt-6-sol'}], dr._SPEND_RANK[dr.HAIKU_MODEL]) == 'gpt-6-luna'
+    assert dr._strongest_hired_model([{'model': 'gpt-6-sol'}], dr._SPEND_RANK[dr.HAIKU_MODEL]) is None
+    from app.services import autonomy
+    state = {'product_id': 'id', 'path': 'products/id', 'stack': 'static', 'gates': {'build': True, 'smoke': False}}
+    journal = [{'product_phase': 'brief'}, {'product_phase': 'build', 'model': 'claude-haiku-5.5'}]
+    repair = autonomy.product_employee('Сделай сайт', state, journal)
+    assert repair['model'] == 'gpt-6-sol' and 'ПОЧИНКА' in repair['task'] and 'smoke' in repair['task']
+    assert 'ПОЧИНКА' not in autonomy.product_employee('Сделай сайт', state, journal[:1])['task']
+    # One build and one repair, then an honest report instead of a third paid pass.
+    assert autonomy.product_employee('Сделай сайт', state, journal + [{'product_phase': 'build'}]) is None
+
+
 def test_recovery_keeps_a_strong_planner_and_repair_worker():
     journal=[{'status':'error','model':ROUTINE_MODEL,'result':'AssertionError: тест не прошёл'}]
     assert dr._clamped_planner_model(1, first_round=False, recovery=True)=='gpt-6-sol'
@@ -129,7 +245,9 @@ def test_trace_records_cost_and_phase_without_prompt_or_account(caplog, monkeypa
     monkeypatch.setattr(call_budget,'wallet_user',lambda uid:False)
     async def create(**kwargs):
         return NS(usage=NS(input_tokens=100,output_tokens=20,input_tokens_details=NS(cached_tokens=10),output_tokens_details=NS(reasoning_tokens=5)))
-    client=NS(responses=NS(create=create))
+    async def count(**kwargs):
+        return NS(input_tokens=100)
+    client=NS(responses=NS(create=create,input_tokens=NS(count=count)))
     @model_phase('planner')
     async def run():
         return await model_call(client,{'model':ROUTINE_MODEL,'input':'PRIVATE_PROMPT','max_output_tokens':100},model=ROUTINE_MODEL,responses=True)
