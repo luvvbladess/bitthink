@@ -8,8 +8,8 @@ import { CaretLeft, CaretRight, DownloadSimple, ShareNetwork, X, MagnifyingGlass
 import { useQuery } from '@tanstack/react-query';
 import { apiBlob, apiFetch, downloadBlob } from '@/api/client';
 
-export const canPreviewDocument = (name: string) => /\.(pdf|docx?|odt|rtf|xlsx?|ods|pptx?|odp|html?)$/i.test(name);
-type PreviewFile = { name: string; conversationId?: string; url?: string; html?: string };
+export const canPreviewDocument = (name: string) => /\.(pdf|docx?|odt|rtf|xlsx?|ods|pptx?|odp|html?|mp3|wav|ogg|oga|m4a|aac|flac|opus|aiff|wma|mp4|webm|mov|m4v|mkv|avi|mpeg|mpg|3gp)$/i.test(name);
+type PreviewFile = { name: string; conversationId?: string; url?: string; html?: string; kind?: 'audio' | 'video' };
 export const useDocumentPreview = create<{ file: PreviewFile | null; open: (file: PreviewFile) => void; close: () => void }>(set => ({
   file: null, open: file => set({ file }), close: () => set({ file: null }),
 }));
@@ -26,9 +26,14 @@ export function DocumentPreview({ file, conversationId, onClose }: { file: Previ
   const readingPosition = useRef(0);
   const docx = /\.docx$/i.test(file.name);
   const html = /\.html?$/i.test(file.name);
+  const audio = file.kind === 'audio' || /\.(mp3|wav|ogg|oga|m4a|aac|flac|opus|aiff|wma)$/i.test(file.name);
+  const video = !audio && (file.kind === 'video' || /\.(mp4|webm|mov|m4v|mkv|avi|mpeg|mpg|3gp)$/i.test(file.name));
+  const media = audio || video;
+  const [mediaFailed, setMediaFailed] = useState(false);
+  useEffect(() => { setMediaFailed(false); }, [file.name, file.url]);
   const reading = docx && (mode || (mobile ? 'read' : 'original')) === 'read';
   const path = `/conversations/${encodeURIComponent(id || '')}/files/preview?filename=${encodeURIComponent(file.name)}&mobile=${mobile}&native=true&reading=${reading}`;
-  const info = useQuery<{ pages?: number; viewer?: OfficeViewer; reader?: ReadingContent; download_url: string }>({ queryKey: ['document-preview', id, file.name, mobile, reading], queryFn: ({ signal }) => apiFetch(path, { signal, timeoutMs: 120_000 }), enabled: !!id && !html, retry: false, staleTime: 0, refetchOnWindowFocus: false });
+  const info = useQuery<{ pages?: number; viewer?: OfficeViewer; reader?: ReadingContent; download_url: string }>({ queryKey: ['document-preview', id, file.name, mobile, reading], queryFn: ({ signal }) => apiFetch(path, { signal, timeoutMs: 120_000 }), enabled: !!id && !html && !media, retry: false, staleTime: 0, refetchOnWindowFocus: false });
   const [prepared, setPrepared] = useState<File | null>(null);
   useEffect(() => { setPrepared(null); }, [info.dataUpdatedAt]);
   const pageImage = useQuery({ queryKey: ['document-preview-page', id, file.name, page, info.dataUpdatedAt], queryFn: ({ signal }) => apiBlob(`${path}&page=${page}`, { signal, timeoutMs: 120_000 }), enabled: !!info.data?.pages && !!id && !info.isFetching, retry: false, gcTime: 0, refetchOnWindowFocus: false });
@@ -83,7 +88,10 @@ export function DocumentPreview({ file, conversationId, onClose }: { file: Previ
       </ToggleButtonGroup>
     </Box>}
     {notice && <Alert severity="info" onClose={() => setNotice('')}>{notice}</Alert>}
-    {html ? (file.url || file.html ? <DesignCanvas source={{ name: file.name, url: file.url, html: file.html }} compact={mobile} /> : <Alert severity="warning" sx={{ m: 2 }}>Не удалось получить результат. Закройте предпросмотр и откройте файл из беседы ещё раз.</Alert>) : info.data?.reader && !error ? <DocumentReader content={info.data.reader} position={readingPosition} /> : info.data?.viewer && !error ? <><Typography sx={{ px: 1.5, py: 0.5, fontSize: '0.8125rem', color: 'text.secondary', borderBottom: '1px solid var(--bt-hairline)' }}>{info.data.viewer.config.documentType === 'word' ? 'Оригинальное оформление · только просмотр' : mobile ? 'Только просмотр. Проведите по таблице, чтобы увидеть остальные столбцы. Листы — внизу.' : 'Только просмотр · листы и масштаб — внизу таблицы'}</Typography><OfficePreview viewer={info.data.viewer} /></> : <>
+    {media ? <Box sx={{ flex: 1, minHeight: 0, minWidth: 0, overflow: 'auto', p: { xs: 2, md: 3 }, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2 }}>
+      {file.url && !mediaFailed ? video ? <Box component="video" aria-label={`Видео ${file.name}`} src={file.url} controls playsInline preload="metadata" onError={() => setMediaFailed(true)} sx={{ width: '100%', maxHeight: '65dvh', bgcolor: 'black' }} /> : <Box component="audio" aria-label={`Аудио ${file.name}`} src={file.url} controls preload="metadata" onError={() => setMediaFailed(true)} sx={{ width: '100%', minWidth: 0, minHeight: 54 }} /> : <Alert severity="info">Этот формат не воспроизводится в браузере. Скачайте оригинал кнопкой вверху.</Alert>}
+      <Typography sx={{ color: 'text.secondary', fontSize: '.875rem' }}>Оригинальный файл доступен Оркестратору для работы и встраивания в проект.</Typography>
+    </Box> : html ? (file.url || file.html ? <DesignCanvas source={{ name: file.name, url: file.url, html: file.html }} compact={mobile} /> : <Alert severity="warning" sx={{ m: 2 }}>Не удалось получить результат. Закройте предпросмотр и откройте файл из беседы ещё раз.</Alert>) : info.data?.reader && !error ? <DocumentReader content={info.data.reader} position={readingPosition} /> : info.data?.viewer && !error ? <><Typography sx={{ px: 1.5, py: 0.5, fontSize: '0.8125rem', color: 'text.secondary', borderBottom: '1px solid var(--bt-hairline)' }}>{info.data.viewer.config.documentType === 'word' ? 'Оригинальное оформление · только просмотр' : mobile ? 'Только просмотр. Проведите по таблице, чтобы увидеть остальные столбцы. Листы — внизу.' : 'Только просмотр · листы и масштаб — внизу таблицы'}</Typography><OfficePreview viewer={info.data.viewer} /></> : <>
     <Box sx={{ flex: 1, minHeight: 0, overflow: 'auto', p: { xs: 1, md: 2 }, bgcolor: 'var(--bt-overlay-faint)' }}>
       {error ? <Alert severity="warning" action={<Button onClick={() => { if (info.error) void info.refetch(); else void pageImage.refetch(); }}>Повторить</Button>}>{error}</Alert> : !image || info.isFetching || pageImage.isFetching ? <Box role="status" sx={{ p: 4, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 1 }}><CircularProgress size={22} /><Typography>Готовим страницу…</Typography></Box> : <Box component="img" src={image} alt={`Страница ${page} документа ${file.name}`} sx={{ display: 'block', width: `${zoom}%`, maxWidth: 'none', height: 'auto', mx: 'auto', bgcolor: '#fff' }} />}
     </Box>

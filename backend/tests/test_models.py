@@ -66,7 +66,7 @@ def test_free_user_cannot_select_locked_expert_model():
 def test_best_route_balances_cost_and_complexity_without_router_tokens():
     assert best_route("Привет, как приготовить омлет?", "none", True) == ("deepseek-v4-flash", False)
     assert best_route("Проанализируй архитектуру и сделай ревью кода", "none", True) == ("deepseek-v4-pro", False)
-    assert best_route("Проанализируй архитектуру и сделай ревью кода", "none", True, True) == ("claude-haiku-5.5", False)
+    assert best_route("Проанализируй архитектуру и сделай ревью кода", "none", True, True) == ("gpt-6-sol", False)
     assert best_route("Привет, как приготовить омлет?", "none", True, True) == ("deepseek-v4-flash", False)
     assert best_route("Объясни тему глубоко", "medium", True) == ("deepseek-v4-pro", True)
     assert best_route("Короткий вопрос", "none", False) == ("gpt-6-luna", False)
@@ -546,12 +546,15 @@ def test_open_document_bodies_count_even_when_upload_was_earlier():
     assert packed_has_open_documents([body, {"role": "user", "content": "Проверь"}])
 
 
-def test_search_mode_sends_kimi_a_short_hop_not_full_docs():
+def test_search_mode_uses_our_search_not_kimi():
     from pathlib import Path
 
     source = (Path(__file__).resolve().parents[1] / "app" / "bot_core" / "handlers" / "core.py").read_text(encoding="utf-8")
     kimi_block = source.split('elif model == "kimi-k2.6":', 1)[1].split("elif model", 1)[0]
-    assert "search_hop_messages" in kimi_block
+    assert "get_chat_response" in kimi_block
+    assert "force_web_search=True" in kimi_block
+    assert "kimi_web_result" not in kimi_block
+    assert "get_kimi_chat_response" not in source
     assert "force_web_search=web_required" in source
     director_block = source.split('elif model == "director":', 1)[1].split('elif model == "studio":', 1)[0]
     assert "get_director_response" in director_block
@@ -763,31 +766,27 @@ def test_kimi_result_must_cite_observed_sources_not_meet_a_source_count():
     assert not kimi_result_is_grounded("Ответ без связи с источником", sources)
 
 
-def test_shared_search_uses_kimi_before_openai_and_never_calls_ddg(monkeypatch):
+def test_shared_search_uses_our_metasearch_not_hosted_search(monkeypatch):
     monkeypatch.setenv('WEB_SEARCH_BACKEND', 'kimi')
     calls = []
 
-    async def fake_kimi(_query, _max_results):
-        calls.append("kimi")
-        return [
-            {"title": "Casio рейтинг 2026", "url": "https://one.example/casio", "snippet": ""},
-            {"title": "Популярные Casio", "url": "https://two.example/casio", "snippet": ""},
-        ]
+    async def fake_server(query, **kwargs):
+        calls.append(query)
+        return {'results': [
+            {"title": "Casio рейтинг 2026", "url": "https://one.example/casio", "snippet": "рейтинг"},
+            {"title": "Популярные Casio", "url": "https://two.example/casio", "snippet": "часы"},
+        ], 'status': 'ok'}
 
-    async def forbidden_ddg(*_args):
-        raise AssertionError("DDG must not be used")
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("Hosted Kimi or OpenAI search must not run")
 
-    async def fake_openai(*_args):
-        calls.append("openai")
-        return []
-
-    monkeypatch.setattr(search_engine, "_search_kimi_sources", fake_kimi)
-    monkeypatch.setattr(search_engine, "_search_ddg", forbidden_ddg)
-    monkeypatch.setattr(search_engine, "_search_openai_sources", fake_openai)
+    monkeypatch.setattr('app.services.server_search.server_search', fake_server)
+    monkeypatch.setattr(search_engine, "_search_kimi_sources", forbidden)
+    monkeypatch.setattr(search_engine, "_search_openai_sources", forbidden)
     sources = asyncio.run(search_engine.search_web("рейтинг популярных Casio 2026"))
 
     assert len(sources) == 2
-    assert calls == ["kimi"]
+    assert calls == ["рейтинг популярных Casio 2026"]
 
 
 def test_message_serialization_persists_structured_sources():

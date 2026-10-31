@@ -32,7 +32,8 @@ orchestrator_search = ContextVar("orchestrator_server_search", default=False)
 
 
 def use_server_search() -> bool:
-    return orchestrator_search.get() or os.getenv('WEB_SEARCH_BACKEND', 'server').strip().lower() == 'server'
+    """Наш метапоиск — единственный веб-поиск. Платный поиск Kimi и OpenAI не используется."""
+    return True
 
 
 def safe_result_url(value: str) -> str:

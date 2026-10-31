@@ -295,7 +295,8 @@ async def assess_offers(task, results, user_id=None):
 
 
 async def replacement_search(task, queries, rejected, user_id=None):
-    from kimi_web_search import kimi_search_pro, to_ui_sources
+    from kimi_web_search import to_ui_sources
+    from app.services.server_search import server_search
     from web_scraper import is_ru_marketplace
     from itertools import islice
     stores=[]
@@ -305,17 +306,8 @@ async def replacement_search(task, queries, rejected, user_id=None):
     journal=[]
     for i,q in enumerate(islice(queries,2)):
         site=stores[i%len(stores)] if stores else None
-        results=await kimi_search_pro(q,limit=10,sites=[site] if site else None,timeout_seconds=12,user_id=user_id)
-        sources=to_ui_sources([r for r in results if is_ru_marketplace(r.get("url",""))])
-        from app.services.server_search import use_server_search
-        if not sources and not use_server_search():
-            from search_engine import _search_openai_sources
-            try:
-                fallback=await asyncio.wait_for(_search_openai_sources(q+(" site:"+site if site else ""),10),45)
-                sources=[{"query":r.get("title") or r.get("url"),"summary":r.get("url","")+"\n"+r.get("snippet","")} for r in fallback if is_ru_marketplace(r.get("url",""))]
-                log.info("marketplace_replacement provider=openai sources=%s",len(sources))
-            except Exception as exc:
-                log.warning("marketplace_replacement fallback_error=%s",type(exc).__name__)
+        found=await server_search(q,limit=10,sites=[site] if site else None)
+        sources=to_ui_sources([r for r in found['results'] if is_ru_marketplace(r.get("url",""))])
         journal.append({"result":"Поиск замены неподходящих предложений: " + q,"search":sources})
     return journal
 

@@ -192,6 +192,9 @@ async def tool(uid, args):
     raise ValueError('Действия autonomy: identity, recall, learn.')
 
 
+_WANTS_MOTION = re.compile(r'(?i)анимаци|анимаш|вау|\bwow\b|эффект|параллакс|parallax|плавн|скролл|motion')
+
+
 def _visual_design(task):
     """Design law for a site or infographic. Other products stay on their own brief."""
     from studio.design_skills import design_guidance, visual_build
@@ -208,33 +211,66 @@ def _visual_design(task):
         'Пока человек сам не назвал цвета, запрещены бумага #f3f4ed, графит #153c36, лайм #d9f16d, Arial, '
         'eyebrow с точкой, четыре одинаковые карточки и тёмная форма на всю ширину. '
         'Если такой шаблон уже записан, а заказчик его не просил — смени визуальную систему до вёрстки. '
-        'Дальше стандарт impeccable, ui_ux_pro_max, emil_design_eng и visual_system.'
+        'Дальше стандарт impeccable, ui_ux_pro_max, emil_design_eng и visual_system. '
+        'Фото, шрифты и иконки не подключай внешней ссылкой: сайт из архива должен выглядеть так же без интернета. '
+        'Скачай файл в assets/ (woff2, фото со свободной лицензией, автора впиши в REFERENCES.md); '
+        'если скачать нельзя — нарисуй SVG или CSS-иллюстрацию.'
     )
+    if _WANTS_MOTION.search(task or ''):
+        law += (
+            ' Заказчик ждёт движения с эффектом «вау»: в BRIEF.md запиши 3–4 момента движения '
+            '(элемент, триггер, длительность). Реализуй их по таблице движения ниже: появление секций со stagger, '
+            'параллакс героя, отклик на наведение и одну выразительную сцену на скролле (sticky или scroll-linked). '
+            'Анимируй только transform и opacity; prefers-reduced-motion оставляет всё видимым и неподвижным. '
+            'В tests/ проверь, что эти приёмы есть в коде, иначе брифу не соответствует.'
+        )
     return law + ('\n\n' + guidance if guidance else '')
 
 
 def product_employee(task, evidence, journal):
     """A serial build dependency chain; never parallelize writers in one project."""
     attempts = sum(bool(entry.get('product_phase')) for entry in journal)
-    if attempts >= 5 or evidence.get('packaged'):
+    builds = sum(entry.get('product_phase') == 'build' for entry in journal)
+    # One build and one repair: a third identical pass of a strong model rarely fixes what two did not.
+    if attempts >= 4 or builds >= 2 or evidence.get('packaged'):
         return None
     design = _visual_design(task)
     suffix = ('\n\n' + design) if design else ''
     if not evidence.get('product_id'):
         phase = 'brief'
+        look = (
+            'Для внешнего вида открой один лучший аналог через browse_visual: страницу самого сайта, не документацию и не гайдлайны '
+            '(для стиля Apple — страницу товара на apple.com). Запиши видимую композицию: '
+            'секции, выравнивание, сетку, фон, акцент и как движется страница. '
+            if design else 'Снимок страницы не делай. '
+        )
         assignment = (
-            'Создай продукт: ' + task + '\nСначала autonomy identity/recall. Изучи указанные URL и подходящие аналоги '
-            'через поиск/browse_page, если они нужны. Выбери стек из static/react/next/astro/python/node, '
+            'load_skill research\nСоздай продукт: ' + task + '\n'
+            'Сначала autonomy identity/recall. Потом вникни в предмет не из памяти: '
+            'server_search — два узких запроса, browse_page — не больше трёх страниц. ' + look +
+            'Чужие картинки и их URL в файлы продукта не копируй: в REFERENCES.md запиши факты и композицию. '
+            'Выбери стек из static/react/next/astro/python/node, '
             'затем product_lifecycle action=start brief=полное задание stack=выбор reason=обоснование. '
-            'В возвращённой папке создай BRIEF.md (сценарий, функции, критерии), REFERENCES.md '
-            '(действительно прочитанные аналоги/что улучшить или честная отметка об отсутствии), '
-            'README.md с запуском. Передай product_id и путь. На этом этапе не пиши всю реализацию.'
+            'В возвращённой папке создай BRIEF.md (сценарий, функции, критерии, какие свои кадры нужны), REFERENCES.md '
+            '(только реально открытые страницы или честная отметка, что аналог не открылся), '
+            'README.md с запуском. Передай product_id и путь. На этом этапе не пиши всю реализацию и не растягивай поиск.'
         ) + suffix
     else:
         phase = 'build'
+        failed = [name for name, passed in (evidence.get('gates') or {}).items() if not passed]
+        repair = (
+            'ЭТО ПОЧИНКА, не новая сборка. Прошлый проход не довёл продукт до приёмки'
+            + (' (не прошли: ' + ', '.join(failed) + ')' if failed else '') + '. '
+            'Не переписывай проект и не начинай с нуля: сначала product_lifecycle для непрошедшей проверки, '
+            'прочитай диагностику, исправь именно эту причину и повтори проверку. '
+            if builds else ''
+        )
         assignment = (
+            'load_skill code\n' + repair +
             f"Продукт {evidence['product_id']}, папка {evidence['path']}, стек {evidence['stack']}. Задание: {task}\n"
-            'Прочитай BRIEF.md/REFERENCES.md и текущие исходники. Реализуй полный рабочий сценарий, '
+            'Прочитай BRIEF.md/REFERENCES.md и текущие исходники. Следуй скилам и визуальным правилам брифа. '
+            'Новый обзор интернета не начинай: максимум одна страница, если не хватает одного факта. '
+            'Реализуй полный рабочий сценарий, '
             'дизайн и адаптивность. Запиши исходники, зависимости, README, реальные тесты в tests/ '
             '(Python unittest test_*.py; static Node *.test.mjs; npm-стеки npm run test без watch). '
             'Для веб-стеков обязательны build и test в package.json. Не откладывай реализацию. '
@@ -249,5 +285,7 @@ def product_employee(task, evidence, journal):
             'Сообщи настоящее имя архива. Публикацию выполняй только с данным пользователем размещением '
             'и доступом, иначе выдай проверенный архив и точную инструкцию запуска.'
         ) + suffix
+    # Suggestion only. The planner replaces it when it names a model for this phase.
     return {'role': 'Архитектор продукта' if phase == 'brief' else 'Разработка и проверка продукта',
-            'model': 'gpt-6-sol', 'task': assignment, 'product_phase': phase, 'product_id': evidence.get('product_id')}
+            'model': 'claude-haiku-5.5' if phase == 'brief' else 'gpt-6-sol',
+            'task': assignment, 'product_phase': phase, 'product_id': evidence.get('product_id')}

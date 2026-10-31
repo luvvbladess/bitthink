@@ -240,9 +240,9 @@ def test_spend_summary_uses_vendor_rates():
 
     assert abs(model_cost_usd("gpt-5.6-luna", 1_000_000, 0) - 0.25) < 1e-9
     assert abs(model_cost_usd("gpt-5.6-sol", 0, 1_000_000) - 14.0) < 1e-9
-    assert abs(model_cost_usd("gpt-6-luna", 1_000_000, 0) - 0.10) < 1e-9
+    assert abs(model_cost_usd("gpt-6-luna", 1_000_000, 0) - 0.20) < 1e-9
     assert abs(model_cost_usd("gpt-6-sol", 0, 1_000_000) - 10.0) < 1e-9
-    assert abs(model_cost_usd("gpt-6-astra", 1_000_000, 0) - 10.0) < 1e-9
+    assert abs(model_cost_usd("gpt-6-astra", 1_000_000, 0) - 20.0) < 1e-9
     assert abs(model_cost_usd("gpt-image-2.5-sunburst", 0, 0, 1) - 0.08) < 1e-9
     assert abs(model_cost_usd("gpt-image-2", 0, 0, 1) - 0.08) < 1e-9
     assert abs(model_cost_usd("gpt-image-1.5", 0, 0, 2) - 0.16) < 1e-9
@@ -255,7 +255,7 @@ def test_spend_summary_uses_vendor_rates():
     assert abs(summary["usd"] - 0.33) < 1e-9
     assert summary["models"][0]["model"] == "gpt-5.6-luna"
     assert abs(model_cost_usd("gpt-5.6-luna", 1_000_000, 0, cached_input_tokens=1_000_000) - 0.025) < 1e-9
-    assert abs(model_cost_usd("gpt-6.1-sol", 1_000_000, 0) - 2.0) < 1e-9
+    assert abs(model_cost_usd("gpt-6.1-sol", 1_000_000, 0) - 4.0) < 1e-9
 
 
 def test_month_spend_includes_usage_under_email_hash_and_stored_bot_id():
@@ -280,5 +280,5 @@ def test_month_spend_includes_usage_under_email_hash_and_stored_bot_id():
     usage = asyncio.run(repo.get_month_usage(email))
     assert usage["gpt-6-sol"]["input"] == 1_000_000
     assert usage["gpt-6-luna"]["input"] == 2_000_000
-    assert abs(spend_summary(usage)["usd"] - 2.20) < 1e-9
+    assert abs(spend_summary(usage)["usd"] - 4.40) < 1e-9
     assert repo.account_usage_ids(email) == sorted({hashed, stored})

@@ -101,6 +101,7 @@ def public_url(value: str) -> str:
 @dataclass
 class RunRecord:
     requires_sources: bool = False
+    request_context: dict = field(default_factory=dict, repr=False)
     tools: list[dict] = field(default_factory=list)
     sources: list[dict] = field(default_factory=list)
     task_results: dict[str, dict] = field(default_factory=dict)

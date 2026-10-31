@@ -38,6 +38,8 @@ MODEL_MULTIPLIER: dict[str, int] = {
     "claude-haiku-5.5": 1,
     "claude-sonnet-5.5": 20,
     "claude-opus-5.5": 40,
+    "glm-5.3-flash": 1,
+    "minimax-m3.1-flash": 2,
 }
 
 # Saved chats and in-flight requests may still name the previous generation.
@@ -54,6 +56,8 @@ PROVIDER_MODEL_ALIASES = {
     "anthropic/claude-sonnet-5.5": "claude-sonnet-5.5",
     "anthropic/claude-opus-5.5": "claude-opus-5.5",
 }
+from app.services.model_registry import MODEL_ALIASES
+PROVIDER_MODEL_ALIASES.update(MODEL_ALIASES)
 HAIKU_TIER_INPUT = 100_000
 
 CHEAP_MODELS = [
@@ -272,6 +276,9 @@ def computer_models(tier: str | None) -> list[str]:
         pool.append("claude-opus-5.5")
     if "gpt-6-astra" in allowed:
         pool.append("gpt-6-astra")
+    if 'director' in allowed:
+        from app.services.model_registry import experimental_workers, production_workers
+        pool.extend(dict.fromkeys(production_workers() + experimental_workers()))
     return pool or ["gpt-6-luna"]
 
 
@@ -287,7 +294,9 @@ def billed_multiplier(model: str, input_tokens: int = 0) -> int:
     tokens = max(0, int(input_tokens or 0))
     if model == "claude-haiku-5.5" and tokens > HAIKU_TIER_INPUT:
         return multiplier * 5
-    if tokens > LONG_CONTEXT_INPUT:
+    from app.services.model_registry import model_spec
+    spec = model_spec(model)
+    if tokens > LONG_CONTEXT_INPUT and ((spec is not None and spec.provider == 'openai') or model.startswith('gpt-5.')):
         return multiplier * 2
     return multiplier
 

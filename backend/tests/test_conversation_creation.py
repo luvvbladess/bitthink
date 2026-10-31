@@ -27,7 +27,11 @@ def test_empty_conversations_are_distinct_even_when_created_concurrently(monkeyp
         ids = list(pool.map(create, range(4)))
     assert len(set(ids)) == 4
     listed = client.get('/conversations').json()
-    assert {item['id'] for item in listed} == set(ids)
-    assert sum(item['is_active'] for item in listed) == 1
+    # Opening the list drops the unused drafts. The open one stays, so a blank composer is not lost.
+    assert len(listed) == 1 and listed[0]['id'] in ids and listed[0]['is_active']
+    kept = listed[0]['id']
+    assert client.get(f'/conversations/{kept}/messages').json() == []
     for conversation_id in ids:
-        assert client.get(f'/conversations/{conversation_id}/messages').json() == []
+        if conversation_id == kept:
+            continue
+        assert client.get(f'/conversations/{conversation_id}/summary').status_code == 404

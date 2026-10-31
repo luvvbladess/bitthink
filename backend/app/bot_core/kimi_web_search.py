@@ -214,20 +214,8 @@ async def kimi_search(
     text = (query or "").strip()
     if not text:
         return []
-    from app.services.server_search import use_server_search, server_search
-    if use_server_search():
-        return (await server_search(text, limit=_clamp_limit(limit)))['results']
-    payload: Dict[str, Any] = {
-        "text_query": text,
-        "limit": _clamp_limit(limit),
-        "timeout_seconds": max(1, min(60, int(timeout_seconds))),
-        "include_content": bool(include_content),
-    }
-    data = await _post_json(SEARCH_PATH, payload, timeout=timeout_seconds + 8)
-    results = normalize_search_results(data)
-    if results:
-        _track_calls(user_id)
-    return results
+    from app.services.server_search import server_search
+    return (await server_search(text, limit=_clamp_limit(limit)))['results']
 
 
 @limited_search(list)
@@ -243,31 +231,10 @@ async def kimi_search_pro(
     text = (query or "").strip()
     if not text:
         return []
-    from app.services.server_search import use_server_search, server_search
-    if use_server_search():
-        # Public search is not Search Pro: no fabricated full passages/chunks.
-        if time_window:
-            text += ' ' + ' '.join(str(value) for value in time_window.values() if value)
-        return (await server_search(text, limit=_clamp_limit(limit), sites=sites))['results']
-    payload: Dict[str, Any] = {
-        "text_query": text,
-        "limit": _clamp_limit(limit, default=8),
-        "timeout_seconds": max(1, min(60, int(timeout_seconds))),
-    }
-    cleaned_sites = [str(site).strip() for site in (sites or []) if str(site).strip()][:5]
-    if cleaned_sites:
-        payload["sites"] = cleaned_sites
-    if isinstance(time_window, dict) and (time_window.get("start") or time_window.get("end")):
-        payload["time_window"] = {
-            key: str(time_window[key])
-            for key in ("start", "end")
-            if time_window.get(key)
-        }
-    data = await _post_json(SEARCH_PRO_PATH, payload, timeout=timeout_seconds + 8)
-    results = normalize_search_results(data)
-    if results:
-        _track_calls(user_id)
-    return results
+    from app.services.server_search import server_search
+    if time_window:
+        text += ' ' + ' '.join(str(value) for value in time_window.values() if value)
+    return (await server_search(text, limit=_clamp_limit(limit), sites=sites))['results']
 
 
 async def kimi_fetch(url: str, *, user_id: int | None = None) -> Optional[Dict[str, str]]:

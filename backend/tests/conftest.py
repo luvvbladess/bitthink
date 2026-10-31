@@ -24,6 +24,10 @@ _POOL_COLUMNS = {
 
 
 _EXTRA_COLUMNS = {
+    'usage_records': {
+        'estimated_usd': 'ALTER TABLE usage_records ADD COLUMN estimated_usd FLOAT',
+        'cost_is_complete': 'ALTER TABLE usage_records ADD COLUMN cost_is_complete BOOLEAN NOT NULL DEFAULT FALSE',
+    },
     "subscriptions": _POOL_COLUMNS,
     "messages": {
         "attachment": "ALTER TABLE messages ADD COLUMN attachment TEXT",

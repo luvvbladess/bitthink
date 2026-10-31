@@ -75,6 +75,10 @@ LEAF_OUTPUT: Dict[str, int] = {
 
 
 def window_for(mode: str) -> ModeWindow:
+    from app.services.model_registry import model_spec
+    spec = model_spec(mode)
+    if spec is not None and spec.provider == 'openrouter':
+        return ModeWindow(spec.context, spec.output_cap)
     return MODE_WINDOWS.get(mode) or MODE_WINDOWS["auto"]
 
 
@@ -85,6 +89,10 @@ def packing_mode_id(selected: str) -> str:
 
 def max_output_tokens(leaf_model: str) -> int:
     """Generation cap for the model that actually answers this hop."""
+    from app.services.model_registry import model_spec
+    spec = model_spec(leaf_model)
+    if spec is not None and spec.provider == 'openrouter':
+        return spec.output_cap
     if leaf_model in LEAF_OUTPUT:
         return LEAF_OUTPUT[leaf_model]
     return window_for(leaf_model).max_output

@@ -16,16 +16,8 @@ _USAGE_FIELDS = ("input", "output", "images", "calls", "cached")
 
 
 def _merge_usage(parts: list[dict]) -> dict:
-    """Sum per-model counters. Cost is linear, so the cabinet and /tokencost match."""
-    merged: dict[str, dict] = {}
-    for part in parts:
-        for model, row in (part or {}).items():
-            if not isinstance(row, dict):
-                continue
-            bucket = merged.setdefault(model, {key: 0 for key in _USAGE_FIELDS})
-            for key in _USAGE_FIELDS:
-                bucket[key] += int(row.get(key) or 0)
-    return merged
+    from app.billing.costs import merge_usage
+    return merge_usage(parts)
 
 
 def derive_conversation_title(content: str) -> str:

@@ -11,7 +11,7 @@ export interface AttachmentInfo {
   /** 0–100 while bytes or parse units are known. null = work started, total not known yet. */
   progress?: number | null;
   progressLabel?: string;
-  type?: 'document' | 'image' | 'generated';
+  type?: 'document' | 'image' | 'generated' | 'audio' | 'video' | 'file';
   mime_type?: string;
   url?: string;
   canvas?: boolean;
@@ -50,14 +50,14 @@ export function DocumentAttachment({ name, size, status, type, url, note, progre
   const canEdit = editorEnabled && status === 'done' && isEditableDocument(name);
   const canDownload = status === 'done' && !!url && type !== 'image';
   const html = /\.html?$/i.test(name);
-  const canPreview = status === 'done' && type !== 'image' && canPreviewDocument(name) && (!html || !!url || !!previewHtml);
+  const canPreview = status === 'done' && type !== 'image' && (canPreviewDocument(name) || type === 'audio' || type === 'video') && (!html || !!url || !!previewHtml);
   const openPreview = useDocumentPreview(state => state.open);
   // A Studio canvas is a page that points to its pictures by site path; saved as is it opens black.
   const isCanvasFile = canDownload && html;
   const showProgress = status === 'uploading' && progress !== undefined;
   const progressValue = typeof progress === 'number' ? Math.max(0, Math.min(100, progress)) : 0;
   if (status === 'done' && !isImage) {
-    const label = html ? 'Холст' : /\.(xlsx?|ods)$/i.test(name) ? 'Таблица' : /\.(pptx?|odp)$/i.test(name) ? 'Презентация' : canPreview ? 'Документ' : 'Файл';
+    const label = type === 'audio' || /\.(mp3|wav|ogg|oga|m4a|aac|flac|opus|aiff|wma)$/i.test(name) ? 'Аудио' : type === 'video' || /\.(mp4|webm|mov|m4v|mkv|avi|mpeg|mpg|3gp)$/i.test(name) ? 'Видео' : html ? 'Холст' : /\.(xlsx?|ods)$/i.test(name) ? 'Таблица' : /\.(pptx?|odp)$/i.test(name) ? 'Презентация' : canPreview ? 'Документ' : 'Файл';
     return <Box data-attachment-card sx={{ width: '100%', maxWidth: 520, minWidth: 0, p: 1, border: '1px solid var(--bt-hairline)', borderRadius: '10px' }}>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
         <Box sx={{ width: 24, height: 40, display: 'grid', placeItems: 'center', flexShrink: 0, color: 'var(--bt-ink-2)' }}><Icon size={20} /></Box>
@@ -66,7 +66,7 @@ export function DocumentAttachment({ name, size, status, type, url, note, progre
           <Box sx={{ fontSize: '.8125rem', color: 'text.secondary', mt: .25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}{formatSize(size) ? ` · ${formatSize(size)}` : ''}</Box>
         </Box>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: .25, flexShrink: 0 }}>
-        {canPreview && <Button aria-label={`Предпросмотр ${name}`} onClick={() => openPreview({ name, url, html: previewHtml })} sx={{ minWidth: 64, minHeight: 44, px: 1, fontSize: '.8125rem', color: 'text.primary', fontWeight: 600 }}>Открыть</Button>}
+        {canPreview && <Button aria-label={`Предпросмотр ${name}`} onClick={() => openPreview({ name, url, html: previewHtml, kind: type === 'audio' || type === 'video' ? type : undefined })} sx={{ minWidth: 64, minHeight: 44, px: 1, fontSize: '.8125rem', color: 'text.primary', fontWeight: 600 }}>Открыть</Button>}
         {canDownload && <Tooltip title="Скачать"><IconButton component="a" href={url} download={name} rel="noopener" aria-label={`Скачать ${name}`} onClick={event => {
           if (isCanvasFile) { event.preventDefault(); void downloadCanvasFromUrl(url!, name).catch(() => window.open(url, '_blank', 'noopener')); }
         }} sx={{ width: 44, height: 44, color: 'text.secondary' }}><DownloadSimple size={18} /></IconButton></Tooltip>}

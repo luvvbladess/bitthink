@@ -301,6 +301,45 @@ def test_collect_deliverables_keeps_small_sets_as_separate_files(tmp_path, monke
     assert sorted(p["name"] for p in payload) == ["doc0.docx", "doc1.docx", "doc2.docx"]
 
 
+def test_one_document_is_not_packed_with_checks_and_a_project_archive(tmp_path, monkeypatch):
+    import json
+    import time
+
+    from app.services.workspace_fs import BUNDLE_NAME, user_root
+
+    monkeypatch.setenv("WORKSPACES_DIR", str(tmp_path))
+    uid = 94032
+    root = user_root(uid)
+    (root / "Доклад.docx").write_bytes(b"PK\x03\x04fake-docx")
+    shots = root / "qa"
+    shots.mkdir()
+    for name in ("desktop.png", "mobile.png", "again.png"):
+        (shots / name).write_bytes(b"\x89PNG\r\n")
+    (root / "product-d7373230a6ae40b6af3e5c4f.zip").write_bytes(b"PK\x03\x04zip")
+    payload = json.loads(collect_deliverables(uid, time.time() - 30))
+    assert [item["name"] for item in payload] == ["Доклад.docx"]
+    assert BUNDLE_NAME not in {item["name"] for item in payload}
+
+
+def test_project_archive_is_not_repacked_as_a_document_kit(tmp_path, monkeypatch):
+    import json
+    import time
+
+    from app.services.workspace_fs import BUNDLE_NAME, user_root
+
+    monkeypatch.setenv("WORKSPACES_DIR", str(tmp_path))
+    uid = 94033
+    root = user_root(uid)
+    shots = root / "qa"
+    shots.mkdir()
+    for index in range(10):
+        (shots / f"screen-{index}.png").write_bytes(b"\x89PNG\r\n")
+    (root / "product-aabbccddeeff001122334455.zip").write_bytes(b"PK\x03\x04zip")
+    payload = json.loads(collect_deliverables(uid, time.time() - 30))
+    assert [item["name"] for item in payload] == ["product-aabbccddeeff001122334455.zip"]
+    assert BUNDLE_NAME not in {item["name"] for item in payload}
+
+
 def test_director_detects_document_package_tasks():
     import director_router as dr
 

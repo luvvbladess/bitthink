@@ -54,6 +54,8 @@ def tool_activity(name: str, args: dict) -> tuple[str, str] | None:
         'workspace_delete': ('file', 'Удаляю рабочий файл' + detail),
         'workspace_grep': ('file', 'Ищу нужные сведения в файлах'),
         'workspace_glob': ('file', 'Ищу файлы по заданию'),
+        'workspace_import_file': ('file', 'Переношу вложение в проект'),
+        'workspace_export_files': ('file', 'Подготавливаю файлы для скачивания'),
         'python_run': ('work', 'Обрабатываю данные для задачи — Выполняю подготовленный сценарий'),
         'pip_install': ('prepare', 'Подготавливаю инструменты — Они нужны для обработки данных и сборки файлов'),
         'list_skills': ('prepare', 'Подбираю инструкции для задачи'),

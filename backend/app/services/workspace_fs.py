@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 QUOTA_BYTES = 3 * 1024 * 1024 * 1024
 MAX_FILE_BYTES = 8 * 1024 * 1024
+MAX_TRANSFER_BYTES = 100 * 1024 * 1024
 MAX_READ_CHARS = 120_000
 MAX_LS_ENTRIES = 400
 MAX_PATH_DEPTH = 12
@@ -29,7 +30,7 @@ _PIP_SPEC = re.compile(
 )
 
 _FORBIDDEN_NAMES = {".env", ".git", "docker-compose.yml"}
-_SKIP_DIRS = {".venv", ".tmp", "__pycache__"}
+_SKIP_DIRS = {".venv", ".tmp", "__pycache__", "node_modules", "venv"}
 # One-off tooling the model writes while thinking. Not a user-facing project.
 _HELPER_STEM = re.compile(
     r"(?i)^(inspect|extract|parse|debug|scratch|dump|probe|calc)_"
@@ -106,8 +107,11 @@ MAX_DELIVER_FILES = 8
 # Теперь, если файлов больше, чем влезает отдельными карточками, всё уходит
 # одним архивом с сохранением папок.
 MAX_BUNDLE_FILES = 200
-MAX_BUNDLE_BYTES = 40 * 1024 * 1024
+MAX_BUNDLE_BYTES = MAX_TRANSFER_BYTES
 BUNDLE_NAME = "Комплект документов.zip"
+# Архив комплекта — это много документов, которые человек просил отдельно.
+# Снимки проверки, архив проекта и служебные картинки комплектом не являются.
+_OFFICE_DELIVERABLES = {".docx", ".xlsx", ".xls", ".pptx", ".pdf", ".csv", ".drawio"}
 MAX_AUTO_ZIP_FILES = 40
 MAX_AUTO_ZIP_BYTES = 6 * 1024 * 1024
 MAX_GREP_HITS = 80
@@ -612,15 +616,17 @@ def pip_install(user_id: int, packages: list[str]) -> str:
 def _recent_workspace_files(
     root: Path,
     cutoff: float,
-    suffixes: set[str],
+    suffixes: set[str] | None,
 ) -> list[tuple[float, str, Path, int]]:
     found: list[tuple[float, str, Path, int]] = []
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        dirnames[:] = [name for name in dirnames if name not in _SKIP_DIRS and name not in _FORBIDDEN_NAMES]
+        dirnames[:] = [name for name in dirnames if name not in _SKIP_DIRS and name not in _FORBIDDEN_NAMES and not name.startswith('.')]
         for name in filenames:
+            if name.startswith('.') or name in _FORBIDDEN_NAMES:
+                continue
             path = Path(dirpath) / name
             suffix = path.suffix.lower()
-            if suffix not in suffixes and path.name not in {"Dockerfile", "requirements.txt", ".env.example"}:
+            if suffixes is not None and suffix not in suffixes and path.name not in {"Dockerfile", "requirements.txt", ".env.example"}:
                 continue
             try:
                 if path.is_symlink():
@@ -630,11 +636,11 @@ def _recent_workspace_files(
                 continue
             if cutoff and stat.st_mtime < cutoff:
                 continue
-            if stat.st_size <= 0 or stat.st_size > MAX_FILE_BYTES:
+            if stat.st_size < 0 or stat.st_size > (MAX_TRANSFER_BYTES if suffixes is None else MAX_FILE_BYTES):
                 continue
             rel = path.relative_to(root).as_posix()
             # Imported references are inputs, never a completed drawing package.
-            if rel.startswith('engineering/materials/'):
+            if rel.startswith(('engineering/materials/', 'inputs/')):
                 continue
             # Individual sheet previews already live in the drawing package.
             if rel.startswith('engineering/output/') and '/sheets/' in rel and path.suffix.lower() == '.svg':
@@ -743,7 +749,7 @@ def _bundle_deliverables(entries: list[tuple[float, str, Path, int]]) -> Optiona
     }
 
 
-def collect_deliverables(user_id: int, since: float = 0) -> str:
+def collect_deliverables(user_id: int, since: float = 0, paths: list[str] | None = None) -> str:
     """Newest user-facing files written during a job, as JSON with base64 bodies."""
     root = (workspaces_root() / f"u{user_id}").resolve()
     if not isinstance(user_id, int) or user_id <= 0 or not root.is_dir():
@@ -751,23 +757,63 @@ def collect_deliverables(user_id: int, since: float = 0) -> str:
     cutoff = float(since or 0) - 2
     # Deliverable suffixes that the user actually wants to download
     _DIRECT_DELIVER = _DOC_ARTIFACT_SUFFIXES | {".zip", ".png", ".jpg", ".jpeg", ".webp"}
-    found = _recent_workspace_files(root, cutoff, DELIVER_SUFFIXES)
+    found = _recent_workspace_files(root, cutoff, None)
+    selected = set()
+    for relative in paths or []:
+        try:
+            path = resolve_in_jail(user_id, relative)
+            if not path.is_file() or path.stat().st_size > MAX_TRANSFER_BYTES:
+                continue
+            selected.add(path.relative_to(root).as_posix())
+            if not any(item[2] == path for item in found):
+                found.append((path.stat().st_mtime, path.relative_to(root).as_posix(), path, path.stat().st_size))
+        except (ValueError, OSError, TypeError):
+            continue
+    def direct_file(entry):
+        _, relative, path, _ = entry
+        return relative in selected or path.suffix.lower() in _DIRECT_DELIVER or (
+            path.suffix.lower() not in _SOURCE_FOR_AUTO_ZIP | _CODE_SUFFIXES and not _is_helper_source(relative)
+            and path.name.lower() not in _PROJECT_MARKERS)
     has_zip = any(path.suffix.lower() == ".zip" for _, _, path, _ in found)
     has_doc = any(path.suffix.lower() in _DOC_ARTIFACT_SUFFIXES for _, _, path, _ in found)
-    direct = [entry for entry in found if entry[2].suffix.lower() in _DIRECT_DELIVER]
-    direct_bytes = sum(size for _, _, _, size in direct)
-    if len(direct) > MAX_DELIVER_FILES or direct_bytes > MAX_FILE_BYTES:
-        bundle = _bundle_deliverables(direct)
+    direct = [entry for entry in found if direct_file(entry)]
+    handoff = [entry for entry in direct if entry[1] in selected] if selected else list(direct)
+    if selected and not handoff:
+        handoff = list(direct)
+    if not selected:
+        office = [entry for entry in handoff if entry[2].suffix.lower() in _OFFICE_DELIVERABLES]
+        archives = [entry for entry in handoff if entry[2].suffix.lower() == ".zip"]
+        if office:
+            # Один договор или доклад не тащит за собой снимки и архив проекта.
+            handoff = office
+        elif archives:
+            archives.sort(key=lambda entry: (entry[2].name.lower().startswith("product-"), entry[0]), reverse=True)
+            handoff = archives[:1]
+    office_only = [entry for entry in handoff if entry[2].suffix.lower() in _OFFICE_DELIVERABLES]
+    handoff_bytes = sum(size for _, _, _, size in handoff)
+    if office_only and (len(office_only) > MAX_DELIVER_FILES or sum(size for _, _, _, size in office_only) > MAX_TRANSFER_BYTES):
+        bundle = _bundle_deliverables(office_only)
         if bundle:
             return json.dumps([bundle], ensure_ascii=False)
+    if len(handoff) > MAX_DELIVER_FILES or handoff_bytes > MAX_TRANSFER_BYTES:
+        kept: list[tuple[float, str, Path, int]] = []
+        kept_bytes = 0
+        for entry in sorted(handoff, key=lambda item: item[0], reverse=True):
+            if len(kept) >= MAX_DELIVER_FILES or kept_bytes + entry[3] > MAX_TRANSFER_BYTES:
+                break
+            kept.append(entry)
+            kept_bytes += entry[3]
+        handoff = kept
     items = []
     total = 0
-    for _, rel, path, size in found:
+    handoff.sort(key=lambda entry: (entry[1] in selected, entry[0]), reverse=True)
+    for entry in handoff:
+        _, rel, path, size = entry
         suffix = path.suffix.lower()
         # Only deliver real artifacts (docs, images, zips). Scripts stay internal.
-        if suffix not in _DIRECT_DELIVER:
+        if not direct_file(entry):
             continue
-        if len(items) >= MAX_DELIVER_FILES or total + size > MAX_FILE_BYTES:
+        if len(items) >= MAX_DELIVER_FILES or total + size > MAX_TRANSFER_BYTES:
             break
         try:
             payload = path.read_bytes()
@@ -985,5 +1031,5 @@ def dispatch(user_id: int, op: str, args: dict[str, Any]) -> str:
             since = float(args.get("since") or 0)
         except (TypeError, ValueError):
             since = 0
-        return collect_deliverables(user_id, since)
+        return collect_deliverables(user_id, since, args.get('paths'))
     return f"Неизвестная операция {op}."

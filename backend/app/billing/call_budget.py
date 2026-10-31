@@ -33,10 +33,25 @@ def wallet_user(user_id: int | None) -> bool:
 def estimate_text_input(request: dict) -> int:
     """Byte ceiling, not the display/packing estimate (which divides by three)."""
     payload = {k: request[k] for k in ("input", "messages", "instructions", "tools") if k in request}
+    model = str(request.get('model') or '')
+    images = 0
+    def scrub(value):
+        nonlocal images
+        if isinstance(value, dict):
+            if value.get('type') in {'image_url', 'input_image'} and ('claude-' in model):
+                images += 1
+                return {'type': 'image_url', 'image_url': {'url': '<visual tokens counted separately>'}}
+            return {key: scrub(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [scrub(item) for item in value]
+        return value
+    payload = scrub(payload)
     encoded = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
     # Per-message protocol tokens and vendor tool wrappers.
     items = request.get("messages") or request.get("input") or []
-    return len(encoded) + 4096 + 64 * (len(items) if isinstance(items, list) else 1)
+    # Claude 4.7+ caps a downscaled image at 4,784 visual tokens. Reserve 5,000;
+    # base64 bytes are transport, not millions of billable text tokens.
+    return len(encoded) + 4096 + 64 * (len(items) if isinstance(items, list) else 1) + images * 5_000
 
 
 def _refund(data: dict, row: Any, amount: int) -> None:
@@ -187,16 +202,19 @@ async def model_call(client: Any, request: dict, *, model: str, user_id: int | N
     cap_key = "max_output_tokens" if responses else ("max_completion_tokens" if "max_completion_tokens" in request else "max_tokens")
     cap = int(request.get(cap_key) or 4000)
     reservation_id = None
+    from app.services.orchestrator_budget import current_budget
+    run_budget = current_budget.get()
     paid = await asyncio.to_thread(wallet_user, user_id)
+    inp = 0
+    if responses and (paid or run_budget is not None):
+        count_params = {k: request[k] for k in ('model', 'input', 'instructions', 'tools', 'tool_choice', 'reasoning', 'text') if k in request}
+        counted = await asyncio.wait_for(client.responses.input_tokens.count(**count_params), timeout=30)
+        inp = int(counted.input_tokens)
+    elif paid:
+        inp = estimate_text_input(request)
+    inp = max(inp, input_token_ceiling)
     if paid:
         release_paid_hold()
-        if responses:
-            count_params = {k: request[k] for k in ("model", "input", "instructions", "tools", "tool_choice", "reasoning", "text") if k in request}
-            counted = await asyncio.wait_for(client.responses.input_tokens.count(**count_params), timeout=30)
-            inp = int(counted.input_tokens)
-        else:
-            inp = estimate_text_input(request)
-        inp = max(inp, input_token_ceiling)
         pending = asyncio.create_task(asyncio.to_thread(reserve, user_id, pool, model, inp, cap))
         try:
             reservation_id, cap = await asyncio.shield(pending)
@@ -211,7 +229,20 @@ async def model_call(client: Any, request: dict, *, model: str, user_id: int | N
     started = time.monotonic()
     usage = None
     completed = False
+    run_hold = None
     try:
+        if run_budget is not None:
+            from app.services.model_registry import model_spec
+            from app.services.orchestrator_metrics import phase
+            spec = model_spec(model)
+            run_output_cap = spec.output_cap if spec else int(request.get(cap_key) or cap)
+            if phase.get() == 'planner':
+                run_output_cap = min(run_output_cap, 4096)
+            elif phase.get() == 'composer':
+                run_output_cap = min(run_output_cap, 12_000)
+            estimated_input = inp if paid or responses else max(estimate_text_input(request), input_token_ceiling)
+            run_hold, run_cap = await run_budget.reserve_call(model, estimated_input, min(int(request.get(cap_key) or cap), run_output_cap))
+            request[cap_key] = run_cap
         async def invoke():
             result = await create(**request)
             if not consume:
@@ -230,7 +261,10 @@ async def model_call(client: Any, request: dict, *, model: str, user_id: int | N
             await asyncio.to_thread(settle, user_id, reservation_id, actual, pool)
             reservation_id = None
             if user_id:
-                await asyncio.to_thread(_manager().track_tokens, user_id, model, *counts, debit=not paid)
+                from app.billing.costs import provider_cost_usd
+                cost = provider_cost_usd(usage)
+                extra = {'actual_usd': cost} if cost is not None else {}
+                await asyncio.to_thread(_manager().track_tokens, user_id, model, *counts, debit=not paid, **extra)
         elif reservation_id:
             # A successful provider response without usage must not silently reopen the budget.
             logger.error("Provider returned no usage for user=%s model=%s; retaining maximum debit", user_id, model)
@@ -243,5 +277,7 @@ async def model_call(client: Any, request: dict, *, model: str, user_id: int | N
                 # Includes cancellation and provider failure. Refund only this call's hold.
                 await asyncio.shield(asyncio.to_thread(settle, user_id, reservation_id, 0))
         finally:
+            if run_budget is not None and run_hold is not None:
+                run_budget.settle(run_hold, model, usage)
             from app.services.orchestrator_metrics import observe
             observe(model, usage, time.monotonic()-started, completed)

@@ -135,19 +135,13 @@ async def execute_subtask(
     complexity = task.get("complexity", "simple")
     search_required = task.get("search_required", False)
 
-    # 1. Выполняем поиск, если он требуется. Приоритет — Kimi REST web search;
-    # если KIMI_API_KEY не задан, используем резервный поиск через DuckDuckGo.
     facts = ""
     if search_required:
         try:
-            if KIMI_API_KEY:
-                logger.info(f"Running Kimi web search for subtask: '{task_text[:30]}'")
-                from kimi_client import get_kimi_search_brief
-                facts = await get_kimi_search_brief(history, task_text, user_id=user_id)
-            else:
-                logger.info(f"Running DuckDuckGo web search for subtask: '{task_text[:30]}'")
-                raw_search_results = await smart_web_search(task_text)
-                facts = await summarize_scraped_content(task_text, raw_search_results, user_id=user_id)
+            logger.info(f"Running our web search for subtask: '{task_text[:30]}'")
+            from search_engine import build_grounded_web_context
+            context, _sources = await build_grounded_web_context(task_text, max_results=8, pages_to_read=0)
+            facts = context or "Свежих источников не найдено."
         except Exception as e:
             logger.error(f"Search failed for subtask {task_text}: {e}")
             facts = "[Ошибка поиска информации в интернете]"
@@ -315,16 +309,17 @@ async def get_correspondent_response(
     user_id: int,
     status_msg: Any
 ) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
-    """Режим корреспондента: правовой анализ через GPT, источники через Kimi, финальный ответ через DeepSeek."""
-    await _update_status(status_msg, "🗞 **Корреспондент**: ищу внешние источники через Kimi...")
-    from kimi_client import get_kimi_search_brief
-    kimi_brief = await get_kimi_search_brief(messages, user_text, user_id=user_id)
-    search_results: List[Dict[str, str]] = [{"query": "Внешние источники (Kimi)", "summary": (kimi_brief or "")[:500]}]
+    """Режим корреспондента: правовой анализ через GPT, источники через наш поиск, финальный ответ через DeepSeek."""
+    await _update_status(status_msg, "🗞 **Корреспондент**: ищу внешние источники...")
+    from search_engine import build_grounded_web_context
+    brief, found = await build_grounded_web_context(user_text, max_results=8, pages_to_read=0)
+    search_results: List[Dict[str, str]] = found or [{"query": "Внешние источники", "summary": (brief or "")[:500]}]
+    kimi_brief = brief
 
     await _update_status(status_msg, "🧠 **Корреспондент**: анализирую правовую позицию через GPT...")
     analysis_prompt = (
         f"Запрос пользователя:\n{user_text}\n\n"
-        f"Внешняя информация и источники от Kimi:\n{kimi_brief}\n\n"
+        f"Внешняя информация и источники:\n{kimi_brief}\n\n"
         "Ты выступаешь как сильный российский юрист по официальной переписке с государственными органами, "
         "контролирующими ведомствами, работодателями, судами, инспекциями, контрагентами и иными структурами.\n\n"
         f"{_FORMATTING_RULES}\n\n"
@@ -355,7 +350,7 @@ async def get_correspondent_response(
         "или иное обращение, основываясь на нормах права Российской Федерации в актуальной редакции и на предоставленных материалах.\n\n"
         f"Запрос пользователя:\n{user_text}\n\n"
         f"Логика и анализ GPT:\n{gpt_analysis}\n\n"
-        f"Факты и источники Kimi:\n{kimi_brief}\n\n"
+        f"Факты и источники:\n{kimi_brief}\n\n"
         "Требования к ответу:\n"
         "- пиши на русском языке в официальном, деловом, уверенном и уважительном стиле;\n"
         "- не пиши как журналист, обозреватель или автор статьи;\n"

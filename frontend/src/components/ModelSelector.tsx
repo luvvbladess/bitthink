@@ -6,6 +6,7 @@ import { apiFetch } from '@/api/client';
 import { composerChipSelectedSx, composerChipSx } from '@/theme/effects';
 import { GlowSwitch } from '@/components/GlowSwitch';
 import { ASTRA_LABEL, DOCGEN_LABEL, EXPRESS_LABEL, PILOT_LABEL, STUDIO_LABEL } from '@/constants/modes';
+import { conversationModeOwner, rememberConversationMode } from '@/features/chat/conversationMode';
 import { useVisualViewportHeight } from '@/features/chat/useVisualViewportHeight';
 
 interface Model {
@@ -104,7 +105,23 @@ function usePreferenceMutation(path: string, field: 'selected' | 'reasoningEffor
     meta: { setting: field },
     mutationKey: MODE_PREFERENCES_KEY, scope: { id: 'mode-preferences' },
     mutationFn: (value: string) => apiFetch(path, { method: 'POST', body: JSON.stringify({ [bodyKey]: value }), timeoutMs: 15000 }),
-    onMutate: () => queryClient.cancelQueries({ queryKey: ['models'] }),
+    onMutate: async (value: string) => {
+      // Capture the open chat before the first await. A later chat switch must not receive this mode.
+      const owner = field === 'selected' ? conversationModeOwner() : undefined;
+      await queryClient.cancelQueries({ queryKey: ['models'] });
+      const previous = queryClient.getQueryData<ModelsCache>(['models']);
+      if (field === 'selected') {
+        if (owner) rememberConversationMode(owner, value);
+        if (previous) patchModelsCache(queryClient, { selected: value });
+      }
+      return { previous, owner };
+    },
+    onError: (_error, _value, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(['models'], context.previous);
+        if (field === 'selected' && context.owner) rememberConversationMode(context.owner, context.previous.selected);
+      }
+    },
     onSuccess: (result, value) => patchModelsCache(queryClient, { [field]: result[resultKey] || value }),
     onSettled: () => { void queryClient.invalidateQueries({ queryKey: ['models'] }); },
   });

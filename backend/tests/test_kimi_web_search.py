@@ -121,35 +121,36 @@ def test_empty_or_invalid_payloads_are_dropped():
     assert kimi_web_search.format_results_for_model([]) == "По запросу ничего не найдено."
 
 
-def test_search_web_uses_rest_basic_before_openai(monkeypatch):
+def test_search_web_uses_our_metasearch(monkeypatch):
     calls = []
 
-    async def fake_search(query, **kwargs):
-        calls.append(("basic", query, kwargs.get("limit")))
-        return kimi_web_search.normalize_search_results(SAMPLE_BASIC)
+    async def fake_server(query, **kwargs):
+        calls.append(query)
+        return {'results': kimi_web_search.normalize_search_results(SAMPLE_BASIC), 'status': 'ok'}
 
-    async def forbidden_openai(*_args, **_kwargs):
-        raise AssertionError("OpenAI fallback must not run when Kimi REST is useful")
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("Hosted search must not run")
 
-    monkeypatch.setattr(kimi_web_search, "kimi_search", fake_search)
-    monkeypatch.setattr(search_engine, "_search_openai_sources", forbidden_openai)
+    monkeypatch.setattr('app.services.server_search.server_search', fake_server)
+    monkeypatch.setattr(search_engine, "_search_kimi_sources", forbidden)
+    monkeypatch.setattr(search_engine, "_search_openai_sources", forbidden)
     sources = asyncio.run(search_engine.search_web("Kimi web search API REST"))
     assert len(sources) == 2
-    assert calls and calls[0][0] == "basic"
+    assert calls == ["Kimi web search API REST"]
 
 
-def test_scraper_falls_back_to_kimi_fetch(monkeypatch):
+def test_blocked_page_does_not_call_kimi_fetch(monkeypatch):
     async def fail_local(url):
         return url, "[Ошибка: сайт заблокировал доступ (HTTP 403).]"
 
-    async def fake_fetch(url, **kwargs):
-        return {"url": url, "title": "Fetched", "markdown": "# Hello from Kimi Fetch\n\nBody text here."}
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("Kimi fetch must not run")
 
     monkeypatch.setattr(web_scraper, "_fetch_url_content_local", fail_local)
-    monkeypatch.setattr(kimi_web_search, "kimi_fetch", fake_fetch)
+    monkeypatch.setattr(kimi_web_search, "kimi_fetch", forbidden)
 
     url, text = asyncio.run(web_scraper.fetch_url_content("https://example.com/blocked"))
-    assert "Hello from Kimi Fetch" in text
+    assert "403" in text
     assert url == "https://example.com/blocked"
 
 
@@ -188,48 +189,27 @@ def test_reply_cleanup_preserves_product_listing_links():
     assert kimi_client.strip_source_links(body+'\n\nИсточники\n- https://example.com/source')==body
 
 
-def test_grounded_context_uses_pro_chunks_and_skips_scrape(monkeypatch):
-    scraped = []
-
-    async def fake_pro(query, max_results):
-        return kimi_web_search.normalize_search_results(SAMPLE_PRO)
+def test_grounded_context_uses_our_search_and_skips_scrape(monkeypatch):
+    async def fake_search_web(query, max_results=14):
+        return [{"title": "Web Search Pro docs", "url": "https://platform.kimi.ai/docs", "snippet": "ranked passages"}]
 
     async def fake_fetch(url):
-        scraped.append(url)
-        return url, "should not scrape"
+        raise AssertionError("ordinary search must not scrape")
 
-    monkeypatch.setattr(search_engine, "_search_kimi_pro", fake_pro)
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("Kimi search must not run")
+
+    monkeypatch.setattr(search_engine, "search_web", fake_search_web)
     monkeypatch.setattr(search_engine, "fetch_url_content", fake_fetch)
+    monkeypatch.setattr(search_engine, "_search_kimi_pro", forbidden)
     context, ui = asyncio.run(
-        search_engine.build_grounded_web_context("Kimi search_pro chunks", max_results=5, pages_to_read=3)
+        search_engine.build_grounded_web_context("our search", max_results=5, pages_to_read=3)
     )
     assert "ranked passages" in context
-    assert scraped == []
     assert ui[0]["query"] == "Web Search Pro docs"
 
 
-def test_grounded_context_does_not_pay_for_basic_after_pro(monkeypatch):
-    search_web_calls = []
-
-    async def fake_pro(query, max_results):
-        return kimi_web_search.normalize_search_results(SAMPLE_PRO)[:1]
-
-    async def fake_search_web(query, max_results=14):
-        search_web_calls.append(query)
-        return [{"title": "should not run", "url": "https://example.com", "snippet": ""}]
-
-    async def fake_fetch(url):
-        return url, "should not scrape"
-
-    monkeypatch.setattr(search_engine, "_search_kimi_pro", fake_pro)
-    monkeypatch.setattr(search_engine, "search_web", fake_search_web)
-    monkeypatch.setattr(search_engine, "fetch_url_content", fake_fetch)
-    context, ui = asyncio.run(
-        search_engine.build_grounded_web_context("zzz", max_results=5, pages_to_read=3)
-    )
-    assert search_web_calls == []
-    assert "ranked passages" in context
-    assert len(ui) == 1
+def test_kimi_tool_loop_reads_our_search_results(monkeypatch):
     async def fake_pro(query, **kwargs):
         assert query == "Kimi K3 pricing official"
         return kimi_web_search.normalize_search_results(SAMPLE_PRO)

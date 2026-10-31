@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from app.auth import get_current_user
 from app.config import get_settings
 from app.core.repository import repo
+from app.services.file_exchange import MAX_ATTACHMENT_BYTES, safe_filename, file_kind, mime_type
 
 router = APIRouter()
 
@@ -43,7 +44,16 @@ DOCUMENT_EXTENSIONS = {
 
 
 def _safe_filename(filename: str) -> str:
-    return Path(filename).name.replace("\x00", "")[:255] or "attachment"
+    return safe_filename(filename)
+
+
+def _original_note(filename, size, reason=''):
+    return (f'Вложение беседы: {filename}\nРазмер: {size} байт. Тип: {mime_type(filename)}.\n'
+        'Оригинал сохранён и доступен как файл. Это не расшифровка содержимого. '
+        'Чтобы встроить аудио, видео или другое вложение в проект, вызови '
+        'workspace_import_file с точным filename и destination внутри assets проекта. '
+        'Не создавай заглушку и не проси прикрепить файл повторно. '
+        'Готовые файлы любого формата выдавай через workspace_export_files.\n' + reason)
 
 
 async def _save_chat_image(contents: bytes, filename: str, user_id: str) -> tuple[str, str, int]:
@@ -96,7 +106,11 @@ async def _save_chat_original(contents: bytes, filename: str, user_id: str) -> s
     user_key = hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:16]
     folder = settings.UPLOAD_DIR / "chat" / user_key
     folder.mkdir(parents=True, exist_ok=True)
-    stored_name = uuid.uuid4().hex + Path(filename).suffix.lower()
+    suffix = Path(filename).suffix.lower()
+    # Active documents are downloads, never executable pages on the app origin.
+    if suffix in {'.html', '.htm', '.svg', '.xml', '.xhtml', '.js', '.mjs'}:
+        suffix = '.bin'
+    stored_name = uuid.uuid4().hex + suffix
     target = folder / stored_name
     await asyncio.to_thread(target.write_bytes, contents)
     return f"/uploads/chat/{user_key}/{stored_name}"
@@ -121,10 +135,12 @@ async def upload_document(
     ext = Path(filename).suffix.lower()
     declared_image = (file.content_type or "").startswith("image/")
     is_image = declared_image or ext in IMAGE_EXTENSIONS
+    contents = await file.read(MAX_ATTACHMENT_BYTES + 1)
+    if len(contents) > MAX_ATTACHMENT_BYTES:
+        raise HTTPException(status_code=413, detail='Файл слишком большой: максимум 100 МБ на вложение.')
     if ext == ".zip":
         extended_limits = (await repo.get_user_model(user_id)) == "docgen"
-        max_zip_size = 100 * 1024 * 1024 if extended_limits else 20 * 1024 * 1024
-        contents = await file.read()
+        max_zip_size = MAX_ATTACHMENT_BYTES
         if len(contents) > max_zip_size:
             raise HTTPException(
                 status_code=400,
@@ -143,17 +159,11 @@ async def upload_document(
                     extended_limits=extended_limits,
                     on_progress=report,
                 )
-            except MemoryError as exc:
-                raise HTTPException(status_code=400, detail="Архив слишком тяжёлый для разбора.") from exc
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            except (zipfile.BadZipFile, OSError) as exc:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Не удалось прочитать архив — файл повреждён или не является zip.",
-                ) from exc
+            except (MemoryError, ValueError, zipfile.BadZipFile, OSError):
+                documents = []
             if not documents:
-                raise HTTPException(status_code=400, detail="В архиве не найдено файлов, которые можно прочитать")
+                await repo.add_document(user_id, filename, _original_note(filename, len(contents),
+                    'Текст из архива автоматически не извлечён. Оригинал можно импортировать и разобрать инструментами.'), conv_id=conversation_id)
             for doc_name, text in documents:
                 await repo.add_document(user_id, doc_name, text, conv_id=conversation_id)
             original_url = await _save_chat_original(contents, filename, user_id)
@@ -177,15 +187,8 @@ async def upload_document(
             return StreamingResponse(_ndjson(finish_archive), media_type="application/x-ndjson")
         return await finish_archive()
 
-    if not is_image and ext not in DOCUMENT_EXTENSIONS:
-        raise HTTPException(status_code=400, detail=f"Формат {ext or 'без расширения'} пока нельзя прочитать")
-
-    contents = await file.read()
     extended_limits = not is_image and (await repo.get_user_model(user_id)) == "docgen"
-    if is_image:
-        max_size = 40 * 1024 * 1024
-    else:
-        max_size = 100 * 1024 * 1024 if extended_limits else 20 * 1024 * 1024
+    max_size = MAX_ATTACHMENT_BYTES
     if len(contents) > max_size:
         raise HTTPException(
             status_code=400,
@@ -195,9 +198,11 @@ async def upload_document(
     if is_image:
         try:
             url, mime_type, normalized_size = await _save_chat_image(contents, filename, user_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        msg = await repo.add_message(
+        except ValueError:
+            is_image = False
+        else:
+            original_url = await _save_chat_original(contents, filename, user_id)
+            msg = await repo.add_message(
             user_id,
             "user",
             filename,
@@ -209,15 +214,18 @@ async def upload_document(
                 "type": "image",
                 "mime_type": mime_type,
                 "url": url,
+                'original_url': original_url,
             },
-        )
-        return {"ok": True, "kind": "image", "filename": filename, "message": msg}
+            )
+            return {"ok": True, "kind": "image", "filename": filename, "message": msg}
 
     from document_parser import extract_text_from_file, store_source_docx
 
     bot_user_id = await repo.ensure_user(user_id)
 
     async def finish_document(report=None):
+        from app.services.file_exchange import mime_type
+        kind = file_kind(filename, file.content_type or '')
         try:
             text = await extract_text_from_file(
                 contents,
@@ -225,14 +233,13 @@ async def upload_document(
                 user_id=bot_user_id,
                 extended_limits=extended_limits,
                 on_progress=report,
-            )
-        except MemoryError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail="Файл слишком тяжёлый для разбора. Пришлите часть документа или меньше страниц.",
-            ) from exc
+            ) if ext in DOCUMENT_EXTENSIONS else None
+        except (MemoryError, ValueError, OSError):
+            text = None
         if text is None:
-            raise HTTPException(status_code=400, detail="Could not extract text from file")
+            text = _original_note(filename, len(contents))
+        elif kind == 'file':
+            kind = 'document'
         await repo.add_document(user_id, filename, text, conv_id=conversation_id)
         # Оригинал .docx нужен режиму «Документы» как основа оформления: из базы
         # доступен только извлечённый текст, по нему стили не восстановить.
@@ -243,9 +250,10 @@ async def upload_document(
             "user",
             filename,
             conv_id=conversation_id,
-            attachment={"name": filename, "size": len(contents), "status": "done", "type": "document", "url": original_url},
+            attachment={"name": filename, "size": len(contents), "status": "done", "type": kind,
+                        'mime_type': mime_type(filename), "url": original_url, 'original_url': original_url},
         )
-        return {"ok": True, "kind": "document", "filename": filename, "length": len(text), "message": msg}
+        return {"ok": True, "kind": kind, "filename": filename, "length": len(text), "message": msg}
 
     if _wants_progress(request):
         return StreamingResponse(_ndjson(finish_document), media_type="application/x-ndjson")

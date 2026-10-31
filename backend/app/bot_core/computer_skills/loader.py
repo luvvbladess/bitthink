@@ -488,7 +488,8 @@ def match_skills(
                 ranked.append((12, 0, order, name))
             order += 1
         from studio.design_skills import visual_build
-        if visual_build(blob):
+        # A product task already carries the design guidance inline: loading it again doubles every loop's prompt.
+        if visual_build(blob) and "дизайн этого заказа делает дизайнер" not in blob:
             design_names = ['impeccable', 'ui_ux_pro_max', 'emil_design_eng', 'visual_system']
             if 'инфографик' in blob:
                 design_names.append('infographic')

@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import time
+from contextvars import ContextVar
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
 from app.services.run_protocol import WORKFLOW_RULES
@@ -43,13 +44,15 @@ HAIKU_MODEL = "claude-haiku-5.5"
 SONNET_MODEL = "claude-sonnet-5.5"
 OPUS_MODEL = "claude-opus-5.5"
 MODEL_POOL = [
-    "gpt-5-nano",
     "gpt-6-luna",
     "gpt-6.1-terra",
     HAIKU_MODEL,
     "gpt-6-sol",
+    SONNET_MODEL,
     OPUS_MODEL,
     "gpt-6-astra",
+    "glm-5.3-flash",
+    "minimax-m3.1-flash",
 ]
 # The orchestrator (round planning: who to hire, how to split the task, when
 # to stop) drives every decision Pilot makes, so a weak model here made the
@@ -58,7 +61,7 @@ MODEL_POOL = [
 # on tiers without Sol. Ordinary single-hop synthesis stays on Luna.
 # Astra is hire-only and only for geometry or a hard SDK error.
 # Opus takes one dense contract, audit or architecture hop. Hard code stays on
-# Sol: at the same token price Sol spends far fewer output tokens than Sonnet.
+# Sol by default; Sonnet is an alternative at the same base price, measured per task.
 PLANNER_MODEL = "gpt-6-sol"
 DIRECT_ANSWER_MODEL = "gpt-6-luna"
 ECONOMY_COMPOSER_MODEL = "gpt-6-luna"
@@ -72,9 +75,12 @@ def _employee_models(user_id: int) -> list[str]:
         from conversations import conversation_manager
         from app.billing.plans import computer_models
 
-        return [model for model in computer_models(conversation_manager.get_subscription(user_id).get("tier")) if model in MODEL_POOL]
+        from config import OPENROUTER_API_KEY
+        from app.services.model_registry import model_spec
+        return [model for model in computer_models(conversation_manager.get_subscription(user_id).get("tier"))
+                if model in MODEL_POOL and (not model_spec(model) or model_spec(model).provider != 'openrouter' or OPENROUTER_API_KEY)]
     except Exception:
-        return list(MODEL_POOL)
+        return [FALLBACK_EMPLOYEE_MODEL]
 
 
 LIGHT_TASK_CHARS = 300
@@ -236,6 +242,30 @@ def _wants_file(text: str) -> bool:
     return bool(_FILE_REQUEST_RE.search(value))
 
 
+_ORDINARY_WORK_RE = re.compile(
+    r"(?i)(?:доклад|реферат|эссе|конспект|аннотац|отч[её]т|справк|"
+    r"документ|ворд|docx|xlsx|pptx|\bpdf\b|презентац|таблиц|"
+    r"гугл|google|на диск|почт|письм|календар|"
+    r"перевед|объясни|расскажи|сколько|найди|что такое)"
+)
+
+
+def _ordinary_work(text: str) -> bool:
+    """Ответ или файл, а не программа. Для такого запроса не нужны сборка, тесты и архив проекта."""
+    if _is_document_package_task(text):
+        return True
+    from app.services.product_strategy import is_product_request
+    if is_product_request(text):
+        document = bool(re.search(
+            r"(?i)доклад|реферат|отч[её]т|справк|аннотац|документ|ворд|docx|презентац|таблиц",
+            text or ""))
+        product = bool(re.search(
+            r"(?i)сайт|лендинг|приложен|веб.?сервис|дашборд|\bбот[а-я]*\b|\bwebsite\b|\blanding\b|\bapp\b|\bdashboard\b",
+            text or ""))
+        return document and not product
+    return bool(_wants_file(text) or _ORDINARY_WORK_RE.search(text or ""))
+
+
 async def _new_files(user_id: int, since: float) -> List[Dict[str, Any]] | None:
     """Файлы, которые песочница отдаст в чат за этот ход. None – проверить не вышло."""
     try:
@@ -295,6 +325,29 @@ def _astra_fallback(allowed: list[str]) -> str:
     return allowed[0] if allowed else FALLBACK_EMPLOYEE_MODEL
 
 
+_SPEND_RANK = {
+    "gpt-5-nano": 0,
+    FALLBACK_EMPLOYEE_MODEL: 1,
+    ROUTINE_MODEL: 2,
+    HAIKU_MODEL: 1,
+    PLANNER_MODEL: 4,
+    SONNET_MODEL: 4,
+    OPUS_MODEL: 6,
+    "gpt-6-astra": 7,
+    'glm-5.3-flash': .5,
+    'minimax-m3.1-flash': 1.5,
+}
+
+
+def _strongest_hired_model(employees, ceiling: int | None = None) -> str | None:
+    """The dearest model the planner hired is its decision to spend; ceiling is a _SPEND_RANK cut-off."""
+    names = [item.get("model") for item in employees or [] if item.get("model") in _SPEND_RANK
+             and (ceiling is None or _SPEND_RANK[item.get("model")] <= ceiling)]
+    if not names:
+        return None
+    return max(names, key=lambda name: _SPEND_RANK[name])
+
+
 def _clamp_employee_plan(
     plan: Dict[str, Any],
     user_id: int,
@@ -308,7 +361,7 @@ def _clamp_employee_plan(
     from app.services.desktop_context import desktop_executor
     from app.services.desktop_cad_completion import required_cad_extensions
     cad_astra = desktop_executor.get() is not None and bool(required_cad_extensions(original_task))
-    allow_astra = "gpt-6-astra" in allowed and _task_warrants_astra(original_task, document_context)
+    allow_astra = "gpt-6-astra" in allowed and cad_astra
     allow_opus = OPUS_MODEL in allowed and not cad_astra and _task_warrants_opus(original_task, document_context)
     already = any(entry.get("model") == "gpt-6-astra" for entry in (journal or []))
     strong = _needs_strong_model(original_task, document_context, has_images, user_id)
@@ -321,8 +374,21 @@ def _clamp_employee_plan(
     employees = []
     astra_used = already
     opus_used = any(entry.get("model") in {OPUS_MODEL, "gpt-6-astra"} for entry in (journal or [])) and not cad_astra
+    sol_this_product = False
     for item in plan.get("new_employees") or []:
         model = item.get("model")
+        work_kind = item.get('work_kind')
+        # The semantic planner classifies the stage; the controller enforces its
+        # capabilities and price. A specialist/failed stage is never downgraded.
+        from app.services.model_registry import production_workers
+        enabled = set(production_workers()) & set(allowed)
+        if not cad_astra and not recovery and not critical_task(original_task + '\n' + document_context[:12000]) and not item.get('product_phase'):
+            if work_kind in {'classify', 'extract_text'} and not has_images and 'glm-5.3-flash' in enabled:
+                model = 'glm-5.3-flash'
+            elif work_kind in {'file_operation', 'small_edit'} and 'minimax-m3.1-flash' in enabled:
+                model = 'minimax-m3.1-flash'
+        if model == 'glm-5.3-flash' and (has_images or work_kind not in {'classify', 'extract_text'}):
+            model = 'minimax-m3.1-flash' if 'minimax-m3.1-flash' in enabled else FALLBACK_EMPLOYEE_MODEL
         extra: Dict[str, Any] = {}
         # BitClient staged CAD specialists
         from app.services.desktop_cad_completion import cad_employee_phase, cad_phase_model, CAD_SPECIALIST_SCOPE
@@ -335,11 +401,35 @@ def _clamp_employee_plan(
             model = _astra_fallback(allowed)
         if cad_astra and model == "gpt-6-astra":
             extra["task"] = CAD_SPECIALIST_SCOPE + str(item.get("task", ""))
+        if item.get("product_phase") in {"brief", "build"} and not cad_astra:
+            # Sonnet and Sol share the same price ceiling. Opus/Astra stay specialist-only.
+            from config import OPENROUTER_API_KEY
+            affordable = {FALLBACK_EMPLOYEE_MODEL, ROUTINE_MODEL, HAIKU_MODEL, PLANNER_MODEL, SONNET_MODEL}
+            if item.get('work_kind') in {'file_operation', 'small_edit'} and 'minimax-m3.1-flash' in enabled:
+                affordable.add('minimax-m3.1-flash')
+            haiku_ok = bool(OPENROUTER_API_KEY) and HAIKU_MODEL in allowed
+            chosen = model if model in affordable and model in allowed else None
+            if chosen is None:
+                if item.get("product_phase") == "brief":
+                    chosen = HAIKU_MODEL if haiku_ok else (FALLBACK_EMPLOYEE_MODEL if FALLBACK_EMPLOYEE_MODEL in allowed else PLANNER_MODEL)
+                else:
+                    chosen = PLANNER_MODEL if PLANNER_MODEL in allowed else (HAIKU_MODEL if haiku_ok else FALLBACK_EMPLOYEE_MODEL)
+            if chosen == HAIKU_MODEL and not haiku_ok:
+                chosen = FALLBACK_EMPLOYEE_MODEL if FALLBACK_EMPLOYEE_MODEL in allowed else PLANNER_MODEL
+            if chosen == SONNET_MODEL and not OPENROUTER_API_KEY:
+                chosen = PLANNER_MODEL if PLANNER_MODEL in allowed else FALLBACK_EMPLOYEE_MODEL
+            if chosen in {PLANNER_MODEL, SONNET_MODEL}:
+                if sol_this_product:
+                    chosen = HAIKU_MODEL if haiku_ok else FALLBACK_EMPLOYEE_MODEL
+                else:
+                    sol_this_product = True
+            employees.append({**item, "model": chosen, **extra})
+            continue
         if model == "kimi-k2.6":
             # The research worker uses the shared search/read tools. The selected
             # backend controls whether web_search is our metasearch or hosted.
             model, extra = FALLBACK_EMPLOYEE_MODEL, {"web": True}
-        elif model in ("gpt-6-sol", SONNET_MODEL, HAIKU_MODEL, "deepseek-v4-pro") and not strong and not recovery:
+        elif model in ("gpt-6-sol", SONNET_MODEL, "deepseek-v4-pro") and not strong and not recovery:
             if model == PLANNER_MODEL and routine_was_strong:
                 if routine_employee(item, original_task, document_context) and ROUTINE_MODEL in allowed:
                     model = ROUTINE_MODEL
@@ -367,8 +457,6 @@ def _clamp_employee_plan(
         repair = bool(re.search(r'(?i)исправ|repair|fix|валид|тест|компиля', str(item.get('task') or '')))
         if recovery and (model == ROUTINE_MODEL or (model == FALLBACK_EMPLOYEE_MODEL and repair)) and PLANNER_MODEL in allowed:
             model = PLANNER_MODEL
-        if model == SONNET_MODEL:
-            model = PLANNER_MODEL if PLANNER_MODEL in allowed else FALLBACK_EMPLOYEE_MODEL
         employees.append({**item, "model": model, **extra})
     return {**plan, "new_employees": employees}
 
@@ -711,7 +799,10 @@ def _parse_director_plan(response_text: str, *, strict: bool = False) -> Dict[st
                 model = FALLBACK_EMPLOYEE_MODEL
             from app.services.desktop_cad_completion import CAD_PHASES
             phase = e.get("cad_phase")
-            valid_employees.append({"role": role, "task": task, "model": model, **({"cad_phase": phase} if isinstance(phase, str) and phase in CAD_PHASES else {})})
+            work_kind = e.get('work_kind')
+            valid_employees.append({"role": role, "task": task, "model": model,
+                **({'work_kind': work_kind} if work_kind in {'classify', 'extract_text', 'file_operation', 'small_edit', 'research', 'expert', 'build'} else {}),
+                **({"cad_phase": phase} if isinstance(phase, str) and phase in CAD_PHASES else {})})
 
         if status == "clarify":
             from clarify import normalize_questions
@@ -807,7 +898,7 @@ def _trim_documents(document_context: str, query: str, budget: int) -> str:
     from db_conversations import _relevant_document_excerpt
 
     parts = [p for p in re.split(rf"(?m)(?=^{re.escape(_DOC_HEADER)})", document_context) if p.strip()]
-    share = max(3_000, budget // max(1, len(parts)))
+    share = max(256, budget // max(1, len(parts)))
     out: List[str] = []
     for part in parts:
         if len(part) <= share:
@@ -816,13 +907,17 @@ def _trim_documents(document_context: str, query: str, budget: int) -> str:
         head, sep, body = part.partition("Содержание:\n")
         if not sep:
             head, body = "", part
-        room = max(1_500, share - len(head) - 260)
+        room = max(128, share - len(head) - 260)
         excerpt = _relevant_document_excerpt(body, query, room)
         out.append(
             f"{head}{sep}{excerpt}\n\n[Показана часть файла: {len(excerpt)} из {len(body)} знаков. "
             "Остальное – read_chat_document с точным именем и query.]"
         )
-    return "\n\n".join(out)
+    combined = "\n\n".join(out)
+    if len(combined) <= budget:
+        return combined
+    note = '\n[Контекст сокращён. Полный каталог — list_chat_files; нужный фрагмент — read_chat_document.]'
+    return combined[:max(0, budget-len(note))] + note
 
 
 def _tail(text: str, limit: int) -> str:
@@ -830,7 +925,16 @@ def _tail(text: str, limit: int) -> str:
     if desktop_executor.get() is not None and limit in {PLANNER_HISTORY_CHARS, EMPLOYEE_HISTORY_CHARS}:
         from app.services.desktop_policy import history_view_limit
         limit = history_view_limit(limit, PLANNER_HISTORY_CHARS)
-    return text if len(text) <= limit else "…" + text[-limit:]
+    if len(text) <= limit:
+        return text
+    # History packing pins the initial requirements. Keeping only the tail undid
+    # that packing and made short follow-ups forget the original constraints.
+    if limit in {PLANNER_HISTORY_CHARS, EMPLOYEE_HISTORY_CHARS}:
+        note = '\n[Часть промежуточной истории сокращена; при необходимости открой исходную беседу.]\n'
+        room = max(0, limit-len(note))
+        head = room // 3
+        return text[:head] + note + text[-(room-head):]
+    return '…' + text[-max(0, limit-1):]
 
 
 def _extract_document_context(messages: List[Dict[str, Any]]) -> str:
@@ -941,6 +1045,9 @@ async def _execute_employee(
         "Не называй адрес или площадку только по виду кадра. После выдачи поисковиков открой 2-4 страницы browse_page. "
         "Не пиши готовый ответ из памяти до инструментов: сначала поиск или страница, потом вывод. "
         "Если текста документа нет в блоке выше, сначала list_chat_files, затем read_chat_document по точному имени. "
+        "Исходные аудио, видео, архивы и любые вложения получай через workspace_import_file: это оригинальные байты, не описание. "
+        "Для встраивания в сайт копируй в assets именно папки проекта и используй относительную ссылку. "
+        "Не заменяй приложенный звук/ролик заглушкой. Готовые файлы любых форматов отдавай через workspace_export_files. "
         "Не проси пользователя прислать файл снова: он уже в чате. "
         "Прошлые разговоры – search_chats или recent_chats, не интернет. Не проси открыть другой чат. "
         "Код только в workspace_* / pip_install / python_run. Сначала workspace_grep или workspace_glob, не читай все файлы. "
@@ -957,6 +1064,12 @@ async def _execute_employee(
         "Не проси пользователя скопировать страницу или выполнить команду за тебя. "
         "Не спрашивай пользователя и не давай нумерованный опросник: делай работу сам."
     )
+    from app.services.run_protocol import current_run
+    run = current_run.get()
+    if run is not None and run.request_context:
+        base_prompt = ('Текущая цель и материалы беседы, общие для всех исполнителей. '
+            'Не теряй ограничения человека при выполнении своего этапа:\n'
+            + json.dumps(run.request_context, ensure_ascii=False) + '\n\n' + base_prompt)
     if context_block:
         prompt = f"{base_prompt}\n\nРезультаты коллег из предыдущих раундов:\n{context_block}"
     else:
@@ -1013,12 +1126,37 @@ async def _execute_employee(
         from app.services.desktop_cad_completion import required_cad_extensions
         cad_build = desktop_executor.get() is not None and bool(required_cad_extensions(task))
         from app.services.desktop_cad_completion import cad_employee_phase
-        loops = 40 if employee.get('product_phase') else (60 if cad_employee_phase(employee)=="gui_geometry" else 30) if cad_build else PACKAGE_EMPLOYEE_TOOL_LOOPS if builds_file else None
-        if model in {HAIKU_MODEL, SONNET_MODEL, OPUS_MODEL}:
+        if employee.get("product_phase") == "brief":
+            loops = 8
+        elif employee.get("product_phase"):
+            # Haiku on a 40-step build costs more than one Sol pass and still fails the checks.
+            loops = 12 if model in {HAIKU_MODEL, "gpt-6-luna", "gpt-5-nano", ROUTINE_MODEL, 'minimax-m3.1-flash'} else 40
+        else:
+            loops = (60 if cad_employee_phase(employee)=="gui_geometry" else 30) if cad_build else PACKAGE_EMPLOYEE_TOOL_LOOPS if builds_file else None
+        def product_accepted(name, result):
+            from app.services.autonomy import product_evidence
+            evidence = product_evidence.get() or {}
+            return name == 'product_lifecycle' and evidence.get('product_id') == employee.get('product_id') and bool(evidence.get('ready'))
+        stop_options = {'stop_after_tool': product_accepted} if employee.get('product_phase') == 'build' and employee.get('product_id') else {}
+        from app.services.model_registry import openrouter_models
+        response = None
+        if model in openrouter_models(include_experimental=True):
             from openrouter_client import get_openrouter_response
-            answer, _, reasoning, search = await get_openrouter_response(
+            response = await get_openrouter_response(
                 employee_messages, model=model, user_id=user_id, use_tools=True, max_tool_loops=loops,
+                reasoning_effort='high' if model == OPUS_MODEL else None,
+                **stop_options,
             )
+            if getattr(response, 'retryable', False) and not response.actions_executed:
+                # Only retry a provider failure before any tool action. Never replay a partial build.
+                from openai_client import get_chat_response
+                preferred = PLANNER_MODEL if model in {SONNET_MODEL, OPUS_MODEL} else FALLBACK_EMPLOYEE_MODEL
+                allowed = _employee_models(user_id)
+                fallback = preferred if preferred in allowed else FALLBACK_EMPLOYEE_MODEL
+                response = await get_chat_response(employee_messages, model=fallback, user_id=user_id,
+                    use_tools=True, max_tool_loops=loops, **stop_options)
+                model = fallback
+            answer, _, reasoning, search = response
         elif model == "deepseek-v4-pro":
             from deepseek_client import get_deepseek_response
             answer, _, reasoning, search = await get_deepseek_response(employee_messages, model=model, user_id=user_id, use_tools=True)
@@ -1026,22 +1164,20 @@ async def _execute_employee(
             from openai_client import get_chat_response
             if employee.get('web') and not cad_build and not builds_file:
                 loops = 6  # Search, skill, selective read/retry, then synthesis.
-            def product_accepted(name, result):
-                from app.services.autonomy import product_evidence
-                evidence = product_evidence.get() or {}
-                return name == 'product_lifecycle' and evidence.get('product_id') == employee.get('product_id') and bool(evidence.get('ready'))
-            answer, _, reasoning, search = await get_chat_response(
+            response = await get_chat_response(
                 employee_messages, model=model, user_id=user_id, use_tools=True, max_tool_loops=loops,
                 force_web_search=bool(employee.get("web", legacy_search)),
                 reasoning_effort="high" if cad_build and model == "gpt-6-astra" else None,
-                **({'stop_after_tool': product_accepted} if employee.get('product_phase') == 'build' and employee.get('product_id') else {}),
+                **stop_options,
             )
+            answer, _, reasoning, search = response
 
-        provider_failed = answer.startswith('❌ Ошибка OpenAI:') or answer.startswith('❌ Ошибка OpenRouter:') or answer == 'Нет ответа от модели'
+        provider_failed = bool(getattr(response, 'error_kind', '')) or answer.startswith('❌') or not answer.strip() or answer == 'Нет ответа от модели'
         return {
             "round": round_num, "role": role, "task": task, "model": model, "cad_phase": employee.get("cad_phase"), "cad_errors": cad_evidence.errors, "cad_resolved": sorted(cad_evidence.resolved), "status": "error" if cad_evidence.errors else "ok", "result": answer + ("\nCAD compiler diagnostics:\n" + "\n".join(cad_evidence.errors) if cad_evidence.errors else ""),
             **({'product_phase': employee['product_phase']} if employee.get('product_phase') else {}),
             **({'status':'error'} if provider_failed else {}),
+            **({'error_kind': response.error_kind, 'retryable': response.retryable} if getattr(response, 'error_kind', '') else {}),
             **({'validation_checks':dict(validation_state.checks)} if validation_state.checks else {}),
             **({'status':'error', 'validation_failed':True,
                 'result':answer + '\nПроверка результата не пройдена: исправь ошибку теста/сборки и повтори только проверку, сначала проверь сохранённые изменения.'} if validation_state.failed else {}),
@@ -1094,6 +1230,8 @@ def _select_composer_model(
     # A file alone no longer buys Sol (20x Luna): the employees already read it, and the
     # composer only merges their notes. Sol stays for contracts/audits and big result sets.
     needs_quality = (
+        any(entry.get('model') in {SONNET_MODEL, OPUS_MODEL, 'gpt-6-astra'} for entry in ok_entries)
+        or
         (bool(document_context) and any(marker in task for marker in hard_markers))
         or len(original_task) > 1200
         or result_chars > 15000
@@ -1106,11 +1244,13 @@ def _select_composer_model(
 
 def _pool_description(user_id: int, original_task: str = "", document_context: str = "") -> str:
     lines = [
-        ("gpt-5-nano", "самая дешёвая, тривиальные микро-задачи и форматирование"),
         ("gpt-6-luna", "дешёвая, простой анализ, черновики, короткие ответы; короткое чтение, извлечение и фильтрация файлов"),
         *([(ROUTINE_MODEL, "точные небольшие правки и ограниченные преобразования вместо Sol, когда Luna недостаточно; наличие файла само по себе не причина выбирать Terra")] if economy_enabled() else []),
-        (HAIKU_MODEL, "дешёвая, цена как у Luna. Код, рассуждения и инструменты. Короткий ответ, без длинных размышлений."),
-        ("gpt-6-sol", "дорогая. Сложный анализ и починка кода, когда Haiku недостаточно. Пиши коротко."),
+        (HAIKU_MODEL, "короткие ограниченные операции, код и извлечение. Базовая цена как у Luna, но вход свыше 100 тысяч токенов повышает цену в пять раз. Для расчёта используй инструменты."),
+        ("gpt-6-sol", "в 20 раз дороже. Сборка сайта, лендинга или приложения (один раз), починка после провала, плотный разбор. Не для поиска и снимков."),
+        (SONNET_MODEL, "альтернатива Sol по той же базовой цене: сложный код, сборка и точечная починка. Не нанимай Sol и Sonnet для дублирующей работы."),
+        ('glm-5.3-flash', 'дешёвое извлечение и классификация текста: work_kind extract_text/classify. Только текст, без изображений и создания продукта.'),
+        ('minimax-m3.1-flash', 'основной экономный исполнитель ограниченных операций с файлами и небольших правок: work_kind file_operation/small_edit. Включая импорт аудио/видео в assets. Не большой проект и не экспертный вывод.'),
         (OPUS_MODEL, "договор, аудит, архитектура, расследование. Один такой сотрудник. Не геометрия и не SDK."),
         (
             "gpt-6-astra",
@@ -1128,9 +1268,11 @@ def _pool_description(user_id: int, original_task: str = "", document_context: s
         allowed.discard("gpt-6-astra")
     else:
         allowed.discard(OPUS_MODEL)
-        if not _task_warrants_astra(original_task, document_context):
-            allowed.discard("gpt-6-astra")
+        allowed.discard("gpt-6-astra")
     return "\n".join(f"{mid} — {desc}" for mid, desc in lines if mid in allowed)
+
+
+_clarify_only: ContextVar[bool] = ContextVar('director_clarify_only', default=False)
 
 
 @model_phase('planner')
@@ -1141,7 +1283,10 @@ async def _plan_round(
     document_context: str = "",
     history_text: str = "",
 ) -> Dict[str, Any]:
-    """Один дешёвый вызов: решить, нанимать ли ещё сотрудников, и кого именно."""
+    """Один дешёвый вызов: решить, нанимать ли ещё сотрудников, и кого именно.
+
+    In the preflight of a new product the build is Sol anyway, so this call only decides whether to ask first."""
+    clarify_only = _clarify_only.get()
     from openai_client import get_chat_response
 
     pool_description = _pool_description(user_id, original_task, document_context)
@@ -1205,11 +1350,15 @@ async def _plan_round(
         "Запрещено писать опросник обычным текстом: никаких «выберите вариант» и нумерованных анкет в ответе.\n"
         "- Не заказывай финальный отчёт, оглавление или нумерованные разделы.\n"
         "- Не проси разрешение искать или открыть сайт: найми сотрудника сразу.\n"
-        "Экономь токены без потери результата: по умолчанию gpt-6-luna; "
-        "для актуальных фактов и поиска - gpt-6-luna с server_search и browse_page; "
-        "для кода и рассуждений - claude-haiku-5.5, ответ короткий. "
-        "gpt-6-sol когда Haiku не тянет починку кода или сложный анализ. "
-        "Не нанимай вторую дорогую модель на ту же часть.\n"
+        "Незнакомую тему не закрывай из памяти: ищи через server_search и не больше трёх browse_page. "
+        "Если важен внешний вид предмета или страницы — один browse_visual, не серия. "
+        "Чужие картинки в файлы не копируй: запиши композицию и факты. "
+        "Подходящий скил из каталога — первая строка task.\n"
+        "Модель выбираешь ты, по цене ошибки. Поиск, чтение, извлечение и черновик — gpt-6-luna. "
+        "Короткий код и рассуждение — claude-haiku-5.5, ответ короткий. "
+        "Сборка сайта, лендинга или приложения — один gpt-6-sol: длинная сборка на Haiku выходит дороже "
+        "и не проходит приёмку. Поиск и снимки страниц Sol не отдавай. "
+        "Один Sol на задачу; второй только если первый провалился.\n"
         + (
             "В локальной CAD-задаче разделяй работу на конкретные этапы с cad_phase: "
             "inspect (файлы, фото, SDK) — Luna; simple_geometry (типовые детали, выдавливания, "
@@ -1280,6 +1429,11 @@ async def _plan_round(
         "Terra назначай для чтения изображений/экранов и ограниченных точных правок; не заменяй ею дешёвые текстовые роли без необходимости. "
         "Поле model - строго один из id моделей выше. questions: 1-3 штуки, у каждого 2-6 коротких options."
     )
+    prompt += ('\nКаждому сотруднику добавь work_kind: classify (классификация текста), extract_text (извлечение полей из текста), '
+        'file_operation (копирование/преобразование/встраивание готовых файлов), small_edit (ограниченная небольшая правка), '
+        'research, expert или build. Это смысл этапа, а не название инструмента. '
+        'Для classify/extract_text используй glm-5.3-flash, если он доступен и не нужны изображения; '
+        'для file_operation/small_edit — minimax-m3.1-flash. Сложные этапы оставляй сильной модели.\n')
 
     from app.services.conversation_context import workspaces
     if workspaces.get() is not None:
@@ -1290,8 +1444,12 @@ async def _plan_round(
                      'Фразы вроде «покрупнее», «всё ещё не нравится», «сделай как обсуждали» не требуют '
                      'повторять слово «сайт»: используй контекст. Вопрос или смена темы не разрешают править проект. '
                      'В JSON обязательно добавь workspace_action: revise / create / none. '
-                     'Для revise укажи workspace_id строго из списка выше. Для revise/create можно вернуть '
-                     'status=continue и пустой new_employees: сборку назначит контроллер. '
+                     'create — только если человек просит программу: сайт, приложение, бота, сервис или дашборд. '
+                     'Документ, доклад, отчёт, таблица, презентация, письмо, файл на Диск и обычный вопрос — это none: '
+                     'без сборки, тестов, браузерной приёмки и архива проекта. '
+                     'Для revise укажи workspace_id строго из списка выше. Для revise/create верни одного сотрудника: '
+                     'его model — решение, нужен ли Sol на этот этап. Контроллер подставит задание и оставит модель. '
+                     'Пустой new_employees значит, что ты не выбрал: разбор останется на Haiku, сборка на Sol. '
                      'Если нельзя выбрать между несколькими проектами, верни status=clarify. '
                      'Не отвечай, что файлы недоступны, без реальной проверки их доступности.')
 
@@ -1309,7 +1467,7 @@ async def _plan_round(
         recovery = economy_enabled() and needs_recovery(journal)
         routine = not image_names and not _is_document_package_task(original_task) and routine_task(original_task, document_context_full) and _legacy_needs_strong_model(original_task, document_context_full, False, user_id)
         planner_model = _clamped_planner_model(user_id, first_round=not journal,
-            complex_task=_needs_strong_model(original_task, document_context_full, bool(image_names), user_id), routine=routine, recovery=recovery)
+            complex_task=False if clarify_only else _needs_strong_model(original_task, document_context_full, bool(image_names), user_id), routine=routine, recovery=recovery)
         async def request_plan(selected):
             response_text, _, _, _ = await get_chat_response(messages, model=selected,
                 user_id=user_id, use_tools=False, use_skills=False,
@@ -1699,11 +1857,15 @@ async def get_director_response(
     token = billing_pool.set("computer")
     from app.services.autonomy import product_evidence
     product_token = product_evidence.set({})
-    record_token = current_run.set(RunRecord(requires_sources=_is_shopping_task(user_text, user_id)))
+    from app.services.conversation_context import workspaces
+    record_token = current_run.set(RunRecord(requires_sources=_is_shopping_task(user_text, user_id),
+        request_context={'current_request': user_text, 'workspaces': workspaces.get() or []}))
     try:
         answer, files, reasoning, sources = await _run_director(messages, user_text, user_id, status_msg)
         from app.services.engineering_io import guard_completion
         answer=guard_completion(answer,current_run.get())
+        from app.services.orchestrator_metrics import mark_outcome
+        mark_outcome(artifacts=len(files or []))
         current_run.get().link_excerpts(answer)
         logger.info('Run completed: elapsed_ms=%s reads=%s',
                     round((time.monotonic()-current_run.get().started)*1000),
@@ -1755,19 +1917,27 @@ async def _run_director(
     from app.services.autonomy import product_evidence, product_employee, verified_product
     initial_plan = None
     followup_id = None
-    if desktop_executor.get() is None and workspaces.get() is not None and not journal:
+    # Asked before a revision rewrites user_text with the old brief, which always looks like "build a site".
+    asked_new_product = is_product_request(user_text) and not any(entry.get('product_id') for entry in journal)
+    turn_has_images = packed_has_images(messages) or _turn_has_images(user_id)
+    simple_without_project = not workspaces.get() and _is_light_task(user_text, document_context, turn_has_images, user_id)
+    if desktop_executor.get() is None and workspaces.get() is not None and not journal and not simple_without_project:
         initial_plan = await _plan_round(user_text, journal, user_id, document_context, history_text)
         if initial_plan.get('status') == 'clarify' and initial_plan.get('questions'):
             from clarify import pack_search
             return initial_plan['questions'][0]['prompt'], [], '', pack_search(initial_plan['questions'])
-        if initial_plan.get('workspace_action') == 'revise':
+        if initial_plan.get('workspace_action') == 'revise' and not _ordinary_work(user_text):
             followup_id = initial_plan.get('workspace_id')
             if followup_id not in {item['product_id'] for item in workspaces.get()}:
                 raise ValueError('Выбранный проект не относится к этой беседе.')
-    product_build = desktop_executor.get() is None and (is_product_request(user_text) or bool(followup_id)
-                                                       or any(entry.get('product_id') for entry in journal))
-    if initial_plan is not None:
-        product_build = initial_plan.get('workspace_action') in {'revise', 'create'}
+    # create от планировщика само по себе не запускает приёмку: иначе доклад,
+    # таблица или файл на Диск собираются как сайт, с тестами и архивом.
+    product_build = desktop_executor.get() is None and not _ordinary_work(user_text) and (
+        is_product_request(user_text) or bool(followup_id) or any(entry.get('product_id') for entry in journal))
+    if (initial_plan is not None and not product_build
+            and initial_plan.get('workspace_action') in {'revise', 'create'}
+            and not initial_plan.get('new_employees')):
+        initial_plan = {'status': 'done', 'new_employees': []}
     product_state = product_evidence.get()
     if product_state is None:
         product_state = {}
@@ -1796,6 +1966,8 @@ async def _run_director(
                 return ('Не удалось открыть исходники ранее созданного проекта в облаке. '
                         'Прикрепите выданный ZIP-архив, чтобы продолжить работу с его файлами. '
                         'Новая версия пока не создана.'), [], '', []
+    preflight = None
+    phase_models: Dict[str, str] = {}
     round_num = 0
     turn_images = packed_has_images(messages) or _turn_has_images(user_id)
     has_images = wants_photo_research(user_text, turn_images)
@@ -1830,7 +2002,11 @@ async def _run_director(
             if round_num == 1 and not journal and not product_state.get('product_id') and initial_plan is None:
                 # Preserve essential clarification (e.g. an app with no purpose).
                 # Stack selection and routine design choices stay autonomous.
-                preflight = await _plan_round(user_text, journal, user_id, document_context, history_text)
+                only_token = _clarify_only.set(True)
+                try:
+                    preflight = await _plan_round(user_text, journal, user_id, document_context, history_text)
+                finally:
+                    _clarify_only.reset(only_token)
                 if preflight.get('status') == 'clarify' and preflight.get('questions'):
                     from clarify import pack_search
                     return preflight['questions'][0]['prompt'], [], '', pack_search(preflight['questions'])
@@ -1846,6 +2022,36 @@ async def _run_director(
             employee = product_employee(user_text, product_state, journal)
             if employee is None:
                 break
+            phase_name = employee.get('product_phase') or 'build'
+            cheap_build_failed = any(
+                entry.get('product_phase') == 'build' and entry.get('model') not in {PLANNER_MODEL, SONNET_MODEL} for entry in journal
+            )
+            fresh_product = asked_new_product and not followup_id and (
+                initial_plan is None or initial_plan.get('workspace_action') != 'revise')
+            # A new product gets one strong builder, honoring Sol/Sonnet from the semantic plan.
+            # A revision of an existing project stays the planner's call.
+            if phase_name == 'build' and (fresh_product or cheap_build_failed) and PLANNER_MODEL in _employee_models(user_id):
+                source = initial_plan if (initial_plan or {}).get('new_employees') else preflight
+                picked = _strongest_hired_model((source or {}).get('new_employees'))
+                builder = picked if picked in {PLANNER_MODEL, SONNET_MODEL} and picked in _employee_models(user_id) else PLANNER_MODEL
+                employee['model'] = builder
+                phase_models[phase_name] = builder
+            elif phase_name in phase_models:
+                employee['model'] = phase_models[phase_name]
+            else:
+                # The plan made for this turn already says what the work is worth: no second Sol planner call.
+                source = initial_plan if (initial_plan or {}).get('new_employees') else preflight
+                if not (source or {}).get('new_employees') and phase_name != 'brief':
+                    source = await _plan_round(user_text, journal, user_id, document_context, history_text)
+                # Research is not the dear step: the brief never inherits the build's Sol.
+                ceiling = _SPEND_RANK[HAIKU_MODEL] if phase_name == 'brief' else None
+                picked = _strongest_hired_model((source or {}).get('new_employees'), ceiling)
+                if picked:
+                    employee['model'] = picked
+                    selected_stage = next((item for item in (source or {}).get('new_employees', []) if item.get('model') == picked), {})
+                    if selected_stage.get('work_kind'):
+                        employee['work_kind'] = selected_stage['work_kind']
+                phase_models[phase_name] = employee['model']
             plan = _clamp_employee_plan({'status': 'continue', 'new_employees': [employee]}, user_id, user_text, document_context, journal)
         elif initial_plan is not None and round_num == 1:
             plan = initial_plan
@@ -1950,6 +2156,9 @@ async def _run_director(
                         res['product_id'] = product_state['product_id']
                 journal.append(res)
         await asyncio.to_thread(save_checkpoint, journal, user_id)
+        from app.services.orchestrator_budget import current_budget
+        if current_budget.get() is not None and current_budget.get().exhausted:
+            break
 
     if not journal:
         # This call can still search and browse. Writing belongs to the final,
@@ -1971,8 +2180,16 @@ async def _run_director(
 
     # Всегда, а не только когда просили файл: сотрудник мог собрать его по ходу дела.
     built_files = await _new_file_names(user_id, started)
+    from app.services.orchestrator_metrics import mark_outcome
+    mark_outcome(errors=sum(entry.get('status') == 'error' for entry in journal))
     await _update_status(status_msg, "Собираю итоговый ответ — Объединяю выводы и подготовленные файлы", 'work')
-    if product_build:
+    from app.services.orchestrator_budget import current_budget
+    budget_exhausted = current_budget.get() is not None and current_budget.get().exhausted
+    if budget_exhausted and not product_build:
+        mark_outcome(accepted=False)
+        answer, compose_reasoning = ('Достигнут бюджет работы моделей. Выполненные действия и созданные файлы сохранены. '
+            'Завершение всей задачи пока не подтверждено; продолжить можно с сохранённого состояния.'), ''
+    elif product_build:
         # Completion is derived from receipts, never from a composer's claim.
         answer, compose_reasoning = '', ''
     else:
@@ -1991,6 +2208,8 @@ async def _run_director(
         except (ValueError, TypeError):
             final_product = {}
         if not final_product.get('packaged') or not final_product.get('ready'):
+            from app.services.orchestrator_metrics import mark_outcome
+            mark_outcome(accepted=False)
             gates = final_product.get('gates') or {'build': False, 'test': False}
             failed = [name for name, passed in gates.items() if not passed]
             if not failed:
@@ -1999,6 +2218,8 @@ async def _run_director(
                       'Сохранённые исходники можно доработать в следующем запросе.\n\n' +
                       ('Папка проекта: ' + final_product['path'] if final_product.get('path') else 'Не удалось создать проверяемый проект.'))
         else:
+            from app.services.orchestrator_metrics import mark_outcome
+            mark_outcome(accepted=True)
             from app.services.autonomy import learn
             try:
                 await asyncio.to_thread(learn, user_id, {

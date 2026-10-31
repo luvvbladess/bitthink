@@ -9,10 +9,24 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Awaitable, Callable, Iterator
+from pathlib import Path
 
 _reader_snapshots: ContextVar[dict | None] = ContextVar("reader_snapshots", default=None)
 _reader_mode: ContextVar[str] = ContextVar("reader_mode", default="full")
 _page_reads: ContextVar[dict | None] = ContextVar("page_reads", default=None)
+_export_paths: ContextVar[list | None] = ContextVar('export_paths', default=None)
+
+
+def export_paths():
+    return list(_export_paths.get() or [])
+
+
+def request_file_export(path):
+    selected = _export_paths.get()
+    if selected is None:
+        raise ValueError('Выдача файлов доступна только внутри ответа в беседе.')
+    if path not in selected:
+        selected.append(path)
 
 
 def page_reads() -> dict | None:
@@ -40,6 +54,7 @@ def turn_conversation(conv_id: str | None, *, reader_detail: str = "full") -> It
     snapshots_token = _reader_snapshots.set({})
     mode_token = _reader_mode.set("overview" if reader_detail == "overview" else "full")
     pages_token = _page_reads.set({})
+    exports_token = _export_paths.set([])
     try:
         yield
     finally:
@@ -50,6 +65,7 @@ def turn_conversation(conv_id: str | None, *, reader_detail: str = "full") -> It
         _reader_snapshots.reset(snapshots_token)
         _reader_mode.reset(mode_token)
         _page_reads.reset(pages_token)
+        _export_paths.reset(exports_token)
 
 
 # Files the reply decided to hand over. None: no decision, everything the
@@ -71,6 +87,7 @@ def pick_deliverables(files: list[dict]) -> list[dict]:
     if not chosen:
         return files
     wanted = {name.casefold() for name in chosen}
+    wanted.update(Path(path).name.casefold() for path in export_paths())
     picked = [item for item in files if str(item.get("filename") or "").casefold() in wanted]
     return picked or files
 

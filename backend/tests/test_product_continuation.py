@@ -72,12 +72,60 @@ def test_empty_registry_still_uses_semantic_product_decision(monkeypatch):
     context_token = workspaces.set([])
     product_token = autonomy.product_evidence.set({})
     try:
-        answer, _, _, _ = asyncio.run(dr._run_director([], 'Нужна удобная штука для учёта заказов', 92001, None))
+        answer, _, _, _ = asyncio.run(dr._run_director([], 'Создай сайт для учёта заказов', 92001, None))
         assert executed == ['brief', 'build']
         assert 'Сборка и тесты текущей версии пройдены' in answer
     finally:
         workspaces.reset(context_token)
         autonomy.product_evidence.reset(product_token)
+
+
+@pytest.mark.parametrize('text', [
+    'Нужна удобная штука для учёта заказов',
+    'создай полноценный доклад про частицу тахеон, оформи в ворд и положи на гугл диск',
+])
+def test_ordinary_request_does_not_start_product_acceptance(monkeypatch, text):
+    import director_router as dr
+    from app.services import autonomy
+    from conversations import conversation_manager
+    phases = []
+
+    async def plan(*args, **kwargs):
+        return {'status': 'continue', 'new_employees': [], 'workspace_action': 'create'}
+
+    async def employee(item, round_num, journal, uid, *args):
+        phases.append(item.get('product_phase'))
+        return {'round': round_num, 'role': item['role'], 'task': item['task'], 'model': item['model'],
+                'status': 'ok', 'result': 'Файл записан'}
+
+    async def no_files(*args):
+        return []
+
+    async def compose(*args, **kwargs):
+        return 'Файл готов.', ''
+
+    async def direct(*args, **kwargs):
+        return 'Обычный ответ', '', []
+
+    monkeypatch.setattr(dr, '_plan_round', plan)
+    monkeypatch.setattr(dr, '_execute_employee', employee)
+    monkeypatch.setattr(dr, '_new_file_names', no_files)
+    monkeypatch.setattr(dr, '_compose_answer', compose)
+    monkeypatch.setattr(dr, '_answer_directly', direct)
+    monkeypatch.setattr(dr, '_is_document_package_task', lambda *args: False)
+    monkeypatch.setattr(dr, '_is_shopping_task', lambda *args: False)
+    monkeypatch.setattr(dr, '_employee_models', lambda uid: list(dr.MODEL_POOL))
+    monkeypatch.setattr(conversation_manager, 'get_subscription', lambda uid: {'tier': 'creator'})
+    context_token = workspaces.set([])
+    product_token = autonomy.product_evidence.set({})
+    try:
+        answer, _, _, _ = asyncio.run(dr._run_director([], text, 92001, None))
+    finally:
+        workspaces.reset(context_token)
+        autonomy.product_evidence.reset(product_token)
+    assert 'brief' not in phases and 'build' not in phases
+    assert 'Сборка и тесты' not in answer
+    assert 'Браузерная проверка' not in answer
 
 
 @pytest.mark.parametrize('source_available', [True, False])

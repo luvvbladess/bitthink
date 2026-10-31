@@ -137,8 +137,8 @@ def test_auto_followup_searches_with_prior_page_not_offline_memory(monkeypatch):
         seen.extend(messages)
         return 'Версии конкурентов проверены. [Источник](https://example.com/announcement)',[],'',[source()]
     async def forbidden(*args,**kwargs):raise AssertionError('No offline or recovery call expected')
-    monkeypatch.setattr(kimi,'get_kimi_chat_response',search)
-    monkeypatch.setattr(core,'get_chat_response',forbidden)
+    monkeypatch.setattr(kimi,'get_kimi_chat_response',forbidden)
+    monkeypatch.setattr(core,'get_chat_response',search)
     query='а скажи именно версии моделей, циферные'
     result=asyncio.run(core.get_smart_response(user,query,[{'role':'user','content':query}],None))
     assert 'Версии конкурентов' in result[0]
@@ -218,8 +218,8 @@ def test_phone_recommendation_with_read_pages_survives_without_inline_links(monk
               'Текущие цены конкретных объявлений не подтверждены.')
     async def search(*args, **kwargs): return answer, [], '', [source()]
     async def forbidden(*args, **kwargs): raise AssertionError('Do not repeat search/model calls for link formatting')
-    monkeypatch.setattr(kimi, 'get_kimi_chat_response', search)
-    monkeypatch.setattr(core, 'get_chat_response', forbidden)
+    monkeypatch.setattr(kimi, 'get_kimi_chat_response', forbidden)
+    monkeypatch.setattr(core, 'get_chat_response', search)
     query = 'Какой телефон выбрать к покупке с камерой до 40 тысяч рублей?'
     result = asyncio.run(core.get_smart_response(user, query, [{'role': 'user', 'content': query}], None))
     assert result[0] == answer and result[3]
@@ -231,8 +231,8 @@ def test_search_answer_is_not_rewritten_by_source_contract(monkeypatch):
     answer = 'Phone A — кандидат по камере. [Подробнее](https://shop.example/phone)'
     async def search(*args, **kwargs): return answer, [], '', [source('retrieved')]
     async def forbidden(*args, **kwargs): raise AssertionError('No source verification model call')
-    monkeypatch.setattr(kimi, 'get_kimi_chat_response', search)
-    monkeypatch.setattr(core, 'get_chat_response', forbidden)
+    monkeypatch.setattr(kimi, 'get_kimi_chat_response', forbidden)
+    monkeypatch.setattr(core, 'get_chat_response', search)
     query = 'Какой телефон выбрать к покупке с камерой до 40 тысяч рублей?'
     result = asyncio.run(core.get_smart_response(user, query, [{'role': 'user', 'content': query}], None))
     assert 'Phone A' in result[0] and 'Подробнее' in result[0]
@@ -253,8 +253,8 @@ def test_search_answer_without_sources_is_delivered_once(monkeypatch):
     answer = 'Рассмотрите Phone A для камеры и Phone B для автономности. Цена зависит от продавца.'
     async def search(*args, **kwargs): return answer, [], '', []
     async def forbidden(*args, **kwargs): raise AssertionError('No duplicate search or source recovery')
-    monkeypatch.setattr(kimi, 'get_kimi_chat_response', search)
-    monkeypatch.setattr(core, 'get_chat_response', forbidden)
+    monkeypatch.setattr(kimi, 'get_kimi_chat_response', forbidden)
+    monkeypatch.setattr(core, 'get_chat_response', search)
     query = 'Какой телефон выбрать к покупке с камерой до 40 тысяч рублей?'
     result = asyncio.run(core.get_smart_response(user, query, [{'role':'user','content':query}], None))
     assert result[0] == answer and result[3] == []
@@ -352,4 +352,4 @@ def test_all_modes_preserve_answer_without_source_validation(monkeypatch, mode, 
     query = 'Какой телефон выбрать к покупке с камерой до 40 тысяч рублей?'
     result = asyncio.run(core.get_smart_response(user, query, [{'role': 'user', 'content': query}], None))
     assert result[0] == answer
-    assert len(calls) == (2 if mode == 'gpt-6-sol' else 1)
+    assert len(calls) == 1

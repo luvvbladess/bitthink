@@ -97,13 +97,15 @@ async def collect_workspace_files(user_id: int, since: float) -> list[dict[str, 
     if desktop_executor.get() is not None:
         # Desktop artifacts already live in the selected project, not the server sandbox.
         return []
-    payload = {"user_id": int(user_id), "op": "deliverables", "since": float(since or 0)}
+    from turn_scope import export_paths
+    paths = export_paths()
+    payload = {"user_id": int(user_id), "op": "deliverables", "since": float(since or 0), 'paths': paths}
     raw = ""
     if os.environ.get("WORKSPACES_DIR"):
         try:
             from app.services.workspace_fs import collect_deliverables
 
-            raw = collect_deliverables(int(user_id), float(since or 0))
+            raw = collect_deliverables(int(user_id), float(since or 0), paths)
         except Exception:
             raw = ""
         parsed = _parse_deliverables(raw)
@@ -134,13 +136,11 @@ def _parse_deliverables(raw: str) -> list[dict[str, Any]]:
             continue
         encoded = str(item.get("data_b64") or "")
         name = str(item.get("name") or Path(str(item.get("path") or "")).name or "file")
-        if not encoded:
+        if 'data_b64' not in item:
             continue
         try:
             data = base64.b64decode(encoded, validate=False)
         except Exception:
-            continue
-        if not data:
             continue
         if name.lower().endswith(".docx"):
             from app.bot_core.docx_generator import scrub_markdown_marks

@@ -263,7 +263,7 @@ async def _generate_and_send(
     outgoing: list[tuple[str, bytes, dict]] = []
     for item in generated_files or []:
         file_bytes = item.get("bytes")
-        if not file_bytes:
+        if file_bytes is None:
             continue
         filename = _generated_filename(item)
         from app.services.desktop_context import desktop_mode

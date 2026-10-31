@@ -12,7 +12,10 @@ router = APIRouter()
 
 @router.get("", response_model=list[ConversationOut])
 async def list_conversations(user_id: str = Depends(get_current_user), limit: int | None = Query(None, ge=1, le=200), offset: int = Query(0, ge=0)):
-    return await asyncio.to_thread(library.summaries, repo._bot_id(user_id), limit, offset)
+    bot_id = repo._bot_id(user_id)
+    if offset == 0:
+        await asyncio.to_thread(library.discard_unused_drafts, bot_id)
+    return await asyncio.to_thread(library.summaries, bot_id, limit, offset)
 
 
 @router.get('/search')

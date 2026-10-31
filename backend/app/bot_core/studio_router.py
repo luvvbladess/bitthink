@@ -540,6 +540,25 @@ _NOT_A_PICTURE_JOB = re.compile(
     r"(?i)\b(?:таблиц|текст|код|документ|файл|excel|word|ворд|список|сайт|лендинг|презентац|слайд|отч[её]т|договор)\w*"
 )
 _MARKDOWN_IMAGE = re.compile(r"!\[[^\]]*\]\((/uploads/[^)\s]+)\)")
+_CANVAS_IMAGE = re.compile(r"""src\s*=\s*['"](/uploads/[^'"]+)['"]""", re.I)
+
+
+def _upload_image_bytes(html: str) -> bytes | None:
+    """The saved canvas points at a real PNG. A follow-up edit has to read that file."""
+    match = _CANVAS_IMAGE.search(html or "")
+    if not match:
+        return None
+    try:
+        from app.config import get_settings
+
+        root = get_settings().UPLOAD_DIR.resolve()
+        relative = match.group(1).split("?", 1)[0].removeprefix("/uploads/")
+        path = (root / relative).resolve()
+        if path.is_relative_to(root) and path.is_file():
+            return path.read_bytes()
+    except Exception:
+        logger.debug("Studio image: stored PNG is not readable", exc_info=True)
+    return None
 
 
 def _last_reply_image(user_id: int) -> bytes | None:
@@ -798,7 +817,7 @@ async def _run_image_studio(
     if source_images:
         data_url, err = await edit_image(source_images, image_prompt, size=size, quality=_image_quality(user_id))
     elif iterating:
-        raw = extract_embedded_image_bytes(previous_html)
+        raw = extract_embedded_image_bytes(previous_html) or _upload_image_bytes(previous_html)
         if raw:
             data_url, err = await edit_image(raw, image_prompt, size=size, quality=_image_quality(user_id))
     if not data_url and not source_images:
@@ -821,19 +840,36 @@ async def _run_image_studio(
     title = (user_text or "Картинка").strip()[:48] or "Картинка"
     html = image_canvas_html(data_url, title)
     title = title_from_html(html, fallback=title)
-    files = [
-        {
-            "filename": safe_html_filename(title),
-            "bytes": html.encode("utf-8"),
+    html_name = safe_html_filename(title)
+    files: list[dict] = []
+    try:
+        from app.api.media import _decode_image_payload, _download_image
+
+        if data_url.startswith("data:"):
+            image_bytes, suffix = _decode_image_payload(data_url)
+        else:
+            image_bytes, suffix = await _download_image(data_url)
+        suffix = suffix or ".png"
+        mime = "image/jpeg" if suffix in {".jpg", ".jpeg"} else f"image/{suffix.lstrip('.')}"
+        files.append({
+            "filename": f"{html_name[:-5]}{suffix}",
+            "bytes": image_bytes,
             "caption": title,
-            "mime_type": "text/html",
-            "canvas": True,
-        }
-    ]
+            "mime_type": mime,
+        })
+    except Exception:
+        logger.exception("Studio image: the PNG could not be split out of the page")
+    files.append({
+        "filename": html_name,
+        "bytes": html.encode("utf-8"),
+        "caption": title,
+        "mime_type": "text/html",
+        "canvas": True,
+    })
     if editing:
-        answer = f"Картинка «{title}» обновлена на холсте. Напишите, что ещё поменять, или скачайте PNG."
+        answer = f"Картинка «{title}» обновлена. PNG можно сохранить и скопировать, на холсте её можно править дальше."
     else:
-        answer = f"Картинка «{title}» на холсте справа. Правится следующим сообщением, скачивается как PNG."
+        answer = f"Картинка «{title}» готова файлом PNG: её можно сохранить и скопировать. На холсте её можно править следующим сообщением."
     return sanitize_response_text(answer), files, "", source_items
 
 

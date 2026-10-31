@@ -448,8 +448,7 @@ async def get_smart_response(
             'Если данных не хватает, сначала прочитай подходящие локальные файлы. '
             'Не проверяй устройство локального проекта поиском в интернете без необходимости.'})
 
-    # Legacy DeepSeek routes use the shared Kimi-first retrieval layer. Public
-    # Search/Auto/Research routes below use Kimi directly and validate its result.
+    # Search, Auto and Research use our metasearch through the writer model, not Kimi.
     # Links to sites that refuse our server (Ozon, Wildberries, ...) are read ahead of the model,
     # so every mode sees what is known about them instead of improvising a "no connection" excuse.
     from web_scraper import walled_links_context
@@ -468,40 +467,6 @@ async def get_smart_response(
         )
         grounded_sources = _merge_sources(grounded_sources, retrieved_sources, limit=28)
         messages = _with_web_context(messages, web_context)
-
-    async def kimi_web_result(source_messages: List[dict], research: bool = False):
-        from kimi_client import get_kimi_chat_response, kimi_result_is_usable
-        from status_feed import push_status
-
-        await push_status("search", "Ищу ответ в интернете")
-        try:
-            candidate = await asyncio.wait_for(
-                get_kimi_chat_response(
-                    source_messages,
-                    user_id=user_id,
-                    on_reasoning_delta=None,
-                    research=research,
-                ),
-                timeout=80 if research else 50,
-            )
-        except asyncio.TimeoutError:
-            logger.warning("Kimi web search timed out research=%s", research)
-            await push_status("think", "Поиск не успел вовремя, продолжаю без него")
-            return None
-        except Exception:
-            logger.exception("Kimi web search failed")
-            await push_status("think", "Поиск недоступен, продолжаю без него")
-            return None
-        from app.services.source_quality import resolve_numbered_citations
-        from app.services.run_protocol import current_run
-        run = current_run.get()
-        candidate_sources = run.enrich_sources(candidate[3]) if run else candidate[3]
-        candidate = (resolve_numbered_citations(candidate[0], candidate_sources), candidate[1], candidate[2], candidate_sources)
-        if kimi_result_is_usable(candidate[0]):
-            await push_status("think", "Оформляю результаты поиска")
-            return candidate
-        await push_status("think", "Уточняю результаты поиска")
-        return None
 
     result: Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]
 
@@ -567,17 +532,15 @@ async def get_smart_response(
     elif model == "auto":
         from status_feed import push_status
         if web_required:
-            result = await kimi_web_result(search_hop_messages(messages, user_text))
-            if result is None:
-                result = await get_chat_response(
-                    messages,
-                    model="gpt-6-luna",
-                    user_id=user_id,
-                    use_tools=True,
-                    reasoning_effort="low",
-                    on_reasoning_delta=None,
-                    force_web_search=True,
-                )
+            result = await get_chat_response(
+                messages,
+                model=clamp_model(tier, "gpt-6-luna"),
+                user_id=user_id,
+                use_tools=True,
+                reasoning_effort="low",
+                on_reasoning_delta=None,
+                force_web_search=True,
+            )
         else:
             from config import DEEPSEEK_API_KEY, OPENROUTER_API_KEY
             from routing import route_for_turn
@@ -604,11 +567,11 @@ async def get_smart_response(
                     reasoning_effort="medium",
                     on_reasoning_delta=on_reasoning_delta,
                 )
-                if result[0].startswith("❌"):
+                if getattr(result, 'retryable', False) and not getattr(result, 'actions_executed', 0):
                     await push_status("think", "Основной маршрут недоступен · переключаюсь на резервный")
                     result = await get_chat_response(
                         messages,
-                        model=clamp_model(tier, "gpt-6-luna"),
+                        model=clamp_model(tier, "gpt-6-sol" if deep_thinking else "gpt-6-luna"),
                         user_id=user_id,
                         use_tools=True,
                         chat_tools=True,
@@ -659,34 +622,19 @@ async def get_smart_response(
 
         result = await get_studio_response(messages, user_text, user_id, status_msg)
     elif model == "kimi-k2.6":
-        result = await kimi_web_result(search_hop_messages(messages, user_text))
-        if result is None:
-            result = await get_chat_response(
-                messages, model="gpt-6-luna", user_id=user_id, use_tools=True,
-                reasoning_effort="low", on_reasoning_delta=None,
-                force_web_search=True,
-            )
+        result = await get_chat_response(
+            messages, model=clamp_model(tier, "gpt-6-luna"), user_id=user_id, use_tools=True,
+            reasoning_effort="low", on_reasoning_delta=None,
+            force_web_search=True,
+        )
     elif model == "gpt-6-sol":
-        # Research: Kimi gathers sources, then Sol writes the report.
         synthesizer = clamp_model(tier, model)
-        kimi_result = await kimi_web_result(search_hop_messages(messages, user_text), research=True)
-        if kimi_result:
-            grounded_sources = _merge_sources(grounded_sources, kimi_result[3], limit=28)
-            result = await get_chat_response(
-                _with_web_context(messages, kimi_result[0]),
-                model=synthesizer,
-                user_id=user_id,
-                use_tools=False,
-                reasoning_effort=reasoning_effort if reasoning_effort not in {None, "none"} else "medium",
-                on_reasoning_delta=None,
-            )
-        else:
-            result = await get_chat_response(
-                messages, model=synthesizer, user_id=user_id, use_tools=True,
-                reasoning_effort=reasoning_effort if reasoning_effort not in {None, "none"} else "medium",
-                on_reasoning_delta=None,
-                force_web_search=True,
-            )
+        result = await get_chat_response(
+            messages, model=synthesizer, user_id=user_id, use_tools=True,
+            reasoning_effort=reasoning_effort if reasoning_effort not in {None, "none"} else "medium",
+            on_reasoning_delta=None,
+            force_web_search=True,
+        )
     elif "deepseek" in model:
         from deepseek_client import get_deepseek_response
         result = await get_deepseek_response(

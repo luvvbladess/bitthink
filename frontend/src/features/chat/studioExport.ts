@@ -204,8 +204,17 @@ function dataUrlToBlob(dataUrl: string): Blob {
   return new Blob([buffer], { type: mime });
 }
 
+const SAVEABLE_PICTURES = '<script data-studio-save>(function(){document.querySelectorAll("img").forEach(function(img){var src=img.getAttribute("src")||"";if(src.indexOf("data:")!==0)return;fetch(src).then(function(r){return r.blob()}).then(function(blob){img.src=URL.createObjectURL(blob)}).catch(function(){})})})();</script>';
+
+/** A downloaded page must not leave its picture as a data URL: browsers show it and then refuse Save and Copy. */
+export function withSaveablePictures(html: string): string {
+  const text = html || '';
+  if (!/data:image\//i.test(text) || /data-studio-save/.test(text)) return text;
+  return /<\/body>/i.test(text) ? text.replace(/<\/body>/i, `${SAVEABLE_PICTURES}</body>`) : text + SAVEABLE_PICTURES;
+}
+
 export function downloadHtml(html: string, name?: string) {
-  downloadBlob(new Blob([html], { type: 'text/html;charset=utf-8' }), `${exportStem(name)}.html`);
+  downloadBlob(new Blob([withSaveablePictures(html)], { type: 'text/html;charset=utf-8' }), `${exportStem(name)}.html`);
 }
 
 // A saved canvas keeps its pictures as files on this site and points to them by path
@@ -246,9 +255,14 @@ export function studioPictureSrc(html: string): string | null {
 }
 
 async function downloadStudioPicture(src: string, name?: string): Promise<void> {
-  const response = await fetch(src, { credentials: 'same-origin' });
-  if (!response.ok) throw new Error('Не удалось скачать картинку');
-  const blob = await response.blob();
+  let blob: Blob;
+  if (src.startsWith('data:')) {
+    blob = dataUrlToBlob(src);
+  } else {
+    const response = await fetch(src, { credentials: 'same-origin' });
+    if (!response.ok) throw new Error('Не удалось скачать картинку');
+    blob = await response.blob();
+  }
   const ext = /jpe?g/i.test(blob.type) ? 'jpg' : /webp/i.test(blob.type) ? 'webp' : 'png';
   downloadBlob(blob, `${exportStem(name)}.${ext}`);
 }
@@ -273,6 +287,11 @@ export async function downloadCanvasFromUrl(url: string, name?: string): Promise
 export async function exportCanvas(html: string, format: ExportFormat, name?: string) {
   const stem = exportStem(name);
   if (format === 'html') {
+    const picture = studioPictureSrc(html);
+    if (picture) {
+      await downloadStudioPicture(picture, stem);
+      return;
+    }
     downloadHtml(await inlineSitePictures(html), stem);
     return;
   }

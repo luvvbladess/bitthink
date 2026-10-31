@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -253,6 +253,8 @@ class UsageRecord(Base):
     images: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     calls: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     cached_input_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default="0")
+    estimated_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cost_is_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
 
 
 class AllowedContext(Base):

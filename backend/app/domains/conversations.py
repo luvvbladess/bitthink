@@ -5,7 +5,7 @@ the number of message bodies. All reads enforce owner/member access in SQL.
 """
 import json
 import time
-from sqlalchemy import and_, or_, select, func, delete, update
+from sqlalchemy import and_, or_, select, func, delete, update, exists
 from sqlalchemy.orm import noload
 from app.db.engine import SyncSessionLocal
 from app.db.models import Conversation, ConversationMember, ConversationShare, Message, Document, User, ComputerTask
@@ -24,6 +24,28 @@ def _summary(row, uid):
         updated_at=row.updated_at.isoformat(), is_active=bool(row.is_active and row.user_id == uid),
         message_count=row.message_count, document_count=row.document_count,
         shared=row.member_count > 0, role='owner' if row.user_id == uid else 'member', deleted_at=row.deleted_at)
+
+
+def discard_unused_drafts(uid):
+    """A click on the logo used to save a chat before any message. Those rows are not conversations."""
+    def absent(model, column):
+        return ~exists(select(column).where(model.conversation_id == Conversation.id))
+    unused = and_(
+        Conversation.user_id == uid,
+        Conversation.deleted_at.is_(None),
+        Conversation.is_active.is_(False),
+        Conversation.title.in_(('Новый чат', 'Новая беседа')),
+        absent(Message, Message.id),
+        absent(Document, Document.id),
+        absent(ConversationMember, ConversationMember.id),
+        ~exists(select(ConversationShare.token).where(
+            ConversationShare.conversation_id == Conversation.id, ConversationShare.revoked.is_(False))),
+    )
+    with SyncSessionLocal.begin() as session:
+        rows = session.scalars(select(Conversation).options(noload('*')).where(unused).limit(100)).all()
+        for row in rows:
+            session.delete(row)
+    return len(rows)
 
 
 def summaries(uid, limit=None, offset=0, trash=False, cid=None):

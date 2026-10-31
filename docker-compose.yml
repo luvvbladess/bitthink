@@ -35,7 +35,7 @@ services:
       - ./data:/app/data
       - ./uploads:/app/uploads
       - ./.env:/app/.env:ro
-      - ./workspaces:/workspaces:ro
+      - ./workspaces:/workspaces
     networks:
       - default
       - sandbox_net
@@ -63,7 +63,7 @@ services:
       - ./data:/app/data
       - ./uploads:/app/uploads
       - ./.env:/app/.env:ro
-      - ./workspaces:/workspaces:ro
+      - ./workspaces:/workspaces
     networks:
       - default
       - sandbox_net

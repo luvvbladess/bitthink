@@ -19,6 +19,7 @@ import {
   canvasKindFromHtml,
   exportCanvas,
   formatsForKind,
+  studioPictureSrc,
   type ExportFormat,
 } from './studioExport';
 
@@ -157,7 +158,7 @@ export function DesignCanvas({ source, thinking = false, statusText = '', compac
     observer.observe(box);
     return () => observer.disconnect();
   }, [useStage, doc, compact, mobileFrame]);
-  const formats = formatsForKind(kind);
+  const formats = doc && studioPictureSrc(doc) ? [{ id: 'png' as const, label: 'PNG' }] : formatsForKind(kind);
   const statusLabel = latestActivityLabel(statusText);
   const headerHint = thinking
     ? statusLabel
@@ -408,7 +409,7 @@ export function DesignCanvas({ source, thinking = false, statusText = '', compac
                   <iframe
                     ref={iframeRef}
                     title="Холст Студии"
-                    sandbox="allow-scripts"
+                    sandbox="allow-scripts allow-downloads"
                     style={{
                       position: 'absolute',
                       top: 0,
@@ -426,7 +427,7 @@ export function DesignCanvas({ source, thinking = false, statusText = '', compac
               <iframe
                 ref={iframeRef}
                 title="Холст Студии"
-                sandbox="allow-scripts"
+                sandbox="allow-scripts allow-downloads"
                 style={{
                   width: '100%',
                   height: '100%',
