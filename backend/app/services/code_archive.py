@@ -68,6 +68,13 @@ def wants_code_archive(user_text: str) -> bool:
     return bool(_ARCHIVE_HINT.search(text))
 
 
+def is_project_archive_request(text: str) -> bool:
+    text=text or ''
+    if re.search(r'(?i)без\s+архива|(?:zip|архив).{0,15}не\s+нуж|не\s+(?:создавай|нужен).{0,15}(?:архив|zip)',text):
+        return False
+    return wants_code_archive(text) and bool(re.search(r'(?i)проект|исходник|\bcli\b|api.?сервис|\b(?:python|javascript|typescript|c11|golang|rust)\b',text))
+
+
 def _safe_name(name: str, used: set[str]) -> str:
     clean = Path(str(name).replace("\\", "/")).name.replace("\x00", "").strip() or "file.txt"
     if clean in {".", ".."}:

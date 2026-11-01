@@ -188,7 +188,10 @@ def test_desktop_answer_modes_follow_site_plan(monkeypatch, account, tier, model
     monkeypatch.setattr(desktop, "subscription_payload", subscription)
     response = TestClient(app).get("/desktop/status", headers={"Authorization": "Bearer " + token})
     assert response.status_code == 200
-    assert set(response.json()["chat_models"]) == models
+    from app.billing.plans import allowed_models
+    extra = {"gpt-6-luna", "claude-haiku-5.5", "claude-sonnet-5.5", "claude-opus-5.5", "deepseek-v4-pro", "deepseek-v4-flash"} & allowed_models(tier)
+    assert set(response.json()["chat_models"]) == models | extra
+    assert not {"glm-5.3-flash", "minimax-m3.1-flash"} & set(response.json()["chat_models"])
 
 
 def test_oversized_desktop_frame_keeps_the_socket(account):

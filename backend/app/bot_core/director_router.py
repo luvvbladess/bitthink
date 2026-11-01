@@ -7,7 +7,7 @@
 """
 
 from app.services.search_budget import search_turn
-from app.services.orchestrator_policy import ROUTINE_MODEL, ECONOMY_RULES, routine_task, routine_tool_task, routine_employee, needs_recovery, economy_enabled, critical_task
+from app.services.orchestrator_policy import ROUTINE_MODEL, ECONOMY_RULES, routine_task, routine_tool_task, routine_employee, needs_recovery, economy_enabled, critical_task, bounded_text_task, calculation_task, chat_reasoning_task, bounded_text_revision
 from app.services.orchestrator_metrics import model_phase, trace_director
 import json
 import logging
@@ -120,11 +120,24 @@ def _is_light_task(text: str, document_context: str, has_images: bool, user_id: 
     """A short question with no files, photos or tools to run: it needs no planner and no team.
 
     Planning it on Sol cost ~20x Luna and a whole extra round trip before any work started."""
-    if document_context or has_images or _wants_file(text) or _is_document_package_task(text):
+    if document_context or has_images:
         return False
+    if bounded_text_task(text):
+        return True
+    if _wants_file(text) or _is_document_package_task(text):
+        return False
+    if chat_reasoning_task(text):
+        return True
+    if critical_task(text):
+        return False
+    if calculation_task(text) and len(text or '') <= 1800:
+        return True
     if routine_tool_task(text):
         return False
     if len(text or "") > LIGHT_TASK_CHARS or _BUILD_RE.search(text or ""):
+        return False
+    from app.services.place_selection import selection_request
+    if selection_request(text):
         return False
     if _is_shopping_task(text, user_id):
         return False
@@ -209,6 +222,8 @@ PACKAGE_EMPLOYEE_TOOL_LOOPS = 16
 
 
 def _is_document_package_task(text: str) -> bool:
+    if bounded_text_task(text):
+        return False
     # Native diagram exports are formats of the same graph, not separate Word jobs.
     if re.search(r"(?i)блок[ -]?схем\w*|схем\w*\s+(?:процесс|алгоритм)|diagrams\.net|draw\.?io|flowchart", text or ""):
         return False
@@ -231,6 +246,11 @@ _FILE_REQUEST_RE = re.compile(
 
 def _wants_file(text: str) -> bool:
     value=text or ""
+    value = re.sub(r'(?i)без\s+создания\s+файлов|не\s+создавай\s+файлы', '', value)
+    if bounded_text_task(value):
+        return False
+    if re.search(r'(?i)^(?:сделай|создай|подготовь|сохрани|запиши|перепиши)\b.{0,250}\.(?:docx|xlsx|pdf|pptx|dxf|csv|md|zip)\b',value):
+        return True
     if re.search(r"(?i)начерт\w*|(?:сдела|созда|восстанов|разработ|собер)\w*.{0,80}(?:черт[её]ж|комплект\s+КД|конструкторск\w*\s+документац)",value):
         return True
     if re.search(r"(?i)(?:нарис|начерт|сдела|созда|собер|сгенерир)\w*.{0,80}(?:блок[ -]?схем|схем\w*\s+(?:процесс|алгоритм)|diagrams\.net|draw\.?io|flowchart)", value):
@@ -519,7 +539,8 @@ def _preference_context(user_id: int) -> str:
 def _current_date_note() -> str:
     """Модели считают "сегодня" датой окончания своего обучения, если не сказать иначе -
     без этого они принимают реальные текущие даты за футуристичные и им не доверяют."""
-    now = datetime.now()
+    from runtime_context import runtime_now
+    now = runtime_now()
     return (
         f"Актуальная дата на момент выполнения задачи: {now.day} {_RU_MONTHS_GENITIVE[now.month - 1]} "
         f"{now.year} года ({now.strftime('%d.%m.%Y')}). Это и есть реальное «сегодня» - "
@@ -562,12 +583,21 @@ def wants_photo_research(user_text: str, has_images: bool) -> bool:
 
 
 def needs_research(user_text: str, has_images: bool) -> bool:
+    from app.services.request_intent import forbids_web
+    if forbids_web(user_text):
+        return False
     if has_images:
         return True
-    if is_smalltalk(user_text):
+    if is_smalltalk(user_text) or bounded_text_task(user_text) or calculation_task(user_text):
         return False
-    text = (user_text or "").lower()
-    return any(marker in text for marker in _RESEARCH_MARKERS)
+    from search_engine import query_requires_web
+    text = (user_text or '').lower()
+    if chat_reasoning_task(user_text):
+        # A quoted contractual price is supplied material, not a live price lookup.
+        return query_requires_web(re.sub(r'«[^»]*»|"[^"]*"', '', user_text))
+    photo_lookup = wants_photo_research(user_text, True) and bool(re.search(r'найди|где|источник', text))
+    subscription_comparison = bool(re.search(r'подписк|подписок|тариф', text) and re.search(r'сравни|лучше|выбрать|купить', text))
+    return query_requires_web(user_text) or photo_lookup or subscription_comparison
 
 
 def packed_has_images(messages: List[Dict[str, Any]] | None) -> bool:
@@ -632,7 +662,7 @@ def _light_research_employee(user_text: str) -> Dict[str, Any]:
         "role": "Поиск",
         "task": (
             "Ответь на вопрос по свежим данным из интернета: сделай веб-поиск и опирайся только на найденное. "
-            "Страницу открывай (browse_page) только если в выдаче нет нужной цифры или даты. "
+            "Открой первоисточник через browse_page: цифра или дата в поисковом сниппете ещё не является проверкой страницы. "
             "В ответе – факты с датой и источником, без вступлений.\n"
             f"Вопрос: {(user_text or '')[:1500]}"
         ),
@@ -697,6 +727,18 @@ def _ensure_research_plan(
     if plan.get("status") == "clarify" and plan.get("questions"):
         return plan
     employees = list(plan.get("new_employees") or [])
+    from app.services.place_selection import selection_request, VENUE_RULES
+    if selection_request(user_text) and not has_images:
+        if round_num == 1:
+            return {'status':'continue','new_employees':[
+                {'role':role,'task':VENUE_RULES+'\n'+focus+'\nЗапрос: '+user_text,
+                 'model':FALLBACK_EMPLOYEE_MODEL,'web':True,'work_kind':'research'}
+                for role,focus in [
+                    ('Меню и цены','Найди доступные места по разным запрошенным кухням; открой меню конкретных филиалов и сравни цены нужных блюд.'),
+                    ('Расположение и отзывы','Найди кандидатов на местных картах, проверь центральное расположение, отзывы о порциях и качестве. Передай дословные найденные адреса и ссылки.')]]}
+        if round_num == 2 and journal:
+            return {'status':'continue','new_employees':[{'role':'Проверка вариантов','task':VENUE_RULES+'\nПроверь кандидатов из заметок коллег: закрой пробелы цен и филиалов, убери дорогие и неподходящие. Не повторяй уже успешные чтения.\nЗапрос: '+user_text,'model':FALLBACK_EMPLOYEE_MODEL,'web':True,'work_kind':'research'}]}
+        return {'status':'done','new_employees':[]}
     if is_smalltalk(user_text) and not has_images:
         return plan
     if round_num == 1:
@@ -712,7 +754,11 @@ def _ensure_research_plan(
         return plan
     if round_num == 2 and needs_research(user_text, has_images) and journal:
         if not employees:
-            return {"status": "continue", "new_employees": [_verify_employee(user_text)]}
+            from app.services.run_protocol import current_run
+            record=current_run.get()
+            read_evidence=bool(record and any(s.get('status')=='read' for s in record.sources))
+            if has_images or _research_needs_retry(journal) or not read_evidence:
+                return {"status": "continue", "new_employees": [_verify_employee(user_text)]}
     return plan
 
 
@@ -1043,14 +1089,17 @@ async def _execute_employee(
         "Цифру или цитату из поиска не считай проверенной, пока не откроешь страницу browse_page. "
         "Если в чате есть фото и вопрос про место, источник или «что на снимке» – первым вызовом image_search. "
         "Не называй адрес или площадку только по виду кадра. После выдачи поисковиков открой 2-4 страницы browse_page. "
-        "Не пиши готовый ответ из памяти до инструментов: сначала поиск или страница, потом вывод. "
+        "Для актуальных внешних фактов сначала поиск и чтение страницы, потом вывод. "
+        "Для преобразования данного текста, объяснения устойчивых знаний и доказательства веб-поиск не обязателен. "
+        "Если пользователь запретил интернет, не вызывай поиск и чтение сайтов. "
         "Если текста документа нет в блоке выше, сначала list_chat_files, затем read_chat_document по точному имени. "
         "Исходные аудио, видео, архивы и любые вложения получай через workspace_import_file: это оригинальные байты, не описание. "
         "Для встраивания в сайт копируй в assets именно папки проекта и используй относительную ссылку. "
         "Не заменяй приложенный звук/ролик заглушкой. Готовые файлы любых форматов отдавай через workspace_export_files. "
         "Не проси пользователя прислать файл снова: он уже в чате. "
         "Прошлые разговоры – search_chats или recent_chats, не интернет. Не проси открыть другой чат. "
-        "Код только в workspace_* / pip_install / python_run. Сначала workspace_grep или workspace_glob, не читай все файлы. "
+        "Исходники — через workspace_*. Сборку, тесты Node/npm/TypeScript/C запускай через workspace_run; "
+        "python_run — для Python-скриптов и расчётов. Сначала workspace_grep или workspace_glob, не читай все файлы. "
         "Если просят архив кода или проект-бота – запиши файлы и собери project.zip в песочнице. "
         "Блок-схема, схема процесса, алгоритм, diagrams.net/draw.io – diagram_create: создай полный несжатый mxfile XML с фигурами, координатами и стрелками, сохрани новый .drawio и заказанные PDF/PNG/SVG (по умолчанию PDF и PNG). PDF содержит все страницы, PNG/SVG – выбранную с 1. Исходный .drawio всегда приложи для редактирования. Для схем не заменяй готовые файлы инструкцией или Mermaid-кодом. "
         "Запрещён PDF через reportlab/fpdf с Helvetica/WinAnsi: кириллица станет палками IIIII. "
@@ -1608,6 +1657,9 @@ async def _compose_answer(
         "Убери повторы. Если каких-то данных нет из-за ошибки — скажи об этом коротко, не выдумывай."
     )
 
+    from app.services.place_selection import selection_request, VENUE_RULES
+    if selection_request(original_task):
+        prompt += '\n' + VENUE_RULES
     from app.services.run_protocol import current_run
     if current_run.get():
         prompt += current_run.get().evidence_prompt()
@@ -1659,6 +1711,7 @@ async def _answer_directly(
 ) -> Tuple[str, str, List[Dict[str, str]]]:
     """Простой вопрос без сотрудников: обычный ответ с теми же инструментами."""
     from openai_client import get_chat_response
+    from app.services.model_registry import model_spec
 
     system = (
         f"{_current_date_note()}\n"
@@ -1672,17 +1725,50 @@ async def _answer_directly(
         "Не задавай пользователю вопросы с вариантами и не пиши «выберите 1/2/3». "
         "Если без выбора нельзя начать, это должен был сделать оркестратор через status=clarify. "
         "Действуй по уже сказанному.\n"
+        "Если просят только перевод, исправленную фразу, JSON или текст письма, верни только этот результат. "
+        "Написать черновик не означает открыть почту или отправить письмо. "
+        "При продолжении сохраняй ограничения предыдущей просьбы пользователя. "
+        "При описании внезапных опасных симптомов сначала дай срочные действия и обращение в экстренную службу; "
+        "не откладывай этот ответ ради веб-исследования и не назначай лекарства. "
+        "Общий разбор риска по цитате договора не требует выдуманных статей закона: "
+        "если ссылаешься на конкретную норму, проверь её источником.\n"
+        "Арифметику и обработку числовых данных проверяй через python_run; не заменяй проверку устным расчётом.\n"
         f"{_OUTPUT_RULES}\n{WORKFLOW_RULES}\n\n{AUTONOMY_RULES}"
     )
     chat = [{"role": "system", "content": system + _desktop_work_instructions()}, *messages]
-    answer, _, reasoning, search = await get_chat_response(
+    from runtime_context import last_user_text
+    task = last_user_text(messages)
+    model = _direct_answer_model(user_id, task)
+    text_only = (bounded_text_task(task) or bounded_text_revision(task, messages)) and not (
+        _extract_document_context(messages) or packed_has_images(messages))
+    call_options = {'use_tools': not text_only, 'chat_tools': chat_reasoning_task(task)}
+    spec = model_spec(model)
+    response_fn = get_chat_response
+    if spec and spec.provider == 'openrouter':
+        from openrouter_client import get_openrouter_response
+        response_fn = get_openrouter_response
+    response = await response_fn(
         chat,
-        model=DIRECT_ANSWER_MODEL,
+        model=model,
         user_id=user_id,
-        use_tools=True,
+        **call_options,
         reasoning_effort="low",
     )
+    if spec and spec.provider == 'openrouter' and getattr(response, 'retryable', False) and not response.actions_executed:
+        response = await get_chat_response(chat, model=DIRECT_ANSWER_MODEL, user_id=user_id,
+                                           **call_options, reasoning_effort='low')
+    answer, _, reasoning, search = response
     return answer, reasoning, search or []
+
+
+def _direct_answer_model(user_id: int, task: str = '') -> str:
+    """A measured, reversible override; catalogue additions never enable themselves."""
+    import os
+    allowed = _employee_models(user_id)
+    if critical_task(task) and not bounded_text_task(task):
+        return next((model for model in [PLANNER_MODEL, SONNET_MODEL, ROUTINE_MODEL] if model in allowed), DIRECT_ANSWER_MODEL)
+    wanted = os.getenv('ORCHESTRATOR_DIRECT_MODEL', DIRECT_ANSWER_MODEL).strip()
+    return wanted if wanted in allowed else DIRECT_ANSWER_MODEL
 
 
 def _sanitize_answer(text: str) -> str:
@@ -1888,6 +1974,11 @@ async def _run_director(
     import time
 
     started = time.time()
+    from app.services.place_selection import selection_request, configure_budget, VENUE_RULES
+    place_request = selection_request(user_text, messages)
+    if place_request:
+        configure_budget()
+        user_text = place_request
     # BitClient explicit CAD intent and build opportunity
     from app.services.desktop_cad_completion import cad_task_from_history
     cad_user_task = cad_task_from_history(user_text, messages)
@@ -1920,8 +2011,9 @@ async def _run_director(
     # Asked before a revision rewrites user_text with the old brief, which always looks like "build a site".
     asked_new_product = is_product_request(user_text) and not any(entry.get('product_id') for entry in journal)
     turn_has_images = packed_has_images(messages) or _turn_has_images(user_id)
-    simple_without_project = not workspaces.get() and _is_light_task(user_text, document_context, turn_has_images, user_id)
-    if desktop_executor.get() is None and workspaces.get() is not None and not journal and not simple_without_project:
+    text_followup = bounded_text_revision(user_text, messages) and not (document_context or turn_has_images)
+    simple_without_project = not workspaces.get() and (text_followup or _is_light_task(user_text, document_context, turn_has_images, user_id))
+    if desktop_executor.get() is None and workspaces.get() is not None and not journal and not simple_without_project and not place_request:
         initial_plan = await _plan_round(user_text, journal, user_id, document_context, history_text)
         if initial_plan.get('status') == 'clarify' and initial_plan.get('questions'):
             from clarify import pack_search
@@ -1971,7 +2063,7 @@ async def _run_director(
     round_num = 0
     turn_images = packed_has_images(messages) or _turn_has_images(user_id)
     has_images = wants_photo_research(user_text, turn_images)
-    light = not product_build and not cad_extensions and _is_light_task(user_text, document_context, turn_images, user_id)
+    light = not product_build and not cad_extensions and (text_followup or _is_light_task(user_text, document_context, turn_images, user_id))
     from marketplace_verification import single_store_price_lookup
     price_lookup = not cad_extensions and not wants_file and single_store_price_lookup(user_text)
     light = light or price_lookup
@@ -2053,6 +2145,8 @@ async def _run_director(
                         employee['work_kind'] = selected_stage['work_kind']
                 phase_models[phase_name] = employee['model']
             plan = _clamp_employee_plan({'status': 'continue', 'new_employees': [employee]}, user_id, user_text, document_context, journal)
+        elif place_request and not product_build:
+            plan = {'status':'done','new_employees':[]}
         elif initial_plan is not None and round_num == 1:
             plan = initial_plan
         elif light and round_num == 1:

@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useLayoutEffect } from 'react';
 import { Routes, Route, Navigate, useLocation, useNavigationType } from 'react-router-dom';
 import { Box } from '@mui/material';
 import { AnimatePresence, motion } from 'framer-motion';
-import { loadChat, loadSettings, loadBilling, preloadAccountPages } from '@/navigation/preload';
+import { loadChat, loadSettings, loadBilling, preloadAccountPages, preloadRoute, loadAdminLayout, loadAdminUsers, loadAdminStats, loadAdminUser } from '@/navigation/preload';
 import { ChatConnectionProvider } from '@/hooks/ChatConnection';
 import { RouteErrorBoundary } from '@/components/RouteErrorBoundary';
 const LoginPage = lazy(() => import('@/pages/LoginPage'));
@@ -12,10 +12,10 @@ const JoinPage = lazy(() => import('@/pages/JoinPage'));
 const SettingsPage = lazy(loadSettings);
 const BillingPage = lazy(loadBilling);
 const PrivacyPage = lazy(() => import('@/pages/PrivacyPage'));
-const AdminLayout = lazy(() => import('@/pages/admin/AdminLayout'));
-const AdminUsersPage = lazy(() => import('@/pages/admin/AdminUsersPage'));
-const AdminUserDetailPage = lazy(() => import('@/pages/admin/AdminUserDetailPage'));
-const AdminStatsPage = lazy(() => import('@/pages/admin/AdminStatsPage'));
+const AdminLayout = lazy(loadAdminLayout);
+const AdminUsersPage = lazy(loadAdminUsers);
+const AdminUserDetailPage = lazy(loadAdminUser);
+const AdminStatsPage = lazy(loadAdminStats);
 import { useAuthStore } from '@/stores/authStore';
 import { FluidNav } from '@/components/FluidNav';
 import { PageAtmosphere } from '@/components/PageAtmosphere';
@@ -64,11 +64,14 @@ export default function App() {
     if (navigationType !== 'POP' || location.pathname === '/chat') window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
   }, [location.pathname]);
 
+  useEffect(() => { preloadRoute(location.pathname); }, [location.pathname]);
+
   useEffect(() => {
     if (!token) return;
+    if (location.pathname.startsWith('/admin')) return;
     const timer = window.setTimeout(preloadAccountPages, 1200);
     return () => window.clearTimeout(timer);
-  }, [token]);
+  }, [token, location.pathname]);
 
   useEffect(() => {
     if (!token) return;

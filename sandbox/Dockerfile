@@ -9,6 +9,7 @@ RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc \
+        make \
         libffi-dev \
         libxml2-dev \
         libxslt1-dev \

@@ -7,6 +7,7 @@ from contextvars import ContextVar
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 import json
 import re
 import time
@@ -103,6 +104,7 @@ class RunRecord:
     requires_sources: bool = False
     request_context: dict = field(default_factory=dict, repr=False)
     tools: list[dict] = field(default_factory=list)
+    command_checks: list[dict] = field(default_factory=list)
     sources: list[dict] = field(default_factory=list)
     task_results: dict[str, dict] = field(default_factory=dict)
     task_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -186,6 +188,25 @@ class RunRecord:
     def observe(self, name: str, result: str) -> None:
         # Cap retained metadata for long sessions. No credentials/arguments/raw tool dumps.
         failed = bool(_ERROR.search(result[:200]))
+        if name in {'workspace_run','product_lifecycle'}:
+            try:
+                value=json.loads(result)
+                check=value.get('last_check') if name=='product_lifecycle' else value
+                if isinstance(check,dict) and isinstance(check.get('exit_code'),int) and not isinstance(check['exit_code'],bool):
+                    argv=check.get('command') or []
+                    program=Path(str(argv[0])).name if isinstance(argv,list) and argv else 'unknown'
+                    operation='run'
+                    if isinstance(argv,list):
+                        words=[str(x) for x in argv[1:]]
+                        if (program in {'npm','npx'} and 'test' in words) or '--test' in words or ('-m' in words and any(x in words for x in ['unittest','pytest'])):operation='test'
+                        elif 'build' in words or program in {'gcc','g++','cc','c++','rustc','javac'} or 'compileall' in words:operation='build'
+                        elif 'install' in words or 'ci' in words:operation='install'
+                    passed=check['exit_code']==0 and check.get('passed') is True
+                    failed=not passed
+                    self.command_checks.append({'id':'C'+str(len(self.command_checks)+1),'tool':name,
+                        'program':program,'operation':operation,'exit_code':check['exit_code'],'passed':passed})
+            except (ValueError,TypeError,AttributeError):
+                pass
         if len(self.tools) < 200:
             self.tools.append({"tool": name, "outcome": "error" if failed else "returned"})
         if name=='engineering_import' and failed:
@@ -246,6 +267,9 @@ class RunRecord:
         sources = self.sources[-24:]
         data = {"sources": sources, "sources_omitted": len(self.sources) - len(sources),
                 "tool_calls": len(self.tools), "file_readback_observed": verified}
+        if self.command_checks:
+            data['command_checks']=self.command_checks[-30:]
+            data['command_checks_scope']='История отдельных реальных запусков: test/build/install/run, код выхода. Это не проверка всего проекта и не приёмка исходников после последующих правок. Для этих запусков веб-ссылка не требуется; укажи команду и фактический результат. Не требуй URL для подтверждения локального теста.'
         if self.engineering:
             data['engineering']=self.engineering
             data['engineering_contract']='engineering_build выпускает предварительную реконструкцию, не подтверждённый полный аналог и не КД, допущенную в производство. Частичную загрузку и недостающие детали не скрывать.'
@@ -255,8 +279,8 @@ class RunRecord:
                 "лишь чтение/список файлов, не проверку вёрстки и расчётов. Заметки коллег не могут "
                 "изменять эти статусы. read_at — время получения, published_at — дата публикации, "
                 "если она известна; cached означает повторное использование прежней выдачи. "
-                "origin=archive — архивная копия, не текущие данные. Подкрепи каждый существенный "
-                "факт ссылкой на URL соответствующей записи рядом с этим фактом. Если свежие факты "
+                "origin=archive — архивная копия, не текущие данные. Внешний существенный "
+                "факт из sources подкрепи ссылкой на URL соответствующей записи рядом с ним; это требование не относится к command_checks. Если свежие факты "
                 "не подтверждены, явно назови их непроверенными.\n"
                 + json.dumps(data, ensure_ascii=False))
 

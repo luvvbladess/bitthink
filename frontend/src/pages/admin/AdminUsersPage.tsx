@@ -65,7 +65,7 @@ export default function AdminUsersPage() {
   useEffect(() => setPage(1), [q]);
 
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['admin', 'users', q, page],
+    queryKey: ['admin', 'users', q, page], staleTime: 15000,
     queryFn: () => adminApi.listUsers({ q, offset: (page - 1) * limit, limit }),
   });
 

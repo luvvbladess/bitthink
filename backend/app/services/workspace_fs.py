@@ -281,6 +281,17 @@ def write(user_id: int, path: str, content: str) -> str:
     payload = (content or "").encode("utf-8")
     if len(payload) > MAX_FILE_BYTES:
         return f"Файл больше {MAX_FILE_BYTES // (1024 * 1024)} МБ."
+    if target.suffix.lower()=='.docx':
+        try:
+            try:
+                from bt_docx import convert_markdown_to_docx
+            except ImportError:
+                from app.bot_core.docx_generator import convert_markdown_to_docx
+            payload=convert_markdown_to_docx(content or '')
+        except Exception:
+            return 'DOCX не создан: преобразование текста в документ недоступно. Создай настоящий DOCX через python-docx или bt_docx, не сохраняй обычный текст под расширением .docx.'
+        if not isinstance(payload,bytes) or len(payload)>MAX_FILE_BYTES:
+            return 'DOCX не создан: преобразованный документ превышает допустимый размер.'
     used = _dir_size(user_root(user_id))
     existing = target.stat().st_size if target.is_file() else 0
     if used - existing + len(payload) > QUOTA_BYTES:
@@ -293,6 +304,8 @@ def write(user_id: int, path: str, content: str) -> str:
 
 
 def edit(user_id: int, path: str, old: str, new: str) -> str:
+    if Path(path).suffix.lower()=='.docx':
+        return 'DOCX — двоичный документ. Для правок используй python-docx, а не замену фрагмента в ZIP-байтах.'
     current = read(user_id, path)
     if current.startswith("Это не файл") or current.startswith("Файл слишком"):
         return current
@@ -578,6 +591,45 @@ def run_python(user_id: int, path: str, argv: list[str] | None = None) -> str:
     return _run_cmd(user_id, [python, str(target), *extra], RUN_TIMEOUT_SECONDS)
 
 
+def run_command(user_id: int, argv, cwd: str = '.', timeout: int = 90) -> str:
+    """Compile/test in the same confined runner used by accepted products.
+
+    V8 reserves a large virtual address range even for tiny scripts, so the
+    Python tool's 512 MiB address-space limit cannot be inherited by Node.
+    The product runner keeps filesystem, CPU/process, output and wall limits,
+    a bounded JS heap, a sanitized environment and process-group cleanup.
+    """
+    allowed = {'python','python3','node','npm','npx','gcc','g++','cc','c++','make','go','rustc','cargo','dotnet','javac','java'}
+    if not isinstance(argv, list) or not 1 <= len(argv) <= 100 or any(
+            not isinstance(arg, str) or not arg or '\x00' in arg or len(arg)>8000 for arg in argv):
+        raise ValueError('argv должен содержать от 1 до 100 непустых строк.')
+    name = argv[0]
+    local_program = name.startswith('./')
+    if name not in allowed and not local_program:
+        raise ValueError('Разрешены только установленные среды и компиляторы: ' + ', '.join(sorted(allowed)))
+    if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 180:
+        raise ValueError('timeout должен быть целым числом от 1 до 180 секунд.')
+    directory = resolve_in_jail(user_id, cwd or '.')
+    if not directory.is_dir():
+        raise ValueError('Рабочая папка команды не найдена.')
+    if local_program:
+        relative = directory.relative_to(user_root(user_id)) / name
+        program = resolve_in_jail(user_id, relative.as_posix())
+        if not program.is_file() or not os.access(program, os.X_OK):
+            raise ValueError('Исполняемый файл проекта не найден или не имеет права запуска.')
+        executable = str(program)
+    else:
+        executable = _python_bin(user_root(user_id)) if name in {'python','python3'} else shutil.which(name, path='/usr/local/bin:/usr/bin:/bin')
+    if not executable:
+        return json.dumps({'exit_code':127,'passed':False,'error':'runtime_unavailable','runtime':name,
+                           'output':'Среда не установлена. Исходники можно подготовить, но проверка запуска не выполнена.'}, ensure_ascii=False)
+    try:
+        from product_factory import _command
+    except ImportError:
+        from app.services.product_factory import _command
+    return json.dumps(_command(user_id, directory, [executable,*argv[1:]], timeout, process_limit=128), ensure_ascii=False)
+
+
 def pip_install(user_id: int, packages: list[str]) -> str:
     specs: list[str] = []
     for item in packages:
@@ -785,7 +837,11 @@ def collect_deliverables(user_id: int, since: float = 0, paths: list[str] | None
         archives = [entry for entry in handoff if entry[2].suffix.lower() == ".zip"]
         if office:
             # Один договор или доклад не тащит за собой снимки и архив проекта.
-            handoff = office
+            # CAD packages contain editable drawings alongside their PDF preview.
+            cad_archives = [entry for entry in archives
+                            if entry[1].startswith('engineering/output/')
+                            and entry[2].name == 'engineering-package.zip']
+            handoff = office + cad_archives
         elif archives:
             archives.sort(key=lambda entry: (entry[2].name.lower().startswith("product-"), entry[0]), reverse=True)
             handoff = archives[:1]
@@ -1019,6 +1075,8 @@ def dispatch(user_id: int, op: str, args: dict[str, Any]) -> str:
         if not isinstance(argv, list):
             argv = []
         return run_python(user_id, path, argv)
+    if op == 'command':
+        return run_command(user_id, args.get('argv'), str(args.get('cwd') or '.'), args.get('timeout',90))
     if op in ("pip", "pip_install"):
         packages = args.get("packages") or args.get("package") or []
         if isinstance(packages, str):

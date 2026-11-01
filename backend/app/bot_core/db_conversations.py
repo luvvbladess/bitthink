@@ -152,7 +152,11 @@ def _relevant_document_excerpt(content: str, query: str, budget: int) -> str:
         return matches, -index
 
     ranked = sorted(range(len(chunks)), key=score, reverse=True)
-    chosen = {0}
+    # A targeted excerpt must start at its best match. Reserving the first
+    # 6000-character chunk consumed the whole budget for short reads, so even
+    # an exact query for a later section always returned the introduction.
+    targeted = bool(terms and not holistic)
+    chosen = {ranked[0]} if targeted else {0}
     if holistic and len(chunks) > 1:
         target_count = max(2, budget // DOCUMENT_CHUNK_SIZE)
         for position in range(target_count):
@@ -168,7 +172,7 @@ def _relevant_document_excerpt(content: str, query: str, budget: int) -> str:
     pieces: List[str] = []
     used = 0
     holistic_piece_budget = max(1, budget // len(chosen) - 80) if holistic else None
-    for index in sorted(chosen):
+    for index in ([i for i in ranked if i in chosen] if targeted else sorted(chosen)):
         remaining = budget - used
         if remaining <= 0:
             break
@@ -178,7 +182,15 @@ def _relevant_document_excerpt(content: str, query: str, budget: int) -> str:
             start += len(chunks[index]) - len(chunk)
         else:
             piece_budget = min(holistic_piece_budget or remaining, remaining)
-            chunk = chunks[index][:piece_budget]
+            offset = 0
+            if targeted and len(chunks[index]) > piece_budget:
+                lower=chunks[index].lower()
+                matches=[(content.lower().count(term),lower.find(term)) for term in terms if term in lower]
+                if matches:
+                    pivot=min(matches)[1]
+                    offset=max(0,min(len(chunks[index])-piece_budget,pivot-piece_budget//3))
+            chunk = chunks[index][offset:offset+piece_budget]
+            start += offset
         pieces.append(f"[Фрагмент {start + 1}–{start + len(chunk)}]\n{chunk}")
         used += len(chunk) + 40
     return "\n\n".join(pieces)

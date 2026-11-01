@@ -194,6 +194,24 @@ def test_cache_write_usage_is_settled_at_the_vendor_rate(user):
     assert token_counts({"prompt_tokens": 100, "completion_tokens": 50, "prompt_cache_hit_tokens": 20}) == (100, 50, 20, 0)
 
 
+def test_open_hold_does_not_move_the_shown_remainder(user):
+    from app.billing.call_budget import settled_for_display
+    from app.billing.quota import usage_view
+
+    limit = plan_for("pro")["session_tokens"]
+    leave_session(user, remaining=limit // 2)
+    before = usage_view(manager.get_subscription(user))["windows"]["shared"]["session"]["remaining"]
+    hold, _ = reserve(user, "chat", "gpt-6-sol", 100, 1000)
+    raw = usage_view(manager.get_subscription(user))["windows"]["shared"]["session"]["remaining"]
+    shown = usage_view(settled_for_display(user, manager.get_subscription(user)))["windows"]["shared"]["session"]["remaining"]
+    assert raw < shown == before
+    settle(user, hold, 1000)
+    after = usage_view(settled_for_display(user, manager.get_subscription(user)))["windows"]["shared"]["session"]["remaining"]
+    assert after == before - 1000
+    with SyncSessionLocal() as session:
+        assert session.query(TokenReservation).filter_by(user_id=user).count() == 0
+
+
 def test_reservation_migration_creates_and_reuses_runtime_table():
     from importlib.util import module_from_spec, spec_from_file_location
     from pathlib import Path

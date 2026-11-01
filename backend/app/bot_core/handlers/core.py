@@ -425,7 +425,11 @@ async def get_smart_response(
 
     research_mode = model == "gpt-6-sol"
     from app.services.search_budget import SEARCH_PLAN
-    messages.insert(0, {'role': 'system', 'content': SEARCH_PLAN})
+    from app.services.place_selection import selection_request, configure_budget, VENUE_RULES
+    place_request = selection_request(user_text, messages)
+    if place_request and not intent.web_forbidden:
+        configure_budget()
+    messages.insert(0, {'role': 'system', 'content': VENUE_RULES if place_request else SEARCH_PLAN})
     # Files first only for this turn's uploads in Auto. Search/Research still
     # go to the web even if an older photo or PDF is sitting in the thread.
     web_required = not intent.web_forbidden and (bool(catalog_note) or intent.needs_web or (followup_web and not intent.local) or turn_requires_web(
