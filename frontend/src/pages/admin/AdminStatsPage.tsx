@@ -6,7 +6,7 @@ import { AdminIsland } from './AdminIsland';
 import { ExperiencePanel } from './ExperiencePanel';
 
 export default function AdminStatsPage() {
-  const { data, isLoading, isError } = useQuery({ queryKey: ['admin', 'stats'], queryFn: () => adminApi.getStats() });
+  const { data, isLoading, isError } = useQuery({ queryKey: ['admin', 'stats'], staleTime: 30000, queryFn: () => adminApi.getStats() });
 
   const stats = [
     { label: 'Пользователи', value: data?.total_users, icon: Users },

@@ -67,6 +67,28 @@ def _refund(data: dict, row: Any, amount: int) -> None:
             data[key] = max(0, int(data.get(key) or 0) - amount)
 
 
+def settled_for_display(user_id: int, sub: dict) -> dict:
+    """Usage the person has actually been charged. An open hold is only a ceiling.
+
+    The wallet still keeps that ceiling so a second task cannot overspend it.
+    The remainder indicator must not fall and bounce back when the hold is released.
+    """
+    data = dict(sub)
+    if data.get("tier_raw"):
+        data["tier"] = data["tier_raw"]
+    from app.db.engine import SyncSessionLocal
+    from app.db.models import TokenReservation
+    now = int(time.time())
+    with SyncSessionLocal() as session:
+        rows = session.query(TokenReservation).filter(
+            TokenReservation.user_id == int(user_id),
+            TokenReservation.expires_at > now,
+        ).all()
+    for row in rows:
+        _refund(data, row, int(row.amount or 0))
+    return data
+
+
 def recover_expired(manager: Any, user_id: int) -> None:
     """Recover abandoned holds before the UI/precheck can report a full wallet."""
     from app.bot_core.db_conversations import _apply_subscription_payload, _subscription_payload

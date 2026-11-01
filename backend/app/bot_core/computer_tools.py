@@ -539,6 +539,12 @@ _TOOL_SPECS = [
         ["path"],
     ),
     (
+        'workspace_run',
+        'В облачной песочнице запустить сборку, тесты или CLI на установленном языке. argv — массив аргументов без shell, cwd — относительная папка проекта, timeout — 1..180 секунд. Для Node/npm/TypeScript/C используй этот инструмент, не subprocess через python_run. Возвращает exit_code и вывод; ненулевой код не означает успешную проверку. Недоступный компилятор не подменяй другим языком.',
+        {'argv':{'type':'array','items':{'type':'string'}}, 'cwd':{'type':'string'}, 'timeout':{'type':'integer'}},
+        ['argv'],
+    ),
+    (
         "pip_install",
         "Пакеты PyPI в личный venv. Без URL, git+ и локальных путей. Затем python_run.",
         _PIP_PROPS,
@@ -660,6 +666,7 @@ def response_tool_names(
         names |= SWARM_TOOL_NAMES
     from app.services.desktop_context import desktop_executor
     if desktop_executor.get() is not None:
+        names.discard('workspace_run')  # BitClient already has desktop_run_command.
         # These cloud paths are not BitClient's local project. Native CAD keeps
         # using its own SDK and local OCR/image/file tools.
         from app.services.desktop_context import desktop_capabilities
@@ -712,7 +719,16 @@ async def _browse_public(url: str, query: str = "") -> str:
     from web_scraper import fetch_url_content, is_ru_marketplace
 
     _assert_public_http_url(url)
-    fetched_url, text = await fetch_url_content(url)
+    from app.services.search_budget import current_search_budget
+    from urllib.parse import urldefrag
+    budget=current_search_budget.get()
+    if budget is None:
+        fetched_url,text=await fetch_url_content(url)
+    else:
+        raw_key=('page-fetch',urldefrag(url)[0])
+        if raw_key not in budget.pending:
+            budget.pending[raw_key]=asyncio.create_task(fetch_url_content(url))
+        fetched_url,text=await budget.pending[raw_key]
     # Compact marketplace snapshots already reserve space for each buying criterion.
     # Query-only excerpts can otherwise discard price, seller or reviews.
     if is_ru_marketplace(fetched_url) and len(text or "") <= 10_800:
@@ -1257,9 +1273,11 @@ async def run_computer_tool(name: str, args: dict[str, Any], user_id: int | None
         cache_key = ("visual" if name == "browse_visual" else "page", key)
         if cache_key in budget.pending:
             return await budget.pending[cache_key]
-        if not budget.read_left:
+        from urllib.parse import urldefrag
+        page_key=('page',urldefrag(str(args.get('url') or ''))[0]) if name=='browse_page' else ('visual',key)
+        if page_key not in budget.pages and not budget.read_left:
             return LIMIT_NOTE
-        budget.pages.add(key)
+        budget.pages.add(page_key)
         async def read_page():
             return await _run_budgeted_computer_tool(name, args, user_id)
         task = asyncio.create_task(read_page())

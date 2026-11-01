@@ -6,12 +6,73 @@ import hashlib
 from contextvars import ContextVar
 
 ROUTINE_MODEL = 'gpt-6.1-terra'
-POLICY_VERSION = 'economy-v1'
+POLICY_VERSION = 'calibration-v2'
 _HARD = re.compile(r'(?i)архитектур|рефактор|миграц|безопасност|уязвим|аудит|юрид|договор|контракт|расслед|доказат|криптограф|авторизац|аутентификац|architect|refactor|migration|security|vulnerab|\baudit\b|\blegal\b|\bcontract\b|investigat|cryptograph|authenticat|authoriz|medical|diagnos|\btax\b|oauth|\bcom\b|\bsdk\b|solidworks|sldprt|sldasm|\bcad\b|компас|геометр|топологи|loft|sweep|race.condition|deadlock|транзакц|налогов|медицин|диагноз|удали|удалени|очисти|форматируй.{0,12}диск|опубликуй|задеплой|деплой|\bdeploy\b|\bdelete\b|\bwipe\b|плат[её]ж|оплати')
 _ROUTINE = re.compile(r'(?i)извлек|выпиши|вытащи|перечисли|составь список|список файлов|прочитай|открой|покажи|скачай|сохрани|переименуй|переведи|перевод|кратк\w* резюме|кратко перескажи|сделай резюме|суммари|отформатируй|форматирован|конвертир|преобразуй|исправь опечат|поменяй цвет|измени цвет|замени заголовок|extract|summarize|translate|format the|open the|list files|rename')
 _TOOL_TARGET = re.compile(r'(?i)файл|папк|страниц|браузер|сайт|документ|таблиц|скриншот|\b(?:readme|csv|xlsx|docx|pdf|html)\b')
 _OPEN_ENDED = re.compile(r'(?i)созда[йт]|разработ|реализ|построй|перепиши|настрой|проанализируй|спроектируй|разберись|implement|refactor|build an? |напиши.{0,30}(?:код|скрипт|прилож|бот)')
 _VALIDATION_FAILURE = re.compile(r'(?i)syntaxerror|typeerror|assertionerror|compil|компиля|тест\w*.*(?:не прош|упал|ошиб)|validation|валидац|неверн\w*\s+(?:формат|структур|результат)|schema|sdk|hresult|model_not_found|unsupported.{0,40}model|нет ответа от модели')
+
+# These are execution hints, not authorization. Quoted source text must not
+# turn a translation into a payment or a draft into a mailbox operation.
+_TEXT_TRANSFORM = re.compile(r'(?i)^\s*(?:переведи|перепиши|перефразируй|сократи|отредактируй|исправь\s+(?:только\s+)?опечатки|извлеки|кратко\s+перескажи)\b')
+_TEXT_CREATE = re.compile(r'(?i)^\s*(?:напиши|составь|подготовь)\b.{0,70}\b(?:письмо|сообщение|поздравление|объявление|пост|план\s+(?:изучения|обучения))\b')
+_TEXT_ACTION = re.compile(r'(?i)\b(?:отправь|отправить|отправляй|прочитай|открой|скачай|загрузи|удали|опубликуй|найди|поищи|зайди|подключись|приложи|проверь\s+(?:почту|ящик))\b|https?://|\b(?:pdf|docx|xlsx|csv|pptx)\b|\b(?:файл\w*|вложени\w*|прикрепл\w*)\b')
+_REASONING_RISK = re.compile(r'(?i)\b(?:докажи|доказать|prove|proof|инсульт|инфаркт|отравление|передозировка)\b|перекосило\s+лицо|невнятн\w*\s+речь|не\s+проверя\w*.{0,15}подпис')
+
+
+def calculation_task(task: str) -> bool:
+    """Arithmetic on supplied quantities is not web research about prices."""
+    text = task or ''
+    return (len(re.findall(r'\d+(?:[.,]\d+)?', text)) >= 2
+            and bool(re.search(r'(?i)посчитай|рассчитай|вычисли|сколько\s+(?:платить|месяцев)|на\s+сколько\s+процент|какую\s+скидку|проверь.{0,30}(?:вычислен|расч[её]т|python|инструмент)', text))
+            and not re.search(r'(?i)https?://|\b(?:сегодня|актуальн\w*|курс|котировк\w*)\b|найди\s+(?:цен|стоим)|поиск\s+в\s+интернет', text))
+
+
+def chat_reasoning_task(task: str) -> bool:
+    """A bounded explanation may need a strong model, but not a team of agents."""
+    text = task or ''
+    if len(text) > 1800 or not re.search(r'(?i)^\s*(?:почему|объясни|докажи|как\s+исправить)\b|какие\s+риски|что\s+исправить|что\s+делать\s+прямо\s+сейчас', text):
+        return False
+    text = re.sub(r'(?i)без\s+создания\s+файлов|не\s+создавай\s+файлы', '', text)
+    return not re.search(r'(?i)https?://|\b(?:прикрепл\w*|вложени\w*|скачай|открой|прочитай|исправь|внеси|реализуй|сохрани|отправь|создай|опубликуй|запусти|настрой|подключись|зайди|проверь\s+(?:почту|ящик|проект|сервер))\b', text)
+
+
+def bounded_text_task(task: str) -> bool:
+    """Only explicit text operations; unknown goals keep the existing planner.
+
+    Source after a colon/quote is data. External actions even after that source
+    still prevent this shortcut; an opt-out of sending alone is harmless.
+    """
+    text = (task or '').strip()
+    if not text or len(text) > 4000 or not (_TEXT_TRANSFORM.search(text) or _TEXT_CREATE.search(text)):
+        return False
+    if _TEXT_TRANSFORM.search(text) and not re.search(r'[:«"\n].*\S', text, re.S):
+        return False
+    head = re.split(r'[:«"\n]', text, maxsplit=1)[0]
+    # Do not weaken expert analysis or a translation of an unseen document.
+    if _HARD.search(head) or _REASONING_RISK.search(head):
+        return False
+    actions = re.sub(r'(?i)\b(?:ничего\s+)?не\s+(?:отправляй|отправлять|отправляйте)\b', '', text)
+    # A quoted sentence may mention a file; only the directive controls that.
+    if _TEXT_ACTION.search(re.sub(r'(?i)\b(?:ничего\s+)?не\s+(?:отправляй|отправлять|отправляйте)\b', '', head)):
+        return False
+    if re.search(r'(?i)(?:создай|подготовь|сделай|собери|приложи).{0,45}(?:файл|docx|pdf|xlsx|презентац|документ|таблиц|архив)', actions):
+        return False
+    return not re.search(r'(?i)\b(?:отправь|опубликуй|загрузи|скачай|удали)\b|сохрани\s+(?:в\b|на\b|как\b|файл|документ|результат|рядом|таблиц)|\bв\s+(?:pdf|docx|word|xlsx|pptx)\b|на\s+скачиван', actions)
+
+
+def bounded_text_revision(task: str, messages) -> bool:
+    """Inherit only a recent, explicit text draft; never an unrelated old task."""
+    text = (task or '').strip()
+    if len(text) > 300 or not re.search(r'(?i)^(?:сделай|перепиши|сократи|измени)\b.{0,80}(?:теплее|короче|вежливее|официальн|дружелюбн|тон)', text):
+        return False
+    if re.search(r'(?i)отправ|опублику|сохрани\s+(?:в|на)\b|файл|https?://', text):
+        return False
+    for row in reversed(messages or []):
+        if row.get('role') == 'user' and isinstance(row.get('content'), str) and row['content'].strip() != text:
+            return bounded_text_task(row['content'])
+    return False
 
 
 def economy_enabled():
@@ -19,12 +80,12 @@ def economy_enabled():
 
 
 def critical_task(task):
-    return bool(_HARD.search(task or ''))
+    return bool(_HARD.search(task or '') or _REASONING_RISK.search(task or ''))
 
 
 def routine_task(task: str, document_context: str = '') -> bool:
     """Only explicit bounded operations; length alone never makes work cheaper."""
-    if not economy_enabled() or _HARD.search(task or '') or _OPEN_ENDED.search(task or ''):
+    if not economy_enabled() or critical_task(task) or _OPEN_ENDED.search(task or ''):
         return False
     # A legal/medical source is not a generic text attachment to downgrade.
     if _HARD.search((document_context or '')[:12000]):
@@ -68,7 +129,11 @@ class ValidationState:
 
     def observe(self, name, args, result):
         command = str(args.get('command') or args.get('cmd') or '')
-        if name != 'desktop_run_command' or not _CHECK_COMMAND.search(command):
+        if name == 'workspace_run':
+            argv = args.get('argv') or []
+            command = ' '.join(argv) if isinstance(argv,list) and all(isinstance(x,str) for x in argv) else ''
+        if name not in {'desktop_run_command','workspace_run'} or not (
+                _CHECK_COMMAND.search(command) or (name == 'workspace_run' and re.search(r'^(?:gcc|g\+\+|cc|c\+\+|javac|rustc)\b|python3?\s+-m\s+unittest|node\s+--test|npm\s+(?:run\s+)?(?:build|test)|npx\s+tsc',command))):
             return
         code = None
         try:
@@ -92,7 +157,7 @@ def routine_employee(item: dict, original_task: str, context: str = '') -> bool:
     if not routine_task(original_task, context):
         return False
     assignment = str(item.get('role') or '') + ' ' + str(item.get('task') or '')
-    return not _HARD.search(assignment)
+    return not critical_task(assignment)
 
 
 ECONOMY_RULES = (

@@ -332,7 +332,7 @@ _SKILL_TRIGGERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("images", ("фото", "картин", "скрин", "где сня", "линз", "поиск по картин", "изображ")),
     ("verify", ("проверь", "правда ли", "сверь", "подтверд")),
     ("browser", ("зайд", "сайт", "http://", "https://", "логин", "пароль")),
-    ("code", ("код", "python", "скрипт", "баг", "ошибк", "функци", "репозитор", "рефактор", "миграц", "pytest")),
+    ("code", ("код", "python", "javascript", "typescript", "node.js", "nodejs", "c11", "gcc", "c++", "golang", "на go", "rust", "скрипт", "баг", "ошибк", "функци", "репозитор", "рефактор", "миграц", "pytest")),
     ("debug", ("traceback", "stack trace", "упал скрипт", "не старту", "502")),
     ("science", ("формул", "рассчитай", "интеграл", "статистик", "гипотез", "молекул", "физик")),
     ("sql", ("sql", "select ", "запрос к баз", "sqlite", "postgres")),
@@ -411,6 +411,17 @@ def _custom_score(row: dict, blob: str) -> int:
 def _builtin_score(name: str, needles: tuple[str, ...], blob: str, *, sandbox: bool) -> int:
     if not sandbox and skill_scope(name) != "chat":
         return 0
+    if name in {'email', 'documents', 'workspace'}:
+        from app.services.orchestrator_policy import bounded_text_task, chat_reasoning_task
+        if bounded_text_task(blob) or chat_reasoning_task(blob):
+            return 0
+    if name in {'science', 'eng_calc_check'}:
+        from app.services.orchestrator_policy import calculation_task
+        if calculation_task(blob):
+            if name == 'science':
+                return 6
+            if not re.search(r'прочност|сопромат|инженер|напряжени|момент|нагрузк|сечени', blob):
+                return 0
     if name == "browser":
         from studio.design_skills import visual_build
         if visual_build(blob) and not re.search(r"зайд|открой|логин|парол|https?://", blob):
@@ -481,6 +492,8 @@ def match_skills(
         # match narrow domain phrases, not individual everyday words.
         for name, row in registry().items():
             if row['adaptation'] != 'builtin' or name in off or (not sandbox and row['scope'] != 'chat'):
+                continue
+            if name == 'wf_automations' and not re.search(r'напомни|следи|отслеживай|запускай|присылай|отправляй|проверяй|по\s+расписанию|(?:создай|настрой).{0,40}(?:задач|автоматизац|напоминан)', blob):
                 continue
             if any(needle in blob for needle in row['triggers']):
                 ranked.append((4, 0, order, name))

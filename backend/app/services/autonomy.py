@@ -238,6 +238,13 @@ def product_employee(task, evidence, journal):
     suffix = ('\n\n' + design) if design else ''
     if not evidence.get('product_id'):
         phase = 'brief'
+        from app.services.request_intent import forbids_web
+        offline = forbids_web(task) or bool(re.search(r'(?i)поиск.{0,25}не нуж|без внешних (?:сервисов|источников)|не нужен поиск',task))
+        research = (
+            'Используй заданное техническое задание. Пользователь не просит внешний поиск: не ищи аналоги, не открывай сайты. '
+            if offline else
+            'Потом вникни в предмет: server_search — два узких запроса, browse_page — не больше трёх страниц. '
+        )
         look = (
             'Для внешнего вида открой один лучший аналог через browse_visual: страницу самого сайта, не документацию и не гайдлайны '
             '(для стиля Apple — страницу товара на apple.com). Запиши видимую композицию: '
@@ -246,8 +253,7 @@ def product_employee(task, evidence, journal):
         )
         assignment = (
             'load_skill research\nСоздай продукт: ' + task + '\n'
-            'Сначала autonomy identity/recall. Потом вникни в предмет не из памяти: '
-            'server_search — два узких запроса, browse_page — не больше трёх страниц. ' + look +
+            'Сначала autonomy identity/recall. ' + research + (look if not offline else '') +
             'Чужие картинки и их URL в файлы продукта не копируй: в REFERENCES.md запиши факты и композицию. '
             'Выбери стек из static/react/next/astro/python/node, '
             'затем product_lifecycle action=start brief=полное задание stack=выбор reason=обоснование. '

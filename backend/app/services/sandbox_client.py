@@ -20,6 +20,7 @@ TOOL_OPS = {
     "workspace_edit": "edit",
     "workspace_delete": "delete",
     "python_run": "run",
+    "workspace_run": "command",
     "pip_install": "pip",
     "workspace_grep": "grep",
     "workspace_glob": "glob",
@@ -56,7 +57,7 @@ async def run_workspace_tool(name: str, args: dict[str, Any], user_id: int) -> s
         from app.services.workspace_fs import dispatch
 
         return dispatch(int(user_id), op, payload)
-    if name in ("python_run", "pip_install", "product_lifecycle"):
+    if name in ("python_run", "workspace_run", "pip_install", "product_lifecycle"):
         return "Песочница сейчас недоступна. Python и pip запускаются только в изолированном контейнере."
     from app.services.workspace_fs import dispatch
 
@@ -99,6 +100,18 @@ async def collect_workspace_files(user_id: int, since: float) -> list[dict[str, 
         return []
     from turn_scope import export_paths
     paths = export_paths()
+    if not paths and os.environ.get('WORKSPACES_DIR'):
+        from app.services.run_protocol import current_run
+        from app.services.code_archive import is_project_archive_request
+        record=current_run.get()
+        if record and is_project_archive_request(record.request_context.get('current_request','')):
+            from app.services.workspace_fs import user_root, _recent_workspace_files
+            import asyncio
+            recent=await asyncio.to_thread(_recent_workspace_files,user_root(int(user_id)),max(0,float(since or 0)-2),{'.zip'})
+            if recent:
+                from turn_scope import request_file_export
+                request_file_export(recent[0][1])
+                paths=export_paths()
     payload = {"user_id": int(user_id), "op": "deliverables", "since": float(since or 0), 'paths': paths}
     raw = ""
     if os.environ.get("WORKSPACES_DIR"):
@@ -143,6 +156,14 @@ def _parse_deliverables(raw: str) -> list[dict[str, Any]]:
         except Exception:
             continue
         if name.lower().endswith(".docx"):
+            import io
+            import zipfile
+            try:
+                with zipfile.ZipFile(io.BytesIO(data)) as document:
+                    if not {'[Content_Types].xml','word/document.xml'}.issubset(document.namelist()):
+                        continue
+            except (zipfile.BadZipFile,OSError):
+                continue
             from app.bot_core.docx_generator import scrub_markdown_marks
 
             data = scrub_markdown_marks(data)

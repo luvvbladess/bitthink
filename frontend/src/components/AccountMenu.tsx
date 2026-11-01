@@ -217,7 +217,7 @@ export function AccountMenu({ variant = 'icon' }: { variant?: 'icon' | 'row' }) 
           Кабинет
         </MenuItem>
         {isAdmin && (
-          <MenuItem onClick={() => go('/admin')} sx={{ minHeight: 44 }}>
+          <MenuItem onMouseEnter={() => preloadRoute('/admin')} onFocus={() => preloadRoute('/admin')} onPointerDown={() => preloadRoute('/admin')} onClick={() => go('/admin')} sx={{ minHeight: 44 }}>
             <ListItemIcon>
               <ShieldCheck size={20} weight="bold" />
             </ListItemIcon>

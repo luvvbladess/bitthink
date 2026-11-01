@@ -1,5 +1,5 @@
 import { Box, Container, Typography, Button } from '@mui/material';
-import { useEffect } from 'react';
+import { Suspense, useEffect } from 'react';
 import { Outlet, useLocation, useNavigate, Link as RouterLink } from 'react-router-dom';
 import { ShieldWarning, Users, ChartBar, ArrowLeft } from '@phosphor-icons/react';
 import { useAuthStore } from '@/stores/authStore';
@@ -111,7 +111,7 @@ export default function AdminLayout() {
             );
           })}
         </Box>
-        <Outlet />
+        <Suspense fallback={<Box role="status" sx={{ py: 3, color: 'text.secondary' }}>Загружаем данные раздела…</Box>}><Outlet /></Suspense>
       </Container>
     </Box>
   );

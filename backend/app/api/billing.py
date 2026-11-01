@@ -7,7 +7,11 @@ from app.billing.quota import usage_view
 from app.core.repository import repo
 
 
-async def subscription_view_from_sub(sub: dict, *, day=None, month=None, include_spend: bool | None = None) -> dict:
+async def subscription_view_from_sub(sub: dict, *, bot_id: int | None = None, day=None, month=None, include_spend: bool | None = None) -> dict:
+    if bot_id is not None:
+        import asyncio
+        from app.billing.call_budget import settled_for_display
+        sub = await asyncio.to_thread(settled_for_display, int(bot_id), sub)
     view = usage_view(sub)
     view.update({
         "daily_nano_mini": sub.get("daily_nano_mini", 0),
@@ -35,7 +39,7 @@ async def subscription_payload(user_id: str) -> dict:
     if plan_for(sub.get("tier")).get("unlimited"):
         day = await repo.get_day_usage(user_id)
         month = await repo.get_month_usage(user_id)
-    return await subscription_view_from_sub(sub, day=day, month=month)
+    return await subscription_view_from_sub(sub, bot_id=repo._bot_id(user_id), day=day, month=month)
 
 
 async def subscription_payload_for_bot(bot_id: int, email: str | None = None) -> dict:
@@ -50,7 +54,7 @@ async def subscription_payload_for_bot(bot_id: int, email: str | None = None) ->
     else:
         day = await asyncio.to_thread(repo.billing.get_day_usage, bot_id)
         month = await asyncio.to_thread(repo.billing.get_month_usage, bot_id)
-    return await subscription_view_from_sub(sub, day=day, month=month, include_spend=True)
+    return await subscription_view_from_sub(sub, bot_id=bot_id, day=day, month=month, include_spend=True)
 
 router = APIRouter()
 

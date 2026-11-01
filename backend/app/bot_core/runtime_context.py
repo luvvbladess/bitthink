@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List
 
 _RU_MONTHS = (
@@ -11,11 +11,16 @@ _RU_MONTHS = (
 )
 
 
+def runtime_now() -> datetime:
+    """Product dates follow Moscow, matching billing and conversation dates."""
+    return datetime.now(timezone(timedelta(hours=3)))
+
+
 def current_date_note() -> str:
-    now = datetime.now()
+    now = runtime_now()
     return (
         f"Сегодня {now.day} {_RU_MONTHS[now.month - 1]} {now.year} года "
-        f"({now.strftime('%d.%m.%Y')}). Это реальное «сегодня». "
+        f"({now.strftime('%d.%m.%Y')}, Москва, UTC+3). Это реальное «сегодня». "
         "Учитывай эту дату для актуальных вопросов. В запрос добавляй год только когда он помогает найти нужный период."
     )
 

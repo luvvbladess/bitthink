@@ -93,6 +93,9 @@ def classify_request(query: str, history=()) -> RequestIntent:
         task = 'followup'
     else:
         task = 'fact'
+    from app.services.place_selection import selection_request
+    if task != 'transformation' and selection_request(query, history):
+        topic, task, local = 'places', 'recommendation', False
     explicit = _has(r'https?://|\b(?:загугл\w*|погугл\w*|поищи|гугли|найди в (?:интернете|сети)|web search|search online)\b', text)
     fresh = _has(r'сегодня|вчера|актуальн|последн\w* (?:верси|релиз)|новейш|свеж\w*|новост|винрейт|патч|'
                  r'сколько стоит|\bцен[аыуе]\b|в наличии|доставк|\bпогод\w*|курс (?:валют|доллар|евро)|котиров', head)
