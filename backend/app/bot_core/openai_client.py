@@ -450,6 +450,8 @@ async def get_chat_response(
     chat_tools: bool = False,
     allowed_tools: Optional[frozenset[str]] = None,
     stop_after_tool: Optional[Any] = None,
+    required_first_tool: Optional[str] = None,
+    output_token_limit: Optional[int] = None,
 ) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
     """
     Получает ответ от OpenAI через Responses API, потоково (stream=True).
@@ -578,6 +580,8 @@ async def get_chat_response(
             from app.services.desktop_cad_completion import cad_tool_loop_limit
             max_loops = cad_tool_loop_limit(max_tool_loops)
         search_count = 0
+        if required_first_tool and (required_first_tool != 'calculate' or required_first_tool not in wanted or max_loops < 2):
+            raise ValueError('Required calculation must be offered with an answer hop')
         MAX_SEARCHES = 6
         for loop_i in range(max_loops):
             logger.info(f"Responses API call #{loop_i + 1}, model={_api_model_id(use_model)}")
@@ -587,7 +591,7 @@ async def get_chat_response(
                 "input": current_input,
                 "instructions": instructions,
                 "truncation": "auto",
-                "max_output_tokens": model_max_output(window_model),
+                "max_output_tokens": min(model_max_output(window_model), max(64, int(output_token_limit))) if output_token_limit is not None else model_max_output(window_model),
                 "reasoning": reasoning_cfg
             }
             from app.services.search_budget import search_tools_allowed
@@ -600,6 +604,8 @@ async def get_chat_response(
             if user_id is not None:
                 # Один ключ на пользователя держит стабильный system-префикс на одном сервере кэша.
                 request["prompt_cache_key"] = f"web-{user_id}"[:64]
+            if required_first_tool and loop_i == 0:
+                request['tool_choice'] = {'type': 'function', 'name': required_first_tool}
             if force_web and loop_i == 0 and search_tools_allowed("web_search") and not _is_smalltalk(_last_user_text(messages)):
                 # With tool_choice="auto" search is optional. Explicit search mode and volatile
                 # Auto queries must never silently skip it. Two rules keep this from backfiring:
@@ -964,6 +970,8 @@ async def get_chat_response(
                 chat_tools=chat_tools,
                 max_tool_loops=max_tool_loops,
                 allowed_tools=allowed_tools,
+                required_first_tool=required_first_tool,
+                output_token_limit=output_token_limit,
             )
         if requested == "gpt-6-astra" and _astra_unavailable(err):
             logger.warning("gpt-6-astra unavailable, falling back to gpt-6-sol")
@@ -981,6 +989,8 @@ async def get_chat_response(
                 chat_tools=chat_tools,
                 max_tool_loops=max_tool_loops,
                 allowed_tools=allowed_tools,
+                required_first_tool=required_first_tool,
+                output_token_limit=output_token_limit,
             )
         from app.billing.quota import refund_quota_charge
 
@@ -1057,6 +1067,19 @@ async def edit_image(
     sources = [item for item in sources if item]
     if not sources:
         return None, "Нет изображения для правки"
+    if size == 'auto':
+        try:
+            from PIL import Image
+            from io import BytesIO
+            with Image.open(BytesIO(sources[0])) as source:
+                width, height = source.size
+            size = f'{width}x{height}'
+        except Exception:
+            pass
+    prompt = (prompt + '\n\nТочечная правка исходного изображения: измени только явно запрошенную область. '
+        'Сохрани остальные надписи, объекты, лица, цвета, композицию и детали. '
+        'Не перерисовывай и не улучшай остальное. Сохрани границы и пропорции исходного кадра, '
+        'если пользователь прямо не попросил изменить формат.')
     try:
         files = [_image_upload(item, index) for index, item in enumerate(sources[:16])]
         kwargs: dict[str, Any] = {

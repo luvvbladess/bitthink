@@ -616,6 +616,10 @@ _TOOL_SPECS.extend([
     ('workspace_export_files', 'Выдать пользователю готовые файлы любых форматов из рабочей папки в текущем ответе, включая MP3, MP4, код и файлы без расширения. Сначала создай/проверь файл, затем передай точные пути. До 100 МБ на выдачу.',
      {'paths': {'type': 'array', 'items': {'type': 'string'}}}, ['paths']),
 ])
+_TOOL_SPECS.append((
+    'calculate',
+    'Точное вычисление без интернета и запуска кода: + - * / // % **, скобки, comb(n,k), factorial(n), sqrt(x), abs(x), round(x,digits) с ROUND_HALF_UP. Десятичная точка. Для дробей используй exact_rational, для приближённого значения result. Сначала составь правильную формулу по условию; инструмент не проверяет постановку задачи.',
+    {'expression': {'type': 'string', 'maxLength': 1000}}, ['expression']))
 COMPUTER_TOOLS_RESPONSES = [_responses_tool(*spec) for spec in _TOOL_SPECS]
 COMPUTER_TOOLS_CHAT = [_chat_tool(*spec) for spec in _TOOL_SPECS]
 COMPUTER_TOOL_NAMES = {spec[0] for spec in _TOOL_SPECS}
@@ -623,6 +627,7 @@ COMPUTER_TOOL_NAMES = {spec[0] for spec in _TOOL_SPECS}
 # Свои скилы доступны в обычном чате. Почта, SSH, коннекторы и песочница — нет.
 SKILL_TOOL_NAMES = frozenset({"list_skills", "load_skill", "save_skill", "delete_skill", "read_skill_resource"})
 CHAT_TOOL_NAMES = frozenset({
+    "calculate",
     "get_capabilities",
     "server_search",
     "browse_page",
@@ -716,27 +721,32 @@ def _assert_public_http_url(url: str) -> str:
 
 
 async def _browse_public(url: str, query: str = "") -> str:
-    from web_scraper import fetch_url_content, is_ru_marketplace
+    from web_scraper import fetch_url_content, is_ru_marketplace, page_text_limit
 
     _assert_public_http_url(url)
     from app.services.search_budget import current_search_budget
     from urllib.parse import urldefrag
     budget=current_search_budget.get()
-    if budget is None:
-        fetched_url,text=await fetch_url_content(url)
-    else:
-        raw_key=('page-fetch',urldefrag(url)[0])
-        if raw_key not in budget.pending:
-            budget.pending[raw_key]=asyncio.create_task(fetch_url_content(url))
-        fetched_url,text=await budget.pending[raw_key]
+    token = page_text_limit.set(300000 if query.strip() else 15000)
+    try:
+        if budget is None:
+            fetched_url,text=await fetch_url_content(url)
+        else:
+            raw_key=('page-fetch',urldefrag(url)[0],page_text_limit.get())
+            if raw_key not in budget.pending:
+                budget.pending[raw_key]=asyncio.create_task(fetch_url_content(url))
+            fetched_url,text=await budget.pending[raw_key]
+    finally:
+        page_text_limit.reset(token)
     # Compact marketplace snapshots already reserve space for each buying criterion.
     # Query-only excerpts can otherwise discard price, seller or reviews.
     if is_ru_marketplace(fetched_url) and len(text or "") <= 10_800:
         return _clamp(f"URL: {fetched_url}\nЗапрос: {query.strip()}\n\n{text}")
     if (query or "").strip():
-        from db_conversations import _relevant_document_excerpt
+        from app.services.page_excerpt import page_excerpt
 
-        excerpt = _relevant_document_excerpt(text or "", query.strip(), min(MAX_TOOL_OUTPUT - 80, 8_000))
+        excerpt = page_excerpt(text or "", query.strip(), url,
+                               min(MAX_TOOL_OUTPUT - 200, 8_000))
         return _clamp(f"URL: {fetched_url}\nЗапрос: {query.strip()}\n\n{excerpt}")
     return _clamp(f"URL: {fetched_url}\n\n{text}")
 
@@ -1364,6 +1374,9 @@ async def _run_budgeted_computer_tool(name: str, args: dict[str, Any], user_id: 
 
 
 async def _run_computer_tool(name: str, args: dict[str, Any], user_id: int | None) -> str:
+    if name == 'calculate':
+        from app.services.calculator import calculate
+        return json.dumps(calculate(args.get('expression')), ensure_ascii=False)
     if name in {'workspace_import_file', 'workspace_export_files'}:
         if not user_id:
             return 'Нет пользователя для доступа к файлам.'

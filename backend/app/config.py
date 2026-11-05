@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     DATABASE_URL: str = _default_database_url(PROJECT_ROOT)
     UPLOAD_DIR: Path = Path(__file__).resolve().parent.parent / "uploads"
     DATA_DIR: Path = PROJECT_ROOT / "data"
+    # Optional project retrieval. A slow provider never delays lexical fallback.
+    PROJECT_EMBEDDINGS_ENABLED: bool = False
 
     # OnlyOffice Docs. Without the JWT secret the editor stays off.
     # PUBLIC_URL – where the browser loads the editor (same site, see nginx.conf).

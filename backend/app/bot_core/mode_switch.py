@@ -105,8 +105,8 @@ _SPECS = {
         "accept": "Перейти в Оркестратор",
         "done": "Оркестратор включён",
     },
-    "kimi-k2.6": {
-        "model": "kimi-k2.6",
+    "search": {
+        "model": "search",
         "label": "Поиск",
         "reason": "Свежий ответ с источниками даёт режим «Поиск».",
         "accept": "Перейти в Поиск",
@@ -161,12 +161,11 @@ def suggest_mode_switch(
         target = "director"
     elif _DOCGEN.search(text) and model != "docgen":
         target = "docgen"
-    elif _wants_studio(text) and model not in _STUDIO_CAPABLE:
-        target = "studio"
+    # Canvas creation is selected for this turn by the chat dispatcher.
     elif model in _NO_WEB and _RESEARCH.search(text):
-        target = "gpt-6-sol" if _allowed("gpt-6-sol", allowed) else "kimi-k2.6"
+        target = "gpt-6-sol" if _allowed("gpt-6-sol", allowed) else "search"
     elif model in _NO_WEB and _SEARCH.search(text):
-        target = "kimi-k2.6"
+        target = "search"
 
     if not target or target == model or not _allowed(target, allowed):
         return None

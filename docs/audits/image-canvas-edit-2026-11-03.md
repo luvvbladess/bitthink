@@ -1,0 +1,5 @@
+# Selected image canvas edit — 3 November 2026
+
+Fixed get_image_response routing before generic non-picture keyword exclusion. An explicit canvas-edit instruction with a bound canvas_target now verifies conversation ownership and reads that exact saved image canvas, then calls the image studio with previous_html. Words such as text/button/layout no longer divert a selected image edit to a text model. Other document/table requests retain their existing routes.
+
+Added two regressions: the screenshot's Russian price-text edit and selected-element text edit. Full baseline 1349 vs candidate 1351 tests, same 29 existing failures, no new failures. Actual cloud/director run with isolated SQLite/uploads generated raster+canvas, then the screenshot's price edit with the exact persisted canvas_target returned a new raster (1217917 bytes) and canvas. Results in output/image-edit-2026-11-03/results.json. Backend and worker redeployed together with scoped source hashes, backup/rollback and release readiness verification. Frontend/client unchanged.

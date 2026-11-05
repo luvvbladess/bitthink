@@ -4,15 +4,15 @@ import { measure } from '@/api/performance';
 import { useSearchParams } from 'react-router-dom';
 import { apiFetch } from '@/api/client';
 import type { ConversationItem } from './ChatSidebar';
-import { lastConversation, rememberConversation } from '@/navigation/chatLocation';
+import { rememberConversation } from '@/navigation/chatLocation';
 
 export function useConversationNavigation(options: { onExternalSelection: () => void; onPersistError: (message: string) => void }) {
   const callbacks = useRef(options);
   callbacks.current = options;
   const [searchParams, setSearchParams] = useSearchParams();
-  const openNewChat = searchParams.get('new') === '1';
+  const openNewChat = searchParams.get('new') === '1' || !searchParams.get('c');
   const requestedConversation = searchParams.get('c');
-  const [activeConvId, setActiveConvId] = useState<string | undefined>(() => openNewChat ? undefined : requestedConversation || lastConversation());
+  const [activeConvId, setActiveConvId] = useState<string | undefined>(() => openNewChat ? undefined : requestedConversation || undefined);
   const activeConvRef = useRef(activeConvId);
   activeConvRef.current = activeConvId;
   const appliedLocationRef = useRef(requestedConversation);
@@ -57,10 +57,6 @@ export function useConversationNavigation(options: { onExternalSelection: () => 
     appliedLocationRef.current = null;
     if (activeConvId) {
       setSearchParams({ c: activeConvId }, { replace: true });
-    } else if (conversations.length) {
-      const restored = conversations.find((conversation) => conversation.is_active) || conversations[0];
-      setActiveConvId(restored.id);
-      setSearchParams({ c: restored.id }, { replace: true });
     }
   }, [activeConvId, conversations, openNewChat, requestedConversation, setSearchParams]);
 

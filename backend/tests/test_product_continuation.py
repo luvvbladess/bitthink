@@ -44,7 +44,13 @@ def test_planner_keeps_question_and_new_product_separate_from_existing_project(d
         workspaces.reset(token)
 
 
-def test_empty_registry_still_uses_semantic_product_decision(monkeypatch):
+@pytest.mark.parametrize('text', [
+    'Создай сайт для учёта заказов',
+    'Сделай сайт по этому промпту: тёмная тема и форма заявки',
+    'По промпту ниже собери лендинг кофейни',
+    'Напиши промпт и собери по нему лендинг',
+])
+def test_empty_registry_still_uses_semantic_product_decision(monkeypatch, text):
     import director_router as dr
     from app.services import autonomy
     from conversations import conversation_manager
@@ -72,9 +78,9 @@ def test_empty_registry_still_uses_semantic_product_decision(monkeypatch):
     context_token = workspaces.set([])
     product_token = autonomy.product_evidence.set({})
     try:
-        answer, _, _, _ = asyncio.run(dr._run_director([], 'Создай сайт для учёта заказов', 92001, None))
+        answer, _, _, _ = asyncio.run(dr._run_director([], text, 92001, None))
         assert executed == ['brief', 'build']
-        assert 'Сборка и тесты текущей версии пройдены' in answer
+        assert '[!SUCCESS]' in answer and 'Сборка' in answer and 'Тесты' in answer
     finally:
         workspaces.reset(context_token)
         autonomy.product_evidence.reset(product_token)
@@ -83,6 +89,14 @@ def test_empty_registry_still_uses_semantic_product_decision(monkeypatch):
 @pytest.mark.parametrize('text', [
     'Нужна удобная штука для учёта заказов',
     'создай полноценный доклад про частицу тахеон, оформи в ворд и положи на гугл диск',
+    'сделай промпт для сайта кофейни',
+    'напиши промпт, по которому можно создать лендинг',
+    'Разработай ТЗ на сайт, сам сайт не собирай',
+    'сделай доклад про сайт конкурента',
+    'не создавай сайт, напиши промпт для него',
+    'Create a prompt for a landing page',
+    'Напиши промпт для сайта.\nСоздай современный лендинг кофейни, тёмная тема',
+    'сделай кнопку для сайта',
 ])
 def test_ordinary_request_does_not_start_product_acceptance(monkeypatch, text):
     import director_router as dr
@@ -124,6 +138,7 @@ def test_ordinary_request_does_not_start_product_acceptance(monkeypatch, text):
         workspaces.reset(context_token)
         autonomy.product_evidence.reset(product_token)
     assert 'brief' not in phases and 'build' not in phases
+    assert '[!SUCCESS]' not in answer
     assert 'Сборка и тесты' not in answer
     assert 'Браузерная проверка' not in answer
 
@@ -182,8 +197,132 @@ def test_followup_revises_existing_sources_before_acceptance(monkeypatch, source
         workspaces.reset(context_token)
     if source_available:
         assert len(executed) == 1
-        assert 'Сборка и тесты текущей версии пройдены' in answer
+        assert '[!SUCCESS]' in answer and 'Сборка' in answer and 'Тесты' in answer
         assert revisions[0]['product_id'] == PID
     else:
         assert executed == [] and revisions == []
         assert 'Прикрепите выданный ZIP-архив' in answer
+
+
+@pytest.mark.parametrize('text, revises', [
+    ('сделай промпт для этого сайта', False),
+    ('напиши промпт, по которому можно доработать этот сайт', False),
+    ('Напиши промпт для сайта.\nСоздай современный лендинг', False),
+    ('добавь форму заявки на сайт', True),
+])
+def test_existing_project_follows_the_requested_result(monkeypatch, text, revises):
+    import director_router as dr
+    from conversations import conversation_manager
+    from app.services import autonomy, sandbox_client
+    from app.services.desktop_context import desktop_executor
+    planned, revisions, phases = [], [], []
+    base = {'product_id': PID, 'path': f'products/{PID}', 'brief': 'Сайт кофейни.',
+            'stack': 'static', 'ready': True, 'packaged': True, 'archive': f'product-{PID}.zip'}
+
+    async def verified(uid, pid, package=False):
+        return {**base, 'ready': bool(phases), 'packaged': bool(phases)} if package else base
+
+    async def tool(name, args, uid):
+        revisions.append(args)
+        return __import__('json').dumps({**base, 'ready': False, 'packaged': False})
+
+    async def employee(item, round_num, journal, uid, *args):
+        phases.append(item.get('product_phase'))
+        return {'round': round_num, 'role': item['role'], 'task': item['task'], 'model': item['model'],
+                'status': 'ok', 'result': 'Edited'}
+
+    async def plan(*args, **kwargs):
+        planned.append(args[0] if args else text)
+        return {'status': 'continue', 'new_employees': [], 'workspace_action': 'revise', 'workspace_id': PID}
+
+    async def direct(*args, **kwargs):
+        return 'Вот промпт', '', []
+
+    monkeypatch.setattr(autonomy, 'verified_product', verified)
+    monkeypatch.setattr(autonomy, 'learn', lambda *args: None)
+    monkeypatch.setattr(sandbox_client, 'run_workspace_tool', tool)
+    monkeypatch.setattr(dr, '_execute_employee', employee)
+    monkeypatch.setattr(dr, '_plan_round', plan)
+    monkeypatch.setattr(dr, '_answer_directly', direct)
+    monkeypatch.setattr(dr, '_compose_answer', direct)
+    async def no_files(*args):
+        return []
+
+    monkeypatch.setattr(dr, '_new_file_names', no_files)
+    monkeypatch.setattr(dr, '_is_document_package_task', lambda *args: False)
+    monkeypatch.setattr(dr, '_is_shopping_task', lambda *args: False)
+    monkeypatch.setattr(dr, '_employee_models', lambda uid: list(dr.MODEL_POOL))
+    monkeypatch.setattr(conversation_manager, 'get_subscription', lambda uid: {'tier': 'creator'})
+    product_token = autonomy.product_evidence.set({})
+    desktop_token = desktop_executor.set(None)
+    context_token = workspaces.set([{'product_id': PID, 'artifact': f'product-{PID}.zip'}])
+    try:
+        answer, _, _, _ = asyncio.run(dr._run_director(HISTORY, text, 92001, None))
+    finally:
+        autonomy.product_evidence.reset(product_token)
+        desktop_executor.reset(desktop_token)
+        workspaces.reset(context_token)
+    if revises:
+        assert planned and revisions and phases == ['build']
+        assert '[!SUCCESS]' in answer
+    else:
+        assert planned == [] and revisions == [] and phases == []
+        assert answer == 'Вот промпт' and '[!SUCCESS]' not in answer
+
+
+@pytest.mark.parametrize('text, action, builds', [
+    ('Создай сайт для учёта заказов', 'reply', False),
+    ('сделай промпт для сайта кофейни', 'product', True),
+])
+def test_model_route_overrides_keyword_guess(monkeypatch, text, action, builds):
+    import director_router as dr
+    from app.services import autonomy
+    from conversations import conversation_manager
+    phases = []
+
+    async def route(*args, **kwargs):
+        return {'action': action, 'goal': 'проверка маршрута', 'workspace_id': ''}
+
+    async def plan(*args, **kwargs):
+        return {'status': 'continue', 'new_employees': [], 'workspace_action': 'create'}
+
+    async def employee(item, round_num, journal, uid, *args):
+        phases.append(item.get('product_phase'))
+        autonomy.product_evidence.get().update(product_id=PID, path=f'products/{PID}', stack='static', ready=False, packaged=False)
+        return {'round': round_num, 'role': item['role'], 'task': item['task'], 'model': item['model'],
+                'status': 'ok', 'result': 'Built'}
+
+    async def verified(*args, **kwargs):
+        return {'product_id': PID, 'path': f'products/{PID}', 'stack': 'static', 'ready': len(phases) >= 2,
+                'packaged': len(phases) >= 2, 'archive': f'product-{PID}.zip'}
+
+    async def direct(*args, **kwargs):
+        return 'Обычный ответ', '', []
+
+    monkeypatch.setattr(dr, '_route_turn', route)
+    monkeypatch.setattr(dr, '_plan_round', plan)
+    monkeypatch.setattr(dr, '_execute_employee', employee)
+    monkeypatch.setattr(dr, '_new_file_names', lambda *args: _empty())
+    monkeypatch.setattr(dr, '_answer_directly', direct)
+    monkeypatch.setattr(dr, '_compose_answer', direct)
+    monkeypatch.setattr(dr, '_is_document_package_task', lambda *args: False)
+    monkeypatch.setattr(dr, '_is_shopping_task', lambda *args: False)
+    monkeypatch.setattr(dr, '_employee_models', lambda uid: list(dr.MODEL_POOL))
+    monkeypatch.setattr(conversation_manager, 'get_subscription', lambda uid: {'tier': 'creator'})
+    monkeypatch.setattr(autonomy, 'verified_product', verified)
+    monkeypatch.setattr(autonomy, 'learn', lambda *args: None)
+    context_token = workspaces.set([])
+    product_token = autonomy.product_evidence.set({})
+    try:
+        answer, _, _, _ = asyncio.run(dr._run_director([], text, 92001, None))
+    finally:
+        workspaces.reset(context_token)
+        autonomy.product_evidence.reset(product_token)
+    if builds:
+        assert phases == ['brief', 'build'] and '[!SUCCESS]' in answer
+    else:
+        assert phases == [] and answer == 'Обычный ответ' and '[!SUCCESS]' not in answer
+
+
+async def _empty():
+    return []

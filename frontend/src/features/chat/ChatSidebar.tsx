@@ -1,13 +1,14 @@
 import { Fragment, useMemo, useRef, useState } from 'react';
 import {
-  Alert, Box, Button, Collapse, Dialog, DialogActions, DialogContent,
+  Alert, Box, Button, Collapse, Drawer, Dialog, DialogActions, DialogContent,
   DialogContentText, DialogTitle, Divider, IconButton, ListItemButton,
   ListItemIcon, Menu, MenuItem, TextField, Tooltip, Typography,
 } from '@mui/material';
 import type { ToolsMode } from './ConversationTools';
-import { ListChecks } from '@phosphor-icons/react';
+import { Desktop, ListChecks } from '@phosphor-icons/react';
 import { ArrowLeft, Check, CaretRight, DotsThree, FolderSimple, MagnifyingGlass, PencilSimple, Plus, Trash, Users, X } from '@phosphor-icons/react';
 import { useReducedMotion } from 'framer-motion';
+import { ComputerLink } from './ComputerLink';
 import { BrandLink } from '@/components/BrandMark';
 import { AccountMenu } from '@/components/AccountMenu';
 import { ProjectActions, type ProjectDeleted } from './ProjectActions';
@@ -88,6 +89,7 @@ function dateGroup(iso?: string): string {
 }
 
 export function ChatSidebar({ hasMore, loadingMore, onLoadMore, onTools, conversations, activeId, onSelect, onCreate, onDelete, onRename, onClose, onLibrary, generatingIds = [], projects = [], activeProjectId, onProject, onCreateProject, onMoveChat, onCreateInProject, onProjectDeleted }: Props) {
+  const [computerOpen, setComputerOpen] = useState(false);
   const reduce = useReducedMotion();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [dragTarget, setDragTarget] = useState<string | null>(null);
@@ -179,7 +181,7 @@ export function ChatSidebar({ hasMore, loadingMore, onLoadMore, onTools, convers
           aria-label={`Действия с беседой ${conv.title}`} aria-haspopup="menu" aria-expanded={menuOpen} aria-controls={menuOpen ? 'sidebar-conversation-menu' : undefined}
           onClick={e => { setMoveMenu(false); setRowMenu({ el: e.currentTarget, conv }); }} sx={{ ...actionSx, mr: 0.25 }}><DotsThree size={20} weight="bold" /></IconButton></Tooltip>}
       </>}
-    </Box>;
+  </Box>;
   };
 
   return <Box component="nav" aria-label="Беседы и проекты" sx={{ height: '100%', display: 'flex', flexDirection: 'column', width: { xs: '100%', md: 280 }, minWidth: 0, overflow: 'hidden', bgcolor: 'var(--bt-sidebar)', borderRight: onClose ? 'none' : '1px solid var(--bt-hairline)' }}>
@@ -193,6 +195,7 @@ export function ChatSidebar({ hasMore, loadingMore, onLoadMore, onTools, convers
       {onLibrary && <Button fullWidth startIcon={<FolderSimple size={18} weight="bold" />} onClick={onLibrary}
         sx={{ minHeight: 40, justifyContent: 'flex-start', px: 1.25, borderRadius: '8px', color: 'text.secondary', fontWeight: 400, fontSize: '0.875rem', '&:hover': { bgcolor: 'var(--bt-overlay-faint)', color: 'text.primary' } }}>Библиотека</Button>}
       {onTools && <Box sx={{ display: 'flex', gap: .5 }}><Button color="inherit" startIcon={<ListChecks size={17} />} onClick={() => onTools('tasks')} sx={{ minHeight: 40, flex: 1, justifyContent: 'flex-start', fontSize: 13 }}>Задачи</Button><Button color="inherit" startIcon={<Trash size={17} />} onClick={() => onTools('trash')} sx={{ minHeight: 40, flex: 1, justifyContent: 'flex-start', fontSize: 13 }}>Корзина</Button></Box>}
+      <Button color="inherit" startIcon={<Desktop size={18}/>} onClick={() => setComputerOpen(true)} aria-label="Бит Клиент — локальные беседы" sx={{ minHeight: 44, width: '100%', justifyContent: 'flex-start', px: 1.5, mb: 1, color: 'text.secondary', borderRadius: '8px' }}>Бит Клиент</Button>
       <TextField value={search} onChange={e => setSearch(e.target.value)} placeholder="Найти беседу" size="small" fullWidth
         inputProps={{ 'aria-label': 'Найти беседу', autoComplete: 'off' }}
         InputProps={{ startAdornment: <Box sx={{ display: 'flex', mr: 0.75, color: 'text.muted' }}><MagnifyingGlass size={17} weight="bold" /></Box>,
@@ -276,5 +279,12 @@ export function ChatSidebar({ hasMore, loadingMore, onLoadMore, onTools, convers
         <Button color="error" onClick={() => { if (confirmDelete) onDelete(confirmDelete.id); setConfirmDelete(null); }}>Удалить</Button>
       </DialogActions>
     </Dialog>
+      <Drawer anchor="right" open={computerOpen} onClose={() => setComputerOpen(false)} PaperProps={{ sx: { width: { xs: '100%', sm: 440 }, maxWidth: '100%', bgcolor: 'background.paper', p: { xs: 2, sm: 3 } } }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}><Typography component="h2" sx={{ flex: 1, fontSize: 20, fontWeight: 600 }}>Бит Клиент</Typography><IconButton aria-label="Закрыть Бит Клиент" onClick={() => setComputerOpen(false)}><X size={22}/></IconButton></Box>
+      <Typography sx={{ fontSize: 14, color: 'text.secondary', mb: 2 }}>Локальные беседы и задачи вашего компьютера. Подключение включается автоматически, когда приложение открыто.</Typography>
+      <Box component="ol" sx={{ pl: 2.5, m: 0, mb: 2, fontSize: 14, lineHeight: 1.65 }}><li>Откройте Бит Клиент версии 0.9.8 или новее.</li><li>Войдите в тот же аккаунт, что и на сайте.</li><li>Откройте папку проекта. Здесь появятся его беседы Оркестратора.</li></Box>
+      <Button component="a" href="/bitclient/" target="_blank" rel="noopener" variant="outlined" sx={{ alignSelf: 'flex-start', mb: 2 }}>Скачать Бит Клиент</Button>
+      {computerOpen && <ComputerLink/>}
+    </Drawer>
   </Box>;
 }

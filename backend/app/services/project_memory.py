@@ -188,6 +188,8 @@ def save(uid, pid, title, body, kind="note", source_url="", entry_id=None, expec
         keep = 5 if len(body) > 60000 else 20
         session.execute(delete(ProjectRevision).where(ProjectRevision.entry_id == row.id, ProjectRevision.number <= version + 1 - keep))
         session.commit()
+        from app.services.project_embeddings import schedule
+        schedule(uid, pid, [row.id])
         return {"id": row.id, "title": row.title, "kind": row.kind, "revision": version + 1}
 
 
@@ -261,6 +263,22 @@ def publish_document(uid, pid, cid, did, entry_id=None, expected_revision=None):
 
 
 def search(uid, pid, query="", limit=20):
+    from app.services import project_embeddings
+    limit = max(1, min(limit, 50))
+    hybrid = bool(query.strip()) and project_embeddings.enabled()
+    rows = _lexical_search(uid, pid, query, 50 if hybrid else limit)
+    if not hybrid:
+        return rows
+    try:
+        return project_embeddings.augment(uid, pid, query, rows, limit)
+    except Exception as exc:
+        # Provider or optional index failures must preserve the working search.
+        import logging
+        logging.getLogger(__name__).info('project_embedding_fallback reason=%s', type(exc).__name__)
+        return rows[:limit]
+
+
+def _lexical_search(uid, pid, query="", limit=20):
     from app.services.project_policy import filters
     stop = {'какой', 'какая', 'какие', 'найди', 'покажи', 'пожалуйста', 'нужно', 'можно', 'проекта', 'проект', 'для', 'что', 'это', 'как'}
     terms = set(re.findall(r"[\w-]{2,40}", query.casefold())) - stop

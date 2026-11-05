@@ -28,9 +28,10 @@ async def update_memory(payload: MemoryUpdate, user_id: str = Depends(get_curren
         fields["enabled"] = payload.enabled
     if payload.notes is not None:
         fields["notes"] = sanitize_notes(payload.notes)
+        fields["reset_source"] = True
     return _public(await repo.save_user_memory(user_id, **fields))
 
 
 @router.delete("", response_model=MemoryOut)
 async def clear_memory(user_id: str = Depends(get_current_user)):
-    return _public(await repo.save_user_memory(user_id, notes="", last_hash=""))
+    return _public(await repo.save_user_memory(user_id, notes="", last_hash="", reset_source=True))

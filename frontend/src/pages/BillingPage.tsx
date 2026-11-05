@@ -116,7 +116,7 @@ export default function BillingPage() {
           ? 'Лимитов нет. Ниже оценка расхода по ценам API за сегодня и за месяц.'
           : isFree
             ? '30 ответов в день, из них до 15 с поиском. Дневной лимит обновляется по Москве.'
-            : 'Один запас для чата, Оркестратора и Студии. Ограничения на 5 часов, неделю и месяц действуют одновременно.'
+            : 'Один запас для чата, Оркестратора и холста. Ограничения на 5 часов, неделю и месяц действуют одновременно.'
       }
     >
       {error && <Alert severity="warning" action={<Button color="inherit" onClick={() => void refetch()}>Обновить</Button>}>Не удалось обновить остаток. Показаны последние загруженные данные.</Alert>}
@@ -205,7 +205,7 @@ export default function BillingPage() {
       ) : (
         <AccountSection title="Что осталось" hint="Работу ограничивает тот период, в котором запас закончится первым.">
           <Stack spacing={3}>
-            <PoolBlock icon={<ChatText size={18} weight="bold" />} title="Общий запас" hint="Чат, Оркестратор и Студия расходуют один бюджет.">
+            <PoolBlock icon={<ChatText size={18} weight="bold" />} title="Общий запас" hint="Чат, Оркестратор и холст расходуют один бюджет.">
               <WindowMeters family={sub?.windows?.shared || sub?.windows?.chat} />
             </PoolBlock>
             <PoolBlock icon={<Image size={18} weight="bold" />} title="Картинки">
@@ -229,7 +229,7 @@ export default function BillingPage() {
       {!sub?.unlimited && (
         <AccountSection title="Как расходуется запас" hint="Единицы зависят от модели, длины контекста и ответа. Собственный поиск не имеет отдельной платы; обработка найденного моделью расходует общий запас. Контекст больше 272 тыс. входных токенов считается вдвойне.">
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
-            {Object.entries(sub?.multipliers || { 'Luna / Nano': 1, Kimi: 9, DeepSeek: 9, Sol: 20, Astra: 100 }).map(
+            {Object.entries(sub?.multipliers || { 'Luna / Nano': 1, Поиск: 1, DeepSeek: 9, Sol: 20, Astra: 100 }).map(
               ([name, factor]) => (
                 <Box
                   key={name}

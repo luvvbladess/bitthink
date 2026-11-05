@@ -212,6 +212,8 @@ export function DesignCanvas({ source, thinking = false, statusText = '', compac
   return (
     <Box
       ref={shellRef}
+      role="region"
+      aria-label="Холст"
       sx={{
         flex: 1,
         minWidth: 0,
@@ -408,7 +410,7 @@ export function DesignCanvas({ source, thinking = false, statusText = '', compac
                 >
                   <iframe
                     ref={iframeRef}
-                    title="Холст Студии"
+                    title="Холст"
                     sandbox="allow-scripts allow-downloads"
                     style={{
                       position: 'absolute',
@@ -426,7 +428,7 @@ export function DesignCanvas({ source, thinking = false, statusText = '', compac
               ) : (
               <iframe
                 ref={iframeRef}
-                title="Холст Студии"
+                title="Холст"
                 sandbox="allow-scripts allow-downloads"
                 style={{
                   width: '100%',
@@ -465,7 +467,7 @@ export function DesignCanvas({ source, thinking = false, statusText = '', compac
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.35 }}>
                     <CircularProgress size={12} thickness={5} />
                     <Box sx={{ fontSize: '0.7rem', letterSpacing: '0.16em', textTransform: 'uppercase', color: 'text.secondary' }}>
-                      Студия
+                      Обновляю макет
                     </Box>
                   </Box>
                   <ActivityFeed statusText={statusText || 'Думаю'} />
@@ -498,10 +500,11 @@ export function DesignCanvas({ source, thinking = false, statusText = '', compac
         )}
       </Box>
       {doc && onEdit && <Box sx={{ flexShrink: 0, borderTop: '1px solid var(--bt-hairline)', bgcolor: 'var(--bt-panel)', p: 1.25 }}>
-        {!isLatest ? <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
+        {!isLatest && <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: .75 }}>
           <Box sx={{ fontSize: '0.8125rem', color: 'text.secondary' }}>Просмотр предыдущей версии</Box>
           <Button onClick={() => onVersion?.(versions[versions.length - 1])}>К последней</Button>
-        </Box> : <>
+        </Box>}
+        <>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.75 }}>
             <Button size="small" disabled={thinking} variant={selecting ? 'outlined' : 'text'} startIcon={<CursorClick size={16} />}
               aria-pressed={selecting} onClick={() => { const next = !selecting; setSelecting(next); if (!next) setSelection(null); iframeRef.current?.contentWindow?.postMessage({ type: 'bt-select-mode', enabled: next }, '*'); }}>
@@ -512,14 +515,14 @@ export function DesignCanvas({ source, thinking = false, statusText = '', compac
             </Box>
           </Box>
           <Box component="form" onSubmit={(event) => { event.preventDefault(); if (!change.trim() || thinking) return;
-            onEdit(selection ? selectionPrompt(selection, change) : `В текущем макете: ${change.trim()}. Сохрани остальные элементы и содержание.`); setChange(''); }}
+            onEdit(selection ? selectionPrompt(selection, change) : `Измени текущий макет: ${change.trim()}. Сохрани остальные элементы и содержание.`); setChange(''); }}
             sx={{ display: 'flex', alignItems: 'flex-end', gap: 1 }}>
             <TextField fullWidth multiline maxRows={3} size="small" value={change} disabled={thinking}
               onChange={(event) => setChange(event.target.value)} placeholder={selection ? 'Что изменить в выбранном элементе?' : 'Например: сделай фон светлее'}
               inputProps={{ 'aria-label': 'Что изменить в макете?' }} />
             <Button type="submit" variant="contained" disabled={thinking || !change.trim()} sx={{ minHeight: 40 }}>Применить</Button>
           </Box>
-        </>}
+        </>
       </Box>}
 
     </Box>
@@ -533,6 +536,7 @@ export function isHtmlAttachment(name?: string, url?: string, mime?: string) {
 
 export function findStudioCanvas(
   messages: Array<{
+    role?: string;
     attachment?: {
       name?: string;
       url?: string;
@@ -544,6 +548,7 @@ export function findStudioCanvas(
   }>,
 ): StudioCanvasSource | null {
   for (const message of [...messages].reverse()) {
+    if (message.role && message.role !== 'assistant') continue;
     const attachment = message.attachment;
     if (attachment) {
       const items = [attachment, ...(attachment.files || [])];

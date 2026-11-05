@@ -1,0 +1,8 @@
+<resources>
+ <color name="primary">#75D1F0</color><color name="on_primary">#003545</color>
+ <color name="primary_container">#004D62</color><color name="on_primary_container">#BAEAFA</color>
+ <color name="surface">#0C1012</color><color name="surface_variant">#1C2427</color>
+ <color name="on_surface">#F2F4F5</color><color name="on_surface_variant">#C5CBCE</color>
+ <color name="outline">#8A9BA1</color><color name="error">#FFB4AB</color>
+ <color name="message_paper">#161C1E</color>
+</resources>

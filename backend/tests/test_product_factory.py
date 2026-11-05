@@ -242,6 +242,7 @@ def test_tool_catalog_and_dispatch(workspace):
 @pytest.mark.parametrize('complete', [False, True])
 def test_actual_orchestrator_requires_tool_evidence_and_preserves_project(workspace, monkeypatch, complete):
     import director_router as dr
+    from app.services import product_response
     from conversations import conversation_manager
     from computer_tools import run_computer_tool
     monkeypatch.delenv('SANDBOX_URL', raising=False)
@@ -257,6 +258,9 @@ def test_actual_orchestrator_requires_tool_evidence_and_preserves_project(worksp
         return {'status': 'continue', 'new_employees': []}
     monkeypatch.setattr(dr, '_new_file_names', names)
     monkeypatch.setattr(dr, '_compose_answer', compose)
+    async def explain(task, product, uid, **kwargs):
+        return 'Собрано приложение для расчёта скидок.\n\n' + product_response.acceptance_note(product), ''
+    monkeypatch.setattr(product_response, 'compose_product_response', explain)
     monkeypatch.setattr(dr, '_plan_round', plan)
     rounds = []
     async def employee(item, round_num, journal, uid, *args):
@@ -279,7 +283,7 @@ def test_actual_orchestrator_requires_tool_evidence_and_preserves_project(worksp
         autonomy.product_evidence.reset(token)
     assert rounds[:2] == ['brief', 'build']
     if complete:
-        assert 'Сборка и тесты текущей версии пройдены' in answer
+        assert 'приложение для расчёта скидок' in answer and '[!SUCCESS]' in answer
         assert len(rounds) == 2
     else:
         assert 'Готовность не подтверждена' in answer

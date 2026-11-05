@@ -24,10 +24,12 @@ function read(): Record<string, string> {
 }
 
 export function conversationMode(id: string): string | undefined {
-  return read()[id];
+  const saved = read()[id];
+  return saved === 'studio' ? 'auto' : saved;
 }
 
 export function rememberConversationMode(id: string, model: string) {
+  if (model === 'studio') model = 'auto';
   if (!id || !model) return;
   const all = read();
   if (all[id] === model) return;

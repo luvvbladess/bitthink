@@ -48,6 +48,16 @@ def _completed(*output):
     return [NS(type="response.completed", response=_response(list(output)))]
 
 
+def test_bounded_writer_caps_output_without_adding_tools(monkeypatch):
+    requests=[]
+    async def create(**request):
+        requests.append(request);return _Stream(_completed(_message('Доклад готов')))
+    monkeypatch.setattr(oc,'client',NS(responses=NS(create=create)))
+    result=asyncio.run(oc.get_chat_response([{'role':'user','content':'Напиши доклад'}],model='gpt-6-sol',use_tools=False,use_skills=False,output_token_limit=6000))
+    assert requests[0]['max_output_tokens']==6000 and not requests[0].get('tools')
+    assert len(requests)==1 and result[0]=='Доклад готов'
+
+
 def test_parallel_read_results_keep_call_ids_in_responses_loop(monkeypatch):
     import computer_tools
     active = peak = 0
@@ -108,6 +118,26 @@ def test_a_greeting_in_search_mode_is_just_answered(monkeypatch):
     result, requests = _run(monkeypatch, [_completed(_message("Привет!"))], text="привет")
     assert "tool_choice" not in requests[0]
     assert result[0] == "Привет!"
+
+
+def test_calculation_tool_is_required_once_and_result_reaches_answer(monkeypatch):
+    requests = []
+    call = NS(type='function_call', name='calculate', arguments='{"expression":"0.1+0.2"}', call_id='calc-1', id='calc-1')
+    scripted = [_completed(call), _completed(_message('0.3'))]
+    async def create(**request):
+        requests.append(request)
+        return _Stream(scripted.pop(0))
+    monkeypatch.setattr(oc, 'client', NS(responses=NS(create=create)))
+    result = asyncio.run(oc.get_chat_response([{'role':'user','content':'Вычисли 0.1+0.2'}],
+        model='gpt-6-luna', use_tools=True, use_skills=False, chat_tools=True,
+        allowed_tools=frozenset({'calculate'}), required_first_tool='calculate', max_tool_loops=3))
+    assert requests[0]['tool_choice'] == {'type':'function','name':'calculate'}
+    assert {t.get('name') for t in requests[0]['tools']} == {'calculate'}
+    assert 'tool_choice' not in requests[1]
+    outputs = [i for i in requests[1]['input'] if isinstance(i,dict) and i.get('type') == 'function_call_output']
+    assert len(outputs) == 1 and outputs[0]['call_id'] == 'calc-1'
+    assert '3/10' in outputs[0]['output']
+    assert result[0] == '0.3'
 
 
 def test_the_demand_is_made_once_not_on_every_hop(monkeypatch):

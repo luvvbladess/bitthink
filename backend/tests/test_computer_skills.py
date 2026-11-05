@@ -98,8 +98,8 @@ def test_skills_catalog_covers_core_playbooks():
     catalog.cache_clear()
     names = {item["name"] for item in catalog()}
     from computer_skills.adaptations import registry
-    adapted = {name for name, row in registry().items() if row['adaptation'] == 'builtin'}
-    assert names == EXPECTED_SKILLS | adapted
+    adapted = {name for name, row in registry().items() if row['adaptation'] == 'builtin' and not row.get('alias_of')}
+    assert names == EXPECTED_SKILLS | adapted | {"technical_docs"}
     text = load_skill("humanize")
     assert "канцелярита" in text or "живой" in text.lower()
     assert "самодостаточный HTML" in load_skill("canvas")
@@ -129,7 +129,8 @@ def test_match_skills_preloads_photo_and_code_playbooks():
     assert match_skills("привет") == []
     assert "infographic" in match_skills("сделать схему процесса ERS")
     site = match_skills("Сделай сайт завода")
-    assert site[:4] == ["impeccable", "ui_ux_pro_max", "emil_design_eng", "visual_system"]
+    assert site == ["impeccable"]
+    assert len(match_skills("Сделай сайт с анимацией", limit=2)) <= 2
     assert "browser" not in site
     info = match_skills("Сделай инфографику по выпуску")
     assert "impeccable" in info and "infographic" in info

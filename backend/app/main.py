@@ -12,7 +12,7 @@ from app.db import models as _db_models  # noqa: F401 — register tables for cr
 from app.api import admin, auth, chat, conversations, models_router, documents, editor, media, billing, usage, connectors, memory, skills, share
 from app.db.base import Base
 from app.db.engine import sync_engine
-from app.api import marketplace_relay, desktop, computer
+from app.api import marketplace_relay, desktop, desktop_link, computer
 from app.api import projects
 from app.api import diagnostics
 from app.api import autonomy
@@ -101,6 +101,7 @@ def create_app() -> FastAPI:
     app.include_router(skills.router, prefix="/skills", tags=["skills"])
     app.include_router(marketplace_relay.router, prefix="/marketplace-relay", tags=["home-reader"])
     app.include_router(desktop.router, prefix="/desktop", tags=["desktop"])
+    app.include_router(desktop_link.router, prefix="/desktop/link", tags=["desktop-link"])
     app.include_router(computer.router, prefix="/computer", tags=["computer"])
     app.include_router(projects.router, prefix="/projects", tags=["projects"])
     app.include_router(diagnostics.router, prefix='/diagnostics', tags=['diagnostics'])

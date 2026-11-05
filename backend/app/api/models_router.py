@@ -22,7 +22,7 @@ WEB_MODEL_INFO = {
     "director": {"name": "Оркестратор", "description": "Раздаёт должности подходящим ИИ-агентам в песочнице и собирает результат"},
     "studio": {"name": "Студия", "description": "Картинки, слайды и инфографика на холсте"},
     "docgen": {"name": "Документы", "description": "Большой .docx или комплект документов по промпту и вашим файлам"},
-    "kimi-k2.6": {"name": "Поиск в интернете", "description": "Актуальные данные и источники"},
+    "search": {"name": "Поиск в интернете", "description": "Актуальные данные и источники"},
     "gpt-5-nano": {"name": "Быстрый ответ (GPT-5 Nano)", "description": "Мгновенные ответы на простые вопросы"},
     "gpt-6-luna": {"name": "Быстрый", "description": "Повседневные вопросы пачками, с минимальным расходом"},
     "gpt-6-sol": {"name": "Эксперт", "description": "Сложный код, агенты и многошаговые задачи"},
@@ -33,7 +33,7 @@ WEB_MODEL_INFO = {
 
 # Perplexity-like public surface: users choose an intent, not a provider catalog.
 # Hidden routes remain available internally to Auto, OCR and specialist pipelines.
-PUBLIC_MODEL_IDS = ["gpt-6.1-terra", "auto", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra", "director", "studio", "docgen"]
+PUBLIC_MODEL_IDS = ["gpt-6.1-terra", "auto", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra", "director", "docgen"]
 
 # The API lets Sol and Luna run up to max. The product dial keeps max on Astra
 # so everyday Luna does not burn reasoning tokens, and xhigh on Sol and Astra.
@@ -71,7 +71,7 @@ async def list_models(user_id: str = Depends(get_current_user)):
     tier = effective_tier(subscription)
     allowed = _allowed_for(tier)
     selected_model = await repo.get_user_model(user_id)
-    clamped = clamp_model(tier, selected_model)
+    clamped = clamp_model(tier, 'auto' if selected_model == 'studio' else selected_model)
     if clamped != selected_model:
         await repo.set_user_model(user_id, clamped)
         selected_model = clamped
@@ -100,20 +100,23 @@ async def list_models(user_id: str = Depends(get_current_user)):
         "xhighCapable": selected_model in XHIGH_CAPABLE_MODELS or selected_model in MAX_CAPABLE_MODELS,
         "supportsReasoningEffort": selected_model in REASONING_EFFORT_CAPABLE_MODELS,
         "researchModel": research,
-        "searchAvailable": "kimi-k2.6" in allowed,
+        "searchAvailable": "search" in allowed,
         "computerAvailable": "director" in allowed,
         "studioAvailable": "studio" in allowed,
+        "canvasAvailable": "studio" in allowed,
         "docgenAvailable": "docgen" in allowed,
         "astraAvailable": "gpt-6-astra" in allowed,
         "modeRequirements": {'research': 'Нужен Pro', 'astra': 'Нужен Pro+', 'studio': 'Нужен Pro',
             'computer': 'Нужен Pro', 'docgen': 'Внутренний режим Creator'},
-        "multipliers": MODEL_MULTIPLIER,
+        "multipliers": {m:v for m,v in MODEL_MULTIPLIER.items() if not m.startswith("kimi-")},
     }
 
 
 @router.post("/select")
 async def select_model(data: ModelSelect, user_id: str = Depends(get_current_user)):
     requested = LEGACY_MODEL_ALIASES.get(data.model, data.model)
+    if requested == 'studio':
+        requested = 'auto'
     if requested not in bot_config.AVAILABLE_MODELS:
         raise HTTPException(status_code=400, detail="Unknown model")
     subscription = await repo.get_subscription(user_id)

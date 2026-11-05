@@ -1474,6 +1474,7 @@ class DatabaseConversationManager:
         enabled: bool | None = None,
         last_hash: str | None = None,
         updated_at: int | None = None,
+        reset_source: bool = False,
     ) -> dict:
         import time
 
@@ -1488,6 +1489,9 @@ class DatabaseConversationManager:
                 row.enabled = enabled
             if last_hash is not None:
                 row.last_hash = last_hash
+            if reset_source:
+                cutoff=session.scalar(select(func.max(Message.id)).where(Message.conversation_id.in_(select(Conversation.id).where(Conversation.user_id==user_id)))) or 0
+                row.last_hash=f'@{cutoff}:'
             if updated_at is not None:
                 row.updated_at = int(updated_at)
             elif notes is not None:

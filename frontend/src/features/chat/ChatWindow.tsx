@@ -17,7 +17,7 @@ import { CHAT_COL, CLARIFY_SCROLL_PAD, COMPOSER_SCROLL_PAD, HEADER_SCROLL_PAD } 
 import { isClarifyMessage, isClarifyReply } from './clarify';
 import { CaretDown, CaretUp, Desktop, Presentation } from '@phosphor-icons/react';
 import { useSelectModel, useModelsQuery } from '@/components/ModelSelector';
-import { DOCGEN_LABEL, PILOT_LABEL, STUDIO_LABEL } from '@/constants/modes';
+import { DOCGEN_LABEL, PILOT_LABEL } from '@/constants/modes';
 import { BrandMark } from '@/components/BrandMark';
 import { followUpChips, followUpMode } from './followUps';
 import { normalizeMarkdown } from './markdownText';
@@ -79,7 +79,7 @@ const SUGGESTIONS: Suggestion[] = [
   { label: 'Что нового в мире', text: 'Что главное произошло сегодня в мире? Коротко и по источникам.', icon: Newspaper },
   { label: 'Разобрать документ', text: 'Разбери прикреплённый документ: краткое содержание, ключевые выводы и вопросы, требующие внимания.', icon: Paperclip },
   { label: 'Сравнить предложения', text: 'Сравни предложения из прикреплённых файлов по цене, условиям и рискам. Сначала уточни, чего не хватает для сравнения.', icon: ArrowsLeftRight },
-  { label: 'Подготовить презентацию', text: 'Помоги подготовить презентацию. Сначала уточни тему, аудиторию, цель и количество слайдов, затем предложи план и подходящий режим.', icon: Presentation },
+  { label: 'Подготовить презентацию', text: 'Создай презентацию. Тема: ', icon: Presentation },
   { label: 'Найти ошибку в коде', text: 'Помоги найти ошибку в куске кода и как её чинить.', icon: Bug },
 ];
 
@@ -93,13 +93,6 @@ const COMPUTER_SUGGESTIONS = [
   { label: 'Место по фото', text: 'По фото найди, где это снято, и открой источники, а не угадывай по виду.' },
   { label: 'Перескажи сайт', text: 'Зайди на сайт и кратко перескажи главное, со ссылками.' },
   { label: 'Проверь почту', text: 'Проверь непрочитанные письма в Gmail и скажи, что требует ответа.' },
-];
-
-const STUDIO_SUGGESTIONS = [
-  { label: 'Презентация', text: 'Создай презентацию на тему: ' },
-  { label: 'Сайт', text: 'Создай сайт: ' },
-  { label: 'Приложение', text: 'Создай интерактивное приложение: ' },
-  { label: 'Инфографика', text: 'Создай инфографику на тему: ' },
 ];
 
 const DOCGEN_SUGGESTIONS = [
@@ -210,16 +203,12 @@ export function ChatWindow({
   const lastAssistantText = [...listMessages].reverse().find((m) => m.role === 'assistant')?.content || '';
   const { data: models } = useModelsQuery();
   const isComputer = models?.selected === 'director';
-  const isStudio = models?.selected === 'studio';
   const isDocgen = models?.selected === 'docgen';
   const computerAvailable = Boolean(models?.computerAvailable);
-  const studioAvailable = Boolean(models?.studioAvailable);
   const selectModel = useSelectModel();
   const suggestions = isDocgen
     ? DOCGEN_SUGGESTIONS
-    : isStudio
-      ? STUDIO_SUGGESTIONS
-      : isComputer
+    : isComputer
         ? COMPUTER_SUGGESTIONS
         : SUGGESTIONS;
   const suggestionActions = (
@@ -429,7 +418,7 @@ export function ChatWindow({
     >
       <Box ref={columnRef} sx={{
         ...CHAT_COL,
-        ...(splitPane ? { maxWidth: '100%', px: { xs: 1.25, sm: 1.75 } } : {}),
+        ...(splitPane ? { maxWidth: '100%', px: { xs: 1.25, sm: 1.75 }, pr: { md: 6 } } : {}),
         pt: HEADER_SCROLL_PAD,
         // Empty desktop chat already reserves the dock in its heading slot.
         // Replies use bottom padding instead, so a growing composer is counted once.
@@ -482,87 +471,26 @@ export function ChatWindow({
                   {DOCGEN_LABEL} включены
                 </Box>
               )}
-              {!isComputer && !isStudio && !isDocgen && (
+              {!isComputer && !isDocgen && (
                 <Box sx={{ color: 'text.secondary', fontSize: '0.875rem', mb: 0.75 }}>{greeting(firstName)}</Box>
               )}
-              <Box sx={{ fontSize: { xs: '1.5rem', md: '1.85rem' }, fontWeight: 600, letterSpacing: '-0.035em', mb: isComputer || isStudio || isDocgen ? 0.75 : { xs: 2.5, md: 3 }, lineHeight: 1.15, textWrap: 'balance', color: 'text.primary' }}>
-                {isDocgen ? 'Что собрать?' : isStudio ? 'Что создадим?' : isComputer ? 'Над чем поработаем?' : 'С чего начнём?'}
+              <Box sx={{ fontSize: { xs: '1.5rem', md: '1.85rem' }, fontWeight: 600, letterSpacing: '-0.035em', mb: isComputer || isDocgen ? 0.75 : { xs: 2.5, md: 3 }, lineHeight: 1.15, textWrap: 'balance', color: 'text.primary' }}>
+                {isDocgen ? 'Что собрать?' : isComputer ? 'Над чем поработаем?' : 'С чего начнём?'}
               </Box>
-              {(isComputer || isStudio || isDocgen) && (
+              {(isComputer || isDocgen) && (
               <Box sx={{ color: 'text.secondary', mb: 2.25, fontSize: '0.9375rem', mx: 'auto', maxWidth: '40ch', lineHeight: 1.5 }}>
                 {isDocgen
                   ? 'Прикрепите шаблоны и базу — Word, PDF, Excel или zip. Соберёт .docx. Перед генерацией покажет план и спросит подтверждение.'
-                  : isStudio
-                    ? 'Опишите идею — результат появится на холсте. Затем меняйте его сообщением или выберите нужный элемент.'
-                    : isComputer
+                  : isComputer
                       ? 'Опишите нужный результат и прикрепите материалы, если они есть. Оркестратор выполнит работу с файлами, поиском и инструментами, а затем покажет итог.'
                       : ''}
               </Box>
               )}
-              {!isComputer && !isStudio && !isDocgen && suggestionActions}
+              {!isComputer && !isDocgen && suggestionActions}
               {composerSlotRef && (
                 <Box ref={composerSlotRef} aria-hidden sx={{ height: 'var(--bt-composer-h, 112px)', mb: 2.5 }} />
               )}
-              {!isComputer && !isStudio && !isDocgen && studioAvailable && (
-                <Box
-                  component="button"
-                  type="button"
-                  aria-label={`Включить ${STUDIO_LABEL}: живой холст со слайдами, картинками и инфографикой`}
-                  onClick={() => selectModel.mutate('studio')}
-                  sx={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 1.25,
-                    width: '100%',
-                    maxWidth: 420,
-                    mx: 'auto',
-                    mb: 1.5,
-                    px: 1.5,
-                    py: 1.25,
-                    minHeight: 64,
-                    textAlign: 'left',
-                    border: '1px solid var(--bt-line)',
-                    borderRadius: '16px',
-                    bgcolor: 'var(--bt-panel)',
-                    color: 'text.primary',
-                    font: 'inherit',
-                    cursor: 'pointer',
-                    transition: 'border-color 0.16s cubic-bezier(0.23, 1, 0.32, 1), background-color 0.16s cubic-bezier(0.23, 1, 0.32, 1)',
-                    '&:hover': { bgcolor: 'var(--bt-glow)', borderColor: 'primary.main' },
-                    '&:active': { transform: 'scale(0.99)' },
-                    '@media (prefers-reduced-motion: reduce)': {
-                      '&:active': { transform: 'none' },
-                    },
-                    '&:focus-visible': {
-                      outline: '2px solid',
-                      outlineColor: 'primary.main',
-                      outlineOffset: 2,
-                    },
-                  }}
-                >
-                  <Box
-                    sx={{
-                      width: 40,
-                      height: 40,
-                      borderRadius: '12px',
-                      flexShrink: 0,
-                      display: 'grid',
-                      placeItems: 'center',
-                      bgcolor: 'var(--bt-glow)',
-                      color: 'primary.light',
-                    }}
-                  >
-                    <Presentation size={20} weight="bold" />
-                  </Box>
-                  <Box sx={{ minWidth: 0, flex: 1 }}>
-                    <Box sx={{ fontWeight: 600, fontSize: '0.9375rem', letterSpacing: '-0.02em' }}>{STUDIO_LABEL}</Box>
-                    <Box sx={{ color: 'text.secondary', fontSize: '0.8125rem', lineHeight: 1.4, mt: 0.2 }}>
-                      Презентации, лендинг и дашборд на живом холсте
-                    </Box>
-                  </Box>
-                </Box>
-              )}
-              {!isComputer && !isStudio && !isDocgen && computerAvailable && (
+              {!isComputer && !isDocgen && computerAvailable && (
                 <Box
                   component="button"
                   type="button"
@@ -635,7 +563,7 @@ export function ChatWindow({
                   </Box>
                 </Box>
               )}
-              {(isComputer || isStudio || isDocgen) && suggestionActions}
+              {(isComputer || isDocgen) && suggestionActions}
             </motion.div>
           </Box>
         )}
@@ -707,7 +635,7 @@ export function ChatWindow({
           )}
         </AnimatePresence>
 
-        {chipsHost &&
+        <>{chipsHost &&
           nextChips.length > 0 &&
           createPortal(
             <Box
@@ -739,12 +667,12 @@ export function ChatWindow({
               ))}
             </Box>,
             chipsHost,
-          )}
+          )}</>
         <div ref={bottomRef} />
         {onClarifySelection && !thinking && <SelectionClarify rootRef={scrollerRef} onClarify={onClarifySelection} canEdit={pick => resultReferences(listMessages.find(msg => msg.id === pick.messageId)?.search).filter(ref => ref.type === 'report').length === 1} onEdit={onEditResult ? pick => { const ref = resultReferences(listMessages.find(msg => msg.id === pick.messageId)?.search).filter(ref => ref.type === 'report'); if (ref.length === 1) onEditResult(ref[0], pick.text); } : undefined} />}
       </Box>
     </Box>
-    <DialogueRail scroller={scrollerNode} questions={questionTicks} onJump={jumpToQuestion} />
+    <DialogueRail splitPane={splitPane} scroller={scrollerNode} questions={questionTicks} onJump={jumpToQuestion} />
     {visibleMessages.length > 0 && (jump.up || jump.down) && (
       <Box
         sx={{

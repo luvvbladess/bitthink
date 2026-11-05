@@ -3,6 +3,7 @@ import { Eye, FileText, FilePdf, FileXls, FileDoc, CheckCircle, WarningCircle, T
 import { canPreviewDocument, useDocumentPreview } from '@/features/editor/DocumentPreview';
 import { isEditableDocument, useEditorEnabled, useEditorStore } from '@/features/editor/DocumentEditor';
 import { downloadCanvasFromUrl } from './studioExport';
+import { useCanvasNavigation } from './CanvasNavigation';
 
 export interface AttachmentInfo {
   name: string;
@@ -42,7 +43,7 @@ function formatSize(bytes?: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
 }
 
-export function DocumentAttachment({ name, size, status, type, url, note, progress, progressLabel, onRemoveFromContext, previewHtml }: Props) {
+export function DocumentAttachment({ name, size, status = 'done', type, url, canvas, note, progress, progressLabel, onRemoveFromContext, previewHtml }: Props) {
   const Icon = iconForFile(name);
   const isImage = type === 'image';
   const editorEnabled = useEditorEnabled();
@@ -52,21 +53,30 @@ export function DocumentAttachment({ name, size, status, type, url, note, progre
   const html = /\.html?$/i.test(name);
   const canPreview = status === 'done' && type !== 'image' && (canPreviewDocument(name) || type === 'audio' || type === 'video') && (!html || !!url || !!previewHtml);
   const openPreview = useDocumentPreview(state => state.open);
+  const openCanvas = useCanvasNavigation();
+  const canOpenCanvas = status === 'done' && Boolean(openCanvas && (canvas || (type === 'generated' && html)) && (url || previewHtml));
+  const showPreview = () => {
+    if (canOpenCanvas) openCanvas?.({ name, url, html: previewHtml });
+    else openPreview({ name, url, html: previewHtml, kind: type === 'audio' || type === 'video' ? type : undefined });
+  };
   // A Studio canvas is a page that points to its pictures by site path; saved as is it opens black.
   const isCanvasFile = canDownload && html;
   const showProgress = status === 'uploading' && progress !== undefined;
   const progressValue = typeof progress === 'number' ? Math.max(0, Math.min(100, progress)) : 0;
   if (status === 'done' && !isImage) {
+    const generated = type === 'generated';
+    const projectArchive = generated && /^product-[a-f\d]+\.zip$/i.test(name);
     const label = type === 'audio' || /\.(mp3|wav|ogg|oga|m4a|aac|flac|opus|aiff|wma)$/i.test(name) ? 'Аудио' : type === 'video' || /\.(mp4|webm|mov|m4v|mkv|avi|mpeg|mpg|3gp)$/i.test(name) ? 'Видео' : html ? 'Холст' : /\.(xlsx?|ods)$/i.test(name) ? 'Таблица' : /\.(pptx?|odp)$/i.test(name) ? 'Презентация' : canPreview ? 'Документ' : 'Файл';
-    return <Box data-attachment-card sx={{ width: '100%', maxWidth: 520, minWidth: 0, p: 1, border: '1px solid var(--bt-hairline)', borderRadius: '10px' }}>
+    return <Box data-attachment-card sx={{ width: '100%', maxWidth: generated ? '100%' : 520, minWidth: 0, p: projectArchive ? { xs: 1.5, sm: 2 } : 1, border: '1px solid var(--bt-hairline)', borderRadius: '12px' }}>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
         <Box sx={{ width: 24, height: 40, display: 'grid', placeItems: 'center', flexShrink: 0, color: 'var(--bt-ink-2)' }}><Icon size={20} /></Box>
         <Box sx={{ minWidth: 0, flex: 1 }}>
-          <Box title={name} sx={{ fontSize: '.875rem', fontWeight: 600, lineHeight: 1.4, overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{name}</Box>
-          <Box sx={{ fontSize: '.8125rem', color: 'text.secondary', mt: .25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}{formatSize(size) ? ` · ${formatSize(size)}` : ''}</Box>
+          <Box title={name} sx={{ fontSize: '.875rem', fontWeight: 600, lineHeight: 1.4, overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{projectArchive ? 'Исходники проекта' : name}</Box>
+          <Box sx={{ fontSize: '.8125rem', color: 'text.secondary', mt: .25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{/\.zip$/i.test(name) ? 'ZIP-архив' : label}{formatSize(size) ? ` · ${formatSize(size)}` : ''}</Box>
         </Box>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: .25, flexShrink: 0 }}>
-        {canPreview && <Button aria-label={`Предпросмотр ${name}`} onClick={() => openPreview({ name, url, html: previewHtml, kind: type === 'audio' || type === 'video' ? type : undefined })} sx={{ minWidth: 64, minHeight: 44, px: 1, fontSize: '.8125rem', color: 'text.primary', fontWeight: 600 }}>Открыть</Button>}
+        {generated && canDownload && <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: .5, color: 'var(--bt-success)', bgcolor: 'var(--bt-answer-success-bg)', borderRadius: '999px', px: 1, py: .25, mr: .5, fontSize: '.75rem', fontWeight: 500 }}><CheckCircle size={14} aria-hidden /><Box component="span" sx={{ display: { xs: 'none', sm: 'inline' } }}>Готово</Box></Box>}
+        {(canPreview || canOpenCanvas) && <Button aria-label={`${canOpenCanvas ? 'Открыть холст' : 'Предпросмотр'} ${name}`} onClick={showPreview} sx={{ minWidth: 64, minHeight: 44, px: 1, fontSize: '.8125rem', color: 'text.primary', fontWeight: 600 }}>{canOpenCanvas ? 'Открыть холст' : 'Открыть'}</Button>}
         {canDownload && <Tooltip title="Скачать"><IconButton component="a" href={url} download={name} rel="noopener" aria-label={`Скачать ${name}`} onClick={event => {
           if (isCanvasFile) { event.preventDefault(); void downloadCanvasFromUrl(url!, name).catch(() => window.open(url, '_blank', 'noopener')); }
         }} sx={{ width: 44, height: 44, color: 'text.secondary' }}><DownloadSimple size={18} /></IconButton></Tooltip>}
@@ -98,7 +108,7 @@ export function DocumentAttachment({ name, size, status, type, url, note, progre
       }}
         {...(canDownload && !canPreview ? { component: 'a' as const, href: url, download: name, rel: 'noopener' } : {})}
         onClick={event => {
-          if (canPreview) openPreview({ name, url, html: previewHtml });
+          if (canOpenCanvas || canPreview) showPreview();
           else if (isCanvasFile) {
             event.preventDefault();
             downloadCanvasFromUrl(url!, name).catch(() => window.open(url, '_blank', 'noopener'));

@@ -27,6 +27,11 @@ html[data-theme='dark'] {
   --bt-danger: #f87171;
   --bt-danger-soft: rgba(248, 113, 113, 0.12);
   --bt-success: #4ade80;
+  --bt-answer-success-bg: rgba(74, 222, 128, 0.08);
+  --bt-answer-info: #78c9e8;
+  --bt-answer-info-bg: rgba(33, 160, 206, 0.09);
+  --bt-answer-warning: #f4c76b;
+  --bt-answer-warning-bg: rgba(244, 199, 107, 0.08);
   --bt-shadow: 0 18px 50px rgba(6, 10, 12, 0.55);
   --bt-shadow-menu: 0 24px 60px rgba(0, 0, 0, 0.5);
   --bt-inset: inset 0 1px 0 rgba(255, 255, 255, 0.08);
@@ -73,6 +78,11 @@ html[data-theme='light'] {
   --bt-danger: #c24141;
   --bt-danger-soft: rgba(194, 65, 65, 0.1);
   --bt-success: #15803d;
+  --bt-answer-success-bg: rgba(21, 128, 61, 0.07);
+  --bt-answer-info: #146b8a;
+  --bt-answer-info-bg: rgba(20, 107, 138, 0.06);
+  --bt-answer-warning: #855b0b;
+  --bt-answer-warning-bg: rgba(133, 91, 11, 0.07);
   --bt-shadow: 0 14px 36px rgba(18, 48, 52, 0.08);
   --bt-shadow-menu: 0 18px 44px rgba(18, 48, 52, 0.12);
   --bt-inset: inset 0 1px 0 rgba(255, 255, 255, 0.9);

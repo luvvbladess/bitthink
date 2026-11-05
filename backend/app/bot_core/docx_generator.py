@@ -114,6 +114,11 @@ def _create_gost_abstract(root) -> int:
         ind.set(qn("w:hanging"), str(hanging))
         pPr.append(ind)
         lvl.append(pPr)
+        rPr = OxmlElement('w:rPr')
+        color = OxmlElement('w:color')
+        color.set(qn('w:val'), '000000')
+        rPr.append(color)
+        lvl.append(rPr)
         abs_num.append(lvl)
     nums = root.findall(qn("w:num"))
     if nums:
@@ -392,7 +397,11 @@ def fix_monospace_fonts(doc):
 
     def process_paragraphs(paragraphs):
         for p in paragraphs:
+            if p.style and p.style.name == 'BT Code':
+                continue
             for r in p.runs:
+                if r.style and r.style.name == 'BT Inline Code':
+                    continue
                 if re.fullmatch(r'```(?:text|txt|markdown|md)?', r.text.strip(), re.IGNORECASE):
                     r.text = ""
                     continue
@@ -426,6 +435,11 @@ def apply_paragraph_formatting(doc):
 
         style_name = (p.style.name if p.style else "") or ""
         style_lower = style_name.lower()
+
+        if style_name == 'BT Code':
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            p.paragraph_format.first_line_indent = Cm(0)
+            continue
         is_heading = style_lower.startswith('heading') or style_lower.startswith('title')
 
         has_num_pr = False
@@ -524,6 +538,35 @@ def _looks_like_code(text: str) -> bool:
     return any(ind in text for ind in _CODE_INDICATORS)
 
 
+def _fence_open(line):
+    match = re.fullmatch(r'[ \t]*(`{3,}|~{3,})([^`~]*)', line)
+    return (match[1], match[2].strip().lower()) if match else None
+
+
+def _fence_closes(line, marker):
+    return bool(re.fullmatch(re.escape(marker[0]) + '{' + str(len(marker)) + ',}', line.strip()))
+
+
+def _add_code_line(doc, text):
+    from docx.enum.style import WD_STYLE_TYPE
+    from docx.shared import Pt
+    name = 'BT Code'
+    if name not in doc.styles:
+        style = doc.styles.add_style(name, WD_STYLE_TYPE.PARAGRAPH)
+        style.base_style = doc.styles['Normal']
+        style.font.name = 'Courier New'
+        style.font.size = Pt(10)
+        style.font.color.rgb = RGBColor(0, 0, 0)
+        fmt = style.paragraph_format
+        fmt.first_line_indent = Cm(0)
+        fmt.space_before = fmt.space_after = Pt(0)
+        fmt.line_spacing = 1
+        fmt.keep_with_next = False
+        fmt.keep_together = False
+    paragraph = doc.add_paragraph(style=name)
+    paragraph.add_run(text)
+
+
 def _add_formatted_runs(paragraph, text: str) -> None:
     """Пишет в абзац текст с **жирным**, *курсивом* и ссылками как видимым текстом."""
     text = (text or "").replace("\u00a0", " ")
@@ -539,7 +582,13 @@ def _add_formatted_runs(paragraph, text: str) -> None:
             run = paragraph.add_run(match.group(3) or match.group(4))
             run.italic = True
         elif match.group(5) is not None:
-            paragraph.add_run(match.group(5))
+            from docx.enum.style import WD_STYLE_TYPE
+            styles = paragraph.part.document.styles
+            if 'BT Inline Code' not in styles:
+                style = styles.add_style('BT Inline Code', WD_STYLE_TYPE.CHARACTER)
+                style.font.name = 'Courier New'
+                style.font.color.rgb = RGBColor(0, 0, 0)
+            paragraph.add_run(match.group(5), style='BT Inline Code')
         elif match.group(6) is not None:
             paragraph.add_run(match.group(6))
         else:
@@ -853,17 +902,17 @@ def _render_markdown_native(doc, markdown_text: str) -> None:
             i += 1
             continue
 
-        if stripped.startswith("```"):
+        fence = _fence_open(raw)
+        if fence:
             block = []
             i += 1
-            while i < n and lines[i].strip() != "```":
+            while i < n and not _fence_closes(lines[i], fence[0]):
                 block.append(lines[i])
                 i += 1
             if i < n:
                 i += 1
             for block_line in block:
-                paragraph = doc.add_paragraph()
-                paragraph.add_run(block_line)
+                _add_code_line(doc, block_line)
             continue
 
         heading = _HEADING_RE.match(stripped)
@@ -936,7 +985,7 @@ def _render_markdown_native(doc, markdown_text: str) -> None:
                     _HEADING_RE.match(cont.strip())
                     or _is_table_line(cont)
                     or _classify_line(cont) is not None
-                    or cont.strip().startswith("```")
+                    or _fence_open(cont)
                 ):
                     break
                 if cont[:1] in " \t":
@@ -960,7 +1009,7 @@ def _render_markdown_native(doc, markdown_text: str) -> None:
                 _HEADING_RE.match(nxt.strip())
                 or _is_table_line(nxt)
                 or _classify_line(nxt, in_list=False) is not None
-                or nxt.strip().startswith("```")
+                or _fence_open(nxt)
                 or _HR_RE.match(nxt.strip())
             ):
                 break
@@ -970,41 +1019,38 @@ def _render_markdown_native(doc, markdown_text: str) -> None:
         _add_formatted_runs(paragraph, " ".join(para_lines))
 
 
-def _preprocess_markdown_for_docx(markdown_text: str) -> str:
-    markdown_text = strip_blockquote_markers(markdown_text)
-    lines = markdown_text.split("\n")
-    fixed_lines = []
-    for line in lines:
-        stripped = line.strip()
-        if re.match(r"^\d+\.\s*$", stripped) or re.match(r"^[\*\-]\s*$", stripped):
+def _preprocess_markdown_for_docx(markdown_text: str, _depth=0) -> str:
+    # Consume opening and closing fences together. A closing C++ fence must
+    # never become a new prose opener and eat the next section's boundary.
+    lines = markdown_text.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+    result = []
+    i = 0
+    while i < len(lines):
+        opening = _fence_open(lines[i])
+        if opening:
+            end = i + 1
+            while end < len(lines) and not _fence_closes(lines[end], opening[0]):
+                end += 1
+            block = lines[i + 1:end]
+            body = '\n'.join(block)
+            prose_wrapper = (opening[1] in {'markdown', 'md'} or
+                (opening[1] in {'', 'text', 'txt'} and not _looks_like_code(body)
+                 and any(_HEADING_RE.match(line.strip()) for line in block)))
+            if end < len(lines) and prose_wrapper and _depth < 16:
+                result.extend(_preprocess_markdown_for_docx(body, _depth + 1).split('\n'))
+            else:
+                result.extend(lines[i:min(end + 1, len(lines))])
+            i = end + 1
             continue
-        fixed_lines.append(line)
-    markdown_text = "\n".join(fixed_lines)
-    markdown_text = re.sub(
-        r"\*\*([^*]+?)\*\*", lambda m: "**" + m.group(1).strip() + "**", markdown_text
-    )
-
-    defenced = []
-    src_lines = markdown_text.split("\n")
-    i3 = 0
-    while i3 < len(src_lines):
-        line3 = src_lines[i3]
-        if re.match(r"^```(?:text|txt|markdown|md)?\s*$", line3.strip(), re.IGNORECASE):
-            block = []
-            j3 = i3 + 1
-            while j3 < len(src_lines) and src_lines[j3].strip() != "```":
-                block.append(src_lines[j3])
-                j3 += 1
-            if j3 < len(src_lines) and not _looks_like_code("\n".join(block)):
-                defenced.extend(block)
-                i3 = j3 + 1
-                continue
-            if j3 >= len(src_lines):
-                i3 += 1
-                continue
-        defenced.append(line3)
-        i3 += 1
-    return "\n".join(defenced)
+        line = re.sub(r'^(\s*)>\s?', r'\1', lines[i])
+        stripped = line.strip()
+        if not (re.fullmatch(r'\d+\.\s*', stripped) or re.fullmatch(r'[\*\-]\s*', stripped)):
+            parts = re.split(r'(`[^`\n]+`)', line)
+            for index in range(0, len(parts), 2):
+                parts[index] = re.sub(r'\*\*([^*]+?)\*\*', lambda m: '**' + m[1].strip() + '**', parts[index])
+            result.append(''.join(parts))
+        i += 1
+    return '\n'.join(result)
 
 
 def convert_markdown_to_docx(markdown_text: str, base_template_bytes: Optional[bytes] = None) -> bytes:
@@ -1157,7 +1203,11 @@ def _unify_body_fonts(doc) -> None:
     if not name:
         return
     for p in doc.paragraphs:
+        if p.style and p.style.name == 'BT Code':
+            continue
         for run in p.runs:
+            if run.style and run.style.name == 'BT Inline Code':
+                continue
             if run.font.name in {"Courier New", "Consolas", "Lucida Console", "Courier", "Monaco", "Menlo"}:
                 continue
             run.font.name = name
@@ -1167,6 +1217,8 @@ def _unify_body_fonts(doc) -> None:
             for cell in row.cells:
                 for p in cell.paragraphs:
                     for run in p.runs:
+                        if run.style and run.style.name == 'BT Inline Code':
+                            continue
                         if run.font.name in {"Courier New", "Consolas", "Lucida Console", "Courier", "Monaco", "Menlo"}:
                             continue
                         run.font.name = name
@@ -1484,11 +1536,14 @@ def scrub_markdown_marks(data: bytes) -> bytes:
         return data
     changed = False
     for paragraph in _all_paragraphs(doc):
+        if paragraph.style and paragraph.style.name == 'BT Code':
+            continue
         runs = paragraph.runs
         if not runs:
             continue
         prefix = _LEFTOVER_HEADING_RE.match(paragraph.text)
-        if prefix:
+        first = next((run for run in runs if run.text.strip()), None)
+        if prefix and not (first is not None and first.style and first.style.name == 'BT Inline Code'):
             left = prefix.end()
             for run in runs:
                 cut = min(left, len(run.text))
@@ -1503,6 +1558,8 @@ def scrub_markdown_marks(data: bytes) -> bytes:
             paragraph.paragraph_format.keep_with_next = True
             changed = True
         for run in runs:
+            if run.style and run.style.name == 'BT Inline Code':
+                continue
             if "**" in run.text:
                 run.text = run.text.replace("**", "")
                 changed = True

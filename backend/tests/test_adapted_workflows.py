@@ -46,8 +46,8 @@ def test_catalog_is_complete_but_personal_rules_are_opt_in():
 @pytest.mark.parametrize('text,expected', [
     ('Подготовь PRD и дорожную карту продукта', 'wf_product'),
     ('Сделай сверку, потом каждый день присылай результат', 'wf_automations'),
-    ('load_skill browser-use', 'wf_browser_workflow'),
-    ('load_skill wf_search', 'wf_search'),
+    ('load_skill browser-use', 'browser'),
+    ('load_skill wf_search', 'research'),
     ('Как начать пользоваться?', 'wf_onboarding'),
 ])
 def test_adapted_domain_routing(text, expected):
@@ -73,7 +73,7 @@ def test_narrow_triggers_do_not_inject_unrelated_workflows():
 
 def test_builtin_alias_and_disabled_resources(account):
     email, uid = account
-    assert '# wf_browser_workflow' in load_skill('browser-use', uid)
+    assert '# browser' in load_skill('browser-use', uid)
     assert 'references/contract.md' in load_skill('wf_browser_workflow', uid)
     assert read_builtin_resource('browser-use', 'references/contract.md', uid)
     asyncio.run(repo.set_builtin_skill_enabled(email, 'wf_browser_workflow', False))

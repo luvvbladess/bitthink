@@ -1,0 +1,350 @@
+[
+  {
+    "id": "m_bigint",
+    "domain": "math",
+    "split": "dev",
+    "prompt": "Вычисли точно (987654321987654321 * 123456789123456789) % 1000000007. Верни только JSON с ключом result; значение — строка.",
+    "rubric": [
+      "Правильность",
+      "Исполнение ограничений"
+    ],
+    "json_expected": {
+      "result": "327846861"
+    }
+  },
+  {
+    "id": "m_fraction",
+    "domain": "math",
+    "split": "dev",
+    "prompt": "Вычисли 1/17 + 1/19 + 1/23. Верни только JSON с result — несократимой дробью в виде строки a/b.",
+    "rubric": [
+      "Правильность",
+      "Исполнение ограничений"
+    ],
+    "json_expected": {
+      "result": "1151/7429"
+    }
+  },
+  {
+    "id": "m_compound",
+    "domain": "math",
+    "split": "dev",
+    "prompt": "Начальная сумма 100000. Каждый месяц она умножается на 1,0075, всего 23 месяца. Промежуточно не округляй. Верни только JSON с result — итоговой суммой строкой с двумя знаками, ROUND_HALF_UP.",
+    "rubric": [
+      "Правильность",
+      "Исполнение ограничений"
+    ],
+    "json_expected": {
+      "result": "118750.72"
+    }
+  },
+  {
+    "id": "m_hypergeom",
+    "domain": "math",
+    "split": "dev",
+    "prompt": "Из 50 деталей ровно 6 дефектных. Без возвращения случайно выбирают 8. Какова вероятность хотя бы двух дефектных? Верни только JSON с percent — процентом строкой с 6 знаками после точки.",
+    "rubric": [
+      "Правильность",
+      "Исполнение ограничений"
+    ],
+    "json_expected": {
+      "percent": "24.162372"
+    }
+  },
+  {
+    "id": "m_bayes",
+    "domain": "math",
+    "split": "holdout",
+    "prompt": "Доля заболевших 0,18%. Чувствительность теста 97,3%, ложноположительный результат у здорового — 1,2%. У случайного человека положительный тест. Найди вероятность болезни. Только JSON с percent — процент строкой с 6 знаками.",
+    "rubric": [
+      "Правильность",
+      "Исполнение ограничений"
+    ],
+    "json_expected": {
+      "percent": "12.756195"
+    }
+  },
+  {
+    "id": "m_money",
+    "domain": "math",
+    "split": "holdout",
+    "prompt": "Три оплаченных позиции по 0,105 рубля. Сначала сложи точно, затем округли итог до копеек ROUND_HALF_UP. Только JSON с amount — строкой с двумя знаками.",
+    "rubric": [
+      "Правильность",
+      "Исполнение ограничений"
+    ],
+    "json_expected": {
+      "amount": "0.32"
+    }
+  },
+  {
+    "id": "m_discount",
+    "domain": "math",
+    "split": "holdout",
+    "prompt": "Цена 18750 рублей. Последовательно применяют скидки 12% и 7%. Затем на полученную сумму начисляют сбор 3,5%. Промежуточно не округляй. Только JSON с amount — строкой с двумя знаками.",
+    "rubric": [
+      "Правильность",
+      "Исполнение ограничений"
+    ],
+    "json_expected": {
+      "amount": "15882.08"
+    }
+  },
+  {
+    "id": "m_birthday",
+    "domain": "math",
+    "split": "holdout",
+    "prompt": "В группе 23 человека, дни рождения независимы и равномерны по 365 дням. Вероятность хотя бы одного совпадения? Только JSON с percent — процентом строкой с 6 знаками после точки.",
+    "rubric": [
+      "Правильность",
+      "Исполнение ограничений"
+    ],
+    "json_expected": {
+      "percent": "50.729723"
+    }
+  },
+  {
+    "id": "d_wait",
+    "domain": "reference",
+    "split": "dev",
+    "prompt": "По официальной документации Python 3.12: обязана ли asyncio.wait_for завершиться строго в timeout секунд, если отмена awaitable занимает время? Верни только JSON: strict_deadline (bool), waits_for_cancellation (bool).",
+    "rubric": [
+      "Правильность",
+      "Исполнение ограничений"
+    ],
+    "json_expected": {
+      "strict_deadline": false,
+      "waits_for_cancellation": true
+    }
+  },
+  {
+    "id": "d_gather",
+    "domain": "reference",
+    "split": "dev",
+    "prompt": "По официальной документации Python 3.12 сравни asyncio.gather и asyncio.TaskGroup. Одна задача бросает обычное исключение. Только JSON: gather_cancels_siblings (bool), taskgroup_cancels_siblings (bool).",
+    "rubric": [
+      "Правильность",
+      "Исполнение ограничений"
+    ],
+    "json_expected": {
+      "gather_cancels_siblings": false,
+      "taskgroup_cancels_siblings": true
+    }
+  },
+  {
+    "id": "d_cached",
+    "domain": "reference",
+    "split": "dev",
+    "prompt": "По официальной документации Python 3.12: гарантирует ли functools.cached_property ровно одно вычисление при конкурентном первом чтении? Только JSON: internal_property_lock (bool), guaranteed_once (bool).",
+    "rubric": [
+      "Правильность",
+      "Исполнение ограничений"
+    ],
+    "json_expected": {
+      "internal_property_lock": false,
+      "guaranteed_once": false
+    }
+  },
+  {
+    "id": "d_sqlite",
+    "domain": "reference",
+    "split": "dev",
+    "prompt": "По официальной документации Python 3.12: sqlite3.Connection.executescript при autocommit=sqlite3.LEGACY_TRANSACTION_CONTROL и уже открытой транзакции. Только JSON: commits_pending_first (bool), automatically_wraps_script_in_transaction (bool).",
+    "rubric": [
+      "Правильность",
+      "Исполнение ограничений"
+    ],
+    "json_expected": {
+      "commits_pending_first": true,
+      "automatically_wraps_script_in_transaction": false
+    }
+  },
+  {
+    "id": "d_random",
+    "domain": "reference",
+    "split": "holdout",
+    "prompt": "По официальной документации Python 3.12: гарантирует ли random.choices с равными весами ту же последовательность, что несколько random.choice, если seed одинаков? Только JSON с guaranteed_identical (bool).",
+    "rubric": [
+      "Правильность",
+      "Исполнение ограничений"
+    ],
+    "json_expected": {
+      "guaranteed_identical": false
+    }
+  },
+  {
+    "id": "d_join",
+    "domain": "reference",
+    "split": "holdout",
+    "prompt": "По официальной документации Python 3.12: результат urllib.parse.urljoin(\"https://safe.example/base/\", \"https://other.example/x\")? Только JSON с url (str) и preserves_original_host (bool).",
+    "rubric": [
+      "Правильность",
+      "Исполнение ограничений"
+    ],
+    "json_expected": {
+      "url": "https://other.example/x",
+      "preserves_original_host": false
+    }
+  },
+  {
+    "id": "d_groupby",
+    "domain": "reference",
+    "split": "holdout",
+    "prompt": "По официальной документации Python 3.12: itertools.groupby на последовательности [\"A\", \"B\", \"A\"] без сортировки. Только JSON: keys — последовательность ключей групп; requires_sort_to_group_all_equal — bool.",
+    "rubric": [
+      "Правильность",
+      "Исполнение ограничений"
+    ],
+    "json_expected": {
+      "keys": [
+        "A",
+        "B",
+        "A"
+      ],
+      "requires_sort_to_group_all_equal": true
+    }
+  },
+  {
+    "id": "d_timedelta",
+    "domain": "reference",
+    "split": "holdout",
+    "prompt": "По официальной документации Python 3.12: x=datetime.timedelta(days=-1, seconds=10). Только JSON: seconds (int), total_seconds (int).",
+    "rubric": [
+      "Правильность",
+      "Исполнение ограничений"
+    ],
+    "json_expected": {
+      "seconds": 10,
+      "total_seconds": -86390
+    }
+  },
+  {
+    "id": "h_exact",
+    "domain": "humanities",
+    "split": "dev",
+    "prompt": "Перепиши дословно только цитату вместе с кавычками, сохрани все символы: «Я вернусь — если дождь кончится».",
+    "rubric": [
+      "Буквально сохранено длинное тире",
+      "Никакого вступления"
+    ]
+  },
+  {
+    "id": "h_lit",
+    "domain": "humanities",
+    "split": "dev",
+    "prompt": "Разбери вымышленный отрывок: «Он оставил свет в прихожей, хотя ключи уже лежали в почтовом ящике». Дай два разных объяснения поведения с опорой на слова. Не утверждай биографию или единственный смысл. До 140 слов.",
+    "rubric": [
+      "Два различимых объяснения",
+      "Наблюдение отделено от интерпретации",
+      "Не выдумана предыстория"
+    ]
+  },
+  {
+    "id": "h_ethics",
+    "domain": "humanities",
+    "split": "holdout",
+    "prompt": "Верно ли, что из запрета лгать у Канта следует обязанность отвечать на каждый вопрос любого человека? Разбери различие этих утверждений, сильное возражение к ответу и его предел. До 170 слов.",
+    "rubric": [
+      "Не выводит обязанность отвечать из запрета лгать",
+      "Корректная аргументация",
+      "Есть содержательное возражение"
+    ]
+  },
+  {
+    "id": "h_quote",
+    "domain": "humanities",
+    "split": "holdout",
+    "prompt": "Выпиши дословно только вторую реплику, сохрани кавычки и тире. Текст: Первая реплика: «Не сейчас». Вторая реплика: «Потом — не значит никогда».",
+    "rubric": [
+      "Точная вторая реплика",
+      "Сохранены знаки"
+    ]
+  },
+  {
+    "id": "f_math",
+    "domain": "dialogue",
+    "split": "dev",
+    "prompt": "Пересчитай для 24 месяцев. Только JSON с result — строкой с двумя знаками ROUND_HALF_UP.",
+    "rubric": [
+      "Правильность",
+      "Исполнение ограничений"
+    ],
+    "json_expected": {
+      "result": "119641.35"
+    },
+    "history": [
+      {
+        "role": "user",
+        "content": "Сумма 100000, ежемесячно умножается на 1,0075, 23 месяца, без промежуточного округления."
+      },
+      {
+        "role": "assistant",
+        "content": "Расчёт задаётся формулой 100000 × 1,0075^23."
+      }
+    ]
+  },
+  {
+    "id": "f_doc",
+    "domain": "dialogue",
+    "split": "dev",
+    "prompt": "А в Python 3.11 это свойство было с блокировкой? Проверь официальную документацию. Только JSON с internal_property_lock (bool).",
+    "rubric": [
+      "Правильность",
+      "Исполнение ограничений"
+    ],
+    "json_expected": {
+      "internal_property_lock": true
+    },
+    "history": [
+      {
+        "role": "user",
+        "content": "В Python 3.12 functools.cached_property не имеет внутренней блокировки?"
+      },
+      {
+        "role": "assistant",
+        "content": "Да, в Python 3.12 эту блокировку удалили."
+      }
+    ]
+  },
+  {
+    "id": "f_scope",
+    "domain": "dialogue",
+    "split": "holdout",
+    "prompt": "Сделай короче, ровно два предложения. Сохрани оба ограничения.",
+    "rubric": [
+      "Ровно два предложения",
+      "Время и место неизвестны",
+      "Четверг сохранён"
+    ],
+    "history": [
+      {
+        "role": "user",
+        "content": "Напиши сообщение: встреча переносится на четверг, время пока неизвестно, место пока неизвестно. Ничего не выдумывай."
+      },
+      {
+        "role": "assistant",
+        "content": "Встреча переносится на четверг. Время сообщим позже. Место также пока не определено."
+      }
+    ]
+  },
+  {
+    "id": "f_quote",
+    "domain": "dialogue",
+    "split": "holdout",
+    "prompt": "Повтори дословно эту реплику и ничего не добавляй.",
+    "rubric": [
+      "Сохранены кавычки и длинное тире",
+      "Нет вступления"
+    ],
+    "history": [
+      {
+        "role": "user",
+        "content": "Запомни реплику для следующего хода: «Точно — не значит навсегда»."
+      },
+      {
+        "role": "assistant",
+        "content": "Хорошо, реплика: «Точно — не значит навсегда»."
+      }
+    ]
+  }
+]

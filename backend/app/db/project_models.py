@@ -1,5 +1,5 @@
 """Account-owned, explicitly published project knowledge, separate from chat history."""
-from sqlalchemy import BigInteger, ForeignKey, String, Text, Integer, UniqueConstraint
+from sqlalchemy import BigInteger, ForeignKey, String, Text, Integer, UniqueConstraint, LargeBinary
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
@@ -60,3 +60,5 @@ class ProjectChunk(Base):
     position: Mapped[int] = mapped_column(Integer)
     body: Mapped[str] = mapped_column(Text)
     folded: Mapped[str] = mapped_column(Text)
+    embedding: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    embedding_model: Mapped[str | None] = mapped_column(String(80), nullable=True)

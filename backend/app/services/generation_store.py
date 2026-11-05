@@ -54,7 +54,10 @@ def reserve(user, cid, kind='external', request=None, owner='', limit=4, request
             session.scalar(select(User).where(User.email == user).with_for_update())
             receipt_key = hashlib.sha256((user + '\0' + request_id).encode()).hexdigest() if request_id else None
             # Preferences can change between retries; the human operation cannot.
-            fingerprint = hashlib.sha256(json.dumps([submitted_cid, kind, (request or {}).get('content', '')], ensure_ascii=False).encode()).hexdigest()
+            operation = [submitted_cid, kind, (request or {}).get('content', '')]
+            if (request or {}).get('canvas_target'):
+                operation.append(request['canvas_target'])
+            fingerprint = hashlib.sha256(json.dumps(operation, ensure_ascii=False).encode()).hexdigest()
             if receipt_key:
                 existing = session.get(ChatSubmission, receipt_key)
                 if existing:

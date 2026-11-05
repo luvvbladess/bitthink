@@ -15,6 +15,8 @@ from app.services.desktop_context import desktop_executor, desktop_cwd, desktop_
 from app.services.chat_service import run_chat
 from app.services.desktop_local_chat import run_local_chat
 from app.services.generation_hub import hub, MAX_JOBS_PER_USER
+from app.services.chat_modes import normalize_chat_mode, public_chat_modes
+from app.core.request_context import generation_preferences
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -35,10 +37,10 @@ _active_users: set[str] = set()
 
 @router.get("/status")
 async def desktop_status(user_id: str = Depends(get_current_user)):
-    from app.billing.plans import allowed_models
     subscription = await subscription_payload(user_id)
-    models = allowed_models(subscription.get("tier")) & {"auto", "gpt-6.1-terra", "gpt-6-sol", "gpt-6-astra", "director", "studio", "kimi-k2.6", "docgen", "gpt-6-luna", "claude-haiku-5.5", "claude-sonnet-5.5", "claude-opus-5.5", "deepseek-v4-pro", "deepseek-v4-flash"}
-    return {"protocol": PROTOCOL, "mode": "director", "modes": ["director", "chat"], "local_history": True, "work_context": True, "context_compaction": True, "context_policy": context_policy(), "chat_models": sorted(models), "subscription": subscription}
+    choices = public_chat_modes(subscription.get('tier'))
+    models = [item['id'] for item in choices if item['available']]
+    return {"protocol": PROTOCOL, "mode": "director", "modes": ["director", "chat"], "local_history": True, "work_context": True, "context_compaction": True, "context_policy": context_policy(), "chat_models": sorted(models), "chat_modes": choices, "canvas": True, "remote_link": True, "subscription": subscription}
 
 
 @router.get("/chats")
@@ -82,6 +84,7 @@ async def desktop_socket(ws: WebSocket):
     async def run(payload: dict):
         cid = None
         marked = False
+        preferences_token = None
         mode = str(payload.get("mode") or "director")
         context = desktop_executor.set(execute if mode == "director" else None)
         folder = desktop_cwd.set(str(payload.get("cwd") or "")[:4096] if mode == "director" else "")
@@ -106,6 +109,15 @@ async def desktop_socket(ws: WebSocket):
             if not content or len(content) > 100_000:
                 raise ValueError("Введите задачу до 100 000 символов.")
             bot_id = await repo.ensure_user(user_id)
+            if mode == 'chat':
+                target = payload.get('canvas_target')
+                if target is not None and (not isinstance(target, str) or len(target) > 2048):
+                    raise ValueError('Некорректная ссылка на холст.')
+                selected = normalize_chat_mode(str(payload.get('chat_model') or 'auto'))
+                desktop_chat_model.set(selected)
+                preferences = await repo.capture_generation_preferences(user_id)
+                preferences.update({'user_id': bot_id, 'selected_model': selected, 'canvas_target': target})
+                preferences_token = generation_preferences.set(preferences)
             cid = payload.get("conversation_id") if mode == "chat" else None
             if cid:
                 owner = await asyncio.to_thread(repo.conversations.owner, str(cid))
@@ -131,6 +143,11 @@ async def desktop_socket(ws: WebSocket):
 
             async def file(name, data, url=""):
                 import base64
+                if mode == 'chat' and not data and url:
+                    path = repo._manager._attachment_disk_path({'url': url})
+                    if not path or not path.is_file() or path.stat().st_size > 100 * 1024 * 1024:
+                        raise ValueError('Не удалось прочитать готовый файл. Откройте его в истории беседы.')
+                    data = await asyncio.to_thread(path.read_bytes)
                 await send("file", name=name, url=url, data=base64.b64encode(data).decode() if data else "")
 
             async def extras(reasoning, search):
@@ -167,6 +184,8 @@ async def desktop_socket(ws: WebSocket):
             desktop_skills.reset(skills_context)
             desktop_work_context.reset(work_context)
             desktop_capabilities.reset(capabilities_context)
+            if preferences_token is not None:
+                generation_preferences.reset(preferences_token)
             subscription = None
             try:
                 subscription = await subscription_payload(user_id)

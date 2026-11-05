@@ -14,15 +14,19 @@ def registry() -> dict[str, dict]:
     return {row['name']: row for row in rows}
 
 
-def canonical_name(value: str) -> str:
+def canonical_name(value: str, *, follow_alias: bool = True) -> str:
     from .loader import builtin_names
     normalized = (value or '').strip().lower().replace('-', '_')
+    rows = registry()
+    row = rows.get(normalized)
+    if row and row.get('alias_of'):
+        return row['alias_of'] if follow_alias else normalized
     # Preserve native names and personal skills; source aliases never shadow them.
     if normalized in builtin_names():
         return normalized
     for row in registry().values():
         if row['adaptation'] == 'builtin' and value.strip().lower() == row['source_name']:
-            return row['name']
+            return row.get('alias_of', row['name']) if follow_alias else row['name']
     return normalized
 
 
@@ -36,12 +40,13 @@ def builtin_resources(name: str) -> list[str]:
 def read_builtin_resource(name: str, path: str, user_id: int | None) -> bytes | None:
     from .loader import builtin_names, disabled_builtin_names
     wanted = canonical_name(name)
-    if wanted not in builtin_names() or wanted in disabled_builtin_names(user_id):
+    original = canonical_name(name, follow_alias=False)
+    if wanted not in builtin_names() or {wanted, original} & disabled_builtin_names(user_id):
         return None
     relative = PurePosixPath(path)
     if not path or '\\' in path or ':' in path or relative.is_absolute() or '..' in relative.parts:
         raise ValueError('Недопустимый путь ресурса.')
-    base = (ROOT / wanted).resolve()
+    base = (ROOT / original).resolve() if registry().get(original, {}).get('alias_of') else (ROOT / wanted).resolve()
     target = (base / path).resolve()
     if not target.is_relative_to(base) or target.suffix.lower() not in {'.md', '.txt', '.json', '.csv', '.py'}:
         raise ValueError('Недопустимый текстовый ресурс.')

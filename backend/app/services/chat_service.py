@@ -224,6 +224,15 @@ async def _generate_and_send(
             # Pilot picks the final files at the end; drafts and duplicates stay in the sandbox.
             extra_files = pick_deliverables(extra_files)
             if extra_files:
+                # A native document path may return the already validated file.
+                # Do not attach it a second time through workspace discovery.
+                import hashlib
+                from turn_scope import export_paths
+                selected=export_paths()
+                native_names={str(f.get('filename') or '') for f in generated_files or []
+                              if len(selected)==1 and f.get('workspace_path')==selected[0]}
+                existing = {(str(f.get('filename') or f.get('name') or ''), hashlib.sha256(f.get('bytes') or b'').digest()) for f in generated_files or []}
+                extra_files = [f for f in extra_files if str(f.get('filename') or '') not in native_names and (str(f.get('filename') or f.get('name') or ''), hashlib.sha256(f.get('bytes') or b'').digest()) not in existing]
                 generated_files = list(generated_files or []) + extra_files
         except Exception:
             logger.exception("Failed to collect workspace deliverables")
@@ -247,8 +256,9 @@ async def _generate_and_send(
     # Long web replies used to deliver an ephemeral response.docx only through
     # the socket. Persist it with the other files so preview and history agree.
     from app.services.desktop_context import desktop_mode
+    from canvas_intent import text_response_requested
     auto_docx = False
-    if len(response_text) > 8000 and desktop_mode.get() is None:
+    if len(response_text) > 8000 and desktop_mode.get() is None and not text_response_requested(prompt_content):
         try:
             from docx_generator import convert_markdown_to_docx
             base_template = await asyncio.to_thread(repo.templates.base, bot_user_id)
@@ -343,7 +353,10 @@ async def _generate_and_send(
             continue
         if canvas and len(file_bytes) > 350_000 and desktop_mode.get() != "chat":
             continue
-        await best_effort(send_file, filename, file_bytes)
+        if desktop_mode.get() == 'chat':
+            await best_effort(send_file, filename, file_bytes, url)
+        else:
+            await best_effort(send_file, filename, file_bytes)
 
     await safe_status("")
 

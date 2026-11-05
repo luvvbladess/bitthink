@@ -103,7 +103,7 @@ def test_usage_view_and_debit():
     assert view["images"]["used"] == 2
     assert view["images"]["remaining"] == 23
     assert view["windows"]["chat"]["session"]["used"] == 1_500_000
-    assert view["windows"]["chat"]["session"]["remaining"] == 7_130_000
+    assert view["windows"]["chat"]["session"]["remaining"] == 11_984_375
     assert view["windows"]["chat"]["week"]["used"] == 1_500_000
     assert view["windows"]["chat"]["week"]["remaining"] == 28_500_000
     assert view["windows"]["computer"]["session"]["used"] == 1_500_000
@@ -124,10 +124,10 @@ def test_session_and_week_block_before_month():
     mgr = DatabaseConversationManager()
     uid = 91003
     mgr.set_subscription_tier(uid, "pro", 30)
-    mgr.debit_plan_tokens(uid, "chat", 8_630_000)
+    mgr.debit_plan_tokens(uid, "chat", 13_484_375)
     view = usage_view(mgr.get_subscription(uid))
     assert view["windows"]["chat"]["session"]["remaining"] == 0
-    assert view["chat"]["remaining"] == 66_370_000
+    assert view["chat"]["remaining"] == 61_515_625
     try:
         assert_can_use(uid, "chat", "gpt-6-luna")
         raise AssertionError("session should block")
@@ -167,7 +167,7 @@ def test_expired_session_resets():
         session.commit()
     view = usage_view(mgr.get_subscription(uid))
     assert view["windows"]["chat"]["session"]["used"] == 0
-    assert view["windows"]["chat"]["session"]["remaining"] == 8_630_000
+    assert view["windows"]["chat"]["session"]["remaining"] == 13_484_375
     assert view["chat"]["used"] == 1_000_000
 
 

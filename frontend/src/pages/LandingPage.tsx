@@ -24,7 +24,7 @@ const plans = [
     price: '1 990 ₽',
     note: 'Sol, Исследование и Оркестратор',
     featured: false,
-    items: ['75 млн общих единиц для чата и Оркестратора', 'GPT-6.1 Sol и Исследование', 'Поиск, документы и Студия', '25 картинок в месяц'],
+    items: ['75 млн общих единиц для чата и Оркестратора', 'GPT-6.1 Sol и Исследование', 'Поиск, документы и холст в чате', '25 картинок в месяц'],
   },
   {
     name: 'Pro+',
@@ -102,7 +102,7 @@ export default function LandingPage() {
             </motion.div>
             <motion.div {...fade} transition={{ ...fade.transition, delay: 0.05 }}>
               <Typography sx={{ color: 'text.secondary', maxWidth: '42ch', mx: 'auto', fontSize: '1.0625rem', lineHeight: 1.55 }}>
-                Нейросеть в браузере: поиск с источниками, документы, картинки и Студия.
+                Нейросеть в браузере: поиск с источниками, документы, картинки и холст прямо в чате.
               </Typography>
             </motion.div>
             <motion.div {...fade} transition={{ ...fade.transition, delay: 0.1 }} style={{ width: '100%' }}>
@@ -275,7 +275,7 @@ export default function LandingPage() {
             Что такое {BRAND_NAME}
           </Typography>
           <Typography sx={{ color: 'text.secondary', textAlign: 'center', lineHeight: 1.6 }}>
-            {BRAND_NAME} – ИИ-чат в браузере: вопрос нейросети, ответ с источниками, документы, картинки и Студия для
+            {BRAND_NAME} – ИИ-чат в браузере: вопрос нейросети, ответ с источниками, документы, картинки и холст для
             слайдов. Также ищут как Bit Think и бит синк. Адрес:{' '}
             <Box component="span" sx={{ color: 'text.primary', fontWeight: 500 }}>
               bit-think.space

@@ -2,6 +2,7 @@
 import asyncio
 
 PARALLEL_READS = frozenset({
+    'calculate',
     'server_search', 'browse_page', 'browse_visual', 'project_search', 'project_read',
     'read_chat_document', 'list_chat_files', 'get_capabilities',
 })

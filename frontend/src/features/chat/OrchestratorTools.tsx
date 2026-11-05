@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { Alert, Box, Button, Collapse, IconButton, MenuItem, Skeleton, Stack, Switch, TextField, Typography } from '@mui/material';
 import { useReducedMotion } from 'framer-motion';
-import { ArrowLeft, CaretRight, Clock, Folder, Plugs, PuzzlePiece, SlidersHorizontal, X } from '@phosphor-icons/react';
+import { ArrowLeft, CaretRight, Clock, Desktop, Folder, Plugs, PuzzlePiece, SlidersHorizontal, X } from '@phosphor-icons/react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { apiFetch, apiFormDataProgress } from '@/api/client';
@@ -10,12 +10,13 @@ import { GoogleSection } from '@/features/settings/GoogleSection';
 import { ComputerRulesSection } from '@/features/settings/ComputerRulesSection';
 import { ProjectMemorySection } from './ProjectMemorySection';
 import { activitySummary } from '@/components/ActivityFeed';
+import { ComputerLink, useComputerLink } from './ComputerLink';
 
 type Task = { id: string; title: string; prompt: string; status: string; enabled: boolean; progress: string; error: string; next_run_at: number; conversation_id: string | null };
 type Skill = { name: string; title: string; description: string; origin: string; enabled: boolean };
 type SkillTemplate = { name: string; title: string; description: string };
-type Section = 'home' | 'tasks' | 'skills' | 'connectors' | 'rules' | 'projects';
-const titles = { home: 'Оркестратор', tasks: 'Задачи', skills: 'Навыки', connectors: 'Подключения', rules: 'Правила', projects: 'Память проекта' };
+type Section = 'home' | 'computer' | 'tasks' | 'skills' | 'connectors' | 'rules' | 'projects';
+const titles = { home: 'Оркестратор', computer: 'Этот компьютер', tasks: 'Задачи', skills: 'Навыки', connectors: 'Подключения', rules: 'Правила', projects: 'Память проекта' };
 const statusLabels: Record<string, string> = { queued: 'В очереди', running: 'В работе', scheduled: 'По расписанию', completed: 'Готово', paused: 'На паузе', cancelled: 'Отменено', interrupted: 'Прервано', failed: 'Ошибка', blocked: 'Нужен доступ или лимит' };
 const date = (value: number) => new Date(value * 1000).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
@@ -61,6 +62,7 @@ export function OrchestratorTools({ draft, hasFiles = false, conversationId, onO
     return () => { observer.disconnect(); window.removeEventListener('resize', measure); window.visualViewport?.removeEventListener('resize', measure); };
   }, [open]);
   const tasks = useQuery<Task[]>({ queryKey: ['computer-tasks'], queryFn: () => apiFetch('/computer/tasks'), refetchInterval: 15000 });
+  const computer = useComputerLink(open, section === 'computer');
   const skills = useQuery<{ items: Skill[] }>({ queryKey: ['skills'], queryFn: () => apiFetch('/skills'), enabled: open, staleTime: 30000 });
   const templates = useQuery<{ items: SkillTemplate[] }>({ queryKey: ['skill-templates'], queryFn: () => apiFetch('/skills/templates'), enabled: open && section === 'skills' && showTemplates, staleTime: 30000 });
   const connectors = useQuery<{ id: number; type: string }[]>({ queryKey: ['connectors'], queryFn: () => apiFetch('/connectors'), enabled: open, staleTime: 30000 });
@@ -102,6 +104,7 @@ export function OrchestratorTools({ draft, hasFiles = false, conversationId, onO
   const addTask = () => { enrollment.current = { payload: '', key: '' }; setPrompt(draft); setInterval(0); setStart(''); setError(''); setCreating(true); };
   const custom = (skills.data?.items || []).filter(s => s.origin === 'custom');
   const builtin = (skills.data?.items || []).filter(s => s.origin !== 'custom');
+  const computerHint = computer.isLoading ? 'Проверяю, открыт ли Bit Client' : computer.isError ? 'Не удалось проверить компьютер' : computer.data?.online ? `${computer.data.device_name || 'Компьютер'} на связи` : 'Откройте Bit Client на этом аккаунте';
   const matchesSkill = (skill: Skill) => `${skill.title} ${skill.name} ${skill.description}`.toLocaleLowerCase('ru-RU').includes(skillSearch.trim().toLocaleLowerCase('ru-RU'));
   const rowSx = { display: 'flex', width: '100%', gap: 1.5, alignItems: 'center', p: 1.5, textAlign: 'left', bgcolor: 'transparent', color: 'text.primary', border: 0, borderRadius: '10px', font: 'inherit', cursor: 'pointer', '&:hover': { bgcolor: 'var(--bt-overlay)' }, '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 } };
   const skillRow = (skill: Skill) => <Stack key={skill.name} direction="row" alignItems="center" gap={2} sx={{ py: 1.25, borderBottom: '1px solid var(--bt-hairline)' }}>
@@ -127,6 +130,7 @@ export function OrchestratorTools({ draft, hasFiles = false, conversationId, onO
         {error && <Alert severity="error" sx={{ my: 1 }}>{error}</Alert>}
         {section === 'home' && <>
           {([
+            ['computer', Desktop, 'Этот компьютер', computerHint],
             ['tasks', Clock, 'Задачи', active ? `Активных задач: ${active} · работа по расписанию` : 'Поручения на потом и по расписанию'],
             ['projects', Folder, 'Память проекта', 'Требования, решения и документы между беседами'],
             ['skills', PuzzlePiece, 'Навыки', custom.length ? `Личные: ${custom.length} · встроенные: ${builtin.length}` : 'Инструкции под ваши задачи'],
@@ -136,6 +140,7 @@ export function OrchestratorTools({ draft, hasFiles = false, conversationId, onO
           </Box>)}
           <Button size="small" onClick={() => setSection('rules')} sx={{ mt: 1, color: 'text.secondary', fontSize: 12 }}>Дополнительные правила</Button>
         </>}
+        {section === 'computer' && <ComputerLink />}
         {section === 'tasks' && <>
           <Stack direction="row" alignItems="center" justifyContent="space-between" gap={1} sx={{ mt: 1, mb: 2 }}><Typography sx={{ fontSize: 12, color: 'text.secondary' }}>Работают после закрытия чата; при сбое сохраняют шаги</Typography><Button size="small" onClick={addTask} disabled={create.isPending}>Новая задача</Button></Stack>
           <Collapse in={creating} unmountOnExit>

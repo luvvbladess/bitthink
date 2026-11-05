@@ -290,6 +290,9 @@ async def get_smart_response(
     computer_request.set(user_text or "")
     desktop_chat = desktop_mode.get() == "chat"
     model = "director" if is_desktop or cloud_task else desktop_chat_model.get() if desktop_chat else conversation_manager.get_user_model(user_id)
+    if desktop_chat:
+        from app.services.chat_modes import normalize_chat_mode
+        model = normalize_chat_mode(model)
     reasoning_effort = conversation_manager.get_user_reasoning_effort(user_id)
     sub = conversation_manager.get_subscription(user_id)
     from app.billing.plans import allowed_models, clamp_model
@@ -300,11 +303,24 @@ async def get_smart_response(
     tier = view["tier"]
     if (is_desktop or cloud_task) and "director" not in allowed_models(tier):
         raise QuotaError("Оркестратор недоступен на вашем тарифе. Откройте тарифы Bit-Think.", "plan")
-    if desktop_chat and (model not in allowed_models(tier) or model not in {"auto", "gpt-6.1-terra", "gpt-6-sol", "gpt-6-astra", "director", "studio"}):
+    if desktop_chat and model not in allowed_models(tier):
         raise QuotaError("Эта модель недоступна для обычных бесед на вашем тарифе.", "plan")
     model = clamp_model(tier, model)
+    if model == 'studio':
+        model = 'auto'  # Old saved choices now use the unified chat.
+    canvas_job = None
+    if not (is_desktop or cloud_task) and model not in {'director', 'docgen'}:
+        from canvas_intent import canvas_request
+        canvas_job = canvas_request(user_id, user_text)
+        if canvas_job in {'ambiguous', 'missing'}:
+            return 'Откройте нужную работу кнопкой «Открыть холст» и повторите правку — так я изменю именно выбранный результат.', [], '', []
+        if canvas_job:
+            executor = 'director' if canvas_job == 'project' else 'studio'
+            if executor not in allowed_models(tier):
+                raise QuotaError('Создание сайтов, слайдов и инфографики на холсте доступно с тарифа Pro.', 'plan')
+            model = executor  # A per-turn executor, never a persisted mode switch.
     # Before quota: a mode hint must not spend a reply or start a model call.
-    suggestion = None if is_desktop or desktop_chat or cloud_task else suggest_mode_switch(model, user_text, allowed=allowed_models(tier))
+    suggestion = None if is_desktop or desktop_chat or cloud_task or model == 'studio' else suggest_mode_switch(model, user_text, allowed=allowed_models(tier))
     if suggestion:
         return suggestion["text"], [], "", pack_mode_switch(suggestion)
     # Before quota and before Studio / Documents / Pilot / Search branch:
@@ -367,6 +383,12 @@ async def get_smart_response(
             model=local_model, user_id=user_id, use_tools=True, use_skills=False,
             allowed_tools=local_tools, force_web_search=False)
 
+    if model == 'director' and not is_desktop:
+        from app.services.simple_docx import respond as simple_document
+        document_reply = await simple_document(messages, user_text, user_id, status_msg)
+        if document_reply is not None:
+            return document_reply
+
     if model == "docgen":
         # Работает по полному, не сжатому тексту исходников через собственный
         # отбор релевантных фрагментов — reduce_heavy_context/fit_for_mode
@@ -397,6 +419,11 @@ async def get_smart_response(
     messages = list(messages)
     messages.insert(-1 if messages and messages[-1].get('role') == 'user' else len(messages),
                     {'role': 'system', 'content': intent.note()})
+    from app.services.answer_quality import answer_quality_note
+    domain_note = answer_quality_note(user_text)
+    if domain_note and model not in {'director', 'studio', 'docgen'}:
+        messages.insert(-1 if messages and messages[-1].get('role') == 'user' else len(messages),
+                        {'role': 'system', 'content': domain_note})
     logger.info('Task route: task=%s topic=%s followup=%s web=%s',
                 intent.task, intent.topic, intent.followup, intent.needs_web)
     from app.services.followup_evidence import followup_evidence
@@ -480,7 +507,7 @@ async def get_smart_response(
     # Studio and Pilot read the chat's photos and files themselves; the generic
     # «photo in this turn» branch below used to swallow their requests.
     own_files = model in {"director", "studio"}
-    if model in {"auto", "gpt-5-nano", "gpt-6-luna", "deepseek-v4-pro", "deepseek-v4-flash"}:
+    if not is_desktop and model not in {"studio", "docgen"}:
         # «Добавь очки на фото», «нарисуй кота»: draw instead of answering that we cannot.
         from studio_router import get_image_response
 
@@ -488,7 +515,23 @@ async def get_smart_response(
         if drawn is not None:
             return drawn
 
-    if has_documents and not own_files:
+    tool_result = None
+    if (model == 'auto' and not is_desktop and not has_documents and not has_images):
+        from app.services.text_document import respond as respond_text_document
+        tool_result = await respond_text_document(messages, user_text, user_id)
+    if re.search(r'(?i)дослов|точн\w*\s+цитат|сохрани\w*\s+пунктуаци', user_text):
+        messages.insert(0, {'role': 'system', 'content':
+            'Дословные цитаты — исходные данные: сохраняй слова, орфографию и пунктуацию, '
+            'включая длинное тире. Правила стиля применяй только к собственным пояснениям.'})
+    from app.services.conversation_context import workspaces
+    if (tool_result is None and model in {'auto', 'director'} and not is_desktop and not cloud_task
+            and not has_documents and not has_images and not workspaces.get() and not place_request):
+        from app.services.answer_tools import maybe_tool_answer
+        tool_result = await maybe_tool_answer(messages, user_text, user_id, allowed_models(tier),
+                                              pool='computer' if model == 'director' else 'chat')
+    if tool_result is not None:
+        result = tool_result
+    elif has_documents and not own_files:
         from status_feed import push_status
 
         await push_status("think", "Разбираю загруженные документы")
@@ -527,7 +570,7 @@ async def get_smart_response(
             on_reasoning_delta=on_reasoning_delta,
             force_web_search=vision_force_web,
         )
-    elif intent.web_forbidden and model in {'kimi-k2.6', 'gpt-6-sol'}:
+    elif intent.web_forbidden and model in {'search', 'gpt-6-sol'}:
         result = await get_chat_response(
             messages, model=clamp_model(tier, 'gpt-6-sol' if research_mode else 'gpt-6-luna'),
             user_id=user_id, use_tools=False, use_skills=False,
@@ -535,7 +578,25 @@ async def get_smart_response(
         )
     elif model == "auto":
         from status_feed import push_status
-        if web_required:
+        from app.services.response_policy import compact_answer_kind, compact_model
+        from app.services.conversation_context import workspaces
+        compact_kind = compact_answer_kind(user_text, web_required=web_required)
+        if compact_kind == 'text' and not is_desktop and not workspaces.get():
+            from app.services.response_policy import compact_messages
+            messages = compact_messages(messages)
+            route = compact_model(user_text, allowed_models(tier),
+                                  context_chars=sum(len(str(m.get('content') or '')) for m in messages))
+            if route.startswith('claude-'):
+                from openrouter_client import get_openrouter_response
+                result = await get_openrouter_response(messages, model=route, user_id=user_id,
+                    use_tools=False, use_skills=False, reasoning_effort='low')
+                if getattr(result, 'retryable', False) and not getattr(result, 'actions_executed', 0):
+                    result = await get_chat_response(messages, model=clamp_model(tier, 'gpt-6-luna'),
+                        user_id=user_id, use_tools=False, use_skills=False, reasoning_effort='low')
+            else:
+                result = await get_chat_response(messages, model=clamp_model(tier, route), user_id=user_id,
+                    use_tools=False, use_skills=False, reasoning_effort='low')
+        elif web_required or compact_kind == 'web':
             result = await get_chat_response(
                 messages,
                 model=clamp_model(tier, "gpt-6-luna"),
@@ -623,9 +684,13 @@ async def get_smart_response(
         result = await get_director_response(messages, user_text, user_id, status_msg)
     elif model == "studio":
         from studio_router import get_studio_response
-
-        result = await get_studio_response(messages, user_text, user_id, status_msg)
-    elif model == "kimi-k2.6":
+        from canvas_intent import canvas_creation
+        canvas_token = canvas_creation.set(canvas_job == 'create')
+        try:
+            result = await get_studio_response(messages, user_text, user_id, status_msg)
+        finally:
+            canvas_creation.reset(canvas_token)
+    elif model == "search":
         result = await get_chat_response(
             messages, model=clamp_model(tier, "gpt-6-luna"), user_id=user_id, use_tools=True,
             reasoning_effort="low", on_reasoning_delta=None,
@@ -667,7 +732,7 @@ async def get_smart_response(
     answer, files, reasoning, model_sources = result
     from status_feed import push_status
     await push_status("think", "Оформляю ответ")
-    source_limit = 28 if model == "director" else (24 if model in {"gpt-6-sol", "gpt-6-astra", "kimi-k2.6"} else 18)
+    source_limit = 28 if model == "director" else (24 if model in {"gpt-6-sol", "gpt-6-astra", "search"} else 18)
     sources = _merge_sources(grounded_sources, model_sources, limit=source_limit)
     from app.services.followup_evidence import previous_source_rows
     from app.services.source_quality import cited_urls, resolve_numbered_citations
@@ -689,7 +754,10 @@ async def get_smart_response(
     # user-facing explanation of progress.
     from skill_commands import guard_unsaved_claim
 
-    return guard_unsaved_claim(answer), files, "", sources
+    from app.services.answer_format import normalize_answer_format
+    from app.services.verbatim_quotes import restore_verbatim_quote
+    answer = restore_verbatim_quote(guard_unsaved_claim(answer), user_text, messages)
+    return normalize_answer_format(answer, user_text), files, "", sources
 
 
 def sanitize_response_text(text: str) -> str:
@@ -700,12 +768,16 @@ def sanitize_response_text(text: str) -> str:
     - убирает LaTeX-разметку \\textbf{}, \\textit{}, \\texttt{};
     - заменяет угловые скобки <<...>> на кавычки «...» (пустые <<>> — на [не указано]).
     """
-    text = text.replace("—", "–")
-
-    text = re.sub(r"\\textbf\{([^{}]+)\}", r"\1", text)
-    text = re.sub(r"\\textit\{([^{}]+)\}", r"\1", text)
-    text = re.sub(r"\\texttt\{([^{}]+)\}", r"\1", text)
-
+    # Structured output is data. Typography/HTML cleanup would corrupt string
+    # values (including generated source code) inside otherwise valid JSON.
+    if text.lstrip().startswith(('{', '[')):
+        import json
+        try:
+            value = json.loads(text)
+            if isinstance(value, (dict, list)):
+                return text
+        except ValueError:
+            pass
     code_blocks: List[str] = []
     inline_codes: List[str] = []
     _PLACEHOLDER = ""
@@ -720,6 +792,17 @@ def sanitize_response_text(text: str) -> str:
 
     text = re.sub(r"```[\s\S]*?```", save_code_block, text)
     text = re.sub(r"`[^`]+`", save_inline_code, text)
+
+    # Quoted punctuation is data too. Protect only the glyph, so HTML cleanup
+    # still applies inside quotes; never exempt arbitrary quoted markup.
+    import uuid
+    quote_dash = '\ue002' + uuid.uuid4().hex + '\ue003'
+    text = re.sub(r'«[^»]*»|(?m:^\s*>[^\n]*)',
+                  lambda m: m[0].replace('—', quote_dash), text)
+    text = text.replace("—", "–").replace(quote_dash, '—')
+    text = re.sub(r"\\textbf\{([^{}]+)\}", r"\1", text)
+    text = re.sub(r"\\textit\{([^{}]+)\}", r"\1", text)
+    text = re.sub(r"\\texttt\{([^{}]+)\}", r"\1", text)
 
     text = re.sub(
         r"<<([\s\S]*?)>>",

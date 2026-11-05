@@ -45,6 +45,15 @@ def bounded_text_task(task: str) -> bool:
     still prevent this shortcut; an opt-out of sending alone is harmless.
     """
     text = (task or '').strip()
+    # A short, explicitly offline conversation-preparation question needs a
+    # written answer, not a planner/team/composer loop. Inspect the whole request
+    # here: quoted actions, attachments and expert topics must not slip through.
+    if len(text) <= 1000 and re.match(r'(?i)^как\s+подготовиться\s+к\s+разговору\b', text):
+        from app.services.request_intent import forbids_web
+        if (forbids_web(text) and not _HARD.search(text) and not _REASONING_RISK.search(text)
+                and not _TEXT_ACTION.search(text)
+                and not re.search(r'(?i)актуальн|сегодня|\b(?:цен\w*|курс\w*|закон\w*|лечение|лекарств\w*)\b', text)):
+            return True
     if not text or len(text) > 4000 or not (_TEXT_TRANSFORM.search(text) or _TEXT_CREATE.search(text)):
         return False
     if _TEXT_TRANSFORM.search(text) and not re.search(r'[:«"\n].*\S', text, re.S):
@@ -67,7 +76,7 @@ def bounded_text_revision(task: str, messages) -> bool:
     text = (task or '').strip()
     if len(text) > 300 or not re.search(r'(?i)^(?:сделай|перепиши|сократи|измени)\b.{0,80}(?:теплее|короче|вежливее|официальн|дружелюбн|тон)', text):
         return False
-    if re.search(r'(?i)отправ|опублику|сохрани\s+(?:в|на)\b|файл|https?://', text):
+    if re.search(r'(?i)отправ|опублику|сохрани\s+(?:в\b|на\b|результат|файл|документ)|скачай|запусти|инструмент|файл|\b(?:docx|pdf|xlsx|pptx|csv|word|excel)\b|https?://', text):
         return False
     for row in reversed(messages or []):
         if row.get('role') == 'user' and isinstance(row.get('content'), str) and row['content'].strip() != text:
@@ -115,19 +124,34 @@ def needs_recovery(journal) -> bool:
 
 
 validation = ContextVar('orchestrator_validation', default=None)
-_CHECK_COMMAND = re.compile(r'(?i)\bpytest\b|\bnpm(?:\.cmd)?\s+(?:run\s+)?(?:test|typecheck|build)\b|\btsc\b|\b(?:cargo|go|dotnet)\s+test\b|node\s+[^\r\n]*\b(?:test|smoke)[-\w]*\.mjs')
+_CHECK_COMMAND = re.compile(r'(?i)\bpytest\b|\bnpm(?:\.cmd)?\s+(?:run\s+)?(?:test|typecheck|build)\b|\btsc\b|\b(?:cargo|go|dotnet)\s+(?:test|check|build)\b|\bpython(?:3|\.exe)?\s+-m\s+(?:unittest|pytest|compileall)\b|node\s+--test\b|\bctest\b|\bcmake\s+--build\b|node\s+[^\r\n]*\b(?:test|smoke)[-\w]*\.mjs')
 
 
 class ValidationState:
     """An actual failed test cannot be overwritten by unrelated successful work."""
     def __init__(self):
         self.checks = {}
+        self.wrote_code = False
+        self.checked_after_write = False
+        self.write_failed = False
 
     @property
     def failed(self):
         return any(not passed for passed in self.checks.values())
 
     def observe(self, name, args, result):
+        if name in {'workspace_write', 'workspace_edit'}:
+            self.checked_after_write = False
+            self.write_failed = True
+            try:
+                data = json.loads(result)
+            except (ValueError, TypeError):
+                data = None
+            if (args.get('path') and re.match(r'^(?:Записал |Сохранён )', str(result))) or (isinstance(data, dict) and not data.get('error') and (
+                    data.get('ok') is True or data.get('success') is True
+                    or data.get('written') is True or data.get('status') == 'ok')):
+                self.wrote_code = True
+                self.write_failed = False
         command = str(args.get('command') or args.get('cmd') or '')
         if name == 'workspace_run':
             argv = args.get('argv') or []
@@ -145,6 +169,7 @@ class ValidationState:
         if isinstance(code, int) and not isinstance(code, bool):
             key = hashlib.sha256(command.strip().encode()).hexdigest()
             self.checks[key] = code == 0
+            self.checked_after_write = self.wrote_code and not self.write_failed and code == 0
 
 
 def observe_validation(name, args, result):

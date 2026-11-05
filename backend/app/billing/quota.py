@@ -320,7 +320,7 @@ def usage_view(sub: dict[str, Any]) -> dict[str, Any]:
         },
         "multipliers": {
             "Luna / Nano": MODEL_MULTIPLIER["gpt-6-luna"],
-            "Kimi": MODEL_MULTIPLIER["kimi-k2.6"],
+            "Поиск": MODEL_MULTIPLIER["search"],
             "DeepSeek": MODEL_MULTIPLIER["deepseek-v4-pro"],
             "Haiku": MODEL_MULTIPLIER["claude-haiku-5.5"],
             "Sol": MODEL_MULTIPLIER["gpt-6-sol"],

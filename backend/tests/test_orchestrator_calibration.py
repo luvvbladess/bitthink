@@ -145,3 +145,10 @@ def test_text_revision_inherits_only_previous_draft():
     assert bounded_text_revision(task, [{'role':'user','content':'Напиши поздравление Марине на вы, до 40 слов.'}])
     assert not bounded_text_revision(task, [{'role':'user','content':'Исправь приложение в проекте'}])
     assert not bounded_text_revision('Сделай теплее и отправь письмо', [{'role':'user','content':'Напиши письмо клиенту'}])
+
+
+def test_text_revision_with_file_or_tools_keeps_execution():
+    from app.services.orchestrator_policy import bounded_text_revision
+    history=[{'role':'user','content':'Напиши письмо клиенту'}]
+    for text in ['Сделай короче в DOCX','Сделай теплее и сохрани результат','Сделай короче и проверь инструментами','Сделай короче в PDF']:
+        assert not bounded_text_revision(text,history)

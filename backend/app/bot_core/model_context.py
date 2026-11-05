@@ -1,7 +1,7 @@
 """One conversation window per product mode.
 
 Auto / Computer / Research / Luna / Sol all mix models on the same thread.
-The thread is packed once to the mode window. Individual hops (Kimi search,
+The thread is packed once to the mode window. Individual hops (shared search,
 Luna OCR, Sol vision) do not re-pack to a different size.
 """
 
@@ -39,13 +39,15 @@ class ModeWindow:
 
 
 # Conversation windows. Mixed-model modes share the 1.05M window
-# (GPT-6 Luna/Sol/Astra and DeepSeek V4). Search is Kimi-only, so 256K.
+# (GPT-6 Luna/Sol/Astra and DeepSeek V4). Search uses Luna and shared tools.
+# The retired Kimi window is retained only for historical context tests.
 # Leaf output caps stay in LEAF_OUTPUT — that is generation, not thread size.
 MODE_WINDOWS: Dict[str, ModeWindow] = {
     "auto": ModeWindow(1_050_000, 128_000),
     "correspondent": ModeWindow(1_050_000, 128_000),
     "director": ModeWindow(1_050_000, 128_000),
     "studio": ModeWindow(1_050_000, 128_000),
+    "search": ModeWindow(1_050_000, 128_000),
     "gpt-6-luna": ModeWindow(1_050_000, 128_000),
     "gpt-6.1-terra": ModeWindow(1_050_000, 128_000),
     "gpt-6-sol": ModeWindow(1_050_000, 128_000),

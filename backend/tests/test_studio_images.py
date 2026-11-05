@@ -1,3 +1,4 @@
+import pytest
 """Studio must draw and edit pictures instead of falling back to a landing page."""
 
 from app.config import get_settings  # noqa: F401
@@ -116,3 +117,26 @@ def test_chat_draws_and_edits_pictures_instead_of_refusing(monkeypatch):
     monkeypatch.setattr(sr, "_last_reply_image", lambda _uid: b"previous")
     ask("а теперь убери фон")
     assert calls[-1][0] == "edit"
+    ask("у тебя нижнее устройство плохо получилось. поправь пж")
+    assert calls[-1][0] == "edit"
+    before=len(calls)
+    assert ask("Создай SVG код обложки") is None
+    assert len(calls)==before
+
+
+@pytest.mark.parametrize('prompt', [
+    'Измени текущий макет: чуть поменьше размер текста сделать в кнопке "от 490". Сохрани остальные элементы и содержание.',
+    'В текущем макете измени элемент «от 490» (img): уменьши текст цены.',
+])
+def test_selected_image_canvas_edits_text_instead_of_refusing(monkeypatch,prompt):
+    import canvas_intent
+    import studio.html_canvas as hc
+    monkeypatch.setattr(canvas_intent,'target_for_turn',lambda uid:'/uploads/chosen.html')
+    monkeypatch.setattr(canvas_intent,'canvas_attachments',lambda uid:[{'url':'/uploads/chosen.html'}])
+    monkeypatch.setattr(hc,'load_previous_html',lambda uid:'selected-image-canvas')
+    monkeypatch.setattr(hc,'is_image_canvas',lambda html:html=='selected-image-canvas')
+    async def image(messages,text,uid,status,**kwargs):
+        assert kwargs['previous_html']=='selected-image-canvas'
+        return 'edited',[], '',[]
+    monkeypatch.setattr(sr,'_run_image_studio',image)
+    assert asyncio.run(sr.get_image_response([],prompt,1,None))[0]=='edited'
