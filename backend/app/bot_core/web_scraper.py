@@ -26,6 +26,10 @@ URL_PATTERN = re.compile(
 # Лимиты
 MAX_URLS = 5               # Макс. ссылок для обработки в одном сообщении
 MAX_CONTENT_PER_URL = 15000  # Макс. символов текста с одной страницы
+from contextvars import ContextVar
+# Query-based readers select a bounded excerpt after fetching. Other callers
+# retain the original limit; never raise the amount sent to a model here.
+page_text_limit = ContextVar('page_text_limit', default=MAX_CONTENT_PER_URL)
 FETCH_TIMEOUT = 15          # Таймаут на скачивание (секунды)
 
 # User-Agent для обхода простых блокировок
@@ -533,8 +537,9 @@ async def _fetch_url_content_local(url: str) -> Tuple[str, str]:
         if not text or len(text) < 50:
             return url, "[Страница пуста или не содержит текста]"
 
-        if len(text) > MAX_CONTENT_PER_URL:
-            text = text[:MAX_CONTENT_PER_URL] + "\n\n[...текст обрезан...]"
+        limit = max(MAX_CONTENT_PER_URL, min(page_text_limit.get(), 300000))
+        if len(text) > limit:
+            text = text[:limit] + "\n\n[...текст обрезан...]"
 
         return url, note + text
 
@@ -551,7 +556,7 @@ async def fetch_url_content(url: str, *, use_kimi_fallback: bool = True) -> Tupl
     reads = page_reads()
     if reads is None:
         return await _fetch_url_content_once(url, use_kimi_fallback=use_kimi_fallback)
-    key = (url.strip(), reader_mode(), bool(use_kimi_fallback))
+    key = (url.strip(), reader_mode(), bool(use_kimi_fallback), page_text_limit.get())
     task = reads.get(key)
     if task is None:
         # Do not retain unbounded page content on a very large specification.
@@ -562,7 +567,7 @@ async def fetch_url_content(url: str, *, use_kimi_fallback: bool = True) -> Tupl
     try:
         result = await asyncio.shield(task)
         if result[0] != url and len(reads) < 40:
-            reads.setdefault((result[0], reader_mode(), bool(use_kimi_fallback)), task)
+            reads.setdefault((result[0], reader_mode(), bool(use_kimi_fallback), page_text_limit.get()), task)
         return result
     except Exception:
         reads.pop(key, None)

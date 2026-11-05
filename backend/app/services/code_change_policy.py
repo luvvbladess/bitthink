@@ -1,0 +1,56 @@
+"""Bound execution scope, not intelligence: small edits keep a capable coder."""
+import re
+
+CODE_EDIT_TOOLS = frozenset({
+    'workspace_ls', 'workspace_glob', 'workspace_grep', 'workspace_read',
+    'workspace_edit', 'workspace_write', 'workspace_run', 'python_run',
+    'workspace_export_files', 'list_chat_files', 'read_chat_document', 'workspace_import_file',
+    'load_skill', 'read_skill_resource', 'desktop_run_command', 'desktop_changed_files',
+    'desktop_skill_list', 'desktop_skill_read',
+})
+
+
+CODE_CHANGE_RULES = (
+    'Для правки существующего кода сначала найди конкретное место и выбери минимальное '
+    'законченное исправление. Сохрани текущие API, стиль, стек и зависимости. '
+    'Не вводи интерфейсы, фабрики, универсальные обёртки, новые слои, зависимости или '
+    'реорганизацию файлов ради SOLID/DRY/«на будущее»: только если это нужно по задаче '
+    'или для устранения подтверждённой причины ошибки. Явно заказанный рефакторинг выполняй. '
+    'Одну связанную правку поручай одному исполнителю; не дели чтение, патч и проверку '
+    'одного файла между коллегами. Найди место через grep/glob, прочитай нужный участок, '
+    'исправь и запусти подходящую проверку. Не исследуй весь проект без причины. '
+    'Для локальной правки сначала целевой тест/сборка; расширяй проверки при изменении '
+    'общего контракта, затронутых зависимостях или конкретной ошибке. Обязательные проверки '
+    'репозитория сохраняются. После успешной проверки не повторяй её и не начинай новый '
+    'рефакторинг без новых изменений. При провале исправляй причину, не ослабляй тесты. '
+    'Если обнаружены риски безопасности, гонки или затронуты несколько подсистем, '
+    'расширь анализ по фактам. Кратко сообщи результат и реально выполненную проверку.'
+)
+
+_EDIT = re.compile(r'(?i)^\s*(?:пожалуйста[, ]+)?(?:исправь|поправь|замени|поменяй|измени|добавь|убери|fix|change|replace|add|remove)\b')
+_FILE = re.compile(r'(?i)(?<![\w])(?:[\w./\\-]+\.(?:py|cpp|cc|cxx|hpp|h|rs|cs|ts|tsx|js|jsx|c|go|java|vue|css|scss|html|json|toml|yaml|yml))(?![\w])')
+_TARGET = re.compile(r'(?i)\b(?:опечатк\w*|подпис\w*\s+кнопк\w*|текст\w*\s+кнопк\w*|цвет\w*\s+кнопк\w*|typo|label)\b')
+_RISK = re.compile(r'(?i)архитектур|рефактор|миграц|авторизац|аутентификац|безопасност|уязвим|гонк[аиу]|deadlock|race.condition|security|authenticat|authoriz|oauth|refactor|migration|плат[её]ж|криптограф|encrypt|payment|перепиши|переработай|во\s+вс[её]м|вс[её]\s+приложени|across\s+(?:all|the)|deploy|деплой|опублику|баз[ауы]\s+данных|database|удали\s+файл|delete\s+file|с\s+нуля|from\s+scratch|сохрани\s+на\s+диск|google|гугл|docx|pdf|xlsx|https?://')
+
+
+def code_change_rules(task: str) -> str:
+    from app.services.subject_guidance import subject_for_query
+    return CODE_CHANGE_RULES if _FILE.search(task or '') or subject_for_query(task) == 'code' else ''
+
+
+def bounded_code_change(task: str) -> bool:
+    """Opt in only to a concrete local edit. 'Simple' alone is never evidence."""
+    text = (task or '').strip()
+    if not text or len(text) > 4000 or not _EDIT.search(text):
+        return False
+    # Code is data; inspect the directive, not keywords inside a fenced example.
+    directive = text.split('```', 1)[0]
+    directive = re.sub(r'(?i)\b(?:без\s+(?:постороннего\s+)?рефакторинга|no\s+refactor(?:ing)?)\b', '', directive)
+    from app.services.orchestrator_policy import critical_task
+    if critical_task(directive) or _RISK.search(directive) or re.search(r'(?i)отправ|\bsend\b|upload|скачай|загрузи|\bssh\b|publish|install|установи|browser|браузер|почт|шифров|\bjwt\b|architect|rewrite|\b(?:whole|entire)\b|весь\s+(?:api|код|проект)|полностью|нов\w*\s+(?:подсистем\w*|сервис\w*|api\b)', directive):
+        return False
+    targets = re.sub(r'(?i)\b(?:не\s+меняй|не\s+трогай|do\s+not\s+change)\b[^\n]*', '', directive)
+    files = {m.group(0).lower() for m in _FILE.finditer(targets)}
+    if len(files) > 2:
+        return False
+    return bool(files or _TARGET.search(directive))

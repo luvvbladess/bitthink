@@ -66,6 +66,8 @@ async def announce_tool(name: str, args: Optional[dict] = None) -> None:
     if name in ("web_search", "$web_search", "server_search"):
         q = str(args.get("query") or args.get("q") or args.get("text_query") or "").strip()
         await push_status("search", q or "Ищу в интернете")
+    elif name == "calculate":
+        await push_status("think", "Проверяю вычисления")
     elif name == "image_search":
         filename = str(args.get("filename") or "").strip()
         await push_status("search", f"Ищу фото {filename}" if filename else "Ищу фото в Яндексе и Google")

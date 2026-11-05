@@ -21,7 +21,7 @@ def check(case, paths):
     elif case=='holdout_doc_limits':
         required=[r'12\s*MiB|12\s*МиБ|12582912|12\s*[×*]\s*1024',r'3|тр[иё]',r'5',r'30',r'7',r'24',r'SLA',r'не\s+(?:указан|задан|определ)|нет|отсутств']
     elif case=='beam_report':
-        required=[r'75\s*(?:МПа|MPa)',r'2(?:[.,]0+)?\s*мм',r'2[.,]13',r'креплен|креплён|закреплен',r'допущ|линейн|упруг']
+        required=[r'\b75(?:[.,]0+)?\s*(?:МПа|MPa)',r'2(?:[.,]0+)?\s*мм',r'2[.,]13',r'креплен|креплён|закреплен',r'допущ|линейн|упруг']
     elif case=='plate_dxf':
         import ezdxf
         path=next(p for p in paths if p.suffix.lower()=='.dxf')

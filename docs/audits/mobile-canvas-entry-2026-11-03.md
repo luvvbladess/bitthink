@@ -1,0 +1,5 @@
+# Empty entry and manual canvas — 3 November 2026
+
+Chat navigation no longer restores lastConversation or the server active/latest chat on an unqualified /chat entry. Explicit c links remain supported. A new empty entry is a view, not a persisted empty conversation. Canvas visibility is per current visit and requires explicit Open canvas; previously persisted sessionStorage visibility is ignored. Switching conversations and reloading close the canvas. Compact drawer content is mounted only on explicit opening, avoiding hidden iframe generation/loading.
+
+Frontend TypeScript and production build passed. Browser regression at 390px and 1440px passed: seeded last conversation and saved open-canvas preference do not restore on /chat entry, existing messages load on selection, canvas stays absent until explicit open, saved iframe renders on click, switching away/back and reload remain closed. Existing explicit conversation URLs are retained for links. Built assets retain previous hashed versions for open tabs. Deployment backs up dist and the two changed sources; release verifier checks public frontend/assets and API/worker readiness.

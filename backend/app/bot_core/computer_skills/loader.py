@@ -37,6 +37,7 @@ CHAT_SKILLS = frozenset(
         "research",
         "rewrite",
         "verify",
+        "technical_docs",
     }
 )
 
@@ -72,12 +73,15 @@ def _parse(path: Path) -> dict[str, str]:
     return meta
 
 
-@lru_cache(maxsize=1)
-def builtin_catalog() -> tuple[dict[str, str], ...]:
+@lru_cache(maxsize=2)
+def builtin_catalog(*, include_aliases: bool = False) -> tuple[dict[str, str], ...]:
+    from .adaptations import registry
     items = []
     for skill_file in sorted(SKILLS_DIR.glob("*/SKILL.md")):
         parsed = _parse(skill_file)
         name = parsed["name"]
+        if not include_aliases and registry().get(name, {}).get('alias_of'):
+            continue
         items.append(
             {
                 "name": name,
@@ -91,7 +95,8 @@ def builtin_catalog() -> tuple[dict[str, str], ...]:
 
 
 def builtin_names() -> tuple[str, ...]:
-    return tuple(item["name"] for item in builtin_catalog())
+    # Old stored settings and load_skill calls continue to recognize merged names.
+    return tuple(item["name"] for item in builtin_catalog(include_aliases=True))
 
 
 def _user_skill_rows(user_id: int | None) -> list[dict]:
@@ -201,9 +206,9 @@ def catalog_for_prompt(user_id: int | None = None, compact: bool = False) -> str
         "код, файлы, почта, сайт, SQL.\n"
         "Карта: слайды → deck; инфографика/схема процесса → infographic; таблицы/xlsx → spreadsheet; "
         "отчёт/docx/договор → documents или legal; товар, цены по магазинам, лучшее предложение → marketplaces; код → code; почта → email; "
-        "открыть сайт → browser; сделать сайт, лендинг или инфографику → impeccable, ui_ux_pro_max, emil_design_eng, visual_system; "
+        "открыть сайт → browser; дизайн сайта → impeccable; анимация и взаимодействие → emil_design_eng; справочник UI → ui_ux_pro_max; кадры Студии → visual_system; "
         "фото → images; цены → prices; сверка → verify; выжимка → brief; песочница → workspace; "
-        "ошибка → debug; расчёт → science; протокол → minutes; правка текста → rewrite; PDF → pdf; SQL → sql; "
+        "README/документация API → technical_docs; ошибка → debug; расчёт → science; протокол → minutes; правка текста → rewrite; PDF → pdf; SQL → sql; "
         "инженерка: прочитать чертёж → eng_drawing; начертить/восстановить аналог по материалам → eng_reverse; спецификация → eng_bom, схема → eng_schematic, допуск → eng_tolerance, "
         "ГОСТ → eng_standard, DXF → eng_cad.\n"
         "Свои скилы человека помечены «ваш»: применяй их, если задача попала в триггер или имя.\n"
@@ -226,11 +231,13 @@ def catalog_for_prompt(user_id: int | None = None, compact: bool = False) -> str
 def load_skill(name: str, user_id: int | None = None, *, shared: bool | None = None) -> str:
     from .adaptations import canonical_name, builtin_resources, registry
     normalized = (name or '').strip().lower().replace('-', '_')
-    wanted = normalized if any(row.get('name') == normalized for row in _user_skill_rows(user_id)) else canonical_name(name or '')
+    personal = any(row.get('name') == normalized for row in _user_skill_rows(user_id))
+    wanted = normalized if personal else canonical_name(name or '')
+    original = normalized if personal else canonical_name(name or '', follow_alias=False)
     if not wanted:
         return "Укажи имя скила из list_skills."
     path = SKILLS_DIR / wanted / "SKILL.md"
-    if wanted in disabled_builtin_names(user_id):
+    if {wanted, original} & disabled_builtin_names(user_id):
         return f"Скил «{wanted}» выключен человеком в Настройках. Работай без него, не проси включить."
     if wanted in builtin_names() and path.is_file():
         parsed = _parse(path)
@@ -332,8 +339,9 @@ _SKILL_TRIGGERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("images", ("фото", "картин", "скрин", "где сня", "линз", "поиск по картин", "изображ")),
     ("verify", ("проверь", "правда ли", "сверь", "подтверд")),
     ("browser", ("зайд", "сайт", "http://", "https://", "логин", "пароль")),
-    ("code", ("код", "python", "javascript", "typescript", "node.js", "nodejs", "c11", "gcc", "c++", "golang", "на go", "rust", "скрипт", "баг", "ошибк", "функци", "репозитор", "рефактор", "миграц", "pytest")),
-    ("debug", ("traceback", "stack trace", "упал скрипт", "не старту", "502")),
+    ("code", ("код", "python", "javascript", "typescript", "react", "next.js", "nextjs", ".tsx", ".jsx", "node.js", "nodejs", "c11", "gcc", "c++", "golang", "на go", "rust", "скрипт", "баг", "ошибк", "функци", "репозитор", "рефактор", "миграц", "pytest")),
+    ("technical_docs", ("документац", "readme", "runbook", "api guide", "migration guide", "инструкцию для разработ", "инструкция для разработ", "инструкцию запуска", "инструкция запуска")),
+    ("debug", ("traceback", "stack trace", "упал скрипт", "не старту", "502", "тест падает", "тесты падают", "падает тест", "падают тест", "test failure", "ошибка сборки")),
     ("science", ("формул", "рассчитай", "интеграл", "статистик", "гипотез", "молекул", "физик")),
     ("sql", ("sql", "select ", "запрос к баз", "sqlite", "postgres")),
     ("spreadsheet", ("таблиц", "xlsx", "excel", "csv", "строк и столб")),
@@ -411,6 +419,15 @@ def _custom_score(row: dict, blob: str) -> int:
 def _builtin_score(name: str, needles: tuple[str, ...], blob: str, *, sandbox: bool) -> int:
     if not sandbox and skill_scope(name) != "chat":
         return 0
+    if name == 'technical_docs':
+        authors = re.finditer(r'(?:напиши|составь|перепиши|обнови|создай|подготовь|разработай|write|rewrite|update|create)(?P<between>.{0,60}?)(?:документац|readme|runbook|api guide|migration guide|инструкц)', blob)
+        if not any(not re.search(r'сервис|приложен|сайт|тест|код|проект', match['between']) for match in authors):
+            return 0
+    if name == 'code':
+        framework = {'react', 'next.js', 'nextjs', '.tsx', '.jsx'}
+        if any(n in blob for n in framework) and not any(n in blob for n in needles if n not in framework):
+            if not re.search(r'созда|сдела|напиши|исправ|проверь|оптимиз|рефактор|разработ|ускор|медлен|перерисов|review|build|fix|performance', blob):
+                return 0
     if name in {'email', 'documents', 'workspace'}:
         from app.services.orchestrator_policy import bounded_text_task, chat_reasoning_task
         if bounded_text_task(blob) or chat_reasoning_task(blob):
@@ -474,7 +491,8 @@ def match_skills(
         from .adaptations import canonical_name, registry
         for alias in re.findall(r"load_skill\s+([a-z][a-z0-9_-]*)", blob):
             named = canonical_name(alias)
-            if named in known and named not in off and (sandbox or skill_scope(named) == "chat"):
+            original = canonical_name(alias, follow_alias=False)
+            if named in known and not ({named, original} & off) and (sandbox or skill_scope(named) == "chat"):
                 ranked.append((20, 0, order, named))
                 order += 1
         if sandbox and has_images and "images" not in off:
@@ -491,22 +509,25 @@ def match_skills(
         # Native marketplace/engineering/file skills retain precedence. New workflows
         # match narrow domain phrases, not individual everyday words.
         for name, row in registry().items():
-            if row['adaptation'] != 'builtin' or name in off or (not sandbox and row['scope'] != 'chat'):
+            target = row.get('alias_of', name)
+            if row['adaptation'] != 'builtin' or {name, target} & off or (not sandbox and skill_scope(target) != 'chat'):
                 continue
             if name == 'wf_automations' and not re.search(r'напомни|следи|отслеживай|запускай|присылай|отправляй|проверяй|по\s+расписанию|(?:создай|настрой).{0,40}(?:задач|автоматизац|напоминан)', blob):
                 continue
             if any(needle in blob for needle in row['triggers']):
-                ranked.append((4, 0, order, name))
-            if name in blob or (len(row['source_name']) >= 5 and row['source_name'] in blob):
-                ranked.append((12, 0, order, name))
+                ranked.append((4, 0, order, target))
+            source_mention = re.search(r'(?:\$|\b(?:skill|скил\w*)\s+)' + re.escape(row['source_name']) + r'\b', blob)
+            if re.search(r'(?<![a-z0-9_])' + re.escape(name) + r'(?![a-z0-9_])', blob) or source_mention:
+                ranked.append((12, 0, order, target))
             order += 1
         from studio.design_skills import visual_build
         # A product task already carries the design guidance inline: loading it again doubles every loop's prompt.
         if visual_build(blob) and "дизайн этого заказа делает дизайнер" not in blob:
-            design_names = ['impeccable', 'ui_ux_pro_max', 'emil_design_eng', 'visual_system']
+            design_names = ['impeccable']
+            if re.search(r'анимаци|motion|gsap|переход|микровзаимодейств', blob):
+                design_names.append('emil_design_eng')
             if 'инфографик' in blob:
                 design_names.append('infographic')
-            added = 0
             for design_name in design_names:
                 if design_name in off or design_name not in known:
                     continue
@@ -514,9 +535,8 @@ def match_skills(
                     continue
                 ranked.append((9, 0, order, design_name))
                 order += 1
-                added += 1
-            if added and 2 <= limit < added:
-                limit = added
+            # Keep the caller's budget. Studio/product pipelines inject their
+            # broader design guidance separately; ordinary matching need not.
     ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
     selected: list[tuple[int, int, int, str]] = []
     seen: set[str] = set()

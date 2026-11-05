@@ -45,7 +45,7 @@ _INFO_HINT = re.compile(
     r"(?i)\b(инфографик\w*|infographic|одноэкран\w*|воронк\w*|таймлайн\w*|timeline|kpi[\s-]?strip)\b"
 )
 _LANDING_HINT = re.compile(
-    r"(?i)\b(лендинг\w*|landing|сайт\w*|страниц\w*|промо|hero|маркетинг\w*)\b"
+    r"(?i)\b(лендинг\w*|landing|сайт\w*|страниц\w*|промо|hero|маркетинг\w*|websites?|web\s+pages?)\b"
 )
 _DASH_HINT = re.compile(
     r"(?i)\b(дашборд\w*|dashboard|кабинет\w*|аналитик\w*|панель\w*|метрики)\b"
@@ -466,8 +466,13 @@ def load_previous_html(user_id: int) -> str | None:
         return None
     if not conv:
         return None
+    from canvas_intent import target_for_turn
+    target = target_for_turn(user_id)
     messages = list(getattr(conv, "messages", None) or [])
     for message in reversed(messages):
+        role = message.get('role') if isinstance(message, dict) else getattr(message, 'role', None)
+        if role != 'assistant':
+            continue
         attachment = getattr(message, "attachment", None)
         if isinstance(message, dict):
             attachment = message.get("attachment")
@@ -480,6 +485,8 @@ def load_previous_html(user_id: int) -> str | None:
         for item in items:
             name = str(item.get("name") or "")
             url = str(item.get("url") or "")
+            if target and url != target:
+                continue
             if not (
                 item.get("canvas")
                 or name.lower().endswith((".html", ".htm"))
@@ -550,7 +557,7 @@ p{{color:var(--muted);max-width:34ch;line-height:1.45}}
 <p class="kicker">01</p>
 <h2>Одна мысль на кадр</h2>
 <div class="rule"></div>
-<p>Дальше Студия допишет живой макет под ваш бриф, а не шаблон слайдов.</p>
+<p>Здесь появится живой макет по вашему описанию.</p>
 </div></section>
 <section class="slide"><div class="slide-inner">
 <p class="kicker">Дальше</p>

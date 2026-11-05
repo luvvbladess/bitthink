@@ -516,6 +516,11 @@ def _cut_trailing_source_block(lines: List[str]) -> List[str]:
 
 
 def strip_source_links(text: str) -> str:
+    from app.services.prose_transform import transform_prose
+    return transform_prose(text, _strip_source_links_prose)
+
+
+def _strip_source_links_prose(text: str) -> str:
     """Remove citation lists/markers while preserving actionable inline links."""
     if not text:
         return text

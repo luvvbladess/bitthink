@@ -116,3 +116,27 @@ def test_message_to_a_deleted_chat_starts_a_new_one(monkeypatch):
     assert replaces == "conv_20990101_000000_deadbeef" and new_id != replaces
     messages = asyncio.run(chat_service.repo.get_messages("deleted-chat@example.ru", new_id))
     assert [m["content"] for m in messages] == ["привет"]
+
+
+@pytest.mark.parametrize('name', ['site.html', 'notes.txt'])
+def test_desktop_file_delivery_keeps_persisted_url_for_exact_edits(monkeypatch,name):
+    saved,delivered=[],[]
+    raw=b'<!doctype html><html><body>actual artifact</body></html>'
+    async def response(*args,**kwargs):return 'Готово',[{'filename':name,'bytes':raw}],'',[]
+    async def persist(*args,**kwargs):saved.append(kwargs)
+    async def store(*args):return {'name':name,'url':'/uploads/generated/result/'+name,'type':'generated'}
+    async def file(filename,data,url):
+        assert saved and saved[0]['attachment']['url']==url
+        delivered.append((filename,data,url))
+    async def noop(*args,**kwargs):return []
+    handlers=ModuleType('handlers.core');handlers.get_smart_response=response;handlers.sanitize_response_text=lambda text:text
+    monkeypatch.setitem(sys.modules,'handlers.core',handlers)
+    monkeypatch.setattr(chat_service.repo,'add_message',persist)
+    monkeypatch.setattr(chat_service,'_persist_generated_file',store)
+    monkeypatch.setattr(chat_service,'schedule_memory_refresh',lambda *args:None)
+    monkeypatch.setattr('app.services.sandbox_client.collect_workspace_files',noop)
+    from app.services.desktop_context import desktop_mode
+    token=desktop_mode.set('chat')
+    try:asyncio.run(chat_service._generate_and_send(1,'desktop-url@example.invalid','Создай файл',[],noop,noop,file,noop,noop))
+    finally:desktop_mode.reset(token)
+    assert delivered==[(name,raw,'/uploads/generated/result/'+name)]

@@ -44,9 +44,19 @@ def labeled_secret_spans(text: str) -> list[str]:
     """Values written as «пароль: x» / «token: y» in free text."""
     found: list[str] = []
     pattern = re.compile(
-        r"(?i)(?:пароль(?:\s+приложения)?|app\s*password|password|token|secret|ключ)\s*[:=]\s*(\S+)"
+        r"(?i)(?<![\w])(?:пароль(?:\s+приложения)?|app\s*password|password|token|secret|ключ)\s*[:=]\s*(\S+)"
     )
     for match in pattern.finditer(text or ""):
+        # Assignment expressions are not credentials. Keep literal credentials
+        # eligible, including inside code; known connector values are always
+        # redacted independently by redact_text.
+        raw = match.group(1)
+        prefix = text[:match.start()]
+        line_prefix = prefix.rsplit('\n', 1)[-1]
+        in_code = bool(len(re.findall(r'(?m)^\s*```', prefix)) % 2
+                       or re.search(r'\b(?:var|string|const|let|auto)\s+$', line_prefix))
+        if in_code and re.match(r'[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+(?:[;,)\s]|$)|(?:new|await)\b|[A-Za-z_]\w*\(', raw):
+            continue
         value = match.group(1).strip().strip(".,;\"'")
         if len(value) >= 4:
             found.append(value)

@@ -38,7 +38,7 @@ def test_public_model_catalog_hides_internal_routes():
         response = TestClient(app).get("/models")
         assert response.status_code == 200
         ids = {model["id"] for model in response.json()["models"]}
-        assert ids == {"gpt-6.1-terra", "auto", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra", "director", "studio", "docgen"}
+        assert ids == {"gpt-6.1-terra", "auto", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra", "director", "docgen"}
         assert "none" in response.json()["reasoningEfforts"]
         assert "deepseek-v4-pro" not in ids
         assert "kimi-k2.6" not in ids
@@ -550,7 +550,7 @@ def test_search_mode_uses_our_search_not_kimi():
     from pathlib import Path
 
     source = (Path(__file__).resolve().parents[1] / "app" / "bot_core" / "handlers" / "core.py").read_text(encoding="utf-8")
-    kimi_block = source.split('elif model == "kimi-k2.6":', 1)[1].split("elif model", 1)[0]
+    kimi_block = source.split('elif model == "search":', 1)[1].split("elif model", 1)[0]
     assert "get_chat_response" in kimi_block
     assert "force_web_search=True" in kimi_block
     assert "kimi_web_result" not in kimi_block

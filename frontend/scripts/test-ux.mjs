@@ -45,6 +45,7 @@ async function fixture(options = {}) {
     'chat-b': [{ id: 'b1', role: 'user', content: 'Вопрос второй беседы' }, { id: 'b2', role: 'assistant', content: 'Ответ второй беседы.' }],
   };
   if (options.imageHistory) history['chat-a'].push({ id: 'image-original', role: 'assistant', content: '![Эскиз](/uploads/audit-source.png)' });
+  if (options.uploadedHtml) history['chat-a'].push({ id: 'source-html', role: 'user', content: 'Проанализируй этот файл', attachment: { name: 'source.html', url: '/uploads/source.html', type: 'document', mime_type: 'text/html' } });
   if (options.clarify) history['chat-a'].push({ id: 'clarify', role: 'assistant', content: 'Уточните задачу', search: [{ query: '__clarify__', summary: JSON.stringify({ questions: [{ prompt: 'Какой формат результата нужен?', options: ['Таблица', 'Отчёт'] }] }) }] });
   await page.route('**/uploads/**', route => route.fulfill({ contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jvXkAAAAASUVORK5CYII=', 'base64') }));
   page.on('pageerror', error => {
@@ -95,9 +96,9 @@ async function fixture(options = {}) {
         selected, selectedName: selected === 'gpt-6-luna' ? 'Быстрый' : undefined,
         reasoningEffort: state.modelEffort || 'medium', imageQuality: state.imageQuality || 'high',
         supportsReasoningEffort: ['auto', 'gpt-6-luna', 'gpt-6-sol', 'gpt-6-astra'].includes(selected),
-        computerAvailable: true, studioAvailable: true, searchAvailable: !state.searchLocked,
+        computerAvailable: true, studioAvailable: true, canvasAvailable: true, searchAvailable: !state.searchLocked,
         docgenAvailable: Boolean(options.fullModes), astraAvailable: Boolean(options.fullModes), researchModel: options.fullModes ? 'gpt-6-sol' : null,
-        models: [{ id: 'auto', name: 'Экспресс', available: true }, { id: 'gpt-6-luna', name: 'Быстрый', available: true }, { id: 'director', name: 'Оркестратор', available: true }, { id: 'studio', name: 'Студия', available: true }],
+        models: [{ id: 'auto', name: 'Экспресс', available: true }, { id: 'gpt-6-luna', name: 'Быстрый', available: true }, { id: 'director', name: 'Оркестратор', available: true }],
       };
     } else if (path === '/models/select') {
       (state.modeSelections ||= []).push(route.request().postDataJSON().model);
@@ -162,7 +163,7 @@ async function fixture(options = {}) {
   });
   await page.routeWebSocket(/\/chat\/ws$/, socket => {
     state.emitActivity = text => socket.send(JSON.stringify({ type: 'status', payload: { conversation_id: 'chat-a', text } }));
-    state.emitCanvas = () => socket.send(JSON.stringify({ type: 'file', payload: { conversation_id: 'chat-a', filename: 'Свежий.html', data: Buffer.from('<html><body><h1>Свежий результат</h1></body></html>', 'utf8').toString('base64') } }));
+    state.emitCanvas = (version = '') => socket.send(JSON.stringify({ type: 'file', payload: { conversation_id: 'chat-a', filename: `Свежий${version}.html`, canvas: true, data: Buffer.from(`<html><body><h1>Свежий результат${version ? ' ' + version : ''}</h1></body></html>`, 'utf8').toString('base64') } }));
     state.socketConnections = (state.socketConnections || 0) + 1;
     let silent = false;
     socket.onClose(() => { state.socketCloses = (state.socketCloses || 0) + 1; });
@@ -226,7 +227,10 @@ async function fixture(options = {}) {
   return { context, page, state, input, select };
 }
 
+let reachedStart = !process.env.BITTHINK_UI_START_AT;
 async function test(name, run) {
+  if (!reachedStart) reachedStart = name === process.env.BITTHINK_UI_START_AT;
+  if (!reachedStart) return;
   if (process.env.BITTHINK_UI_FILTER && !name.includes(process.env.BITTHINK_UI_FILTER)) return;
   try { await run(); passed++; console.log('PASS ' + name); }
   catch (error) { console.error('FAIL ' + name); throw error; }
@@ -326,9 +330,9 @@ async function sidebarFixture(options = {}) {
   return f;
 }
 
-function studioFixture({ width = 1440, empty = false, failCanvas = false, theme = 'dark' } = {}) {
+function studioFixture({ width = 1440, empty = false, failCanvas = false, theme = 'dark', legacy = false } = {}) {
   const canvas = version => `<!doctype html><html><head><title>Макет ${version}</title><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;padding:24px;background:#fff;color:#122024;font:16px Arial"><h1>${version === 1 ? 'Первый заголовок' : 'Новый заголовок'}</h1><button>Кнопка макета</button></body></html>`;
-  return fixture({ model: 'studio', theme, startPath: empty ? '/chat?new=1' : '/chat?c=chat-a', viewport: { width, height: 900 }, touch: width < 600,
+  return fixture({ model: legacy ? 'studio' : 'auto', theme, startPath: empty ? '/chat?new=1' : '/chat?c=chat-a', viewport: { width, height: 900 }, touch: width < 600,
     handleRoute: async ({ path, method, route, state }) => {
       if (empty && path === '/conversations' && method === 'GET') { await route.fulfill({ json: [] }); return true; }
       if (path === '/conversations/chat-a/history') {
@@ -345,6 +349,103 @@ function studioFixture({ width = 1440, empty = false, failCanvas = false, theme 
 }
 
 try {
+  for (const width of [320, 390, 913, 1440]) await test(`canvas-chat: first preview opens; closing survives updates ${width}`, async () => {
+    const f = await fixture({ viewport: { width, height: 900 }, touch: width < 600, holdAnswer: true });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('Создай сайт кофейни'); await f.page.getByRole('button', { name: 'Отправить сообщение', exact: true }).click();
+      await expect.poll(() => f.state.sends.length).toBe(1);
+      await expect(f.page.locator('iframe[title="Холст"]')).toHaveCount(0);
+      f.state.emitCanvas('1');
+      const frame = f.page.frameLocator('iframe[title="Холст"]');
+      await expect(frame.getByRole('heading', { name: 'Свежий результат 1' })).toBeVisible();
+      await f.page.getByRole('button', { name: 'Закрыть холст', exact: true }).click();
+      await expect(f.input).toBeVisible();
+      f.state.emitCanvas('2');
+      await expect(f.page.getByRole('button', { name: 'Открыть холст', exact: true })).toBeVisible();
+      await expect(f.page.locator('iframe[title="Холст"]:visible')).toHaveCount(0);
+      await f.page.getByRole('button', { name: 'Открыть холст', exact: true }).click();
+      await expect(frame.getByRole('heading', { name: 'Свежий результат 2' })).toBeVisible();
+      assert.equal(f.state.modeSelections?.length || 0, 0);
+      assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    } finally { await f.context.close(); }
+  });
+  for (const width of [320, 1440]) await test(`canvas-chat: closed state survives navigation and reload; a card reopens its own version ${width}`, async () => {
+    const f = await studioFixture({ width, legacy: true });
+    try {
+      const frame = f.page.frameLocator('iframe[title="Холст"]');
+      await expect(frame.getByRole('heading', { name: 'Новый заголовок' })).toBeVisible();
+      await f.page.getByRole('button', { name: 'Закрыть холст', exact: true }).click();
+      await expect(f.page.getByRole('button', { name: 'Режим ответа: Экспресс', exact: true })).toBeVisible();
+      await f.select('Вторая беседа'); await expect(f.page.getByText('Ответ второй беседы.', { exact: true })).toBeVisible();
+      await expect(f.page.getByRole('button', { name: 'Открыть холст', exact: true })).toHaveCount(0);
+      await f.select('Первая беседа');
+      await expect(f.page.getByRole('button', { name: 'Открыть холст', exact: true })).toBeVisible();
+      await expect(f.page.locator('iframe[title="Холст"]:visible')).toHaveCount(0);
+      await f.page.reload();
+      await expect(f.page.getByRole('button', { name: 'Открыть холст canvas-1.html', exact: true })).toBeVisible();
+      await expect(f.page.locator('iframe[title="Холст"]:visible')).toHaveCount(0);
+      await f.page.getByRole('button', { name: 'Открыть холст canvas-1.html', exact: true }).click();
+      await expect(frame.getByRole('heading', { name: 'Первый заголовок' })).toBeVisible();
+      await f.page.getByRole('textbox', { name: 'Что изменить в макете?', exact: true }).fill('Тёмный фон');
+      await f.page.getByRole('button', { name: 'Применить', exact: true }).click();
+      await expect.poll(() => f.state.sends.length).toBe(1);
+      assert.equal(f.state.sends[0].canvas_target, '/api/qa/canvas-1');
+      assert.equal(f.state.sends[0].model, 'auto');
+      assert.match(f.state.sends[0].content, /Измени текущий макет: Тёмный фон/);
+    } finally { await f.context.close(); }
+  });
+  for (const width of [320, 1440]) await test(`canvas-chat: plain images and uploaded HTML do not open a canvas ${width}`, async () => {
+    const f = await fixture({ viewport: { width, height: 900 }, touch: width < 600, imageHistory: true, uploadedHtml: true });
+    try {
+      await expect(f.input).toBeEnabled();
+      await expect(f.page.getByRole('button', { name: 'Открыть изображение: Эскиз', exact: true })).toBeVisible();
+      await expect(f.page.locator('iframe[title="Холст"]')).toHaveCount(0);
+      await expect(f.page.getByRole('button', { name: 'Открыть холст', exact: true })).toHaveCount(0);
+      await f.page.getByRole('button', { name: 'Режим ответа: Экспресс', exact: true }).click();
+      const menu = f.page.getByRole('dialog', { name: 'Выбор режима', exact: true });
+      await expect(menu.getByRole('button', { name: /^Студия/ })).toHaveCount(0);
+    } finally { await f.context.close(); }
+  });
+  for (const width of [320, 390, 768, 1440]) for (const theme of ['dark', 'light']) await test(`rich-answer: cards, statuses, copy and safe links ${width} ${theme}`, async () => {
+    const title = 'Бюро Север — проект готов к знакомству';
+    const card = { title: 'Инструмент для вашей задачи', description: 'Подходит для аккуратной обработки исходных материалов. Начните с пробного файла; окончательный результат зависит от качества исходника.', meta: 'Windows, macOS и Linux', url: 'https://example.com/tool', linkLabel: 'Официальный сайт', badge: 'Мой выбор', image: '/uploads/qa-tool.png' };
+    const content = `## ${title}\n\nСобрал страницу инженерного бюро с проектами, рассказом о команде и контактами.\n\n> [!SUCCESS] Проверки проекта\n> Сборка и тесты текущей версии пройдены. Архив приложен ниже.\n\n### Что можно сделать дальше\n\n- [x] Открыть исходники\n- [ ] Добавить свои контакты\n\n> [!WARNING] Перед публикацией\n> В проекте пока демонстрационные контакты. Замените их на настоящие.\n\n\`\`\`bitthink-card\n${JSON.stringify(card)}\n\`\`\`\n\n\`\`\`bitthink-card\n${JSON.stringify({ title: 'Безопасная карточка', description: 'Текст <script>alert(1)</script> остаётся текстом.', url: 'javascript:alert(1)' })}\n\`\`\`\n\n> Обычная цитата сохраняет свой вид.`;
+    const filename = 'product-4a28b1505fa545308b96396f.zip';
+    const f = await fixture({ theme, model: 'director', startPath: '/chat?c=chat-a', viewport: { width, height: 1000 }, touch: width < 600, handleRoute: async ({ path, route }) => {
+      if (path.endsWith('/history') || path.endsWith('/messages')) {
+        const items = [{ id: 'rich-question', role: 'user', content: 'Создай страницу инженерного бюро' }, { id: 'rich-answer', role: 'assistant', content, attachment: { name: filename, type: 'generated', status: 'done', size: 575488, url: '/uploads/qa-project.zip' } }];
+        await route.fulfill({ json: path.endsWith('/history') ? { items, has_more: false, before: null, has_newer: false } : items }); return true;
+      }
+    } });
+    try {
+      await expect(f.page.getByRole('heading', { name: title })).toBeVisible();
+      await expect(f.page.locator('[data-answer-callout="success"]')).toContainText('Проверки проекта');
+      await expect(f.page.locator('[data-answer-callout="warning"]')).toContainText('демонстрационные контакты');
+      await expect(f.page.locator('[data-answer-card]')).toHaveCount(2);
+      await expect(f.page.getByRole('img', { name: 'Выполнено', exact: true })).toBeVisible();
+      await expect(f.page.getByRole('img', { name: 'Не выполнено', exact: true })).toBeVisible();
+      await expect(f.page.getByRole('link', { name: 'Официальный сайт' })).toHaveAttribute('href', card.url);
+      assert.equal(await f.page.locator('a[href^="javascript:"]').count(), 0);
+      assert.equal(await f.page.locator('script').filter({ hasText: 'alert(1)' }).count(), 0);
+      await expect(f.page.locator('[data-attachment-card]')).toContainText('Исходники проекта');
+      const download = f.page.getByRole('link', { name: `Скачать ${filename}`, exact: true });
+      assert((await download.boundingBox()).height >= 43.9);
+      await f.page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { window.richAnswerCopied = text; } } }));
+      const replyRow = f.page.locator('.chat-message-row').filter({ has: f.page.getByRole('heading', { name: title }) });
+      await replyRow.getByRole('button', { name: 'Скопировать сообщение', exact: true }).click({ force: true });
+      const copied = await f.page.evaluate(() => window.richAnswerCopied);
+      assert(copied.includes(card.title) && copied.includes(card.url) && !copied.includes('bitthink-card'));
+      assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `No horizontal page overflow at ${width}`);
+      const bounds = await f.page.locator('[data-answer-card], [data-answer-callout], [data-attachment-card]').evaluateAll(items => items.map(item => { const r = item.getBoundingClientRect(); return { x: r.x, right: r.right, scroll: item.scrollWidth, width: item.clientWidth }; }));
+      assert(bounds.every(r => r.x >= 0 && r.right <= width + 1 && r.scroll <= r.width + 1), JSON.stringify(bounds));
+      await f.page.evaluate(() => document.fonts.ready);
+      await f.page.screenshot({ path: `${output}/rich-answer-${width}-${theme}.png`, fullPage: true, animations: 'disabled' });
+      await f.page.getByRole('heading', { name: title }).scrollIntoViewIfNeeded();
+      await f.page.screenshot({ path: `${output}/rich-answer-title-${width}-${theme}.png`, fullPage: true, animations: 'disabled' });
+    } finally { await f.context.close(); }
+  });
+
   for (const width of [390, 1440]) for (const kind of ['audio', 'video']) await test(`media-files: ${kind} opens and plays ${width}`, async () => {
     const name = kind === 'audio' ? 'Оригинальная_звуковая_дорожка.wav' : 'Исходный_ролик_для_проекта.mp4';
     const bytes = await readFile(new URL(`../test-fixtures/${kind === 'audio' ? 'tone.wav' : 'clip.mp4'}`, import.meta.url));
@@ -394,25 +495,27 @@ try {
       if (path === '/qa/xlsx') { state.originalDownloads = (state.originalDownloads || 0) + 1; await route.fulfill({ contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers: { 'Content-Disposition': 'attachment; filename="Report.xlsx"' }, body: 'test workbook' }); return true; }
     } });
     try {
+      await expect(f.page.frameLocator('iframe[title="Холст"]').getByRole('heading', { name: 'Результат проекта' })).toBeVisible();
+      await f.page.getByRole('button', { name: 'Закрыть холст', exact: true }).click();
       await expect(f.input).toBeEnabled(); await f.input.fill('Продолжить работу');
       for (const name of [htmlName, sheetName]) {
-        const open = f.page.getByRole('button', { name: `Предпросмотр ${name}`, exact: true });
+        const open = f.page.getByRole('button', { name: `${name === htmlName ? 'Открыть холст' : 'Предпросмотр'} ${name}`, exact: true });
         const download = f.page.getByRole('link', { name: `Скачать ${name}`, exact: true });
-        await expect(open).toHaveText('Открыть'); await expect(download).toHaveAttribute('aria-label', `Скачать ${name}`);
+        await expect(open).toHaveText(name === htmlName ? 'Открыть холст' : 'Открыть'); await expect(download).toHaveAttribute('aria-label', `Скачать ${name}`);
         const card = open.locator('xpath=ancestor::*[@data-attachment-card]');
         assert((await card.boundingBox()).height <= 82, 'Ready file cards must remain compact even with wrapped names');
         const a = await open.boundingBox(); const b = await download.boundingBox();
         assert(a.height >= 43.9 && b.height >= 43.9 && a.x + a.width <= b.x + 1 && b.x + b.width <= width + 1, JSON.stringify({ open: a, download: b }));
       }
       await f.page.screenshot({ path: `${output}/result-actions-${width}.png` });
-      await f.page.getByRole('button', { name: `Предпросмотр ${htmlName}`, exact: true }).click();
-      await expect.poll(async () => { const r = await f.page.getByRole('region', { name: 'Предпросмотр документа', exact: true }).boundingBox(); return r.x + r.width; }).toBeLessThanOrEqual(width + 1);
-      const canvas = f.page.frameLocator('iframe[title="Холст Студии"]');
+      await f.page.getByRole('button', { name: `Открыть холст ${htmlName}`, exact: true }).click();
+      await expect.poll(async () => { const r = await f.page.getByRole('region', { name: 'Холст', exact: true }).boundingBox(); return r.x + r.width; }).toBeLessThanOrEqual(width + 1);
+      const canvas = f.page.frameLocator('iframe[title="Холст"]');
       await expect(canvas.getByRole('heading', { name: 'Результат проекта' })).toBeVisible();
-      assert.equal(await f.page.locator('iframe[title="Холст Студии"]').getAttribute('sandbox'), 'allow-scripts');
+      assert.equal(await f.page.locator('iframe[title="Холст"]').getAttribute('sandbox'), 'allow-scripts allow-downloads');
       await canvas.getByRole('button', { name: 'Показать детали' }).click();
       await expect(canvas.getByText('Детали доступны')).toBeVisible();
-      await f.page.getByRole('button', { name: 'Закрыть предпросмотр' }).click();
+      await f.page.getByRole('button', { name: 'Закрыть холст' }).click();
       await expect(f.input).toHaveValue('Продолжить работу');
       await f.page.getByRole('button', { name: `Предпросмотр ${sheetName}`, exact: true }).click();
       await expect(f.page.frameLocator('iframe[title="Проверка Excel"]').getByRole('heading')).toBeVisible();
@@ -424,9 +527,9 @@ try {
       assert.equal(binaryDownloads, 1);
       if (width === 390) {
         f.state.emitCanvas();
-        await f.page.getByRole('button', { name: 'Предпросмотр Свежий.html', exact: true }).click();
-        await expect(f.page.frameLocator('iframe[title="Холст Студии"]').getByRole('heading', { name: 'Свежий результат' })).toBeVisible();
-        await f.page.getByRole('button', { name: 'Закрыть предпросмотр' }).click();
+        await f.page.getByRole('button', { name: 'Открыть холст Свежий.html', exact: true }).click();
+        await expect(f.page.frameLocator('iframe[title="Холст"]').getByRole('heading', { name: 'Свежий результат' })).toBeVisible();
+        await f.page.getByRole('button', { name: 'Закрыть холст' }).click();
       }
       assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     } finally { await f.context.close(); await new Promise(resolve => downloadServer.close(resolve)); }
@@ -641,13 +744,13 @@ try {
     ['workspace_read', 'Читаю материалы задачи'],
     ['future_internal_tool', 'Выполняю действие по задаче'],
   ]) await test(`cloud-tools: internal name is hidden in background status ${tool}`, async () => {
-    const f = await fixture({ model: 'director', handleRoute: async ({ path, route }) => {
+    const f = await fixture({ model: 'director', startPath: '/chat?c=chat-a', handleRoute: async ({ path, route }) => {
       if (path === '/computer/tasks') { await route.fulfill({ json: [{ id: 'work', title: 'Отчёт', status: 'running', conversation_id: 'chat-a', prompt: 'Подготовь отчёт', enabled: true, progress: `[think] ${tool}` }] }); return true; }
     } });
     try {
-      const bar = f.page.getByRole('region', { name: 'Фоновая задача', exact: true });
-      await expect(bar.getByText(label, { exact: true })).toBeVisible();
-      await expect(bar.getByText(tool, { exact: false })).toHaveCount(0);
+      await expect(f.page.getByRole('region', { name: 'Фоновая задача', exact: true })).toHaveCount(0);
+      await expect(f.page.getByText(label, { exact: true }).first()).toBeVisible();
+      await expect(f.page.getByText(tool, { exact: false })).toHaveCount(0);
       await f.page.getByRole('button', { name: 'Задачи и инструменты Оркестратора', exact: true }).click();
       await f.page.getByRole('button', { name: /^Задачи Активных задач/ }).click();
       const tools = f.page.getByRole('region', { name: 'Инструменты Оркестратора' });
@@ -657,7 +760,7 @@ try {
   });
   for (const width of [320, 1440]) await test(`cloud30: cloud activity explains current action and history ${width}`, async () => {
     const activity = '[think] Python /private/script.py\n[prepare] Подготавливаю инструменты — Для обработки таблицы\n[file] Собираю документ — Отчёт по результатам сравнения предложений поставщиков.docx';
-    const f = await fixture({ model: 'director', viewport: { width, height: 900 }, touch: width < 600, handleRoute: async ({ path, method, route, state }) => {
+    const f = await fixture({ model: 'director', startPath: '/chat?c=chat-a', viewport: { width, height: 900 }, touch: width < 600, handleRoute: async ({ path, method, route, state }) => {
       if (path === '/computer/tasks' && method === 'POST') {
         await route.fulfill({ json: { id: 'work', status: 'running', conversation_id: 'chat-a', prompt: 'Сравни предложения', progress: '', enabled: true, run_number: 1 } });
         setTimeout(() => state.emitActivity(activity), 100);
@@ -682,14 +785,14 @@ try {
   });
   await test('cloud30: background task shows its latest meaningful activity without protocol tags', async () => {
     const task = { id: 'cloud-task', title: 'Отчёт', status: 'running', conversation_id: 'chat-a', prompt: 'Подготовь отчёт', progress: '[plan] Разбираю задачу\n[file] Создаю таблицу — Сравнение.xlsx', enabled: true, run_number: 1 };
-    const f = await fixture({ model: 'director', handleRoute: async ({ path, route }) => {
+    const f = await fixture({ model: 'director', startPath: '/chat?c=chat-a', handleRoute: async ({ path, route }) => {
       if (path === '/computer/tasks') { await route.fulfill({ json: [task] }); return true; }
     } });
     try {
-      const bar = f.page.getByRole('region', { name: 'Фоновая задача', exact: true });
-      await expect(bar.getByText('Создаю таблицу', { exact: true })).toBeVisible();
-      await expect(bar.getByText('Сравнение.xlsx', { exact: true })).toBeVisible();
-      await expect(bar.getByText('[file]', { exact: false })).toHaveCount(0);
+      await expect(f.page.getByRole('region', { name: 'Фоновая задача', exact: true })).toHaveCount(0);
+      await expect(f.page.getByText('Создаю таблицу', { exact: true })).toBeVisible();
+      await expect(f.page.getByText('Сравнение.xlsx', { exact: true })).toBeVisible();
+      await expect(f.page.getByText('[file]', { exact: false })).toHaveCount(0);
       await f.page.getByRole('button', { name: 'Задачи и инструменты Оркестратора', exact: true }).click();
       await f.page.getByRole('button', { name: /^Задачи Активных задач/ }).click();
       await expect(f.page.getByRole('region', { name: 'Инструменты Оркестратора' }).getByText('Создаю таблицу', { exact: true })).toBeVisible();
@@ -786,7 +889,7 @@ try {
   await test('mobile30: Studio panel can resize and expand', async () => {
     const f = await studioFixture();
     try {
-      const separator = f.page.getByRole('separator', { name: 'Ширина панели: Студия' });
+      const separator = f.page.getByRole('separator', { name: 'Ширина панели: Холст' });
       await expect(separator).toBeVisible();
       await separator.focus(); await separator.press('ArrowLeft');
       await expect(separator).toHaveAttribute('aria-valuenow', '62');
@@ -799,11 +902,10 @@ try {
   for (const width of [320, 913, 1440]) await test(`studio28: start is clear and a format prepares a draft ${width}`, async () => {
     const f = await studioFixture({ width, empty: true });
     try {
-      await expect(f.page.getByText('Что создадим?', { exact: true })).toBeVisible();
-      await expect(f.page.getByRole('button', { name: /^Включить Оркестратор/ })).toHaveCount(0);
-      await expect(f.page.locator('iframe[title="Холст Студии"]')).toHaveCount(0);
-      await f.page.getByRole('button', { name: 'Презентация', exact: true }).click();
-      await expect(f.input).toHaveValue('Создай презентацию на тему: ');
+      await expect(f.page.getByText('С чего начнём?', { exact: true })).toBeVisible();
+      await expect(f.page.locator('iframe[title="Холст"]')).toHaveCount(0);
+      await f.page.getByRole('button', { name: 'Подготовить презентацию', exact: true }).click();
+      await expect(f.input).toHaveValue('Создай презентацию. Тема: ');
       assert.equal(f.state.sends.length, 0);
       assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
       await f.page.screenshot({ path: `${output}/studio-start-${width}.png`, fullPage: true });
@@ -812,7 +914,7 @@ try {
   for (const width of [320, 913, 1440]) for (const theme of ['dark', 'light']) await test(`studio28: versions and selected-element edits work ${width} ${theme}`, async () => {
     const f = await studioFixture({ width, theme });
     try {
-      const frame = f.page.frameLocator('iframe[title="Холст Студии"]');
+      const frame = f.page.frameLocator('iframe[title="Холст"]');
       await expect(frame.getByRole('heading', { name: 'Новый заголовок' })).toBeVisible();
       const versions = f.page.getByRole('combobox', { name: 'Версия макета' });
       await versions.click();
@@ -840,7 +942,8 @@ try {
       await expect.poll(() => f.state.sends.length).toBe(1);
       assert.match(f.state.sends[0].content, /Новый заголовок/);
       assert.match(f.state.sends[0].content, /Сделай текст короче/);
-      assert.equal(f.state.sends[0].model, 'studio');
+      assert.equal(f.state.sends[0].model, 'auto');
+      assert.equal(f.state.sends[0].canvas_target, '/api/qa/canvas-2');
     } finally { await f.context.close(); }
   });
   await test('studio28: a failed canvas shows retry and can recover', async () => {
@@ -850,7 +953,7 @@ try {
       await expect(f.page.getByRole('button', { name: 'Скачать макет', exact: true })).toBeDisabled();
       f.state.canvasFail = false;
       await f.page.getByRole('button', { name: 'Повторить загрузку', exact: true }).click();
-      await expect(f.page.frameLocator('iframe[title="Холст Студии"]').getByRole('heading', { name: 'Новый заголовок' })).toBeVisible();
+      await expect(f.page.frameLocator('iframe[title="Холст"]').getByRole('heading', { name: 'Новый заголовок' })).toBeVisible();
     } finally { await f.context.close(); }
   });
   for (const width of [390, 1440]) await test(`ux27: landing navigation scrolls between sections ${width}`, async () => {
@@ -948,7 +1051,7 @@ try {
     const f = await fixture({ fullModes: true, viewport: { width, height: 900 } });
     try {
       await expect(f.input).toBeEnabled(); await f.input.fill('Не потерять текст при переключении');
-      const choices = [['Поиск', 'kimi-k2.6'], ['Исследование', 'gpt-6-sol'], ['Astra', 'gpt-6-astra'], ['Студия', 'studio'], ['Документы', 'docgen'], ['Оркестратор', 'director'], ['Экспресс', 'auto']];
+      const choices = [['Поиск', 'search'], ['Исследование', 'gpt-6-sol'], ['Astra', 'gpt-6-astra'], ['Документы', 'docgen'], ['Оркестратор', 'director'], ['Экспресс', 'auto']];
       for (const [label, model] of choices) {
         await f.page.getByRole('button', { name: /^Режим ответа:/ }).click();
         const dialog = f.page.getByRole('dialog', { name: 'Выбор режима', exact: true });
@@ -980,12 +1083,12 @@ try {
       await expect(f.input).toBeEnabled(); await f.input.fill('Черновик переживёт ошибку');
       await f.page.getByRole('button', { name: 'Режим ответа: Экспресс', exact: true, includeHidden: true }).click();
       const dialog = f.page.getByRole('dialog', { name: 'Выбор режима', exact: true });
-      await dialog.getByRole('button', { name: /^Студия / }).click();
+      await dialog.getByRole('button', { name: /^Поиск / }).click();
       await expect(dialog.getByRole('alert')).toContainText('Не удалось подтвердить выбор режима');
       await expect(f.page.getByRole('button', { name: 'Режим ответа: Экспресс', exact: true, includeHidden: true })).toHaveCount(1);
-      f.state.modeFailure = false; await dialog.getByRole('button', { name: /^Студия / }).click();
+      f.state.modeFailure = false; await dialog.getByRole('button', { name: /^Поиск / }).click();
       await expect(dialog).toBeHidden();
-      await expect(f.page.getByRole('button', { name: 'Режим ответа: Студия', exact: true })).toBeVisible();
+      await expect(f.page.getByRole('button', { name: 'Режим ответа: Поиск', exact: true })).toBeVisible();
       await expect(f.input).toHaveValue('Черновик переживёт ошибку');
     } finally { await f.context.close(); }
   });
@@ -994,12 +1097,12 @@ try {
     try {
       await expect(f.input).toBeEnabled(); await f.input.fill('Подождать подтверждения');
       await f.page.getByRole('button', { name: /^Режим ответа:/ }).click();
-      await f.page.getByRole('dialog', { name: 'Выбор режима', exact: true }).getByRole('button', { name: /^Студия / }).click();
+      await f.page.getByRole('dialog', { name: 'Выбор режима', exact: true }).getByRole('button', { name: /^Поиск / }).click();
       await expect(f.page.getByRole('button', { name: 'Отправить сообщение', exact: true, includeHidden: true })).toBeDisabled();
       assert.equal(f.state.sends.length, 0);
-      await expect(f.page.getByRole('button', { name: 'Режим ответа: Студия', exact: true })).toBeEnabled();
+      await expect(f.page.getByRole('button', { name: 'Режим ответа: Поиск', exact: true })).toBeEnabled();
       await f.input.press('Enter'); await expect.poll(() => f.state.sends.length).toBe(1);
-      assert.equal(f.state.sends[0].model, 'studio');
+      assert.equal(f.state.sends[0].model, 'search');
     } finally { await f.context.close(); }
   });
   await test('modes: upload locks settings and preserves the mode seen before another tab changed it', async () => {
@@ -1052,14 +1155,14 @@ try {
   await test('modes: accepting a suggested mode handles errors and reflects later mode changes', async () => {
     const f = await fixture({ modeFailure: true, handleRoute: async ({ path, route }) => {
       if (path === '/conversations/chat-a/history') {
-        await route.fulfill({ json: { items: [{ id: 'chat-a_0', role: 'assistant', content: 'Для этого подойдёт Студия.', search: [{ query: '__mode_switch__', summary: JSON.stringify({ model: 'studio', label: 'Студия', reason: 'Для визуального результата', accept: 'Перейти в Студию', done: 'Студия выбрана' }) }] }], has_more: false, before: null, has_newer: false } }); return true;
+        await route.fulfill({ json: { items: [{ id: 'chat-a_0', role: 'assistant', content: 'Для этого подойдёт Поиск.', search: [{ query: '__mode_switch__', summary: JSON.stringify({ model: 'search', label: 'Поиск', reason: 'Для актуальных источников', accept: 'Перейти в Поиск', done: 'Поиск выбран' }) }] }], has_more: false, before: null, has_newer: false } }); return true;
       } return false;
     } });
     try {
-      const accept = f.page.getByRole('button', { name: 'Перейти в Студию', exact: true });
+      const accept = f.page.getByRole('button', { name: 'Перейти в Поиск', exact: true });
       await accept.click(); await expect(f.page.getByRole('alert').filter({ hasText: 'Не удалось подтвердить переключение режима.' })).toBeVisible();
       f.state.modeFailure = false; await accept.click();
-      await expect(f.page.getByRole('button', { name: 'Студия выбрана', exact: true })).toBeDisabled();
+      await expect(f.page.getByRole('button', { name: 'Поиск выбран', exact: true })).toBeDisabled();
       await f.page.getByRole('button', { name: /^Режим ответа:/ }).click();
       await f.page.getByRole('dialog', { name: 'Выбор режима', exact: true }).getByRole('button', { name: /^Экспресс / }).click();
       await expect(accept).toBeEnabled();
@@ -1173,7 +1276,7 @@ try {
       for (const [label, prompt] of [
         ['Разобрать документ', /Разбери прикреплённый документ/],
         ['Сравнить предложения', /Сравни предложения/],
-        ['Подготовить презентацию', /Помоги подготовить презентацию/],
+        ['Подготовить презентацию', /Создай презентацию\. Тема:/],
         ['Что нового в мире', /Что главное произошло сегодня/],
         ['Найти ошибку в коде', /Помоги найти ошибку/],
       ]) {
@@ -1887,7 +1990,7 @@ try {
     } finally { await f.context.close(); }
   });
   await test('presentation: orchestrator enrollment retry preserves draft and idempotency; pause and resume work on mobile', async () => {
-    const f = await fixture({ model: 'director', viewport: { width: 390, height: 844 }, touch: true, enrollmentFail: true, handleRoute: async ({ path, method, route, state }) => {
+    const f = await fixture({ model: 'director', startPath: '/chat?c=chat-a', viewport: { width: 390, height: 844 }, touch: true, enrollmentFail: true, handleRoute: async ({ path, method, route, state }) => {
       if (path === '/computer/tasks') {
         if (method === 'POST') {
           const payload = route.request().postDataJSON();
@@ -1911,13 +2014,10 @@ try {
       await expect(f.page.getByText(/Не удалось отправить сообщение:/).first()).toBeVisible();
       f.state.enrollmentFail = false;
       await f.page.getByRole('button', { name: 'Отправить сообщение', exact: true }).tap();
-      const task = f.page.getByRole('region', { name: 'Фоновая задача', exact: true });
-      await expect(task).toBeVisible();
+      await expect(f.page.getByRole('region', { name: 'Фоновая задача', exact: true })).toHaveCount(0);
       assert.equal(f.state.taskRequests[0].idempotency_key, f.state.taskRequests[1].idempotency_key);
-      await task.getByRole('button', { name: 'Приостановить', exact: true }).tap();
-      await expect(task.getByText('Задача на паузе', { exact: true })).toBeVisible();
-      await task.getByRole('button', { name: 'Продолжить задачу', exact: true }).tap();
-      await expect(task.getByText('Задача выполняется в фоне', { exact: true })).toBeVisible();
+      await f.page.getByRole('button', { name: 'Остановить генерацию', exact: true }).tap();
+      await expect.poll(() => f.state.task.status).toBe('paused');
     } finally { await f.context.close(); }
   });
   await test('presentation: image edit failure preserves prompt and retries the original image', async () => {
@@ -2318,6 +2418,7 @@ try {
     });
   }
   if (accessibility.length) await writeFile(`${output}/accessibility.json`, JSON.stringify(accessibility, null, 2));
+  assert(reachedStart, 'Requested UX start case was not found');
   assert.deepEqual(errors, [], 'No uncaught browser exceptions');
   console.log(`PASS ${passed} UX checks; no browser exceptions`);
 } finally { await browser.close(); }

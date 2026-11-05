@@ -18,8 +18,8 @@ def _get_env(name: str, default: str = "") -> str:
 # API ключи читаются из переменных окружения / .env
 OPENAI_API_KEY = _get_env("OPENAI_API_KEY")
 DEEPSEEK_API_KEY = _get_env("DEEPSEEK_API_KEY")
-KIMI_API_KEY = _get_env("KIMI_API_KEY")
-KIMI_MODEL = _get_env("KIMI_MODEL", "kimi-k2.6")
+KIMI_API_KEY = ""  # Retired provider: never load its credential.
+KIMI_MODEL = "kimi-k2.6"  # Historical compatibility only; credential loading is disabled.
 OPENROUTER_API_KEY = _get_env("OPENROUTER_API_KEY")
 
 # Модель OpenAI для текстовых запросов (по умолчанию)
@@ -40,7 +40,7 @@ AVAILABLE_MODELS = {
     "director": "Оркестратор — раздаёт должности подходящим ИИ-агентам в песочнице",
     "studio": "Студия — картинки, презентации и инфографика",
     "docgen": "📄 Документы — большие .docx и комплекты документов по промпту и файлам",
-    "kimi-k2.6": "🌐 Поиск в интернете",
+    "search": "🌐 Поиск в интернете",
     "gpt-5-nano": "⚡ Быстрый ответ (GPT-5 Nano)",
     "gpt-6-luna": "📝 Простые задачи (GPT-6 Luna)",
     "gpt-6.1-terra": "Terra — зрение и точные правки",
@@ -147,6 +147,9 @@ SYSTEM_PROMPT = """Ты Bit-Think: спокойный сильный ассис�
 Не помогай создавать оружие, взрывчатку, вредоносный код, фишинг и взлом. Не давай инструкции по синтезу наркотиков. Контент про несовершеннолетних в сексуальном ключе – отказ, без «смягчающих» переинтерпретаций. При суициде и самоповреждении не описывай способы, не предлагай болевые замены (лёд, резинки). Не ставь человеку диагноз, который он сам не назвал."""
 
 # GPT-6 Astra: agentic computer-use, not a chat hop and not Pilot's hire-loop.
+from app.services.answer_presentation import ANSWER_PRESENTATION_RULES
+SYSTEM_PROMPT += '\n' + ANSWER_PRESENTATION_RULES
+
 ASTRA_AGENT_PROMPT = """Ты Astra (GPT-6) в Bit-Think: один агент с песочницей. Не планировщик и не набор сотрудников.
 
 Сильные стороны этой модели – сделать работу, а не описать её: код и терминал, многошаговые файлы, договоры и отчёты, расчёты, наука, проверка по фактам. Intelligence «просто поболтать» почти как у Sol, а стоит дороже – не раздувай ответ.

@@ -7,6 +7,7 @@ export type { DialogueTick };
 
 interface Props {
   scroller: HTMLElement | null;
+  splitPane?: boolean;
   questions: DialogueTick[];
   onJump: (id: string) => void;
 }
@@ -35,7 +36,7 @@ function spread(values: number[], minGap: number, lo: number, hi: number) {
   return next;
 }
 
-export function DialogueRail({ scroller, questions, onJump }: Props) {
+export function DialogueRail({ scroller, questions, onJump, splitPane = false }: Props) {
   const theme = useTheme();
   const desktop = useMediaQuery(theme.breakpoints.up('md'));
   const reduce = useReducedMotion();
@@ -83,13 +84,14 @@ export function DialogueRail({ scroller, questions, onJump }: Props) {
     scroller.addEventListener('scroll', schedule, { passive: true });
     const ro = new ResizeObserver(schedule);
     ro.observe(scroller);
+    if (scroller.firstElementChild) ro.observe(scroller.firstElementChild);
     if (railRef.current) ro.observe(railRef.current);
     return () => {
       scroller.removeEventListener('scroll', schedule);
       ro.disconnect();
       if (raf) cancelAnimationFrame(raf);
     };
-  }, [desktop, scroller, items]);
+  }, [desktop, scroller, items, splitPane]);
 
   if (!desktop || items.length < MIN_DIALOGUE_QUESTIONS) return null;
 
@@ -107,7 +109,7 @@ export function DialogueRail({ scroller, questions, onJump }: Props) {
         bottom: 156,
         width: 32,
         zIndex: 2,
-        right: { xs: 12, md: 'max(12px, calc((100% - 768px) / 2 - 40px))', xl: 'max(12px, calc((100% - 880px) / 2 - 40px))' },
+        right: splitPane ? 12 : { xs: 12, md: 'max(12px, calc((100% - 768px) / 2 - 40px))', xl: 'max(12px, calc((100% - 880px) / 2 - 40px))' },
         pointerEvents: 'none',
       }}
     >
@@ -141,7 +143,7 @@ export function DialogueRail({ scroller, questions, onJump }: Props) {
             opacity: 0.28,
             top: layout.viewTop,
             height: layout.viewH,
-            transition: reduce ? 'none' : 'top 0.2s cubic-bezier(0.22, 1, 0.36, 1), height 0.2s cubic-bezier(0.22, 1, 0.36, 1)',
+            transition: 'none',
             pointerEvents: 'none',
           }}
         />

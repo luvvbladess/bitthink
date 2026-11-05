@@ -530,7 +530,7 @@ def _chat_image_bytes(user_id: int, *, current_turn_only: bool) -> list[bytes]:
 # Команда сделать что-то с картинкой, а не вопрос о ней: «добавь очки», «убери фон»,
 # «можешь убрать людей». «Что изменилось на фото?» и «какой тут стиль?» сюда не попадают.
 _IMAGE_COMMAND = re.compile(
-    r"(?i)(?:^|[\s,.!])(?:дорисуй|перерисуй|нарисуй|отредактируй|отретушируй|убери|удали|добавь|замени|поменяй|"
+    r"(?i)(?:^|[\s,.!])(?:поправь|исправь|дорисуй|перерисуй|нарисуй|отредактируй|отретушируй|убери|удали|добавь|замени|поменяй|"
     r"измени|раскрась|обрежь|осветли|затемни|вставь|сотри)\b"
     r"|\b(?:можешь|сможешь|можно)\s+(?:убрать|удалить|добавить|заменить|поменять|изменить|дорисовать|перерисовать|"
     r"отредактировать|нарисовать)\b"
@@ -611,7 +611,27 @@ async def get_image_response(
     """
     from studio.html_canvas import detect_kind_explicit, requested_image_size
 
-    text = user_text or ""
+    from canvas_intent import artifact_brief
+    text = artifact_brief(user_text)
+    # Explicit source/vector deliverables keep their code workflow.
+    if re.search(r'(?i)(?:в\s+формате|формат|создай|сделай|нужен)\s+(?:svg|html)\b|\bsvg[ -]код', user_text or ''):
+        return None
+    if text is None and re.search(r'(?i)^\s*(?:у тебя|а теперь|теперь)\b', user_text or '') and _IMAGE_COMMAND.search(user_text or '') and not _NOT_A_PICTURE_JOB.search(user_text or '') and _last_reply_image(user_id):
+        text = user_text
+    if text is None:
+        return None
+    # A selected image canvas is authoritative even when its editing instruction
+    # mentions text, buttons or layout. Those words do not make it a text job.
+    from canvas_intent import target_for_turn, canvas_attachments
+    from studio.html_canvas import load_previous_html, is_image_canvas
+    target = target_for_turn(user_id)
+    canvas_edit = re.search(r'(?i)^\s*(?:измени\s+текущий\s+макет|в\s+текущем\s+макете\s+измени)', text)
+    if target and canvas_edit:
+        if not any(item.get('url') == target for item in canvas_attachments(user_id)):
+            return 'Не удалось найти выбранный холст в этой беседе. Откройте его снова.', [], '', []
+        previous_html = load_previous_html(user_id)
+        if previous_html and is_image_canvas(previous_html):
+            return await _run_image_studio(messages, user_text, user_id, status_msg, previous_html=previous_html)
     command = bool(_IMAGE_COMMAND.search(text)) and not _NOT_A_PICTURE_JOB.search(text)
     turn_images = _chat_image_bytes(user_id, current_turn_only=True)
     if turn_images:
@@ -620,71 +640,14 @@ async def get_image_response(
         sources: list[bytes] | None = turn_images
     elif command and (previous := _last_reply_image(user_id)):
         sources = [previous]
-    elif detect_kind_explicit(user_text) == "image":
+    elif detect_kind_explicit(text) == "image":
         sources = None
     else:
         return None
 
-    from handlers.core import sanitize_response_text
-
-    await _update_status(status_msg, "Меняю изображение" if sources else "Рисую изображение")
-    image_claimed = False
-    try:
-        from app.billing.quota import assert_can_generate_image
-
-        assert_can_generate_image(int(user_id))
-        image_claimed = True
-    except Exception as exc:
-        from app.billing.quota import QuotaError
-
-        if isinstance(exc, QuotaError):
-            return sanitize_response_text(str(exc) or "Лимит картинок исчерпан."), [], "", []
-        logger.exception("Chat image quota check failed")
-
-    from openai_client import edit_image, generate_image
-
-    size = requested_image_size(user_text)
-    if sources:
-        data_url, err = await edit_image(sources, user_text, size=size, quality=_image_quality(user_id))
-    else:
-        data_url, err = await generate_image(user_text, size=size, quality=_image_quality(user_id))
-    if not data_url:
-        if image_claimed:
-            from app.billing.quota import refund_images
-
-            refund_images(int(user_id), 1)
-        return sanitize_response_text(err or "Не удалось нарисовать картинку. Попробуйте описать иначе."), [], "", []
-    try:
-        from app.api.media import _decode_image_payload, _download_image
-
-        if data_url.startswith("data:"):
-            image_bytes, suffix = _decode_image_payload(data_url)
-        else:
-            image_bytes, suffix = await _download_image(data_url)
-    except Exception:
-        logger.exception("Chat image: cannot read the result")
-        if image_claimed:
-            from app.billing.quota import refund_images
-
-            refund_images(int(user_id), 1)
-        return sanitize_response_text("Картинка не сохранилась. Попробуйте ещё раз."), [], "", []
-    try:
-        from app.billing.quota import debit_images
-
-        debit_images(int(user_id), 1)
-    except Exception:
-        logger.exception("Failed to debit chat image")
-
-    suffix = suffix or ".png"
-    title = (user_text or "Картинка").strip()[:48].rstrip(" .,!?") or "Картинка"
-    mime = "image/jpeg" if suffix in (".jpg", ".jpeg") else f"image/{suffix.lstrip('.')}"
-    files = [{"filename": f"{title}{suffix}", "bytes": image_bytes, "mime_type": mime}]
-    answer = (
-        "Готово, поправил картинку. Напишите, если нужно изменить что-то ещё."
-        if sources
-        else "Готово, картинка ниже. Напишите, что поменять, – поправлю её."
-    )
-    return sanitize_response_text(answer), files, "", []
+    # Use the same image artifact pipeline in chat and cloud tasks: real raster,
+    # HTML canvas and persisted source for the next edit; never a code substitute.
+    return await _run_image_studio(messages, user_text, user_id, status_msg, source_images=sources)
 
 
 async def _run_studio(
@@ -703,7 +666,8 @@ async def _run_studio(
         wants_pptx_file,
     )
 
-    previous_html = load_previous_html(user_id)
+    from canvas_intent import canvas_creation
+    previous_html = None if canvas_creation.get() else load_previous_html(user_id)
     had_canvas = bool(previous_html)
     explicit = detect_kind_explicit(user_text)
 
@@ -812,6 +776,8 @@ async def _run_image_studio(
         await _update_status(status_msg, "Правлю изображение" if editing else "Рисую изображение")
 
     size = requested_image_size(user_text)
+    if editing and not re.search(r'(?i)\b\d+\s*[:x×/]\s*\d+\b|квадратн|горизонтальн|вертикальн|landscape|portrait|square', user_text):
+        size = 'auto'  # Keep source geometry for a local edit, rather than default square.
     data_url: str | None = None
     err: str | None = None
     if source_images:
@@ -820,7 +786,7 @@ async def _run_image_studio(
         raw = extract_embedded_image_bytes(previous_html) or _upload_image_bytes(previous_html)
         if raw:
             data_url, err = await edit_image(raw, image_prompt, size=size, quality=_image_quality(user_id))
-    if not data_url and not source_images:
+    if not data_url and not editing:
         data_url, err = await generate_image(image_prompt, size=size, quality=_image_quality(user_id))
     if not data_url or not (
         data_url.startswith("data:image/") or data_url.startswith("https://") or data_url.startswith("/")
@@ -1093,7 +1059,7 @@ async def _run_pptx_studio(
         files = build_studio_artifact(spec, with_previews=True, already_normalized=True)
     except Exception:
         logger.exception("Studio render failed")
-        return "Не удалось собрать файл Студии. Уточните бриф и попробуйте ещё раз.", [], "", source_items
+        return "Не удалось собрать файл. Уточните задачу и попробуйте ещё раз.", [], "", source_items
 
     img_n = len(spec.get("_images") or {})
     img_note = f", AI-картинок: {img_n}" if img_n else ""

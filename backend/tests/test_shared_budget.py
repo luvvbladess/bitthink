@@ -21,7 +21,7 @@ def uid():
     quota.refund_quota_charge(); quota.clear_quota_charge()
 
 
-@pytest.mark.parametrize('tier,total,week,session', [('pro',75_000_000,30_000_000,8_630_000),('proplus',165_000_000,65_500_000,18_660_000),('ultra',510_000_000,202_500_000,57_780_000),('trial',165_000_000,65_500_000,18_660_000)])
+@pytest.mark.parametrize('tier,total,week,session', [('pro',75_000_000,30_000_000,13_484_375),('proplus',165_000_000,65_500_000,29_156_250),('ultra',510_000_000,202_500_000,90_281_250),('trial',165_000_000,65_500_000,29_156_250)])
 def test_shared_plan_limits(tier,total,week,session):
     plan = plan_for(tier)
     assert (plan['total_tokens'],plan['weekly_tokens'],plan['session_tokens']) == (total,week,session)
@@ -38,6 +38,34 @@ def test_existing_counters_are_added_without_reset_or_double_debit(uid):
     assert view['chat'] == view['computer'] == view['shared']
     for name in ('chat_tokens_used','computer_tokens_used','session_chat_used','session_computer_used','week_chat_used','week_computer_used'):
         assert before[name] == after[name]
+
+
+def test_raised_session_cap_reopens_old_exhausted_window_without_reset(uid):
+    started=int(time.time())-120
+    with SyncSessionLocal() as db:
+        sub=db.query(Subscription).filter_by(user_id=uid).one()
+        sub.session_started_at=started
+        sub.session_chat_used=8_000_000
+        sub.session_computer_used=2_787_500
+        sub.chat_tokens_used=40_000_000
+        sub.computer_tokens_used=10_000_000
+        sub.week_chat_used=10_000_000
+        sub.week_computer_used=10_000_000
+        db.commit()
+    before=manager.get_subscription(uid)
+    view=quota.usage_view(before.copy())
+    assert view['windows']['shared']['session']['used']==10_787_500
+    assert view['windows']['shared']['session']['remaining']==2_696_875
+    assert view['windows']['shared']['session']['resets_at']==started+5*60*60
+    assert view['shared']['remaining']==25_000_000
+    assert view['windows']['shared']['week']['remaining']==10_000_000
+    assert quota.raise_if_blocked(before.copy(),'chat','gpt-6-luna') is True
+    hold,_=reserve(uid,'chat','gpt-6-sol',100,1000)
+    settle(uid,hold,0,'chat')
+    after=manager.get_subscription(uid)
+    for key in ('session_started_at','session_chat_used','session_computer_used',
+                'chat_tokens_used','computer_tokens_used','week_chat_used','week_computer_used'):
+        assert after[key]==before[key]
 
 
 def test_parallel_chat_and_orchestrator_share_one_reservation_limit(uid):

@@ -22,6 +22,7 @@ CACHE_WRITE_FRACTION = 1.25
 # 5x for DeepSeek were charging users roughly half of what the calls cost us.
 # Retired GPT-5.6 ids stay priced so old usage rows still debit correctly.
 MODEL_MULTIPLIER: dict[str, int] = {
+    "search": 1,
     "gpt-5-nano": 1,
     "gpt-5.6-luna": 1,
     "gpt-6-luna": 1,
@@ -44,6 +45,7 @@ MODEL_MULTIPLIER: dict[str, int] = {
 
 # Saved chats and in-flight requests may still name the previous generation.
 LEGACY_MODEL_ALIASES = {
+    "kimi-k2.6": "search",  # Migrate saved chats without calling the retired provider.
     "gpt-5.6-luna": "gpt-6-luna",
     "gpt-5.6-terra": "gpt-6-sol",
     "gpt-5.6-sol": "gpt-6-sol",
@@ -63,7 +65,7 @@ HAIKU_TIER_INPUT = 100_000
 CHEAP_MODELS = [
     "auto",
     "correspondent",
-    "kimi-k2.6",
+    "search",
     "gpt-5-nano",
     "gpt-6-luna",
     "deepseek-v4-pro",
@@ -97,10 +99,10 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "chat_tokens": 0,
         "computer_tokens": 0,
         "images": 3,
-        "models": ["auto", "kimi-k2.6", "gpt-5-nano", "gpt-6-luna", "claude-haiku-5.5"],
+        "models": ["auto", "search", "gpt-5-nano", "gpt-6-luna", "claude-haiku-5.5"],
         "daily_replies": 30,
         "daily_searches": 15,
-        "features": ["30 ответов в день, из них до 15 с поиском", "3 картинки в месяц", "без Оркестратора, Студии и Исследования"],
+        "features": ["30 ответов в день, из них до 15 с поиском", "3 картинки в месяц", "без Оркестратора, холста и Исследования"],
     },
     "trial": {
         "id": "trial",
@@ -132,7 +134,7 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "computer_session": 1_075_000,
         "images": 25,
         "models": list(PRO_MODELS),
-        "features": ["GPT-6.1 Sol и Исследование", "Студия"],
+        "features": ["GPT-6.1 Sol и Исследование", "Холст в чате"],
     },
     "proplus": {
         "id": "proplus",
@@ -199,10 +201,11 @@ for _tier in ("trial", "pro", "proplus", "ultra"):
     _plan = PLAN_CATALOG[_tier]
     _plan["shared_budget"] = True
     _plan["total_tokens"], _plan["weekly_tokens"] = SHARED_LIMITS[_tier]
-    _plan["session_tokens"] = 2 * (_plan["chat_session"] + _plan["computer_session"])
+    # Five-hour allowance +25%, approved 2026-11-04; duration/counters stay unchanged.
+    _plan["session_tokens"] = 25 * (_plan["chat_session"] + _plan["computer_session"]) // 8
     if _tier != "trial":
         _plan["features"] = [f'{_plan["total_tokens"] // 1_000_000} млн общих единиц в месяц',
-            'Единый запас для чата, Оркестратора и Студии', 'Увеличенное окно на 5 часов',
+            'Единый запас для чата, Оркестратора и холста', 'Увеличенное окно на 5 часов',
             'Поиск в пределах общего запаса', *_plan['features'], f'{_plan["images"]} изображений в месяц']
 
 
@@ -224,9 +227,10 @@ def allowed_models(tier: str | None) -> set[str]:
             "correspondent",
             "director",
             "studio",
-            "kimi-k2.6",
+            "search",
         }
         allowed.discard("*")
+    allowed.discard("kimi-k2.6")  # Historical billing rates are not model availability.
     return allowed
 
 
@@ -265,7 +269,7 @@ def research_model(tier: str | None) -> str | None:
 
 def computer_models(tier: str | None) -> list[str]:
     allowed = allowed_models(tier)
-    pool = [item for item in ("gpt-5-nano", "gpt-6-luna", "kimi-k2.6", "claude-haiku-5.5", "deepseek-v4-pro") if item in allowed]
+    pool = [item for item in ("gpt-5-nano", "gpt-6-luna", "claude-haiku-5.5", "deepseek-v4-pro") if item in allowed]
     if "gpt-6.1-terra" in allowed:
         pool.append("gpt-6.1-terra")
     if "gpt-6-sol" in allowed:

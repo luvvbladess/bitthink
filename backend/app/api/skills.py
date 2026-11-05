@@ -109,7 +109,7 @@ async def create_skill(payload: SkillCreate, user_id: str = Depends(get_current_
 
 @router.patch("/{name}", response_model=SkillOut)
 async def update_skill(name: str, payload: SkillUpdate, user_id: str = Depends(get_current_user)):
-    builtin = next((item for item in builtin_catalog() if item["name"] == name.strip().lower()), None)
+    builtin = next((item for item in builtin_catalog(include_aliases=True) if item["name"] == name.strip().lower()), None)
     if builtin is not None:
         # Common skills can't be edited, only switched on and off.
         if payload.enabled is None:

@@ -1,0 +1,1 @@
+<resources><item name="email" type="id"/><item name="password" type="id"/><item name="composer" type="id"/><item name="conversation_list" type="id"/><item name="message_list" type="id"/><item name="result_image" type="id"/><item name="result_next" type="id"/><item name="result_page_label" type="id"/><item name="result_web" type="id"/></resources>

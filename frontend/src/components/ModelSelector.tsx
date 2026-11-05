@@ -1,11 +1,11 @@
 import { useId, useLayoutEffect, useState } from 'react';
 import { Alert, Box, Collapse, Drawer, Popover, Button, IconButton, Typography, Tooltip, useMediaQuery } from '@mui/material';
-import { CaretDown, Check, Lightning, MagnifyingGlass, Books, Desktop, Presentation, Atom, FileText, Lock, Brain, X, Image as ImageIcon } from '@phosphor-icons/react';
+import { CaretDown, Check, Lightning, MagnifyingGlass, Books, Desktop, Atom, FileText, Lock, Brain, X, Image as ImageIcon } from '@phosphor-icons/react';
 import { useQuery, useMutation, useQueryClient, useIsMutating, useMutationState, type QueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/api/client';
 import { composerChipSelectedSx, composerChipSx } from '@/theme/effects';
 import { GlowSwitch } from '@/components/GlowSwitch';
-import { ASTRA_LABEL, DOCGEN_LABEL, EXPRESS_LABEL, PILOT_LABEL, STUDIO_LABEL } from '@/constants/modes';
+import { ASTRA_LABEL, DOCGEN_LABEL, EXPRESS_LABEL, PILOT_LABEL } from '@/constants/modes';
 import { conversationModeOwner, rememberConversationMode } from '@/features/chat/conversationMode';
 import { useVisualViewportHeight } from '@/features/chat/useVisualViewportHeight';
 
@@ -38,10 +38,9 @@ interface ModelsCache {
 
 const ANSWER_MODES = [
   { id: 'auto', label: EXPRESS_LABEL, description: 'Быстро и экономно: сам подберёт модель', model: 'auto', icon: Lightning },
-  { id: 'search', label: 'Поиск', description: 'Свежие ответы с источниками', model: 'kimi-k2.6', icon: MagnifyingGlass },
+  { id: 'search', label: 'Поиск', description: 'Свежие ответы с источниками', model: 'search', icon: MagnifyingGlass },
   { id: 'research', label: 'Исследование', description: 'Глубокий разбор и проверка источников', model: 'gpt-6-sol', icon: Books },
   { id: 'astra', label: ASTRA_LABEL, description: 'Сложные задачи: код, договоры, файлы', model: 'gpt-6-astra', icon: Atom },
-  { id: 'studio', label: STUDIO_LABEL, description: 'Живой холст: картинки, слайды, лендинг', model: 'studio', icon: Presentation },
   { id: 'docgen', label: DOCGEN_LABEL, description: 'Большой .docx или комплект документов по Word, PDF, Excel и архивам', model: 'docgen', icon: FileText },
   { id: 'computer', label: PILOT_LABEL, description: 'Выполняет задачи с файлами, поиском и инструментами', model: 'director', icon: Desktop },
 ] as const;
@@ -55,7 +54,7 @@ interface ModeItem {
 }
 
 /** What the menu shows at first: the everyday modes. The rest sit behind «Ещё». */
-const PRIMARY_MODE_IDS = ['auto', 'computer', 'studio'] as const;
+const PRIMARY_MODE_IDS = ['auto', 'search', 'computer'] as const;
 
 const REASONING_CAPABLE = new Set([
   'auto',
@@ -68,7 +67,7 @@ const REASONING_CAPABLE = new Set([
 const XHIGH_CAPABLE = new Set(['gpt-6-sol', 'gpt-6-astra', 'gpt-6.1-terra']);
 
 export function useModelsQuery() {
-  return useQuery<ModelsCache>({ queryKey: ['models'], queryFn: ({ signal }) => apiFetch('/models', { signal, timeoutMs: 15000 }), staleTime: 10_000, retry: 1 });
+  return useQuery<ModelsCache>({ queryKey: ['models'], queryFn: async ({ signal }) => { const data = await apiFetch('/models', { signal, timeoutMs: 15000 }) as ModelsCache; return { ...data, selected: data.selected === 'studio' ? 'auto' : data.selected }; }, staleTime: 10_000, retry: 1 });
 }
 
 function patchModelsCache(queryClient: QueryClient, patch: Partial<ModelsCache>) {
@@ -149,7 +148,6 @@ export function SearchModeSelector({ disabled = false }: { disabled?: boolean })
   const selected = data?.selected || 'auto';
   const researchModel = data?.researchModel || null;
   const computerAvailable = Boolean(data?.computerAvailable);
-  const studioAvailable = Boolean(data?.studioAvailable);
   const docgenAvailable = Boolean(data?.docgenAvailable);
   const astraAvailable = Boolean(data?.astraAvailable);
   const multipliers = data?.multipliers || {};
@@ -210,19 +208,16 @@ export function SearchModeSelector({ disabled = false }: { disabled?: boolean })
               mode.id === 'selected-model' ||
               (mode.id === 'research' && Boolean(researchModel)) ||
               (mode.id === 'astra' && astraAvailable) ||
-              (mode.id === 'studio' && studioAvailable) ||
               (mode.id === 'docgen' && docgenAvailable) ||
               (mode.id === 'computer' && computerAvailable);
             const isActive = selectedMode.id === mode.id;
             const factor =
               mode.id === 'search'
-                ? multipliers['kimi-k2.6']
+                ? multipliers['search']
                 : mode.id === 'research'
                   ? multipliers[mode.model]
                   : mode.id === 'astra'
                     ? multipliers['gpt-6-astra']
-                    : mode.id === 'studio'
-                      ? multipliers['studio']
                       : mode.id === 'auto'
                         ? 1
                         : undefined;
@@ -231,7 +226,7 @@ export function SearchModeSelector({ disabled = false }: { disabled?: boolean })
                 ? 'Нужен Pro+'
                 : mode.id === 'docgen'
                   ? 'Нужен Creator'
-                  : mode.id === 'studio' || mode.id === 'computer'
+                  : mode.id === 'computer'
                     ? 'Нужен Pro'
                     : 'Нужен Pro');
             return (
@@ -342,7 +337,7 @@ export function SearchModeSelector({ disabled = false }: { disabled?: boolean })
           overflow: 'hidden',
         }}
       >
-        <ActiveIcon size={18} weight={selectedMode.id === 'computer' || selectedMode.id === 'studio' || selectedMode.id === 'astra' || selectedMode.id === 'docgen' ? 'fill' : 'bold'} />
+        <ActiveIcon size={18} weight={selectedMode.id === 'computer' || selectedMode.id === 'astra' || selectedMode.id === 'docgen' ? 'fill' : 'bold'} />
         <Box component="span" sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', '@media (max-width:339.95px)': { display: 'none' } }}>{selectedMode.label}</Box>
         <Box component="span" sx={{ display: { xs: 'none', sm: 'inline-flex' }, flexShrink: 0, lineHeight: 0 }}>
           <CaretDown size={14} weight="bold" />

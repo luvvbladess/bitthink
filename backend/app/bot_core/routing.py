@@ -95,7 +95,7 @@ def turn_requires_web(
     from app.services.request_intent import forbids_web
     if forbids_web((user_text or '').split('\n', 1)[0]):
         return False
-    if model == "kimi-k2.6" or research_mode or model == "director":
+    if model in {"search", "kimi-k2.6"} or research_mode or model == "director":
         return True
     return query_requires_web(user_text)
 
@@ -111,6 +111,14 @@ def best_route(user_text: str, reasoning_effort: Optional[str], has_deepseek: bo
     """Choose the best quality/cost route without spending tokens on a router call."""
     text = (user_text or "").lower()
     shape = _request_shape(user_text)
+    # Explicit bounded text operations already reject external actions and
+    # expert instructions. Source length/keywords must not price a translation
+    # as an architecture or security analysis. Explicit depth still wins.
+    from app.services.orchestrator_policy import bounded_text_task
+    if reasoning_effort in {None, "none", "low"} and bounded_text_task(user_text):
+        return ("deepseek-v4-flash" if has_deepseek else "gpt-6-luna", False)
+    from app.services.subject_guidance import needs_subject_reasoning
+    subject_reasoning = needs_subject_reasoning(user_text)
     hard_markers = (
         "архитектур", "алгоритм", "оптимиз", "напиши код", "отлад", "ошибка в код",
         "юрид", "договор", "исследован", "стратег", "противореч", "статист", "сделай ревью",
@@ -128,6 +136,7 @@ def best_route(user_text: str, reasoning_effort: Optional[str], has_deepseek: bo
     # structure and genuinely hard domains must justify the more expensive route.
     complex_task = bool(
         explicit_deep
+        or subject_reasoning
         or shape["chars"] >= 900
         or hard_hits
         or reasoning_hits
@@ -136,11 +145,12 @@ def best_route(user_text: str, reasoning_effort: Optional[str], has_deepseek: bo
     )
     deep = bool(
         explicit_deep
+        or subject_reasoning
         or reasoning_hits
         or (shape["chars"] >= 1800 and (hard_hits or structured))
     )
     if complex_task and has_openrouter:
-        return ("gpt-6-sol" if hard_hits or reasoning_hits or explicit_deep else "claude-haiku-5.5", deep)
+        return ("gpt-6-sol" if hard_hits or reasoning_hits or explicit_deep or subject_reasoning else "claude-haiku-5.5", deep)
     if has_deepseek:
         return ("deepseek-v4-pro" if complex_task else "deepseek-v4-flash", deep)
     if complex_task:
@@ -155,9 +165,10 @@ def route_for_turn(user_text: str, previous_user_text: str, has_deepseek: bool, 
     from app.services.request_intent import classify_request
     related = classify_request(user_text, [{'role': 'user', 'content': previous_user_text}]).followup
     if previous_user_text and related and len(user_text or "") < 200:
-        thread_route, _ = best_route(previous_user_text, "none", has_deepseek, has_openrouter)
+        thread_route, thread_deep = best_route(previous_user_text, "none", has_deepseek, has_openrouter)
         if thread_route in {"deepseek-v4-pro", "gpt-6-sol", "claude-haiku-5.5"}:
             route = thread_route
+            deep = deep or thread_deep
     return route, deep
 
 

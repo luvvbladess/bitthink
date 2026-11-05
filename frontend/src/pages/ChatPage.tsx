@@ -16,6 +16,7 @@ import { useConversationNavigation } from '@/features/chat/useConversationNaviga
 import { ChatSidebar, type ConversationItem } from '@/features/chat/ChatSidebar';
 import { AccountMenu } from '@/components/AccountMenu';
 import { ChatWindow, DisplayMessage } from '@/features/chat/ChatWindow';
+import { CanvasNavigation } from '@/features/chat/CanvasNavigation';
 import { DesignCanvas, findStudioCanvas, studioCanvasVersions, type StudioCanvasSource } from '@/features/chat/DesignCanvas';
 import { MessageInput } from '@/features/chat/MessageInput';
 import { adoptNewComposerDraft } from '@/features/chat/useComposerDraft';
@@ -41,7 +42,7 @@ import { ConversationFilesDrawer, type FilesScope } from '@/features/editor/Conv
 import { RoomChat } from '@/features/chat/RoomChat';
 import { ProjectWorkspace, type ProjectItem, type ProjectSpace } from '@/features/chat/ProjectWorkspace';
 import { ProjectContextControl } from '@/features/chat/ProjectContextControl';
-import { CloudTaskBar, type CloudTask } from '@/features/chat/CloudTaskBar';
+import type { CloudTask } from '@/features/chat/CloudTaskBar';
 import type { ResultEditRequest } from '@/features/chat/projectResultLinks';
 import type { ProjectCitation } from '@/features/chat/EvidenceLink';
 import { applyPageMeta } from '@/seo';
@@ -86,9 +87,8 @@ export default function ChatPage() {
   const [sourcesSheetOpen, setSourcesSheetOpen] = useState(false);
   const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
   const [dialogueSheetOpen, setDialogueSheetOpen] = useState(false);
-  const [mobileCanvasOpen, setMobileCanvasOpen] = useState(false);
   useEffect(() => {
-    if (previewFile) { setProjectPanel(null); setMobileCanvasOpen(false); }
+    if (previewFile) { setProjectPanel(null); }
   }, [previewFile]);
   const dialogueJumpRef = useRef<DialogueJumpFn | null>(null);
   const [sourceMessageId, setSourceMessageId] = useState<string | undefined>();
@@ -121,7 +121,6 @@ export default function ChatPage() {
   const { data: models } = useModelsQuery();
   const selectModel = useSelectModel();
   const preferencesBusy = useModePreferencesBusy();
-  const isStudio = models?.selected === 'studio';
   const isDocgen = models?.selected === 'docgen';
   const modelsRef = useRef(models);
   modelsRef.current = models;
@@ -171,6 +170,20 @@ export default function ChatPage() {
   const [selectedCanvas, setSelectedCanvas] = useState<StudioCanvasSource | null>(null);
   const canvasSource = displayConversationId === activeConvId ? (selectedCanvas || latestCanvas) : null;
   useEffect(() => setSelectedCanvas(null), [activeConvId, latestCanvas?.url, latestCanvas?.html]);
+  const [canvasOpenFor, setCanvasOpenFor] = useState<string | null>(null);
+  useEffect(() => setCanvasOpenFor(null), [activeConvId]);
+  const canvasVisible = Boolean(canvasSource && activeConvId && canvasOpenFor === activeConvId);
+  const closeCanvas = () => {
+    setPanelExpanded(false);
+    setCanvasOpenFor(null);
+  };
+  const openCanvas = (source: StudioCanvasSource) => {
+    closePreview();
+    setProjectPanel(null);
+    setPanelExpanded(false);
+    setSelectedCanvas(source);
+    if (activeConvId) setCanvasOpenFor(activeConvId);
+  };
   const [exporting, setExporting] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [roomOpenById, setRoomOpenById] = useState<Record<string, boolean>>({});
@@ -257,7 +270,7 @@ export default function ChatPage() {
     }
     lastCloudState.current = { id: currentCloudTask.id, status: currentCloudTask.status };
   }, [activeConvId, currentCloudTask?.id, currentCloudTask?.status, currentCloudTask?.run_number]);
-  const canSplitProject = useMediaQuery('(min-width: 1280px)') && !isStudio;
+  const canSplitProject = useMediaQuery('(min-width: 1280px)');
   const projectSideBySide = canSplitProject && !projectExpanded;
   const messagesQuery = useConversationHistory(activeConvId, thinking, sharedRoom, locationParams.get('m'));
   const messagesReady = Boolean(activeConvId) && messagesQuery.data !== undefined && !messagesQuery.isPlaceholderData;
@@ -267,7 +280,7 @@ export default function ChatPage() {
   }, [messagesReady, activeConvId]);
   // A missing history is a loading state, not a new conversation. Cached query
   // data can also arrive one render before its display projection is installed.
-  const restoringConversation = !openNewChat && !activeConvId && (!conversationsFetched || conversations.length > 0);
+  const restoringConversation = false;
   const conversationListFailed = !activeConvId && conversationsQuery.isError && !conversationsQuery.data;
   const historyPending = conversationListFailed || restoringConversation || Boolean(activeConvId && (!messagesReady || displayConversationId !== activeConvId));
 
@@ -334,11 +347,6 @@ export default function ChatPage() {
     setSelectionQuote(null);
   }, [activeConvId]);
 
-  useEffect(() => setMobileCanvasOpen(false), [activeConvId]);
-
-  useEffect(() => {
-    if (isStudio && compactCanvas && latestCanvas) setMobileCanvasOpen(true);
-  }, [isStudio, compactCanvas, latestCanvas?.url, latestCanvas?.html, latestCanvas?.name]);
 
   const handleSelect = async (id: string) => {
     navigationTime.current = performance.now();
@@ -459,7 +467,7 @@ export default function ChatPage() {
     }
   };
 
-  const handleSend = async (rawText: string, files: File[] = [], mode: 'chat' | 'image' = 'chat'): Promise<boolean> => {
+  const handleSend = async (rawText: string, files: File[] = [], mode: 'chat' | 'image' = 'chat', canvasEdit = false): Promise<boolean> => {
     if (preferencesBusy || !models) { setProjectNotice({ text: 'Дождитесь загрузки и сохранения режима, затем отправьте сообщение.', warning: true }); return false; }
     if (locationParams.has('m') && activeConvId) setSearchParams({ c: activeConvId });
     const text = rawText || (files.length ? 'Проанализируй прикреплённые файлы.' : '');
@@ -569,7 +577,7 @@ export default function ChatPage() {
         if (!uploaded) throw new Error('не удалось загрузить вложения');
         patchJob(conversationId, { statusText: 'Смотрю файлы' });
       }
-      if (models?.selected === 'director' && !sharedRoom) {
+      if (models?.selected === 'director' && !sharedRoom && !canvasEdit && !selectionQuote) {
         const payload = JSON.stringify({ prompt: text, conversation_id: conversationId });
         if (taskEnrollmentRef.current.payload !== payload) taskEnrollmentRef.current = { payload, key: crypto.randomUUID() };
         const task = await apiFetch('/computer/tasks', { method: 'POST', body: JSON.stringify({ prompt: text, conversation_id: conversationId, idempotency_key: taskEnrollmentRef.current.key }) }) as CloudTask;
@@ -581,10 +589,12 @@ export default function ChatPage() {
       // completes before treating the send as delivered.
       const ready = await waitUntilReady(45000);
       if (!ready) throw new Error('нет соединения с сервером, попробуйте ещё раз');
-      const operation = JSON.stringify({ content: text, conversation_id: conversationId, model: models.selected });
+      const payload = { content: text, conversation_id: conversationId, model: canvasEdit ? 'auto' : models.selected,
+        ...(!selectionQuote && canvasVisible && canvasSource?.url ? { canvas_target: canvasSource.url } : {}) };
+      const operation = JSON.stringify(payload);
       if (deliveryRef.current.payload !== operation) deliveryRef.current = { payload: operation, key: submissionId(operation) };
       patchJob(conversationId, { statusText: 'Отправляется…' });
-      await submit('message', { content: text, conversation_id: conversationId, model: models.selected }, deliveryRef.current.key);
+      await submit('message', payload, deliveryRef.current.key);
       confirmSubmission(operation);
       deliveryRef.current = { payload: '', key: '' };
       queryClient.invalidateQueries({ queryKey: ['messages', conversationId] });
@@ -921,10 +931,10 @@ export default function ChatPage() {
             )}
           </Box>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, pointerEvents: 'auto' }}>
-            {isStudio && compactCanvas && (
+            {Boolean(canvasSource) && (
               <Tooltip title="Открыть холст">
                 <IconButton
-                  onClick={() => setMobileCanvasOpen(true)}
+                  onClick={() => { if (canvasSource) openCanvas(canvasSource); }}
                   sx={{
                     ...headerIconBtnSx,
                     width: 'auto',
@@ -1052,6 +1062,7 @@ export default function ChatPage() {
   );
 
   return (
+    <CanvasNavigation.Provider value={openCanvas}>
     <Box
       sx={{
         position: 'absolute',
@@ -1143,12 +1154,12 @@ export default function ChatPage() {
       <Box sx={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', overflow: 'hidden', position: 'relative' }}>
       <Box
         sx={{
-          ...(!compactCanvas && (documentPanel || (isStudio && Boolean(canvasSource || thinking)))
+          ...(!compactCanvas && (documentPanel || (canvasVisible))
             ? { flex: 1 }
             : { flex: 1 }),
           minWidth: 0,
           minHeight: 0,
-          display: (projectPanel !== null && (!projectSideBySide || !projectPanel)) || (!compactCanvas && panelExpanded && (documentPanel || (isStudio && Boolean(canvasSource || thinking)))) ? 'none' : 'flex',
+          display: (projectPanel !== null && (!projectSideBySide || !projectPanel)) || (!compactCanvas && panelExpanded && (documentPanel || (canvasVisible))) ? 'none' : 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
           position: 'relative',
@@ -1237,8 +1248,8 @@ export default function ChatPage() {
           onOpenProjectCitation={citation => { setProjectCitation(citation); setProjectOpenError(''); setProjectPanel(citation.projectId); }}
           clarifyDocked={clarifyQuestions.length > 0}
           jumpRef={dialogueJumpRef}
-          splitPane={Boolean(!compactCanvas && (documentPanel || (isStudio && Boolean(canvasSource || thinking))))}
-          composerSlotRef={!isMobile && !isStudio ? setSlotEl : undefined}
+          splitPane={Boolean(!compactCanvas && (documentPanel || (canvasVisible)))}
+          composerSlotRef={!isMobile ? setSlotEl : undefined}
         />}
         <Box
           ref={composerDockRef}
@@ -1255,7 +1266,7 @@ export default function ChatPage() {
               : 'linear-gradient(180deg, transparent 0%, var(--bt-fade) 42%, var(--bt-fade-solid) 78%)',
           }}
         >
-          <Box sx={{ ...CHAT_COL, ...(isStudio && !compactCanvas && Boolean(canvasSource || thinking) ? { maxWidth: '100%', px: 1.75 } : {}), position: 'relative', display: 'flex', flexDirection: 'column', maxHeight: 'calc(var(--bt-viewport-h, 100dvh) - 76px)', pb: { xs: 'max(12px, env(safe-area-inset-bottom))', md: 2 }, pointerEvents: 'auto' }}>
+          <Box sx={{ ...CHAT_COL, ...(canvasVisible && !compactCanvas ? { maxWidth: '100%', px: 1.75 } : {}), position: 'relative', display: 'flex', flexDirection: 'column', maxHeight: 'calc(var(--bt-viewport-h, 100dvh) - 76px)', pb: { xs: 'max(12px, env(safe-area-inset-bottom))', md: 2 }, pointerEvents: 'auto' }}>
             {isMobile && questionTicks.length >= MIN_DIALOGUE_QUESTIONS && (
               <Box
                 sx={{
@@ -1283,7 +1294,6 @@ export default function ChatPage() {
                 />
               </Box>
             )}
-            {currentCloudTask && <CloudTaskBar key={currentCloudTask.id} task={currentCloudTask} />}
             {!sharedRoom && activeConvId && projectBinding.data?.project_id && <ProjectContextControl key={activeConvId} conversationId={activeConvId} projectId={projectBinding.data.project_id} disabled={thinking} />}
             </Box>
             <MessageInput
@@ -1327,31 +1337,30 @@ export default function ChatPage() {
       {documentPanel && !compactCanvas && previewFile && <ResizablePanel label="Документ" expanded={panelExpanded} onExpand={setPanelExpanded}>
         <DocumentPreview key={`${previewConversation}/${previewFile.name}`} file={previewFile} conversationId={previewConversation} onClose={closePreview} />
       </ResizablePanel>}
-      {projectPanel === null && !documentPanel && isStudio && !compactCanvas && Boolean(canvasSource || thinking) && (
-        <ResizablePanel label="Студия" expanded={panelExpanded} onExpand={setPanelExpanded}>
+      {projectPanel === null && !documentPanel && canvasVisible && !compactCanvas && (
+        <ResizablePanel label="Холст" expanded={panelExpanded} onExpand={setPanelExpanded}>
         <DesignCanvas source={canvasSource} thinking={thinking} statusText={statusText}
           versions={canvasVersions} onVersion={setSelectedCanvas}
-          onEdit={(prompt) => { void handleSend(prompt); }} />
+          onEdit={(prompt) => { void handleSend(prompt, [], 'chat', true); }} onClose={closeCanvas} />
         </ResizablePanel>
       )}
       </Box>
       <Drawer anchor="right" open={documentPanel && compactCanvas} onClose={closePreview} PaperProps={{ sx: { width: '100%', height: '100dvh', bgcolor: 'background.default' } }}>
         {previewFile && <DocumentPreview key={`${previewConversation}/${previewFile.name}`} file={previewFile} conversationId={previewConversation} onClose={closePreview} />}
       </Drawer>
-      {projectPanel === null && isStudio && compactCanvas && (
+      {projectPanel === null && compactCanvas && canvasVisible && (
         <Drawer
-          anchor="bottom"
-          open={mobileCanvasOpen}
-          onClose={() => setMobileCanvasOpen(false)}
+          anchor="right"
+          open={canvasVisible && !documentPanel}
+          onClose={closeCanvas}
           ModalProps={{ keepMounted: true }}
           PaperProps={{
             sx: {
-              height: `min(92dvh, ${Math.max(200, visualViewportHeight - 8)}px)`,
+              height: `min(100dvh, ${visualViewportHeight}px)`,
+              width: '100%',
               maxHeight: '100%',
               bgcolor: 'background.default',
               backgroundImage: 'none',
-              borderTopLeftRadius: '18px',
-              borderTopRightRadius: '18px',
               overflow: 'hidden',
             },
           }}
@@ -1363,8 +1372,8 @@ export default function ChatPage() {
             compact
             versions={canvasVersions}
             onVersion={setSelectedCanvas}
-            onEdit={(prompt) => { void handleSend(prompt); setMobileCanvasOpen(false); }}
-            onClose={() => setMobileCanvasOpen(false)}
+            onEdit={(prompt) => { void handleSend(prompt, [], 'chat', true); }}
+            onClose={closeCanvas}
           />
         </Drawer>
       )}
@@ -1397,5 +1406,6 @@ export default function ChatPage() {
         onOpenChat={handleSelect}
       />
     </Box>
+    </CanvasNavigation.Provider>
   );
 }

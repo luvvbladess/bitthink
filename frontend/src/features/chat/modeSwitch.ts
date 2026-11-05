@@ -2,7 +2,7 @@ import type { SearchItem } from './clarify';
 
 export const MODE_SWITCH_QUERY = '__mode_switch__';
 
-const SWITCHABLE = new Set(['studio', 'docgen', 'director', 'kimi-k2.6', 'gpt-6-sol']);
+const SWITCHABLE = new Set(['docgen', 'director', 'search', 'gpt-6-sol']);
 
 export interface ModeSwitch {
   model: string;

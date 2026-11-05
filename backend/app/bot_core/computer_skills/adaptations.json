@@ -65,7 +65,8 @@
       "библиотека артефактов"
     ],
     "adaptation": "builtin",
-    "source_sha256": "5821cb13155039ffa52652562dffb4bea10e457913fa1a4df10e9a862eb88b56"
+    "source_sha256": "5821cb13155039ffa52652562dffb4bea10e457913fa1a4df10e9a862eb88b56",
+    "alias_of": "workspace"
   },
   {
     "name": "wf_product",
@@ -173,7 +174,8 @@
       "partition"
     ],
     "adaptation": "builtin",
-    "source_sha256": "5a75011f7d5b2d9bfbfff38ccb1ba8503dd38a9dd7781839c6ffdb283fa792a2"
+    "source_sha256": "5a75011f7d5b2d9bfbfff38ccb1ba8503dd38a9dd7781839c6ffdb283fa792a2",
+    "alias_of": "sql"
   },
   {
     "name": "wf_websites",
@@ -288,7 +290,8 @@
       "как выбирается исполнитель"
     ],
     "adaptation": "builtin",
-    "source_sha256": "090e5ec2601cc40e0ee5fad15edbd8d1d0008745d4965ac4d6b0a79d4ce31773"
+    "source_sha256": "090e5ec2601cc40e0ee5fad15edbd8d1d0008745d4965ac4d6b0a79d4ce31773",
+    "alias_of": "wf_capabilities"
   },
   {
     "name": "wf_access",
@@ -406,7 +409,8 @@
       "исследуй вопрос"
     ],
     "adaptation": "builtin",
-    "source_sha256": "bab7aa5a1a2426f432f21a00b139aac4964e1d75590964000d77743272146a6a"
+    "source_sha256": "bab7aa5a1a2426f432f21a00b139aac4964e1d75590964000d77743272146a6a",
+    "alias_of": "research"
   },
   {
     "name": "wf_onboarding",
@@ -472,7 +476,8 @@
       "действия в браузере"
     ],
     "adaptation": "builtin",
-    "source_sha256": "6a3c0d41489f45bdab8eda73d966ce0acc130372d76a135f3eb4e1d4a9786bda"
+    "source_sha256": "6a3c0d41489f45bdab8eda73d966ce0acc130372d76a135f3eb4e1d4a9786bda",
+    "alias_of": "browser"
   },
   {
     "name": "wf_support",
@@ -633,7 +638,8 @@
       "доступность интерфейса"
     ],
     "adaptation": "builtin",
-    "source_sha256": "f65e687434dd202e79e1087f241313310c6535608c48df533b1353368677671f"
+    "source_sha256": "f65e687434dd202e79e1087f241313310c6535608c48df533b1353368677671f",
+    "alias_of": "impeccable"
   },
   {
     "name": "profile_gost_profile",

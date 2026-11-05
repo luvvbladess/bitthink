@@ -174,6 +174,19 @@ def test_pending_conversation_receipt_is_stable(people):
     assert store.reserve(emails[0], None, 'message', {'content': 'hi'}, request_id=key) == first
 
 
+def test_receipt_preserves_canvas_target_and_rejects_reusing_it_for_another_result(people):
+    emails, ids = people
+    user=emails[0];key=uuid.uuid4().hex
+    request={'content':'Сделай заголовок крупнее','canvas_target':'/uploads/first.html',
+        'preferences':{'user_id':ids[0],'selected_model':'auto','canvas_target':'/uploads/first.html'}}
+    generation=store.reserve(user,'canvas-chat','message',request,request_id=key)
+    assert store.reserve(user,'canvas-chat','message',request,request_id=key)==generation
+    with pytest.raises(RuntimeError):
+        store.reserve(user,'canvas-chat','message',{**request,'canvas_target':'/uploads/other.html'},request_id=key)
+    claimed=store.claim('canvas-receipt-worker')
+    assert claimed['request']['preferences']['canvas_target']=='/uploads/first.html'
+
+
 def test_websocket_acknowledges_delivery_and_replay_without_new_job(people):
     from app.main import create_app
     emails, _ = people; email = emails[0]

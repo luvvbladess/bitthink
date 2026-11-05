@@ -4,16 +4,19 @@ No model-written tests are trusted as the sole acceptance criterion. The report
 names the synthetic workspace IDs. Unknown code is never executed on the host.
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.request
 import urllib.error
+import zipfile
 
 
 def execute(argv, cwd, uid, timeout=45, extra_env=None, input_text=None):
@@ -59,9 +62,9 @@ req.on('error',e=>{console.error(e.message);process.exitCode=1});req.setTimeout(
     return as_json(['node','-e',script,json.dumps(spec),data.decode() if data is not None else '__none__'],root,uid)
 
 
-def check(case, uid):
+def check(case, uid, root_override=None):
     import workspace_fs as fs
-    root=fs.user_root(uid)
+    root=root_override or fs.user_root(uid)
     if case=='python_csv':
         main=find(root,'main.py')
         value=as_json([sys.executable,str(main),str(root/'inputs/sales.csv')],main.parent,uid)
@@ -76,7 +79,11 @@ def check(case, uid):
         assert execute(['node',str(main),str(invalid)],main.parent,uid)[0]!=0
     elif case=='c_cli':
         main=find(root,'main.c');binary=main.parent/'independent-check'
-        code,out,err=execute(['gcc','-std=c11','-Wall','-Wextra','-Werror',str(main),'-o',str(binary)],main.parent,uid)
+        sources=[p for p in main.parent.rglob('*.c')
+                 if not any(x in {'test','tests','build','dist','node_modules','verification','verify_unzip'}
+                            for x in p.relative_to(main.parent).parts)
+                 and not p.name.startswith('test_')]
+        code,out,err=execute(['gcc','-std=c11','-Wall','-Wextra','-Werror',*[str(p) for p in sorted(sources)],'-o',str(binary)],main.parent,uid)
         assert code==0,err[-1000:]
         assert as_json([str(binary),'4','-2','9'],main.parent,uid)=={'sum':11,'max':9}
         assert as_json([str(binary),'-7','-2','-4'],main.parent,uid)=={'sum':-13,'max':-2}
@@ -142,10 +149,40 @@ def check(case, uid):
     return {'id':case,'passed':True}
 
 
+def check_archive(row):
+    """Run the same independent checks on the exact bytes delivered to the user."""
+    import workspace_fs as fs
+    home=fs.user_root(row['uid'])
+    artifact=next(a for a in row['artifacts'] if a['filename'].endswith('.zip'))
+    candidates=[p for p in home.rglob(artifact['filename']) if p.is_file() and not p.is_symlink()
+                and hashlib.sha256(p.read_bytes()).hexdigest()==artifact['sha256']]
+    assert candidates,'delivered_archive_bytes_not_found'
+    with tempfile.TemporaryDirectory(prefix='verification-',dir=home) as temporary:
+        root=Path(temporary)
+        with zipfile.ZipFile(candidates[0]) as archive:
+            assert len(archive.infolist())<=1000 and sum(i.file_size for i in archive.infolist())<=100*1024*1024,'archive_too_large'
+            for item in archive.infolist():
+                path=(root/item.filename).resolve()
+                assert path.is_relative_to(root),'archive_path_escape'
+                assert (item.external_attr >> 16) & 0o170000 != 0o120000,'archive_symlink'
+            archive.extractall(root)
+        inputs=home/'inputs'
+        if inputs.is_dir():
+            for path in inputs.rglob('*'):
+                if path.is_file():
+                    assert not path.is_symlink() and path.resolve().is_relative_to(home),'unsafe_input_fixture'
+                    target=root/'inputs'/path.relative_to(inputs);target.parent.mkdir(parents=True,exist_ok=True)
+                    shutil.copyfile(path,target)
+        result=check(row['id'],row['uid'],root)
+        result['scope']='delivered_archive'
+        return result
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--responses',type=Path,required=True)
     p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--archives',action='store_true')
     a=p.parse_args()
     if os.getenv('SANDBOX_MODE')!='1':raise SystemExit('Execution verification requires the disposable sandbox')
     report=json.loads(a.responses.read_text())
@@ -153,7 +190,7 @@ def main():
     for row in report['results']:
         if row['category'] not in {'code_python','code_javascript','code_c','code_typescript','product'}:continue
         started=time.monotonic()
-        try:value=check(row['id'],row['uid'])
+        try:value=check_archive(row) if a.archives else check(row['id'],row['uid'])
         except Exception as exc:value={'id':row['id'],'passed':False,'error':str(exc)[:1800]}
         value['seconds']=round(time.monotonic()-started,3);results.append(value)
         print(json.dumps(value),flush=True)

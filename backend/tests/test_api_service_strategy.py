@@ -52,6 +52,31 @@ class ApiServiceStrategyTests(unittest.TestCase):
                 self.assertTrue(policy.is_product_request(text))
                 self.assertEqual(policy.select_stack(text), stack)
 
+    def test_the_object_of_the_verb_is_the_result_not_a_nearby_topic(self):
+        cases = {
+            'сделай промпт для сайта кофейни': 'text',
+            'Напиши промпт, по которому можно создать лендинг': 'text',
+            'Напиши промпт для сайта.\nСоздай современный лендинг': 'text',
+            'Разработай ТЗ на сайт': 'text',
+            'составь промпт для лендинга': 'text',
+            'Сделай доклад про сайт конкурента': 'text',
+            'не создавай сайт, напиши промпт': 'text',
+            'Create a prompt for a landing page': 'text',
+            'придумай название для приложения': 'text',
+            'Сделай сайт по этому промпту': 'product',
+            'По промпту ниже собери лендинг': 'product',
+            'Собери по промпту ниже лендинг': 'product',
+            'Напиши промпт и собери по нему лендинг': 'product',
+            'Сделай промпт и сайт': 'product',
+            'сделай кнопку для сайта': 'fragment',
+            'сделай калькулятор сайта': 'unknown',
+            'постройка сайта': 'unknown',
+        }
+        for text, kind in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(policy.expected_deliverable(text), kind)
+                self.assertEqual(policy.is_product_request(text), kind == 'product')
+
     def test_empty_inputs(self):
         for text in ['', None]:
             with self.subTest(text=text):

@@ -18,6 +18,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Tuple
 from app.services.run_protocol import WORKFLOW_RULES
 from app.services.autonomy import RULES as AUTONOMY_RULES
+from app.services.code_change_policy import code_change_rules, bounded_code_change, CODE_EDIT_TOOLS
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,10 @@ def _is_light_task(text: str, document_context: str, has_images: bool, user_id: 
         return True
     if _wants_file(text) or _is_document_package_task(text):
         return False
+    from app.services.product_strategy import expected_deliverable
+    # A prompt, spec or text about a site is an answer, even if the text says «сделай» and «сайт».
+    if expected_deliverable(text) == 'text':
+        return True
     if chat_reasoning_task(text):
         return True
     if critical_task(text):
@@ -274,7 +279,9 @@ def _ordinary_work(text: str) -> bool:
     """Ответ или файл, а не программа. Для такого запроса не нужны сборка, тесты и архив проекта."""
     if _is_document_package_task(text):
         return True
-    from app.services.product_strategy import is_product_request
+    from app.services.product_strategy import expected_deliverable, is_product_request
+    if expected_deliverable(text) == 'text':
+        return True
     if is_product_request(text):
         document = bool(re.search(
             r"(?i)доклад|реферат|отч[её]т|справк|аннотац|документ|ворд|docx|презентац|таблиц",
@@ -284,6 +291,34 @@ def _ordinary_work(text: str) -> bool:
             text or ""))
         return document and not product
     return bool(_wants_file(text) or _ORDINARY_WORK_RE.search(text or ""))
+
+
+async def _route_turn(user_text: str, user_id: int, projects: list, history_text: str) -> dict:
+    """Ask a cheap model what the user wants back before any tool or build starts."""
+    import os
+    from app.services.task_route import ROUTE_INSTRUCTIONS, parse_route, route_user_prompt, rule_route
+    if os.getenv('PYTEST_CURRENT_TEST'):
+        return rule_route(user_text)
+    try:
+        from openai_client import get_chat_response
+        from conversations import conversation_manager
+        from app.billing.plans import clamp_model
+        tier = conversation_manager.get_subscription(user_id).get('tier')
+        raw, _, _, _ = await get_chat_response(
+            [
+                {'role': 'system', 'content': ROUTE_INSTRUCTIONS},
+                {'role': 'user', 'content': route_user_prompt(user_text, projects, history_text)},
+            ],
+            model=clamp_model(tier, DIRECT_ANSWER_MODEL), user_id=user_id,
+            use_tools=False, use_skills=False, reasoning_effort='low',
+        )
+        parsed = parse_route(raw, projects)
+        if parsed:
+            logger.info('Task route %s', parsed.get('action'))
+            return parsed
+    except Exception:
+        logger.debug('Task route failed', exc_info=True)
+    return rule_route(user_text)
 
 
 async def _new_files(user_id: int, since: float) -> List[Dict[str, Any]] | None:
@@ -331,7 +366,7 @@ def _file_builder_employee(user_text: str) -> Dict[str, str]:
             "load_skill documents. Пользователь просил файл, но в песочнице его пока нет. "
             f"Запрос: «{(user_text or '')[:600]}». "
             "Возьми текст и данные из результатов коллег и из песочницы (workspace_glob), допиши недостающее, "
-            "собери файл: .docx через bt_docx, либо .xlsx/.pdf/.pptx, если просили этот формат. "
+            "В облачной песочнице для обычного DOCX используй workspace_write с путём .docx и Markdown-содержимым: инструмент сам создаёт настоящий DOCX. Не пиши отдельный Python-скрипт ради простой сборки. Для сложных исходных шаблонов сохраняй их оформление профильной библиотекой. Для .xlsx/.pdf/.pptx используй подходящий инструмент. "
             "В конце workspace_glob: файл должен лежать. Не пиши, что нет доступа к созданию DOCX."
         ),
         "model": FALLBACK_EMPLOYEE_MODEL,
@@ -498,6 +533,9 @@ _OUTPUT_RULES = (
     "КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО оборачивать что-либо в угловые скобки << >> или использовать их как плейсхолдер — "
     "такая запись ломается в документе. Если значение неизвестно — напиши об этом словами."
 )
+from app.services.answer_presentation import ANSWER_PRESENTATION_RULES
+from app.services.answer_quality import ANSWER_QUALITY_RULES, answer_quality_note
+_OUTPUT_RULES += '\n' + ANSWER_PRESENTATION_RULES
 
 _RU_MONTHS_GENITIVE = [
     "января", "февраля", "марта", "апреля", "мая", "июня",
@@ -1069,9 +1107,13 @@ async def _execute_employee(
     preferences_block = _preference_context(user_id)
     prefs_note = f"\n\n{preferences_block}" if preferences_block else ""
 
+    from app.services.subject_guidance import subject_note
+    domain_note = subject_note(task)
     base_prompt = (
         f"{date_note}{history_block}{doc_block}{skills_block}{prefs_note}\n\n{WORKFLOW_RULES}\n\n"
         f"{ECONOMY_RULES if economy_enabled() else ''}\n"
+        f"{domain_note}\n"
+        f"{code_change_rules(task)}\n"
         f"Твоя роль: {role}.\nТвоя задача: {task}\n\n"
         "Ты сотрудник Оркестратора. Делай только свою задачу. "
         "Если выше есть память или правило «как отвечать» – соблюдай язык, тон и формат "
@@ -1106,13 +1148,29 @@ async def _execute_employee(
         "Договор, ТЗ, смета, таблица, расчёт – это .docx/.xlsx/.pdf или текст в чате, НИКОГДА не .py скрипт. "
         "Расчёт, калькуляция, стоимость – пиши результат текстом прямо в сообщении или создай .xlsx таблицу. Не создавай .py файлы для простых вычислений. "
         "Файл из песочницы (xlsx, csv, docx, pdf, zip) пользователь скачает кнопкой в чате: не выдумывай ссылку. "
-        "python-docx и bt_docx (markdown → .docx) уже стоят в песочнице: не пиши, что нет доступа к созданию "
+        "В облачной песочнице для простого DOCX workspace_write принимает Markdown и путь .docx, сам создаёт настоящий документ; затем одна проверка готового файла. Не пиши скрипт и не устанавливай пакеты ради этой операции. Для правки сложного исходного документа сохрани шаблон и оформление через профильную библиотеку. python-docx и bt_docx (markdown → .docx) уже стоят в песочнице: не пиши, что нет доступа к созданию "
         "или прикреплению DOCX. Если тебе поручено несколько документов – сделай каждый отдельным .docx, "
         "не останавливайся на первом, в конце проверь workspace_glob, что все файлы на месте. "
         "Пароли в ответ не пиши. "
         "Не проси пользователя скопировать страницу или выполнить команду за тебя. "
         "Не спрашивай пользователя и не давай нумерованный опросник: делай работу сам."
     )
+    if employee.get('bounded_code_change'):
+        from app.services.desktop_context import desktop_executor
+        environment = ('Среда: BitClient, Windows/PowerShell. Для команд используй desktop_run_command.'
+                       if desktop_executor.get() is not None else
+                       'Среда: облачная Linux-мастерская. Для команд используй workspace_run с argv; desktop_* здесь недоступны.')
+        base_prompt = (
+            f'{date_note}{history_block}{doc_block}{prefs_note}\n{WORKFLOW_RULES}\n'
+            f'{code_change_rules(task)}\n{domain_note}\nЗадача пользователя: {task}\n'
+            f'{environment}\n'
+            'Ты единственный исполнитель этой локальной правки. Используй workspace_edit '
+            'для точечного патча, desktop_run_command в BitClient или workspace_run в облаке '
+            'для реальной проверки. Подходящий скил ниже уже загружен, не загружай его повторно. '
+            'Не ищи внешние источники и не создавай отдельный проект без причины. '
+            'Если обнаружена большая связанная проблема, опиши конкретные факты; не скрывай '
+            'непройденную проверку. В конце кратко: что изменил и какая проверка прошла.'
+        )
     from app.services.run_protocol import current_run
     run = current_run.get()
     if run is not None and run.request_context:
@@ -1129,7 +1187,7 @@ async def _execute_employee(
         # The task alone: matching on the whole chat history pulled in unrelated skills
         # (a 7 KB "documents" playbook because someone once said "договор").
         skill_block = preload_skills_block(
-            task,
+            'Правка кода. ' + task if employee.get('bounded_code_change') else task,
             has_images=has_images or "image_search" in (task or "").lower() or "фото" in (task or "").lower(),
             user_id=user_id,
             sandbox=True,
@@ -1182,11 +1240,17 @@ async def _execute_employee(
             loops = 12 if model in {HAIKU_MODEL, "gpt-6-luna", "gpt-5-nano", ROUTINE_MODEL, 'minimax-m3.1-flash'} else 40
         else:
             loops = (60 if cad_employee_phase(employee)=="gui_geometry" else 30) if cad_build else PACKAGE_EMPLOYEE_TOOL_LOOPS if builds_file else None
+        if employee.get('bounded_code_change'):
+            loops = 12
         def product_accepted(name, result):
             from app.services.autonomy import product_evidence
             evidence = product_evidence.get() or {}
             return name == 'product_lifecycle' and evidence.get('product_id') == employee.get('product_id') and bool(evidence.get('ready'))
         stop_options = {'stop_after_tool': product_accepted} if employee.get('product_phase') == 'build' and employee.get('product_id') else {}
+        if employee.get('bounded_code_change'):
+            tools = CODE_EDIT_TOOLS - ({'workspace_run'} if desktop_executor.get() is not None else
+                                      {name for name in CODE_EDIT_TOOLS if name.startswith('desktop_')})
+            stop_options.update(allowed_tools=frozenset(tools), use_skills=False)
         from app.services.model_registry import openrouter_models
         response = None
         if model in openrouter_models(include_experimental=True):
@@ -1216,7 +1280,7 @@ async def _execute_employee(
             response = await get_chat_response(
                 employee_messages, model=model, user_id=user_id, use_tools=True, max_tool_loops=loops,
                 force_web_search=bool(employee.get("web", legacy_search)),
-                reasoning_effort="high" if cad_build and model == "gpt-6-astra" else None,
+                reasoning_effort="low" if employee.get('bounded_code_change') else "high" if cad_build and model == "gpt-6-astra" else None,
                 **stop_options,
             )
             answer, _, reasoning, search = response
@@ -1228,6 +1292,8 @@ async def _execute_employee(
             **({'status':'error'} if provider_failed else {}),
             **({'error_kind': response.error_kind, 'retryable': response.retryable} if getattr(response, 'error_kind', '') else {}),
             **({'validation_checks':dict(validation_state.checks)} if validation_state.checks else {}),
+            **({'code_change_checked': validation_state.checked_after_write and not validation_state.failed}
+               if employee.get('bounded_code_change') else {}),
             **({'status':'error', 'validation_failed':True,
                 'result':answer + '\nПроверка результата не пройдена: исправь ошибку теста/сборки и повтори только проверку, сначала проверь сохранённые изменения.'} if validation_state.failed else {}),
             "reasoning": reasoning, "search": search,
@@ -1278,7 +1344,10 @@ def _select_composer_model(
     photo_task = any(marker in task for marker in ("фото", "где сня", "локац", "картин"))
     # A file alone no longer buys Sol (20x Luna): the employees already read it, and the
     # composer only merges their notes. Sol stays for contracts/audits and big result sets.
+    from app.services.subject_guidance import needs_subject_reasoning
     needs_quality = (
+        needs_subject_reasoning(original_task)
+        or
         any(entry.get('model') in {SONNET_MODEL, OPUS_MODEL, 'gpt-6-astra'} for entry in ok_entries)
         or
         (bool(document_context) and any(marker in task for marker in hard_markers))
@@ -1388,7 +1457,10 @@ async def _plan_round(
         "почта и сервер сразу, поиск плюс разбор документа) ОБЯЗАНЫ попасть в один раунд, "
         f"2-{MAX_PARALLEL_PER_ROUND} сотрудника. Не режь их по раундам.\n"
         "- Следующий раунд только для шагов, которым реально нужны результаты предыдущих.\n"
-        "- Не нанимай одного универсального сотрудника на всю задачу, если её можно разрезать.\n"
+        "- Деление оправдано независимыми результатами, а не самим наличием нескольких шагов. "
+        "Чтение, правка и тест одного участка кода — работа одного сотрудника. "
+        "Не запускай параллельных редакторов одних и тех же файлов.\n"
+        f"{code_change_rules(original_task)}\n"
         "- Оркестратор – исследователь, не чат из памяти. Раунд 1 без сотрудников запрещён, "
         "кроме приветствия. status=done только после того, как сотрудники уже собрали и сверили источники.\n"
         "- Запрещено закрывать задачу в раунде 1, если нужно найти факт, место, источник, цену или разобрать фото.\n"
@@ -1505,6 +1577,8 @@ async def _plan_round(
     from app.services.run_protocol import current_run
     if current_run.get():
         prompt += current_run.get().evidence_prompt()
+    from app.services.subject_guidance import subject_note
+    prompt += '\n\n' + subject_note(original_task)
     if economy_enabled():
         prompt += '\n\n' + ECONOMY_RULES
     messages = [
@@ -1612,6 +1686,7 @@ async def _compose_answer(
     prompt = (
         f"{_current_date_note()}\n\n"
         f"{prefs_block}"
+        f"{answer_quality_note(original_task)}\n"
         "Ответь пользователю так, как ответила бы обычная модель в этом чате.\n"
         "Если выше есть память или правило «как отвечать» – выполни его буквально: язык, тон, "
         "обращение, формат вывода. Это важнее твоих привычек форматирования.\n"
@@ -1708,6 +1783,7 @@ async def _compose_answer(
 async def _answer_directly(
     messages: List[Dict[str, Any]],
     user_id: int,
+    *, compact_kind: str = '',
 ) -> Tuple[str, str, List[Dict[str, str]]]:
     """Простой вопрос без сотрудников: обычный ответ с теми же инструментами."""
     from openai_client import get_chat_response
@@ -1727,7 +1803,7 @@ async def _answer_directly(
         "Действуй по уже сказанному.\n"
         "Если просят только перевод, исправленную фразу, JSON или текст письма, верни только этот результат. "
         "Написать черновик не означает открыть почту или отправить письмо. "
-        "При продолжении сохраняй ограничения предыдущей просьбы пользователя. "
+        "При продолжении сохраняй ограничения предыдущей просьбы пользователя. Предыдущий отказ ассистента не определяет доступные инструменты: используй реально выданный сейчас каталог. Не повторяй отказ, если нужный инструмент доступен; сначала выполни подходящий вызов. "
         "При описании внезапных опасных симптомов сначала дай срочные действия и обращение в экстренную службу; "
         "не откладывай этот ответ ради веб-исследования и не назначай лекарства. "
         "Общий разбор риска по цитате договора не требует выдуманных статей закона: "
@@ -1735,13 +1811,33 @@ async def _answer_directly(
         "Арифметику и обработку числовых данных проверяй через python_run; не заменяй проверку устным расчётом.\n"
         f"{_OUTPUT_RULES}\n{WORKFLOW_RULES}\n\n{AUTONOMY_RULES}"
     )
+    if compact_kind:
+        from app.services.response_policy import COMPACT_FORMAT, compact_messages
+        from app.services.answer_quality import COMPACT_ANSWER_RULES
+        messages = compact_messages(messages, web=compact_kind == 'web')
+        system = (_current_date_note() + '\n' + COMPACT_ANSWER_RULES + '\n'
+                  + COMPACT_FORMAT)
+    else:
+        system += '\n' + ANSWER_QUALITY_RULES
     chat = [{"role": "system", "content": system + _desktop_work_instructions()}, *messages]
     from runtime_context import last_user_text
     task = last_user_text(messages)
+    from app.services.subject_guidance import subject_note
+    chat[0]["content"] += "\n" + subject_note(task)
     model = _direct_answer_model(user_id, task)
+    if compact_kind == 'text':
+        from app.services.response_policy import compact_model
+        model = compact_model(task, _employee_models(user_id),
+                              context_chars=sum(len(str(m.get('content') or '')) for m in messages))
     text_only = (bounded_text_task(task) or bounded_text_revision(task, messages)) and not (
         _extract_document_context(messages) or packed_has_images(messages))
     call_options = {'use_tools': not text_only, 'chat_tools': chat_reasoning_task(task)}
+    if compact_kind:
+        call_options = {'use_tools': compact_kind == 'web', 'use_skills': False}
+        if compact_kind == 'web':
+            # One writer reads sources and answers; no planner/employee/composer copies.
+            model = DIRECT_ANSWER_MODEL
+            call_options['force_web_search'] = True
     spec = model_spec(model)
     response_fn = get_chat_response
     if spec and spec.provider == 'openrouter':
@@ -2003,7 +2099,12 @@ async def _run_director(
 
     from app.services.task_checkpoints import resumed_journal, save as save_checkpoint
     journal: List[Dict[str, Any]] = list(resumed_journal.get() or [])
-    from app.services.product_strategy import is_product_request
+    if not document_context and not packed_has_images(messages):
+        from app.services.text_document import respond as respond_text_document
+        document_result = await respond_text_document(messages, user_text, user_id)
+        if document_result is not None:
+            return document_result
+    from app.services.product_strategy import expected_deliverable, is_product_request
     from app.services.conversation_context import workspaces
     from app.services.autonomy import product_evidence, product_employee, verified_product
     initial_plan = None
@@ -2011,9 +2112,41 @@ async def _run_director(
     # Asked before a revision rewrites user_text with the old brief, which always looks like "build a site".
     asked_new_product = is_product_request(user_text) and not any(entry.get('product_id') for entry in journal)
     turn_has_images = packed_has_images(messages) or _turn_has_images(user_id)
+    from app.services.response_policy import compact_answer_kind
+    compact_kind = compact_answer_kind(user_text, web_required=needs_research(user_text, turn_has_images))
+    if (compact_kind and not journal and not workspaces.get() and not document_context
+            and not turn_has_images and not place_request and not cad_extensions
+            and desktop_executor.get() is None):
+        answer, reasoning, sources = await _answer_directly(messages, user_id, compact_kind=compact_kind)
+        return answer, [], reasoning, sources
+    # Bounded educational arithmetic also applies to persistent cloud tasks.
+    if (not journal and not workspaces.get() and not document_context and not turn_has_images
+            and not place_request and not cad_extensions and desktop_executor.get() is None):
+        from app.services.answer_tools import teaching_calculation, maybe_tool_answer
+        if teaching_calculation(user_text):
+            calculated = await maybe_tool_answer(messages, user_text, user_id,
+                                                  _employee_models(user_id), pool='computer')
+            if calculated is not None:
+                return calculated
     text_followup = bounded_text_revision(user_text, messages) and not (document_context or turn_has_images)
     simple_without_project = not workspaces.get() and (text_followup or _is_light_task(user_text, document_context, turn_has_images, user_id))
-    if desktop_executor.get() is None and workspaces.get() is not None and not journal and not simple_without_project and not place_request:
+    projects = list(workspaces.get() or [])
+    bounded_patch = (economy_enabled() and bounded_code_change(user_text) and not journal
+                     and not projects and not turn_has_images and not cad_extensions
+                     and not place_request)
+    routed = {'action': 'defer', 'goal': '', 'workspace_id': ''}
+    if desktop_executor.get() is None and not place_request and not cad_extensions and not bounded_patch:
+        routed = await _route_turn(user_text, user_id, projects, history_text)
+    if routed.get('goal'):
+        await _update_status(status_msg, 'Понял задачу — ' + str(routed['goal'])[:180], 'plan')
+    route = routed.get('action') or 'defer'
+    if route == 'reply' and _wants_file(user_text):
+        route = 'file'  # A requested deliverable cannot be a tool-free answer.
+    deliverable = expected_deliverable(user_text)
+    # A definite route is the model's reading of the request. Keywords do not override it.
+    definite = route in {'reply', 'file', 'product', 'revise', 'research'}
+    if (desktop_executor.get() is None and projects and not journal and not simple_without_project
+            and not place_request and not definite and deliverable != 'text'):
         initial_plan = await _plan_round(user_text, journal, user_id, document_context, history_text)
         if initial_plan.get('status') == 'clarify' and initial_plan.get('questions'):
             from clarify import pack_search
@@ -2022,10 +2155,19 @@ async def _run_director(
             followup_id = initial_plan.get('workspace_id')
             if followup_id not in {item['product_id'] for item in workspaces.get()}:
                 raise ValueError('Выбранный проект не относится к этой беседе.')
+    if route == 'revise':
+        ids = {item.get('product_id') for item in projects}
+        chosen = routed.get('workspace_id')
+        if chosen not in ids and len(ids) == 1:
+            chosen = next(iter(ids))
+        if chosen in ids:
+            followup_id = chosen
     # create от планировщика само по себе не запускает приёмку: иначе доклад,
     # таблица или файл на Диск собираются как сайт, с тестами и архивом.
-    product_build = desktop_executor.get() is None and not _ordinary_work(user_text) and (
-        is_product_request(user_text) or bool(followup_id) or any(entry.get('product_id') for entry in journal))
+    product_build = desktop_executor.get() is None and route not in {'reply', 'file', 'research'} and (
+        route in {'product', 'revise'} or (
+            route == 'defer' and not _ordinary_work(user_text) and (
+                is_product_request(user_text) or bool(followup_id) or any(entry.get('product_id') for entry in journal))))
     if (initial_plan is not None and not product_build
             and initial_plan.get('workspace_action') in {'revise', 'create'}
             and not initial_plan.get('new_employees')):
@@ -2067,6 +2209,12 @@ async def _run_director(
     from marketplace_verification import single_store_price_lookup
     price_lookup = not cad_extensions and not wants_file and single_store_price_lookup(user_text)
     light = light or price_lookup
+    if route == 'reply':
+        light = True
+    elif route in {'file', 'research'}:
+        light = False
+    if bounded_patch:
+        light = False  # Missing evidence returns to planning, never to a light research retry.
     if _is_shopping_task(user_text, user_id):
         journal = []  # Fresh card/review/availability checks on each resumed shopping run.
 
@@ -2147,6 +2295,16 @@ async def _run_director(
             plan = _clamp_employee_plan({'status': 'continue', 'new_employees': [employee]}, user_id, user_text, document_context, journal)
         elif place_request and not product_build:
             plan = {'status':'done','new_employees':[]}
+        elif bounded_patch and round_num == 1 and not steering:
+            # One capable coder owns the edit and its test. No separate planning/review team.
+            allowed = _employee_models(user_id)
+            coder = next((m for m in [FALLBACK_EMPLOYEE_MODEL, ROUTINE_MODEL, PLANNER_MODEL] if m in allowed), DIRECT_ANSWER_MODEL)
+            plan = {'status': 'continue', 'new_employees': [{
+                'role': 'Правка кода', 'task': user_text, 'model': coder,
+                'bounded_code_change': True,
+            }]}
+        elif bounded_patch and journal and journal[-1].get('code_change_checked') and journal[-1].get('status') == 'ok' and not steering:
+            break  # A real write followed by a passing check; prose alone cannot stop the run.
         elif initial_plan is not None and round_num == 1:
             plan = initial_plan
         elif light and round_num == 1:
@@ -2283,6 +2441,8 @@ async def _run_director(
         mark_outcome(accepted=False)
         answer, compose_reasoning = ('Достигнут бюджет работы моделей. Выполненные действия и созданные файлы сохранены. '
             'Завершение всей задачи пока не подтверждено; продолжить можно с сохранённого состояния.'), ''
+    elif bounded_patch and len(journal) == 1 and journal[0].get('code_change_checked') and journal[0].get('status') == 'ok':
+        answer, compose_reasoning = journal[0]['result'], ''
     elif product_build:
         # Completion is derived from receipts, never from a composer's claim.
         answer, compose_reasoning = '', ''
@@ -2323,11 +2483,9 @@ async def _run_director(
                 }, final_product)
             except Exception:
                 logger.warning('Product lesson could not be saved', exc_info=True)
-            answer = ('Проект собран на стеке ' + final_product['stack'] + '. '
-                      'Сборка и тесты текущей версии пройдены. Архив: ' + final_product['archive'] + '. '
-                      'В README.md — команды запуска и размещения, в BRIEF.md — критерии приёмки.')
-            if final_product['stack'] != 'python':
-                answer += ' Браузерная проверка экранов 1440 и 390 px пройдена; снимки находятся в qa/ внутри архива.'
+            from app.services.product_response import compose_product_response
+            answer, compose_reasoning = await compose_product_response(
+                user_text, final_product, user_id, budget_exhausted=budget_exhausted)
             from turn_scope import choose_deliverables
             choose_deliverables([final_product['archive']])
 

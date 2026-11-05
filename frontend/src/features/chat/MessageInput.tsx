@@ -113,7 +113,6 @@ export function MessageInput({
   const sendingRef = useRef(false);
   const isComputer = useIsComputer();
   const selectedModel = useSelectedModel();
-  const isStudio = selectedModel === 'studio';
   const isDocgen = selectedModel === 'docgen';
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -329,16 +328,12 @@ export function MessageInput({
             : pendingFiles.length
               ? isDocgen
                 ? 'Какой документ собрать по этим файлам?'
-                : isStudio
-                  ? 'Что создать по этим материалам?'
-                  : 'Спросите о прикреплённых файлах...'
+                : 'Спросите о прикреплённых файлах...'
               : isDocgen
                 ? 'Прикрепите шаблоны и данные, затем опишите документ...'
                 : isComputer
                   ? 'Какой результат нужен? Можно прикрепить файлы…'
-                  : selectedModel === 'studio'
-                    ? 'Опишите, что создать или изменить…'
-                    : selectedModel === 'kimi-k2.6'
+                  : selectedModel === 'search'
                       ? 'Что найти прямо сейчас?'
                       : selectedModel === 'gpt-6-astra'
                         ? 'Прикрепите материалы или опишите сложную задачу…'
@@ -509,9 +504,9 @@ export function MessageInput({
       <Box
         className="bt-key-hint"
         sx={{
-          display: toolsOpen && viewportHeight < 480 ? 'none' : isComputer ? 'none' : isStudio || isDocgen || imageMode ? 'block' : { xs: 'none', sm: 'block' },
+          display: toolsOpen && viewportHeight < 480 ? 'none' : isComputer ? 'none' : isDocgen || imageMode ? 'block' : { xs: 'none', sm: 'block' },
           // The plain Enter/Shift+Enter reminder shows while typing; the mode explanations stay.
-          opacity: isComputer || isStudio || isDocgen || imageMode || editingImage ? 1 : 0,
+          opacity: isComputer || isDocgen || imageMode || editingImage ? 1 : 0,
           transition: 'opacity 0.2s cubic-bezier(0.23, 1, 0.32, 1)',
           mt: 0.7,
           px: 0.75,
@@ -525,8 +520,6 @@ export function MessageInput({
           ? 'Опишите правку. Картинка останется в этой беседе'
           : isDocgen
             ? `${DOCGEN_LABEL}: Word, PDF, Excel или zip — соберёт .docx или целый комплект файлов. Перед запуском покажет состав и спросит подтверждение`
-          : isStudio
-            ? 'Опишите идею своими словами. Файлы и образцы — по желанию.'
           : isComputer
             ? `${PILOT_LABEL}: выполняет задачи с файлами, поиском и инструментами`
             : 'Enter отправит · Shift+Enter новая строка'}

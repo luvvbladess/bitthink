@@ -158,7 +158,7 @@ def test_product_phase_uses_the_model_the_planner_hired(monkeypatch):
     # The brief does not inherit the build's Sol, and the build needs no second Sol planner call.
     assert seen == [('brief', 'gpt-6-luna'), ('build', 'gpt-6-sol')]
     assert planned == [0]
-    assert 'Сборка и тесты текущей версии пройдены' in answer
+    assert '[!SUCCESS]' in answer and 'Сборка' in answer and 'Тесты' in answer
 
 
 def test_design_product_gets_motion_guidance_once_and_offline_assets():

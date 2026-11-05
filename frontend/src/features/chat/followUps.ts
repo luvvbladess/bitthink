@@ -6,7 +6,7 @@ export function followUpMode(selected?: string | null): FollowUpMode {
   if (selected === 'studio') return 'studio';
   if (selected === 'docgen') return 'docgen';
   if (selected === 'gpt-6-astra') return 'astra';
-  if (selected === 'kimi-k2.6') return 'search';
+  if (selected === 'search') return 'search';
   if (selected === 'gpt-6-sol' || selected === 'gpt-5.6-sol' || selected === 'gpt-5.6-sol-pro' || selected === 'gpt-5.6-terra') {
     return 'research';
   }
@@ -23,7 +23,7 @@ export function followUpChips(
   const answer = (assistantText || '').trim();
   if (answer.length < 40) return [];
 
-  if (mode === 'studio') {
+  if (mode === 'studio' || hasCanvas) {
     if (!hasCanvas) {
       return [
         {
@@ -34,7 +34,7 @@ export function followUpChips(
     }
     return [
       { label: 'Проверить читаемость', text: 'Проверь читаемость текущего макета: контраст, размеры текста, переносы и наложения. Исправь найденные проблемы, сохрани содержание и визуальный стиль.' },
-      { label: 'Другой стиль', text: 'Тот же материал, но другой визуальный мир. Не переписывай смысл.' },
+      { label: 'Другой стиль', text: 'Измени визуальный стиль текущего макета. Сохрани содержание.' },
     ];
   }
 

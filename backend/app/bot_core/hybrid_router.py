@@ -9,7 +9,7 @@ import asyncio
 import re
 from typing import List, Dict, Any, Tuple
 
-from config import DEEPSEEK_API_KEY, KIMI_API_KEY
+from config import DEEPSEEK_API_KEY
 from openai_client import get_chat_response
 from search_engine import smart_web_search
 

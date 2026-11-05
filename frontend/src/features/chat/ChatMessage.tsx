@@ -1,4 +1,4 @@
-import { memo, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { createContext, isValidElement, memo, useContext, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Box, Button, IconButton, TextField, Tooltip } from '@mui/material';
 import { Copy, Check, FileArrowDown, ArrowClockwise, PencilSimple, Sparkle, X } from '@phosphor-icons/react';
 import ReactMarkdown, { type Components } from 'react-markdown';
@@ -22,6 +22,8 @@ import { isReplyText, useReplySnapshot, useRevealShown } from './replyReveal';
 import { MarkdownResultTable } from './ResultTable';
 import { resultReferences, type ProjectResultRef } from './projectResultLinks';
 import { EvidenceLink, type ProjectCitation } from './EvidenceLink';
+import { AnswerCallout, AnswerCard, AnswerCheckbox } from './RichAnswer';
+import { copyableAnswer, parseAnswerCard, remarkAnswerCallouts } from './richAnswerData';
 import '@/theme/highlight.css';
 
 /** Module-level on purpose: a component created inside render is a new type on every
@@ -42,7 +44,7 @@ function MarkdownCell({ children, style }: { children?: ReactNode; style?: CSSPr
 interface Props {
   role: 'user' | 'assistant';
   content: string;
-  file?: { filename: string; data: string };
+  file?: { filename: string; data: string; url?: string; canvas?: boolean };
   attachment?: AttachmentInfo;
   onRemoveAttachment?: () => void;
   reasoning?: string;
@@ -200,6 +202,25 @@ function CodeBlock({ children }: { children?: React.ReactNode }) {
 
 const HIGHLIGHT = [rehypeHighlight];
 const NO_PLUGINS: never[] = [];
+const TypingMarkdown = createContext(false);
+
+function textOf(node: ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(textOf).join('');
+  return isValidElement<{ children?: ReactNode }>(node) ? textOf(node.props.children) : '';
+}
+
+function RichCodeBlock({ children }: { children?: ReactNode }) {
+  const typing = useContext(TypingMarkdown);
+  const code = Array.isArray(children) ? children[0] : children;
+  const language = isValidElement<{ className?: string }>(code) ? code.props.className : '';
+  if (language?.split(/\s+/).includes('language-bitthink-card')) {
+    const text = textOf(children);
+    if (typing && !parseAnswerCard(text)) return <Box sx={{ py: 1, fontSize: '.875rem', color: 'text.secondary' }}>Оформляю карточку…</Box>;
+    return <AnswerCard text={text} />;
+  }
+  return <CodeBlock>{children}</CodeBlock>;
+}
 
 type MdNode = { type: string; value?: string; children?: MdNode[] };
 
@@ -222,13 +243,14 @@ function softBreaks() {
   return walk;
 }
 
-const REMARK = [remarkGfm, softBreaks];
+const REMARK = [remarkGfm, remarkAnswerCallouts, softBreaks];
+const PLAIN_REMARK = [remarkGfm, softBreaks];
 
-function Markdown({ text, components, highlight = true }: { text: string; components: Components; highlight?: boolean }) {
+function Markdown({ text, components, highlight = true, rich = true }: { text: string; components: Components; highlight?: boolean; rich?: boolean }) {
   return (
-    <ReactMarkdown remarkPlugins={REMARK} rehypePlugins={highlight ? HIGHLIGHT : NO_PLUGINS} urlTransform={sanitizeUrl} components={components}>
+    <TypingMarkdown.Provider value={!highlight}><ReactMarkdown remarkPlugins={rich ? REMARK : PLAIN_REMARK} rehypePlugins={highlight ? HIGHLIGHT : NO_PLUGINS} urlTransform={sanitizeUrl} components={components}>
       {text}
-    </ReactMarkdown>
+    </ReactMarkdown></TypingMarkdown.Provider>
   );
 }
 
@@ -275,9 +297,13 @@ const ChatMessageView = memo(function ChatMessageView({
   const mdComponents = useMemo(
     () =>
       ({
-        pre: CodeBlock,
+        pre: isUser ? CodeBlock : RichCodeBlock,
+        blockquote: isUser ? 'blockquote' : AnswerCallout,
+        input: isUser ? 'input' : AnswerCheckbox,
         table: MarkdownResultTable,
         td: MarkdownCell,
+        p: ({ node, children }) => node?.children.some(child => child.type === 'element' && child.tagName === 'img')
+          ? <div>{children}</div> : <p>{children}</p>,
         a: ({ href, children }) => <EvidenceLink href={href} sources={parsedSources} onProject={onOpenProjectCitation}>{children}</EvidenceLink>,
         img: ({ src, alt }: { src?: string | Blob; alt?: string }) =>
           typeof src === 'string' && src ? (
@@ -288,7 +314,7 @@ const ChatMessageView = memo(function ChatMessageView({
             />
           ) : null,
       }) as Components,
-    [onEditImage, parsedSources, onOpenProjectCitation],
+    [onEditImage, parsedSources, onOpenProjectCitation, isUser],
   );
   const visibleContent = isUser && isClarifyReply(content) ? CLARIFY_ACK : content;
   // A reply can carry several files (Pilot writes a set of documents); every one
@@ -306,7 +332,7 @@ const ChatMessageView = memo(function ChatMessageView({
 
   const handleCopy = async () => {
     try {
-      await copyToClipboard(visibleContent);
+      await copyToClipboard(isUser ? visibleContent : copyableAnswer(visibleContent));
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -440,6 +466,8 @@ const ChatMessageView = memo(function ChatMessageView({
             // Outside markers + room for two-digit (and short three-digit) numbers.
             '& ol': { pl: 3.75, my: 1, listStylePosition: 'outside' },
             '& li': { mb: 0.5 },
+            '& .contains-task-list': { listStyle: 'none', pl: 0 },
+            '& .task-list-item': { pl: 0 },
             '& li:empty, & li:has(> p:only-child:empty)': { display: 'none' },
             // overflow-wrap:anywhere (set above) shrinks cell min-width to one letter and
             // splits words mid-way. Cells wrap only when a word really cannot fit.
@@ -476,7 +504,7 @@ const ChatMessageView = memo(function ChatMessageView({
           {revealing ? (
             <RevealedMarkdown full={reply.full} components={mdComponents} />
           ) : (
-            <Markdown text={cleanContent} components={mdComponents} />
+            <Markdown text={cleanContent} components={mdComponents} rich={!isUser} />
           )}
           {modeSwitch && onAcceptMode && (
             <ModeSwitchCard suggestion={modeSwitch} onAccept={() => onAcceptMode(modeSwitch.model)} />
@@ -508,6 +536,7 @@ const ChatMessageView = memo(function ChatMessageView({
               <DocumentAttachment
                 key={`${item.name}-${index}`}
                 {...item}
+                type={!isUser && /\.html?$/i.test(item.name) ? 'generated' : item.type}
                 onRemoveFromContext={attachmentItems.length === 1 ? onRemoveAttachment : undefined}
               />
             ),
@@ -515,7 +544,7 @@ const ChatMessageView = memo(function ChatMessageView({
         </Box>
       )}
       {file && canPreviewDocument(file.filename) && !attachmentItems.some(item => item.name === file.filename) && (
-        <Box sx={{ mt: 1.25 }}><DocumentAttachment name={file.filename} status="done" type="generated" previewHtml={liveHtml(file.filename, file.data)} /></Box>
+        <Box sx={{ mt: 1.25 }}><DocumentAttachment name={file.filename} status="done" type="generated" url={file.url} canvas={file.canvas} previewHtml={liveHtml(file.filename, file.data)} /></Box>
       )}
       {visibleContent && !editing && (
         <Box

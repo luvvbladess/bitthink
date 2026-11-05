@@ -44,7 +44,7 @@ def test_scrub_drops_chat_transcript_and_one_off_tasks():
 - Хочу беспроводные радиоканалы
 """
     notes = scrub_notes(raw)
-    assert "формате Word" in notes
+    assert "формате Word" not in notes
     assert "макет" in notes
     assert "Проанализируй" not in notes
     assert "РЭО" not in notes
@@ -177,3 +177,66 @@ def test_refresh_scrubs_existing_junk_without_model_when_not_due():
 def test_durable_identity_without_task_verb():
     assert is_durable_bullet("Я инженер-схемотехник, работаю с платами")
     assert not is_durable_bullet("Ты инженер-схемотехник. Сколько будет стоить батарейки")
+
+
+def test_short_preferences_and_cross_chat_profile():
+    from app.memory import collect_snippet
+    mgr=DatabaseConversationManager();uid=92901
+    mgr.create_conversation(uid,title='one');mgr.add_message(uid,'user','Пиши кратко')
+    mgr.create_conversation(uid,title='two');mgr.add_message(uid,'user','Мне интересна электроника и автоматизация')
+    text=collect_snippet(uid)
+    assert 'Пиши кратко' in text and 'электроника' in text and text.count('[беседа ')==2
+    assert should_refresh({'enabled':True,'updated_at':0,'last_hash':''},'[беседа x] Пиши кратко')
+
+
+def test_profile_labels_and_one_off_exclusions():
+    for value in ['Профессия: инженер','Интересы: электроника','Уровень знаний: начинающий','Язык: английский','Тон: дружелюбный']:
+        assert is_durable_bullet(value)
+    assert not is_durable_bullet('В этом чате нужен подробный ответ в формате Word')
+    assert not is_durable_bullet('Только сейчас предпочитает кратко')
+
+
+def test_new_profile_replaces_outdated_preference_and_fences_clear():
+    from app.memory import _save_if_unchanged
+    mgr=DatabaseConversationManager();uid=92902
+    mgr.create_conversation(uid,title='change');mgr.add_message(uid,'user','Запомни: теперь предпочитаю подробные ответы вместо коротких.')
+    mgr.save_user_memory(uid,notes='- Предпочитает короткие ответы',updated_at=0)
+    async def updated(*args):return '- Подробность: предпочитает подробные ответы'
+    asyncio.run(refresh_user_memory(uid,complete=updated))
+    current=mgr.get_user_memory(uid)
+    assert 'подробные' in current['notes'] and 'короткие' not in current['notes']
+    mgr.save_user_memory(uid,notes='')
+    assert not _save_if_unchanged(uid,current,'- Предпочитает короткие ответы','old')
+    assert mgr.get_user_memory(uid)['notes']==''
+
+
+def test_private_profile_does_not_ingest_shared_conversation():
+    from app.memory import collect_snippet
+    from app.db.models import ConversationMember
+    from app.db.engine import SyncSessionLocal
+    mgr=DatabaseConversationManager();uid=92903
+    conv=mgr.create_conversation(uid,title='shared');mgr.add_message(uid,'user','Запомни, я инженер и предпочитаю короткие ответы')
+    with SyncSessionLocal.begin() as db:db.add(ConversationMember(conversation_id=conv.id,user_id=92904))
+    assert collect_snippet(uid)==''
+
+
+def test_clear_profile_fences_historical_relearning():
+    from app.memory import collect_snippet
+    mgr=DatabaseConversationManager();uid=92905
+    mgr.create_conversation(uid,title='private');mgr.add_message(uid,'user','Запомни: я инженер и люблю электронику')
+    mgr.save_user_memory(uid,notes='',last_hash='',reset_source=True)
+    assert collect_snippet(uid)==''
+    mgr.add_message(uid,'user','Теперь предпочитаю подробные ответы')
+    assert 'Теперь предпочитаю' in collect_snippet(uid)
+    assert 'электронику' not in collect_snippet(uid)
+
+
+def test_one_off_source_cannot_be_reinterpreted_as_profile():
+    from app.memory import collect_snippet
+    mgr=DatabaseConversationManager();uid=92906
+    mgr.create_conversation(uid,title='one-off')
+    mgr.add_message(uid,'user','В этом чате нужен подробный ответ в формате Word, только на этот раз.')
+    assert collect_snippet(uid)==''
+    async def forbidden(*args):raise AssertionError('No durable source: model must not run')
+    asyncio.run(refresh_user_memory(uid,complete=forbidden,force=True))
+    assert mgr.get_user_memory(uid)['notes']==''

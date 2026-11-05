@@ -9,18 +9,13 @@ os.environ.setdefault("KIMI_API_KEY", "test-key")
 from app.config import get_settings  # noqa: F401 — puts bot_core on sys.path
 from mode_switch import MODE_SWITCH_QUERY, pack_mode_switch, suggest_mode_switch
 
-PRO = {"auto", "kimi-k2.6", "gpt-6-luna", "director", "studio", "gpt-6-sol"}
+PRO = {"auto", "search", "gpt-6-luna", "director", "studio", "gpt-6-sol"}
 CREATOR = PRO | {"docgen", "gpt-6-astra"}
 
 
-def test_studio_request_in_chat_suggests_studio():
+def test_canvas_request_does_not_ask_to_switch_modes():
     suggestion = suggest_mode_switch("auto", "Собери презентацию запуска кофейни на 8 слайдов", allowed=PRO)
-    assert suggestion is not None
-    assert suggestion["model"] == "studio"
-    assert suggestion["accept"] == "Перейти в Студию"
-    packed = pack_mode_switch(suggestion)
-    assert packed[0]["query"] == MODE_SWITCH_QUERY
-    assert json.loads(packed[0]["summary"])["model"] == "studio"
+    assert suggestion is None
 
 
 def test_current_mode_that_can_build_slides_is_not_blocked():
@@ -62,19 +57,19 @@ def test_plain_document_question_stays_put():
 def test_web_question_in_studio_suggests_search_not_in_chat():
     ask = "Что сегодня произошло в мире? Коротко и по источникам."
     suggestion = suggest_mode_switch("studio", ask, allowed=PRO)
-    assert suggestion is not None and suggestion["model"] == "kimi-k2.6"
-    assert suggest_mode_switch("docgen", ask, allowed=CREATOR)["model"] == "kimi-k2.6"
+    assert suggestion is not None and suggestion["model"] == "search"
+    assert suggest_mode_switch("docgen", ask, allowed=CREATOR)["model"] == "search"
     assert suggest_mode_switch("auto", ask, allowed=PRO) is None
-    assert suggest_mode_switch("kimi-k2.6", ask, allowed=PRO) is None
+    assert suggest_mode_switch("search", ask, allowed=PRO) is None
     assert suggest_mode_switch("director", ask, allowed=PRO) is None
 
 
 def test_locked_mode_is_not_offered():
-    free = {"auto", "kimi-k2.6", "gpt-5-nano", "gpt-6-luna"}
+    free = {"auto", "search", "gpt-5-nano", "gpt-6-luna"}
     assert suggest_mode_switch("auto", "Собери презентацию на 6 слайдов", allowed=free) is None
 
 
-def test_get_smart_response_returns_suggestion_without_calling_the_model(monkeypatch):
+def test_other_mode_suggestion_still_precedes_quota_and_model_calls(monkeypatch):
     from handlers import core as core_mod
 
     monkeypatch.setattr(core_mod.conversation_manager, "get_user_model", lambda _uid: "auto")
@@ -86,10 +81,10 @@ def test_get_smart_response_returns_suggestion_without_calling_the_model(monkeyp
 
     monkeypatch.setattr(core_mod, "get_chat_response", boom)
     answer, files, reasoning, search = asyncio.run(
-        core_mod.get_smart_response(7, "Собери инфографику пути зерна от фермы до чашки", [], None)
+        core_mod.get_smart_response(7, "Зайди на сервер по ssh и выполни команду df", [], None)
     )
-    assert "Студия" in answer
+    assert "Оркестратор" in answer
     assert files == []
     assert reasoning == ""
     assert search[0]["query"] == MODE_SWITCH_QUERY
-    assert json.loads(search[0]["summary"])["model"] == "studio"
+    assert json.loads(search[0]["summary"])["model"] == "director"

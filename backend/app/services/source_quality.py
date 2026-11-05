@@ -37,6 +37,11 @@ def source_urls(sources) -> set[str]:
 
 
 def resolve_numbered_citations(answer: str, sources) -> str:
+    from app.services.prose_transform import transform_prose
+    return transform_prose(answer, lambda prose: _resolve_numbered_citations_prose(prose, sources))
+
+
+def _resolve_numbered_citations_prose(answer: str, sources) -> str:
     """Resolve explicit model footnotes only when their URL was actually retrieved.
 
     Never assume source list order: multiple searches restart their numbering.
