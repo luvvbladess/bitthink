@@ -2,6 +2,7 @@ import { chromium, webkit, expect as baseExpect } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { resolve, sep, extname } from 'node:path';
 
 const base = process.env.BITTHINK_UI_BASE || 'http://127.0.0.1:5187';
 const expect = baseExpect.configure({ timeout: 15000 });
@@ -44,6 +45,10 @@ async function fixture(options = {}) {
     'chat-a': [{ id: 'a1', role: 'user', content: 'Вопрос первой беседы' }, { id: 'a2', role: 'assistant', content: 'Ответ первой беседы. Здесь удобно читать и продолжать работу.' }],
     'chat-b': [{ id: 'b1', role: 'user', content: 'Вопрос второй беседы' }, { id: 'b2', role: 'assistant', content: 'Ответ второй беседы.' }],
   };
+  if (options.productPreview) {
+    const archive = { name: 'product-demo.zip', status: 'done', type: 'generated', url: '/uploads/demo.zip' };
+    history['chat-a'][1].attachment = { ...archive, files: [archive, options.productPreview] };
+  }
   if (options.answerUsage) history['chat-a'][1].search = [
     { query: '__answer_usage__', summary: JSON.stringify(options.answerUsage) },
     { query: 'Проверенный источник', summary: 'https://example.com/reference\nПодтверждающий фрагмент.' },
@@ -52,6 +57,13 @@ async function fixture(options = {}) {
   if (options.uploadedHtml) history['chat-a'].push({ id: 'source-html', role: 'user', content: 'Проанализируй этот файл', attachment: { name: 'source.html', url: '/uploads/source.html', type: 'document', mime_type: 'text/html' } });
   if (options.clarify) history['chat-a'].push({ id: 'clarify', role: 'assistant', content: 'Уточните задачу', search: [{ query: '__clarify__', summary: JSON.stringify({ questions: [{ prompt: 'Какой формат результата нужен?', options: ['Таблица', 'Отчёт'] }] }) }] });
   await page.route('**/uploads/**', route => route.fulfill({ contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jvXkAAAAASUVORK5CYII=', 'base64') }));
+  if (options.productPreview) await page.route('**/uploads/previews/**', async route => {
+    const root = resolve(process.env.BITTHINK_UI_PRODUCT_PREVIEW_DIR);
+    const file = resolve(root, '.' + decodeURIComponent(new URL(route.request().url()).pathname).replace(/^\/uploads/, ''));
+    assert.ok(file.startsWith(root + sep));
+    const types = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.woff2': 'font/woff2' };
+    await route.fulfill({ contentType: types[extname(file)] || 'application/octet-stream', body: await readFile(file), headers: { 'Access-Control-Allow-Origin': '*', 'Content-Security-Policy': 'sandbox allow-scripts allow-downloads' } });
+  });
   page.on('pageerror', error => {
     if (options.failSettingsChunk && /Failed to fetch dynamically imported module: .*SettingsPage/.test(error.message)) return;
     if ((options.failChatChunkOnce || options.failChatChunkPersistent) && /Failed to fetch dynamically imported module: .*ChatPage/.test(error.message)) return;
@@ -364,6 +376,26 @@ function studioFixture({ width = 1440, empty = false, failCanvas = false, theme 
 }
 
 try {
+  if (process.env.BITTHINK_UI_PRODUCT_PREVIEW_META) {
+    const productPreview = JSON.parse(await readFile(process.env.BITTHINK_UI_PRODUCT_PREVIEW_META, 'utf8'));
+    for (const width of [390, 1440]) for (const theme of ['dark', 'light']) await test(`product-preview: multi-file simulation opens in canvas ${width} ${theme}`, async () => {
+      const f = await fixture({ productPreview, startPath: '/chat?c=chat-a', theme, viewport: { width, height: 1000 }, touch: width < 600 });
+      try {
+        const frame = f.page.frameLocator('iframe[title="Холст"]');
+        await expect(frame.locator('#universe')).toBeVisible();
+        await expect.poll(() => frame.locator('#universe').evaluate(canvas => Boolean(canvas.getContext('webgl2')))).toBe(true);
+        await frame.locator('#mass').focus();
+        await f.page.keyboard.press('ArrowRight');
+        await expect(frame.locator('#mass')).toHaveValue('11');
+        assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+        await f.page.screenshot({ path: `${output}/product-preview-${width}-${theme}.png`, animations: 'disabled', fullPage: true });
+        await f.page.getByRole('button', { name: 'Закрыть холст', exact: true }).click();
+        await f.page.reload();
+        await expect(f.page.getByRole('button', { name: 'Открыть холст', exact: true })).toBeVisible();
+        await expect(f.page.locator('iframe[title="Холст"]:visible')).toHaveCount(0);
+      } finally { await f.context.close(); }
+    });
+  }
   for (const width of [390, 1440]) for (const theme of ['dark', 'light']) await test(`answer-usage: receipt is readable and persists ${width} ${theme}`, async () => {
     const answerUsage = { version: 1, models: [{ model: 'gpt-6-sol', calls: 2, input: 12500, output: 600, cached: 8000, cache_write: 1000, units: 142000, retained: 0, unknown_tokens: 0, unknown_units: 0 }] };
     const f = await fixture({ viewport: { width, height: 900 }, touch: width < 600, theme, answerUsage, startPath: '/chat?c=chat-a' });
@@ -401,7 +433,7 @@ try {
     } finally { await f.context.close(); }
   });
   for (const width of [320, 390, 913, 1440]) await test(`canvas-chat: first preview opens; closing survives updates ${width}`, async () => {
-    const f = await fixture({ viewport: { width, height: 900 }, touch: width < 600, holdAnswer: true });
+    const f = await fixture({ startPath: '/chat?c=chat-a', viewport: { width, height: 900 }, touch: width < 600, holdAnswer: true });
     try {
       await expect(f.input).toBeEnabled();
       await f.input.fill('Создай сайт кофейни'); await f.page.getByRole('button', { name: 'Отправить сообщение', exact: true }).click();
@@ -447,7 +479,7 @@ try {
     } finally { await f.context.close(); }
   });
   for (const width of [320, 1440]) await test(`canvas-chat: plain images and uploaded HTML do not open a canvas ${width}`, async () => {
-    const f = await fixture({ viewport: { width, height: 900 }, touch: width < 600, imageHistory: true, uploadedHtml: true });
+    const f = await fixture({ startPath: '/chat?c=chat-a', viewport: { width, height: 900 }, touch: width < 600, imageHistory: true, uploadedHtml: true });
     try {
       await expect(f.input).toBeEnabled();
       await expect(f.page.getByRole('button', { name: 'Открыть изображение: Эскиз', exact: true })).toBeVisible();

@@ -126,6 +126,9 @@ def create_app() -> FastAPI:
 
                 return Response(status_code=404)
         response = await call_next(request)
+        if path.startswith('/uploads/previews/'):
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            response.headers['Content-Security-Policy'] = 'sandbox allow-scripts allow-downloads'
         if path.startswith("/uploads/avatars/") and response.status_code == 200:
             response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         elif path.startswith("/uploads/") and not path.startswith("/uploads/avatars/") and response.status_code == 200:

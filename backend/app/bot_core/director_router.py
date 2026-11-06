@@ -151,7 +151,8 @@ def _is_light_task(text: str, document_context: str, has_images: bool, user_id: 
 
 def _needs_strong_model(text: str, document_context: str, has_images: bool, user_id: int | None) -> bool:
     """Only these earn Sol / DeepSeek Pro (9-20x Luna): files, long briefs, several tools, real code."""
-    if economy_enabled() and critical_task(text):
+    from app.services.physics_review import advanced_physics
+    if advanced_physics(text) or (economy_enabled() and critical_task(text)):
         return True
     if routine_task(text, document_context) and not has_images and not _is_document_package_task(text):
         return False
@@ -473,6 +474,9 @@ def _clamp_employee_plan(
                 chosen = FALLBACK_EMPLOYEE_MODEL if FALLBACK_EMPLOYEE_MODEL in allowed else PLANNER_MODEL
             if chosen == SONNET_MODEL and not OPENROUTER_API_KEY:
                 chosen = PLANNER_MODEL if PLANNER_MODEL in allowed else FALLBACK_EMPLOYEE_MODEL
+            from app.services.physics_review import advanced_physics
+            if item.get('product_phase') == 'build' and advanced_physics(original_task) and chosen not in {PLANNER_MODEL, SONNET_MODEL} and PLANNER_MODEL in allowed:
+                chosen = PLANNER_MODEL
             if chosen in {PLANNER_MODEL, SONNET_MODEL}:
                 if sol_this_product:
                     chosen = HAIKU_MODEL if haiku_ok else FALLBACK_EMPLOYEE_MODEL
@@ -2172,6 +2176,7 @@ async def _run_director(
             and initial_plan.get('workspace_action') in {'revise', 'create'}
             and not initial_plan.get('new_employees')):
         initial_plan = {'status': 'done', 'new_employees': []}
+    physics_task = user_text
     product_state = product_evidence.get()
     if product_state is None:
         product_state = {}
@@ -2201,6 +2206,9 @@ async def _run_director(
                         'Прикрепите выданный ZIP-архив, чтобы продолжить работу с его файлами. '
                         'Новая версия пока не создана.'), [], '', []
     preflight = None
+    from app.services.physics_review import specification
+    physics_spec = next((entry for entry in journal if entry.get('physics_spec') and entry.get('status') == 'ok'), None)
+    physics_attempted = physics_spec is not None
     phase_models: Dict[str, str] = {}
     round_num = 0
     turn_images = packed_has_images(messages) or _turn_has_images(user_id)
@@ -2263,6 +2271,14 @@ async def _run_director(
             if employee is None:
                 break
             phase_name = employee.get('product_phase') or 'build'
+            if phase_name == 'build' and not physics_attempted:
+                physics_attempted = True
+                physics_spec = await specification(physics_task, user_id, _employee_models(user_id))
+                if physics_spec:
+                    journal.append(physics_spec)
+                    await asyncio.to_thread(save_checkpoint, journal, user_id)
+            if phase_name == 'build' and physics_spec:
+                employee['task'] += '\nФизическая спецификация (требования, не доказательство реализации):\n' + physics_spec['result'] + '\nСохрани допущения в README и проверь реализованные формулы тестами.'
             cheap_build_failed = any(
                 entry.get('product_phase') == 'build' and entry.get('model') not in {PLANNER_MODEL, SONNET_MODEL} for entry in journal
             )
