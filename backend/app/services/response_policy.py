@@ -183,7 +183,13 @@ def compact_messages(messages, *, web=False):
     """Replace only our exact boilerplate; keep all custom rules, memory and history."""
     from config import SYSTEM_PROMPT
     from app.services.search_budget import SEARCH_PLAN
-    from app.services.answer_quality import ANSWER_QUALITY_RULES, COMPACT_ANSWER_RULES
+    from app.services.answer_quality import ANSWER_QUALITY_RULES, COMPACT_ANSWER_RULES, CONVERSATION_RULES
+    task = next((m.get('content', '') for m in reversed(messages)
+                 if m.get('role') == 'user' and isinstance(m.get('content'), str)), '')
+    # shortcut: explicit Russian message-only requests; broaden after multilingual checks.
+    draft = (not web and re.match(r'(?i)^\s*(?:напиши|составь|подготовь)\b', task)
+             and re.search(r'(?i)\bтолько\s+(?:сообщение|письмо)\b', task)
+             and compact_answer_kind(task) == 'text')
     paragraphs = SYSTEM_PROMPT.split('### КАК ДУМАТЬ О ФАКТАХ', 1)[0].split('\n\n')
     intro = '\n\n'.join(paragraphs[:2] + [p for p in paragraphs[2:] if p.startswith('По юридическим')])
     if '### ОГРАНИЧЕНИЯ' not in SYSTEM_PROMPT or '### КАК ДУМАТЬ О ФАКТАХ' not in SYSTEM_PROMPT:
@@ -196,8 +202,17 @@ def compact_messages(messages, *, web=False):
         if row.get('role') == 'system' and row.get('content') == SYSTEM_PROMPT:
             row['content'] = compact
         if row.get('role') == 'system' and isinstance(row.get('content'), str) and row['content'].startswith(ANSWER_QUALITY_RULES):
-            row['content'] = COMPACT_ANSWER_RULES + row['content'][len(ANSWER_QUALITY_RULES):]
+            rules = COMPACT_ANSWER_RULES.replace(CONVERSATION_RULES, '') if draft else COMPACT_ANSWER_RULES
+            row['content'] = rules + row['content'][len(ANSWER_QUALITY_RULES):]
         if not web and row.get('role') == 'system' and row.get('content') == SEARCH_PLAN:
             continue
         result.append(row)
+    if draft:
+        result.append({'role': 'system', 'content':
+            'Сейчас нужен только готовый текст для адресата. Используй только сообщённые факты. '
+            'Не добавляй обстоятельства, сроки, обещания написать или встретиться позже. '
+            'Не переноси ограничения пользователя в реплику адресату. Пример: '
+            '«Напиши коллеге: отчёт ещё проверяю. Не обещай срок. Только сообщение» → '
+            '«Я ещё проверяю отчёт». Закончи текст после последней нужной фразы, без приписок. '
+            'Сохраняй язык и тон пользователя; не добавляй случайные слова на другом языке.'})
     return result
