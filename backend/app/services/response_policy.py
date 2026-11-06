@@ -82,13 +82,17 @@ def everyday_answer(text):
         r'^(?:сделай|сократи)\s+сообщение\s+короче\b', text or '', re.S))
 
 
-def compact_answer_kind(text, *, web_required=False):
+def compact_answer_kind(text, *, web_required=False, messages=None):
     from app.services.orchestrator_policy import bounded_text_task, calculation_task, critical_task
     from app.services.request_intent import classify_request
     from app.services.subject_guidance import subject_for_query
     text = text or ''
     if not text.strip() or len(text) > 6000:
         return ''
+    if messages and not web_required:
+        from app.services.orchestrator_policy import bounded_text_revision
+        if bounded_text_revision(text, messages):
+            return 'text'
     if inline_code_task(text):
         return 'text'
     if bounded_text_task(text):
@@ -215,4 +219,12 @@ def compact_messages(messages, *, web=False):
             '«Напиши коллеге: отчёт ещё проверяю. Не обещай срок. Только сообщение» → '
             '«Я ещё проверяю отчёт». Закончи текст после последней нужной фразы, без приписок. '
             'Сохраняй язык и тон пользователя; не добавляй случайные слова на другом языке.'})
+    elif not web:
+        from app.services.orchestrator_policy import bounded_text_revision
+        if bounded_text_revision(task, messages):
+            result.append({'role':'system','content':
+                'Отредактируй предыдущий текст по текущему уточнению и верни сам результат без вступления. '
+                'Сохрани факты, даты, суммы, контакты, язык и прежние ограничения, которые пользователь '
+                'не отменил. Новое уточнение меняет только названное свойство текста. '
+                'Не добавляй обещания, обстоятельства и предложения сделать работу позже.'})
     return result

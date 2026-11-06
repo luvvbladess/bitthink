@@ -74,13 +74,32 @@ def bounded_text_task(task: str) -> bool:
 def bounded_text_revision(task: str, messages) -> bool:
     """Inherit only a recent, explicit text draft; never an unrelated old task."""
     text = (task or '').strip()
-    if len(text) > 300 or not re.search(r'(?i)^(?:сделай|перепиши|сократи|измени)\b.{0,80}(?:теплее|короче|вежливее|официальн|дружелюбн|тон)', text):
+    from routing import packed_has_open_documents
+    if packed_has_open_documents(messages) or any(row.get('attachment') or isinstance(row.get('content'), list) for row in messages or []):
         return False
-    if re.search(r'(?i)отправ|опублику|сохрани\s+(?:в\b|на\b|результат|файл|документ)|скачай|запусти|инструмент|файл|\b(?:docx|pdf|xlsx|pptx|csv|word|excel)\b|https?://', text):
+    previous = next((row.get('content', '') for row in reversed(messages or []) if row.get('role') == 'assistant'), '')
+    if isinstance(previous, str) and ('```' in previous or '~~~' in previous):
         return False
-    for row in reversed(messages or []):
-        if row.get('role') == 'user' and isinstance(row.get('content'), str) and row['content'].strip() != text:
-            return bounded_text_task(row['content'])
+    users = [row['content'].strip() for row in messages or [] if row.get('role') == 'user' and isinstance(row.get('content'), str)]
+    if users and users[-1] == text:
+        users.pop()
+    # shortcut: trace at most six consecutive revisions; older context uses normal routing.
+    for index, candidate in enumerate([text, *reversed(users[-6:])]):
+        revision = (len(candidate) <= 300 and re.search(
+            r'(?i)^(?:(?:сделай|перепиши|сократи|измени)\b.{0,80}(?:теплее|короче|вежливее|официальн|дружелюбн|тон)|(?:ещ[её]\s+)?(?:короче|теплее|вежливее)\b|убери\s+вступление\b)', candidate))
+        scope = re.sub(r'(?i)сохрани\s+(?:все\s+)?(?:ограничени\w*|факт\w*|смысл|цифр\w*|дат\w*|срок\w*|имен\w*|обращени\w*)\b', '', candidate)
+        actions = _TEXT_ACTION.search(scope) or re.search(r'(?i)отправ|опублику|сохрани|скачай|запусти|выполни|установи|посчитай|рассчитай|вычисли|пересчитай|инструмент|файл|прикрепл|вложени|источник|актуальн|документаци|проверь|сверь|найди|поищи|\b(?:docx|pdf|xlsx|pptx|csv|word|excel)\b|https?://', scope)
+        if revision and not actions and not critical_task(candidate):
+            continue
+        if index == 0:
+            return False
+        if actions:
+            return False
+        from app.services.subject_guidance import subject_for_query
+        if subject_for_query(candidate) in {'code', 'engineering'}:
+            return False
+        from app.services.response_policy import compact_answer_kind
+        return bounded_text_task(candidate) or (bool(re.search(r'(?i)\bтолько\s+(?:сообщение|письмо)\b', candidate)) and compact_answer_kind(candidate) == 'text')
     return False
 
 
