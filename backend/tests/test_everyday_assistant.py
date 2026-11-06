@@ -9,6 +9,7 @@ from app.services.response_policy import compact_answer_kind, everyday_answer, c
     'Выслушай меня, сегодня тяжёлый день.',
     'Волнуюсь перед собеседованием. Помоги собраться.',
     'Боюсь выступления. С чего начать подготовку?',
+    'привет брат, поддержи меня как брат пж',
 ])
 def test_personal_conversation_needs_no_tools(text):
     assert everyday_answer(text)
@@ -23,6 +24,8 @@ def test_personal_conversation_needs_no_tools(text):
     'Без советов. Открой почту и отправь письмо.',
     'Мне одиноко. Найди актуальные мероприятия.',
     'Я растерян: проанализируй прикреплённый файл.',
+    'Поддержи меня и отправь письмо начальнику.',
+    'Поддержи меня, хочу причинить себе вред.',
 ])
 def test_sensitive_and_external_tasks_keep_normal_handling(text):
     assert not everyday_answer(text)
@@ -36,6 +39,18 @@ def test_compaction_keeps_personal_rules_once_and_preserves_history():
     result=compact_messages(original)
     assert result[0]['content'].count(CONVERSATION_RULES)==1
     assert result[1]==original[1]
+
+
+def test_conversational_tone_reaches_full_and_compact_paths():
+    from app.services.answer_quality import answer_quality_note, CONVERSATION_RULES
+    history=[{'role':'user','content':'Поддержи меня как брат'},
+             {'role':'assistant','content':'Что случилось?'},
+             {'role':'user','content':'Я учитель, что здесь происходило?'}]
+    full=[{'role':'system','content':answer_quality_note(history[-1]['content'])},*history]
+    compact=compact_messages(full)
+    assert CONVERSATION_RULES in full[0]['content']
+    assert CONVERSATION_RULES in compact[0]['content']
+    assert compact[1:]==history
 
 
 def test_ready_message_gets_specific_guidance_without_losing_history():
