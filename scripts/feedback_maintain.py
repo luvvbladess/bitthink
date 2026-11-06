@@ -3,12 +3,30 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import shutil
 import time
 import urllib.request
 import uuid
 
 ALLOWED = {'backend/app/services/product_strategy.py', 'backend/app/services/request_intent.py',
            'backend/app/services/source_quality.py', 'backend/app/bot_core/studio/quality.py'}
+
+
+def verification_files(root, candidate):
+    """Use current trusted tests, while testing code from the actual release image."""
+    target = candidate / 'verification'
+    for name in ('tests', 'evals'):
+        shutil.copytree(root / 'backend' / name, target / 'backend' / name,
+                        ignore=shutil.ignore_patterns('__pycache__', '.pytest_cache', '*.pyc'))
+    shutil.copyfile(root / 'backend/pytest.ini', target / 'backend/pytest.ini')
+    (target / 'scripts').mkdir()
+    for path in (root / 'scripts').glob('*.py'):
+        shutil.copyfile(path, target / 'scripts' / path.name)
+    # The service's private umask must not make trusted checks unreadable in the container.
+    for path in [target, *target.rglob('*')]:
+        path.chmod(path.stat().st_mode | (0o555 if path.is_dir() else 0o444))
+    return ('RUN mkdir -p /workspace/bitthink/backend && cp -a /app/app /app/alembic /app/alembic.ini /workspace/bitthink/backend/\n'
+            'COPY verification/ /workspace/bitthink/\n')
 
 
 def cycle(c, root, apply=False, uid=None):
@@ -33,14 +51,20 @@ with SyncSessionLocal() as db:
  if u is None: raise ValueError('Administrator required')
  print(u.bot_user_id)
 ''').strip().splitlines()[-1])
-        review = json.loads(c.inside('''import asyncio,json,sys
+        status['phase'] = 'review'
+        try:
+            review = json.loads(c.inside('''import asyncio,json,sys
 from app.services.daily_feedback import review_daily
 print(json.dumps(asyncio.run(review_daily(json.load(sys.stdin)['uid'])),ensure_ascii=False))
 ''', {'uid': uid}, timeout=600))
+        except Exception as exc:
+            # An unavailable reviewer must not strand already recorded problems.
+            status['review_error'] = type(exc).__name__
+            review = {'backlog': True}
         status['review'] = review
         issue = json.loads(c.inside('from app.services.improvement_journal import next_issue; import json,sys;print(json.dumps(next_issue(allow_resolve=not json.load(sys.stdin)["backlog"])))', {'backlog': review['backlog']}))
         if not issue:
-            status['status'] = 'reviewed'
+            status['status'] = 'error' if status.get('review_error') else 'reviewed'
             return status
         status['issue_id'] = issue['id']
         if issue['target'] not in ALLOWED:
@@ -49,12 +73,14 @@ print(json.dumps(asyncio.run(review_daily(json.load(sys.stdin)['uid'])),ensure_a
             status['status'] = 'deferred'
             return status
         path = issue['target']
+        status['phase'] = 'source'
         source = (root / path).read_text(encoding='utf-8')
         baseline = c.run(['docker', 'inspect', c.CONTAINER, '--format', '{{.Image}}']).stdout.strip()
         actual = c.inside('import pathlib,json,sys; d=json.load(sys.stdin);print(pathlib.Path("/app",d["path"].removeprefix("backend/")).read_text(),end="")', {'path': path})
         if actual != source:
             raise ValueError('Host source differs from active image')
         transition('reproducing', 'Подготовка кандидата и воспроизводящего теста.')
+        status['phase'] = 'proposal'
         proposal = json.loads(c.inside('''import asyncio,json,sys
 from app.services.feedback_repair import propose
 d=json.load(sys.stdin);print(json.dumps(asyncio.run(propose(d['uid'],d['id'],d['source'])),ensure_ascii=False))
@@ -72,6 +98,7 @@ d=json.load(sys.stdin);validate(d['source'],d['proposal'])
         stamp = uuid.uuid4().hex[:12]
         candidate = directory / ('feedback-' + stamp)
         candidate.mkdir(mode=0o700)
+        status['evidence_path'] = str(candidate.relative_to(root))
         c.write_json(candidate / 'proposal.json', proposal)
         test_path = 'backend/tests/regressions/test_feedback_' + issue['id'] + '_' + stamp + '.py'
         test_name = Path(test_path).name
@@ -82,8 +109,9 @@ d=json.load(sys.stdin);validate(d['source'],d['proposal'])
         baseline_image = 'bitthink-feedback-repro:' + stamp
         candidate_image = 'bitthink-feedback:' + stamp
         images = [baseline_image, candidate_image]
-        dockerfile = f'FROM {base_tag}\nRUN mkdir -p /app/tests/regressions && chmod 755 /app/tests/regressions\nCOPY --chmod=644 regression.py /app/tests/regressions/{test_name}\n'
+        dockerfile = f'FROM {base_tag}\n' + verification_files(root, candidate) + f'RUN mkdir -p /app/tests/regressions /workspace/bitthink/backend/tests/regressions && chmod 755 /app/tests/regressions /workspace/bitthink/backend/tests/regressions\nCOPY --chmod=644 regression.py /app/tests/regressions/{test_name}\n'
         (candidate / 'Dockerfile').write_text(dockerfile, encoding='utf-8')
+        status['phase'] = 'reproduction'
         c.run(['docker', 'build', '-t', baseline_image, str(candidate)])
         command = ['python', '-m', 'unittest', 'discover', '-s', 'tests/regressions', '-p', test_name, '-v']
         before = c.candidate_run(baseline_image, command, check=False, timeout=90)
@@ -92,8 +120,9 @@ d=json.load(sys.stdin);validate(d['source'],d['proposal'])
             transition('needs_review', 'Не получено воспроизведение дефекта через AssertionError на старой версии.')
             status['status'] = 'not_reproduced'
             return status
-        (candidate / 'Dockerfile').write_text(dockerfile + f'COPY --chmod=644 module.py /app/{path.removeprefix("backend/")}\n', encoding='utf-8')
+        (candidate / 'Dockerfile').write_text(dockerfile + f'COPY --chmod=644 module.py /app/{path.removeprefix("backend/")}\nCOPY --chmod=644 module.py /workspace/bitthink/{path}\nCOPY --chmod=644 regression.py /workspace/bitthink/{test_path}\n', encoding='utf-8')
         c.run(['docker', 'build', '-t', candidate_image, str(candidate)])
+        status['phase'] = 'candidate_test'
         after = c.candidate_run(candidate_image, command)
         (candidate / 'after.log').write_text(after.stdout, encoding='utf-8')
         if not re.search(r'Ran [1-9]\d* tests?', after.stdout) or 'OK' not in after.stdout:
@@ -111,13 +140,16 @@ d=json.load(sys.stdin);validate(d['source'],d['proposal'])
             raise RuntimeError('Test database unavailable')
         env = {'DATABASE_URL': 'postgresql+asyncpg://feedback:isolated-only@db:5432/feedback', 'SECRET_KEY': 'isolated-feedback',
             'OPENAI_API_KEY': 'test-key', 'DEEPSEEK_API_KEY': 'test-key', 'KIMI_API_KEY': 'test-key',
-            'DATA_DIR': '/tmp/data', 'UPLOAD_DIR': '/app/uploads', 'MPLBACKEND': 'Agg', 'PYTHONDONTWRITEBYTECODE': '1'}
+            'DATA_DIR': '/tmp/data', 'UPLOAD_DIR': '/app/uploads', 'MPLBACKEND': 'Agg', 'PYTHONDONTWRITEBYTECODE': '1',
+            'PYTHONPATH': '/workspace/bitthink/backend:/workspace/bitthink/backend/app/bot_core'}
         checks = [['python', '-m', 'alembic', 'upgrade', 'head'], ['python', '-m', 'pytest', 'tests', '-p', 'no:cacheprovider'],
                   ['python', '-m', 'evals.quality', '--report', '/tmp/quality.json'],
                   ['python', '-m', 'evals.product_journeys', '--fixtures', '--report', '/tmp/journeys.json']]
         for number, check in enumerate(checks):
+            status['phase'] = ('migrations', 'tests', 'quality', 'journeys')[number]
             try:
-                result = c.candidate_run(candidate_image, check, network=network, env=env, timeout=900, root=root)
+                result = c.candidate_run(candidate_image, check, network=network, env=env, timeout=900, root=root,
+                                         workdir='/workspace/bitthink/backend')
             except RuntimeError as exc:
                 (candidate / f'check-{number}.log').write_text(getattr(exc, 'output', str(exc)), encoding='utf-8')
                 raise
@@ -133,6 +165,7 @@ d=json.load(sys.stdin);validate(d['source'],d['proposal'])
         (candidate / 'before.py').write_text(source, encoding='utf-8')
         (candidate / 'base-image.txt').write_text(baseline, encoding='utf-8')
         history = directory / 'code-history'
+        status['phase'] = 'history'
         history.mkdir(exist_ok=True)
         if not (history / '.git').exists():
             c.run(['git', 'init', str(history)])
@@ -144,6 +177,7 @@ d=json.load(sys.stdin);validate(d['source'],d['proposal'])
         c.run(['git', 'add', path, test_path, 'feedback-evidence.json'], cwd=history)
         c.run(['git', 'commit', '-m', 'Verified feedback repair ' + issue['id']], cwd=history)
         try:
+            status['phase'] = 'deploy'
             (root / path).write_text(proposal['source'], encoding='utf-8')
             (root / test_path).parent.mkdir(parents=True, exist_ok=True)
             (root / test_path).write_text(proposal['test'], encoding='utf-8')
@@ -172,17 +206,17 @@ d=json.load(sys.stdin);validate(d['source'],d['proposal'])
         status.update(status='monitoring', applied=True)
         return status
     except BaseException as exc:
-        status.update(status='error', error_type=type(exc).__name__)
+        status.update(status='error', error_type=type(exc).__name__, error_phase=status.get('phase'))
         try:
             c.inside('''import json,sys
 from app.services.improvement_journal import capture_error
-capture_error('maintenance.feedback',json.load(sys.stdin)['type'])
-''', {'type': type(exc).__name__})
+d=json.load(sys.stdin);capture_error('maintenance.feedback.'+d['phase'],d['type'])
+''', {'type': type(exc).__name__, 'phase': status.get('phase', 'unknown')})
         except Exception:
             pass
         if issue:
             try:
-                transition('rejected', 'Проверка/выпуск не пройдены: ' + type(exc).__name__)
+                transition('rejected', 'Этап ' + str(status.get('phase')) + ': ' + type(exc).__name__)
             except Exception:
                 pass
         if not isinstance(exc, Exception):

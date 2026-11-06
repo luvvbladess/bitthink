@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -11,6 +12,8 @@ def controller():
     path = Path(__file__).resolve().parents[2] / 'scripts/self_maintain.py'
     if not path.exists():
         path = Path('/scripts/self_maintain.py')
+    if str(path.parent) not in sys.path:
+        sys.path.insert(0, str(path.parent))
     spec = importlib.util.spec_from_file_location('self_maintain_controller', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -64,6 +67,7 @@ def test_candidate_container_is_removed_after_timeout(monkeypatch):
 @pytest.mark.parametrize('gain', [False, True])
 def test_no_gain_cannot_deploy_and_failed_deployment_restores_code(tmp_path, monkeypatch, gain):
     script = controller()
+    monkeypatch.setattr(script, 'verification_files', lambda root, candidate: '')
     source = 'def select_stack(text):\n    return "static"\n'
     target = tmp_path / script.ALLOWED
     target.parent.mkdir(parents=True)
