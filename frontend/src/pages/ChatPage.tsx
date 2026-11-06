@@ -16,7 +16,7 @@ import { useConversationNavigation } from '@/features/chat/useConversationNaviga
 import { ChatSidebar, type ConversationItem } from '@/features/chat/ChatSidebar';
 import { AccountMenu } from '@/components/AccountMenu';
 import { ChatWindow, DisplayMessage } from '@/features/chat/ChatWindow';
-import { CanvasNavigation } from '@/features/chat/CanvasNavigation';
+import { CanvasNavigation, canvasVisibility, rememberCanvasVisibility } from '@/features/chat/CanvasNavigation';
 import { DesignCanvas, findStudioCanvas, studioCanvasVersions, type StudioCanvasSource } from '@/features/chat/DesignCanvas';
 import { MessageInput } from '@/features/chat/MessageInput';
 import { adoptNewComposerDraft } from '@/features/chat/useComposerDraft';
@@ -170,19 +170,18 @@ export default function ChatPage() {
   const [selectedCanvas, setSelectedCanvas] = useState<StudioCanvasSource | null>(null);
   const canvasSource = displayConversationId === activeConvId ? (selectedCanvas || latestCanvas) : null;
   useEffect(() => setSelectedCanvas(null), [activeConvId, latestCanvas?.url, latestCanvas?.html]);
-  const [canvasOpenFor, setCanvasOpenFor] = useState<string | null>(null);
-  useEffect(() => setCanvasOpenFor(null), [activeConvId]);
-  const canvasVisible = Boolean(canvasSource && activeConvId && canvasOpenFor === activeConvId);
+  const [canvasVisibleById, setCanvasVisibleById] = useState(canvasVisibility);
+  const canvasVisible = Boolean(canvasSource && activeConvId && canvasVisibleById[activeConvId] !== false);
   const closeCanvas = () => {
     setPanelExpanded(false);
-    setCanvasOpenFor(null);
+    if (activeConvId) setCanvasVisibleById(current => rememberCanvasVisibility(current, activeConvId, false));
   };
   const openCanvas = (source: StudioCanvasSource) => {
     closePreview();
     setProjectPanel(null);
     setPanelExpanded(false);
     setSelectedCanvas(source);
-    if (activeConvId) setCanvasOpenFor(activeConvId);
+    if (activeConvId) setCanvasVisibleById(current => rememberCanvasVisibility(current, activeConvId, true));
   };
   const [exporting, setExporting] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
@@ -1341,7 +1340,7 @@ export default function ChatPage() {
         <ResizablePanel label="Холст" expanded={panelExpanded} onExpand={setPanelExpanded}>
         <DesignCanvas source={canvasSource} thinking={thinking} statusText={statusText}
           versions={canvasVersions} onVersion={setSelectedCanvas}
-          onEdit={(prompt) => { void handleSend(prompt, [], 'chat', true); }} onClose={closeCanvas} />
+          onEdit={canvasSource?.url?.startsWith('/uploads/previews/') ? undefined : (prompt) => { void handleSend(prompt, [], 'chat', true); }} onClose={closeCanvas} />
         </ResizablePanel>
       )}
       </Box>
@@ -1372,7 +1371,7 @@ export default function ChatPage() {
             compact
             versions={canvasVersions}
             onVersion={setSelectedCanvas}
-            onEdit={(prompt) => { void handleSend(prompt, [], 'chat', true); }}
+            onEdit={canvasSource?.url?.startsWith('/uploads/previews/') ? undefined : (prompt) => { void handleSend(prompt, [], 'chat', true); }}
             onClose={closeCanvas}
           />
         </Drawer>

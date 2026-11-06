@@ -297,6 +297,14 @@ async def _generate_and_send(
         if item.get("canvas"):
             meta["canvas"] = True
         outgoing.append((filename, file_bytes, meta))
+        if re.fullmatch(r'product-[0-9a-f]{24}\.zip', filename):
+            try:
+                from app.services.product_preview import create
+                preview = await asyncio.to_thread(create, web_user_id, filename, file_bytes)
+                if preview:
+                    outgoing.append(preview)
+            except Exception:
+                logger.exception('Could not prepare product preview; keeping the project archive')
     attachment = outgoing[0][2] if outgoing else None
     if attachment and len(outgoing) > 1:
         attachment = {**attachment, "files": [meta for _, _, meta in outgoing]}

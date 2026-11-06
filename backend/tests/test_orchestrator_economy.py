@@ -111,11 +111,18 @@ def test_planner_chooses_product_spend_inside_a_ceiling(monkeypatch):
     assert no_key['new_employees'][0]['model'] == 'gpt-6-luna'
 
 
-def test_product_phase_uses_the_model_the_planner_hired(monkeypatch):
+@pytest.mark.parametrize('physics', [False, True])
+def test_product_phase_uses_the_model_the_planner_hired(monkeypatch, physics):
     from app.services import autonomy
     seen = []
 
     planned = []
+    from unittest.mock import AsyncMock
+    spec = AsyncMock(return_value={'round':0,'role':'Физическая модель','model':'gpt-6-astra',
+                                  'status':'ok','physics_spec':True,'result':'Physics requirements'} if physics else None)
+    monkeypatch.setattr('app.services.physics_review.specification', spec)
+    monkeypatch.setattr('app.services.sandbox_client.run_workspace_tool', AsyncMock(return_value='README: откройте index.html в браузере.'))
+    monkeypatch.setattr(oc, 'get_chat_response', AsyncMock(return_value=('Подготовлен сайт. Откройте index.html в браузере; исходники и инструкция находятся в архиве.', [], '', [])))
 
     async def plan(*args, **kwargs):
         planned.append(len(args[1]) if len(args) > 1 else 0)
@@ -130,6 +137,8 @@ def test_product_phase_uses_the_model_the_planner_hired(monkeypatch):
         if item['product_phase'] == 'brief':
             state.update(product_id='pid', path='products/pid', stack='static', ready=False, packaged=False)
         else:
+            if physics:
+                assert 'Physics requirements' in item['task']
             state.update(ready=True, packaged=True)
         return {'round': round_num, 'role': item['role'], 'status': 'ok', 'result': 'ok',
                 'model': item['model'], 'product_phase': item['product_phase'], 'product_id': 'pid'}
@@ -152,12 +161,13 @@ def test_product_phase_uses_the_model_the_planner_hired(monkeypatch):
     monkeypatch.setattr(autonomy, 'learn', lambda *args: None)
     token = autonomy.product_evidence.set({})
     try:
-        answer, _, _, _ = asyncio.run(dr._run_director([], 'Сделай сайт', 92001, None))
+        answer, _, _, _ = asyncio.run(dr._run_director([], 'Сделай сайт: симуляцию чёрной дыры с физикой' if physics else 'Сделай сайт', 92001, None))
     finally:
         autonomy.product_evidence.reset(token)
     # The brief does not inherit the build's Sol, and the build needs no second Sol planner call.
     assert seen == [('brief', 'gpt-6-luna'), ('build', 'gpt-6-sol')]
     assert planned == [0]
+    assert spec.call_count == 1
     assert '[!SUCCESS]' in answer and 'Сборка' in answer and 'Тесты' in answer
 
 
