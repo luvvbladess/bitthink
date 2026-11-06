@@ -2113,7 +2113,7 @@ async def _run_director(
     asked_new_product = is_product_request(user_text) and not any(entry.get('product_id') for entry in journal)
     turn_has_images = packed_has_images(messages) or _turn_has_images(user_id)
     from app.services.response_policy import compact_answer_kind
-    compact_kind = compact_answer_kind(user_text, web_required=needs_research(user_text, turn_has_images))
+    compact_kind = compact_answer_kind(user_text, web_required=needs_research(user_text, turn_has_images), messages=messages)
     if (compact_kind and not journal and not workspaces.get() and not document_context
             and not turn_has_images and not place_request and not cad_extensions
             and desktop_executor.get() is None):

@@ -580,7 +580,7 @@ async def get_smart_response(
         from status_feed import push_status
         from app.services.response_policy import compact_answer_kind, compact_model
         from app.services.conversation_context import workspaces
-        compact_kind = compact_answer_kind(user_text, web_required=web_required)
+        compact_kind = compact_answer_kind(user_text, web_required=web_required, messages=messages)
         if compact_kind == 'text' and not is_desktop and not workspaces.get():
             from app.services.response_policy import compact_messages
             messages = compact_messages(messages)
