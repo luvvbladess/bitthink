@@ -23,6 +23,7 @@ import { MarkdownResultTable } from './ResultTable';
 import { resultReferences, type ProjectResultRef } from './projectResultLinks';
 import { EvidenceLink, type ProjectCitation } from './EvidenceLink';
 import { AnswerCallout, AnswerCard, AnswerCheckbox } from './RichAnswer';
+import { AnswerUsage } from './AnswerUsage';
 import { copyableAnswer, parseAnswerCard, remarkAnswerCallouts } from './richAnswerData';
 import '@/theme/highlight.css';
 
@@ -582,6 +583,7 @@ const ChatMessageView = memo(function ChatMessageView({
                   {copied ? <Check size={14} /> : <Copy size={14} />}
                 </IconButton>
               </Tooltip>
+              {!typing && <AnswerUsage search={search} />}
               {file && (
                 <Tooltip title="Скачать файл">
                   <IconButton

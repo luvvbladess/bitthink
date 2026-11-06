@@ -163,9 +163,9 @@ def reserve(user_id: int, pool: str, model: str, input_tokens: int, output_cap: 
         return reservation_id, output_limit
 
 
-def settle(user_id: int, reservation_id: str | None, actual: int | None, pool: str = "chat") -> None:
+def settle(user_id: int, reservation_id: str | None, actual: int | None, pool: str = "chat") -> int:
     if not reservation_id:
-        return
+        return 0
     from app.bot_core.db_conversations import _apply_subscription_payload, _subscription_payload
     from app.db.engine import SyncSessionLocal
     from app.db.models import TokenReservation
@@ -175,6 +175,7 @@ def settle(user_id: int, reservation_id: str | None, actual: int | None, pool: s
         sub = manager.lock_subscription(session, user_id)
         row = session.get(TokenReservation, reservation_id)
         if row is None:
+            charged = 0
             # A later call may have recovered a stale hold after a worker timeout.
             if actual:
                 data = _subscription_payload(sub)
@@ -185,9 +186,10 @@ def settle(user_id: int, reservation_id: str | None, actual: int | None, pool: s
                         data["session_started_at"] = int(time.time())
                     for key in (f"{pool}_tokens_used", f"week_{pool}_used", f"session_{pool}_used"):
                         data[key] = int(data.get(key) or 0) + actual
+                    charged = actual
                 _apply_subscription_payload(sub, data)
                 session.commit()
-            return
+            return charged
         data = _subscription_payload(sub)
         refresh_windows(data)
         if actual is not None:
@@ -196,9 +198,11 @@ def settle(user_id: int, reservation_id: str | None, actual: int | None, pool: s
                 # Never hide a vendor/counting mismatch by clipping accounting.
                 logger.error("Provider usage exceeded preflight hold: user=%s, units=%s", user_id, -delta)
             _refund(data, row, delta)
+        charged = max(0, actual) if actual is not None else row.amount
         session.delete(row)
         _apply_subscription_payload(sub, data)
         session.commit()
+        return charged
 
 
 def token_counts(usage: Any) -> tuple[int, int, int, int]:
@@ -251,6 +255,8 @@ async def model_call(client: Any, request: dict, *, model: str, user_id: int | N
     started = time.monotonic()
     usage = None
     completed = False
+    charged_units = 0 if reservation_id is None else None
+    retained = False
     run_hold = None
     try:
         if run_budget is not None:
@@ -280,7 +286,7 @@ async def model_call(client: Any, request: dict, *, model: str, user_id: int | N
         if usage:
             counts = token_counts(usage)
             actual = our_tokens(model, *counts)
-            await asyncio.to_thread(settle, user_id, reservation_id, actual, pool)
+            charged_units = await asyncio.to_thread(settle, user_id, reservation_id, actual, pool)
             reservation_id = None
             if user_id:
                 from app.billing.costs import provider_cost_usd
@@ -290,16 +296,25 @@ async def model_call(client: Any, request: dict, *, model: str, user_id: int | N
         elif reservation_id:
             # A successful provider response without usage must not silently reopen the budget.
             logger.error("Provider returned no usage for user=%s model=%s; retaining maximum debit", user_id, model)
-            await asyncio.to_thread(settle, user_id, reservation_id, None)
+            charged_units = await asyncio.to_thread(settle, user_id, reservation_id, None, pool)
+            retained = True
             reservation_id = None
         return result
     finally:
         try:
             if reservation_id:
                 # Includes cancellation and provider failure. Refund only this call's hold.
-                await asyncio.shield(asyncio.to_thread(settle, user_id, reservation_id, 0))
+                charged_units = await asyncio.shield(asyncio.to_thread(settle, user_id, reservation_id, 0, pool))
         finally:
             if run_budget is not None and run_hold is not None:
                 run_budget.settle(run_hold, model, usage)
             from app.services.orchestrator_metrics import observe
             observe(model, usage, time.monotonic()-started, completed)
+            from app.billing.answer_usage import current
+            receipt = current.get()
+            if receipt is not None:
+                try:
+                    receipt.record(model, token_counts(usage) if usage else None,
+                                   charged_units if paid else 0, retained=retained)
+                except Exception:
+                    logger.exception('Could not record answer usage')
