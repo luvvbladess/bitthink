@@ -118,7 +118,8 @@ def compact_answer_kind(text, *, web_required=False, messages=None):
                  r'внеси|реализуй|создай|собери|сгенерируй|исправь|измени|протестируй|открой|прочитай|'
                  r'выполни|посчитай|вычисли|рассчитай|проверь|инструмент\w*|мой|мои|мою|моих|наши)\b', action_scope):
         return ''
-    if everyday_answer(text) and not web_required:
+    # Personal circumstances can contain "today" without requiring current web facts.
+    if everyday_answer(text):
         return 'text'
     if re.search(r'(?i)\bлечени\w*|\bлекарств\w*|\bдоз\w*', text):
         return ''

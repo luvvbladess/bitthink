@@ -14,6 +14,7 @@ import subprocess
 import time
 import urllib.request
 import uuid
+from feedback_maintain import verification_files
 
 ALLOWED = 'backend/app/services/product_strategy.py'
 CONTAINER = 'gpt-ultra-web-backend-1'
@@ -55,7 +56,7 @@ with SyncSessionLocal() as db:
     return int(result.strip().splitlines()[-1])
 
 
-def candidate_run(image, command, *, network='none', env=None, timeout=180, root=None, check=True):
+def candidate_run(image, command, *, network='none', env=None, timeout=180, root=None, check=True, workdir=None):
     name = 'bt-kaizen-check-' + uuid.uuid4().hex[:12]
     argv = ['docker', 'run', '--rm', '--name', name, '--network', network, '--memory', '1536m', '--cpus', '1.5',
             '--pids-limit', '256', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
@@ -66,8 +67,12 @@ def candidate_run(image, command, *, network='none', env=None, timeout=180, root
         for host in ('example.com', 'www.ozon.ru', 'www.wildberries.ru', 'www.chipdip.ru'):
             argv += ['--add-host', host + ':93.184.216.34']
         argv += ['-v', str(root / 'backend') + ':/backend:ro', '-v', str(root / 'sandbox') + ':/sandbox:ro', '-v', str(root / 'scripts') + ':/scripts:ro']
+        if workdir:
+            argv += ['-v', str(root / 'sandbox') + ':/workspace/bitthink/sandbox:ro']
     else:
         argv += ['--read-only']
+    if workdir:
+        argv += ['--workdir', workdir]
     for key, value in (env or {}).items():
         argv += ['-e', key + '=' + value]
     try:
@@ -140,7 +145,9 @@ data=json.load(sys.stdin); validate_proposal(data['source'], data['proposal']); 
         (candidate / 'product_strategy.py').write_text(proposal['source'], encoding='utf-8')
         baseline_tag = 'bitthink-kaizen-base:' + stamp
         run(['docker', 'tag', baseline_image, baseline_tag])
-        (candidate / 'Dockerfile').write_text(f'FROM {baseline_tag}\nCOPY product_strategy.py /app/app/services/product_strategy.py\n', encoding='utf-8')
+        (candidate / 'Dockerfile').write_text(f'FROM {baseline_tag}\n' + verification_files(root, candidate)
+            + 'COPY product_strategy.py /app/app/services/product_strategy.py\n'
+            + 'COPY product_strategy.py /workspace/bitthink/backend/app/services/product_strategy.py\n', encoding='utf-8')
         candidate_image = 'bitthink-kaizen:' + stamp
         run(['docker', 'build', '-t', candidate_image, str(candidate)], timeout=180)
         measured = candidate_run(candidate_image, ['python', '-m', 'app.services.product_benchmark'])
@@ -167,7 +174,8 @@ data=json.load(sys.stdin); validate_proposal(data['source'], data['proposal']); 
         env = {'DATABASE_URL': 'postgresql+asyncpg://kaizen:isolated-only@db:5432/kaizen',
                'SECRET_KEY': 'isolated-kaizen-checks', 'OPENAI_API_KEY': 'test-key',
                'DEEPSEEK_API_KEY': 'test-key', 'KIMI_API_KEY': 'test-key', 'MPLBACKEND': 'Agg',
-               'PYTHONDONTWRITEBYTECODE': '1', 'DATA_DIR': '/tmp/data', 'UPLOAD_DIR': '/app/uploads'}
+               'PYTHONDONTWRITEBYTECODE': '1', 'DATA_DIR': '/tmp/data', 'UPLOAD_DIR': '/app/uploads',
+               'PYTHONPATH': '/workspace/bitthink/backend:/workspace/bitthink/backend/app/bot_core'}
         checks = [
             ['python', '-m', 'alembic', 'upgrade', 'head'],
             ['python', '-m', 'pytest', 'tests', '-p', 'no:cacheprovider'],
@@ -176,7 +184,8 @@ data=json.load(sys.stdin); validate_proposal(data['source'], data['proposal']); 
         ]
         for index, command in enumerate(checks):
             try:
-                result = candidate_run(candidate_image, command, network=test_network, env=env, timeout=900, root=root)
+                result = candidate_run(candidate_image, command, network=test_network, env=env, timeout=900, root=root,
+                                       workdir='/workspace/bitthink/backend')
             except RuntimeError as exc:
                 (candidate / f'check-{index}.log').write_text(getattr(exc, 'output', str(exc)), encoding='utf-8')
                 raise
@@ -271,7 +280,7 @@ def main():
         result = cycle(args.root, args.apply, args.user_id, repair=not bool(feedback and feedback.get('issue_id')))
         if feedback is not None:
             result['feedback'] = feedback
-            if feedback.get('status') == 'error':
+            if feedback.get('status') == 'error' or feedback.get('review_error'):
                 result['status'] = 'attention'
             write_json(directory / 'maintenance-status.json', result)
         print(json.dumps(result, ensure_ascii=False))
