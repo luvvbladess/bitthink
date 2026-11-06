@@ -6,7 +6,7 @@ import { apiFetch } from '@/api/client';
 import type { DisplayMessage } from './ChatWindow';
 import { filesQueryKey } from '@/features/editor/ConversationFiles';
 import { replyReveal } from './replyReveal';
-import { splitSearch } from './clarify';
+import { splitSearch, type SearchItem } from './clarify';
 import { dropJob, emptyJob, mergeRemoteJobs, upsertJob, type LiveJobPatch, type LiveJobsMap } from './liveJobs';
 
 // Fallback parser for Kimi-style citations like [1] Title – https://...
@@ -175,11 +175,11 @@ export function useChatGeneration({ activeConvId, setActiveConvId, setSearchPara
         setJobs((prev) => {
           const current = prev[convId] || emptyJob(convId);
           const nextText = (current.text || '') + (msg.payload.text || '');
-          const fallbackSearch = !current.search?.length ? parseSearchFromText(nextText) : undefined;
+          const fallbackSearch = !current.search?.some(item => item?.query !== '__answer_usage__') ? parseSearchFromText(nextText) : undefined;
           return upsertJob(prev, convId, {
             text: nextText,
             thinking: false,
-            search: current.search?.length ? current.search : fallbackSearch,
+            search: fallbackSearch?.length ? [...(current.search || []), ...fallbackSearch] : current.search,
           });
         });
       }
@@ -202,14 +202,14 @@ export function useChatGeneration({ activeConvId, setActiveConvId, setSearchPara
         });
       }
       if (msg.type === 'extras' && convId) {
-        const extrasSearch = msg.payload.search?.length ? msg.payload.search : undefined;
+        const extrasSearch: SearchItem[] | undefined = msg.payload.search?.length ? msg.payload.search : undefined;
         setJobs((prev) => {
           const current = prev[convId] || emptyJob(convId);
-          const fallbackSearch = !extrasSearch ? parseSearchFromText(current.text) : undefined;
+          const fallbackSearch = !extrasSearch?.some(item => item?.query !== '__answer_usage__') ? parseSearchFromText(current.text) : undefined;
           const hasClarify = splitSearch(extrasSearch).questions.length > 0;
           return upsertJob(prev, convId, {
             reasoning: msg.payload.reasoning || undefined,
-            search: extrasSearch || fallbackSearch,
+            search: fallbackSearch?.length ? [...(extrasSearch || []), ...fallbackSearch] : extrasSearch,
             ...(hasClarify ? { thinking: false, statusText: '' } : {}),
           });
         });

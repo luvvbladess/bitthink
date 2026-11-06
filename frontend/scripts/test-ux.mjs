@@ -44,6 +44,10 @@ async function fixture(options = {}) {
     'chat-a': [{ id: 'a1', role: 'user', content: 'Вопрос первой беседы' }, { id: 'a2', role: 'assistant', content: 'Ответ первой беседы. Здесь удобно читать и продолжать работу.' }],
     'chat-b': [{ id: 'b1', role: 'user', content: 'Вопрос второй беседы' }, { id: 'b2', role: 'assistant', content: 'Ответ второй беседы.' }],
   };
+  if (options.answerUsage) history['chat-a'][1].search = [
+    { query: '__answer_usage__', summary: JSON.stringify(options.answerUsage) },
+    { query: 'Проверенный источник', summary: 'https://example.com/reference\nПодтверждающий фрагмент.' },
+  ];
   if (options.imageHistory) history['chat-a'].push({ id: 'image-original', role: 'assistant', content: '![Эскиз](/uploads/audit-source.png)' });
   if (options.uploadedHtml) history['chat-a'].push({ id: 'source-html', role: 'user', content: 'Проанализируй этот файл', attachment: { name: 'source.html', url: '/uploads/source.html', type: 'document', mime_type: 'text/html' } });
   if (options.clarify) history['chat-a'].push({ id: 'clarify', role: 'assistant', content: 'Уточните задачу', search: [{ query: '__clarify__', summary: JSON.stringify({ questions: [{ prompt: 'Какой формат результата нужен?', options: ['Таблица', 'Отчёт'] }] }) }] });
@@ -211,6 +215,17 @@ async function fixture(options = {}) {
           socket.send(JSON.stringify({ type: 'status', payload: { conversation_id: id, text: state.activityStatus || 'Готовлю ответ' } }));
           return;
         }
+        if (state.usageOnSend) {
+          const search = [{ query: '__answer_usage__', summary: JSON.stringify(state.usageOnSend) }];
+          const text = 'Проверенный ответ.\n\n[1] Reference – https://example.com/reference';
+          history[id].push({ id: 'sent-' + state.sends.length, role: 'user', content: event.payload.content }, { id: 'reply-' + state.sends.length, role: 'assistant', content: text, search });
+          const extras = { type: 'extras', payload: { conversation_id: id, search } };
+          if (state.usageFirst) socket.send(JSON.stringify(extras));
+          socket.send(JSON.stringify({ type: 'chunk', payload: { conversation_id: id, text } }));
+          if (!state.usageFirst) socket.send(JSON.stringify(extras));
+          state.finishUsage = () => socket.send(JSON.stringify({ type: 'done', payload: { conversation_id: id } }));
+          return;
+        }
         history[id].push({ id: 'sent-' + state.sends.length, role: 'user', content: event.payload.content }, { id: 'reply-' + state.sends.length, role: 'assistant', content: 'Проверенный новый ответ.' });
         socket.send(JSON.stringify({ type: 'chunk', payload: { conversation_id: id, text: 'Проверенный новый ответ.' } }));
         socket.send(JSON.stringify({ type: 'done', payload: { conversation_id: id } }));
@@ -349,6 +364,42 @@ function studioFixture({ width = 1440, empty = false, failCanvas = false, theme 
 }
 
 try {
+  for (const width of [390, 1440]) for (const theme of ['dark', 'light']) await test(`answer-usage: receipt is readable and persists ${width} ${theme}`, async () => {
+    const answerUsage = { version: 1, models: [{ model: 'gpt-6-sol', calls: 2, input: 12500, output: 600, cached: 8000, cache_write: 1000, units: 142000, retained: 0, unknown_tokens: 0, unknown_units: 0 }] };
+    const f = await fixture({ viewport: { width, height: 900 }, touch: width < 600, theme, answerUsage, startPath: '/chat?c=chat-a' });
+    try {
+      await expect(f.page.getByRole('dialog')).toHaveCount(0);
+      await expect(f.page.getByText('gpt-6-sol', { exact: true })).toHaveCount(0);
+      await expect(f.page.getByRole('menuitem', { name: 'Расход лимита', exact: true })).toHaveCount(0);
+      await f.page.getByRole('button', { name: 'Меню ответа', exact: true }).focus();
+      await f.page.keyboard.press('Enter');
+      await f.page.getByRole('menuitem', { name: 'Расход лимита', exact: true }).click();
+      await expect(f.page.getByRole('dialog', { name: 'Расход лимита', exact: true })).toBeVisible();
+      await expect(f.page.getByText('gpt-6-sol', { exact: true })).toBeVisible();
+      assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      await f.page.screenshot({ path: `${output}/answer-usage-${width}-${theme}.png`, animations: 'disabled', fullPage: true });
+      await f.page.getByRole('button', { name: 'Закрыть', exact: true }).click();
+      await expect(f.page.getByRole('dialog')).toHaveCount(0);
+      await f.page.reload();
+      await f.page.getByRole('button', { name: 'Меню ответа', exact: true }).focus();
+      await f.page.keyboard.press('Enter');
+      await f.page.getByRole('menuitem', { name: 'Расход лимита', exact: true }).click();
+      await expect(f.page.getByRole('dialog', { name: 'Расход лимита', exact: true })).toBeVisible();
+    } finally { await f.context.close(); }
+  });
+  for (const usageFirst of [true, false]) await test(`answer-usage: inline sources survive metadata order ${usageFirst}`, async () => {
+    const usageOnSend = { version: 1, models: [{ model: 'gpt-6-luna', calls: 1, input: 200, output: 30, cached: 0, cache_write: 0, units: 230, retained: 0, unknown_tokens: 0, unknown_units: 0 }] };
+    const f = await fixture({ usageOnSend, usageFirst, startPath: '/chat?c=chat-a' });
+    try {
+      await expect(f.input).toBeEnabled();
+      await f.input.fill('Проверь источник');
+      await f.page.getByRole('button', { name: 'Отправить сообщение', exact: true }).click();
+      await expect.poll(() => f.state.sends.length).toBe(1);
+      await expect(f.page.getByRole('button', { name: '1 источник', exact: true }).last()).toBeVisible();
+      f.state.finishUsage();
+      await expect(f.page.getByRole('button', { name: 'Меню ответа', exact: true })).toHaveCount(1);
+    } finally { await f.context.close(); }
+  });
   for (const width of [320, 390, 913, 1440]) await test(`canvas-chat: first preview opens; closing survives updates ${width}`, async () => {
     const f = await fixture({ viewport: { width, height: 900 }, touch: width < 600, holdAnswer: true });
     try {

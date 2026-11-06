@@ -210,9 +210,11 @@ async def _generate_and_send(
                 api_messages = [dict(item) for item in api_messages]
                 index = 1 if api_messages and api_messages[0].get('role') == 'system' else 0
                 api_messages.insert(index, {'role': 'system', 'content': project_note})
-            response_text, generated_files, reasoning_text, search_results = await get_smart_response(
-                bot_user_id, prompt_content, api_messages, status_msg, on_reasoning_delta=None
-            )
+            from app.billing.answer_usage import collect_usage
+            with collect_usage() as answer_usage:
+                response_text, generated_files, reasoning_text, search_results = await get_smart_response(
+                    bot_user_id, prompt_content, api_messages, status_msg, on_reasoning_delta=None
+                )
         finally:
             workspaces.reset(workspace_token)
             project_context.reset(project_token)
@@ -300,7 +302,11 @@ async def _generate_and_send(
         attachment = {**attachment, "files": [meta for _, _, meta in outgoing]}
 
     # Bind edit affordances to real persisted results, never to guessed titles.
-    search_results = [item for item in (search_results or []) if item.get('query') != '__project_results__']
+    from app.billing.answer_usage import QUERY as USAGE_QUERY
+    search_results = [item for item in (search_results or []) if item.get('query') not in {'__project_results__', USAGE_QUERY}]
+    if answer_usage.models:
+        import json
+        search_results.append({'query': USAGE_QUERY, 'summary': json.dumps(answer_usage.snapshot())})
     try:
         from app.services.project_results import answer_references
         if not saved_project_results:
