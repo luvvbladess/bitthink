@@ -54,10 +54,11 @@ def design_guidance(user_text: str, kind: str, user_id: int | None = None, *, in
         chunks.append(load_skill('ui_ux_pro_max', user_id))
         engine = _search_engine()
         context = {'deck': 'presentation editorial storytelling', 'board': 'infographic hierarchy chart data', 'slides': 'presentation editorial storytelling', 'landing': 'landing page responsive clear call to action',
+                   'simulation': 'interactive scientific visualization exploration model controls accessible labels',
                    'app': 'app interface interaction forms navigation', 'dashboard': 'dashboard data visualization',
                    'infographic': 'infographic hierarchy chart data'}.get(kind, 'interface responsive')
         query = context + ' ' + (user_text or '')[:500]
-        domains = ['product', 'style', 'typography', 'ux', 'chart' if kind in {'dashboard', 'infographic'} else 'landing']
+        domains = ['product', 'style', 'typography', 'ux', 'chart' if kind in {'dashboard', 'infographic', 'simulation'} else 'landing']
         rows = {domain: engine.search(query, domain=domain, max_results=1).get('results', []) for domain in domains}
         chunks.append('UI UX Pro Max: локальные рекомендации, не замена брифу:\n' + json.dumps(rows, ensure_ascii=False)[:5500])
         if kind in {'landing', 'app', 'dashboard'}:

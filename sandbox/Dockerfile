@@ -56,6 +56,7 @@ COPY backend/app/services/diagrams.py /usr/local/lib/python3.12/site-packages/bt
 COPY backend/app/services/workspace_fs.py /opt/sandbox/workspace_fs.py
 COPY backend/app/services/product_factory.py /opt/sandbox/product_factory.py
 COPY backend/app/services/product_strategy.py /opt/sandbox/product_strategy.py
+COPY sandbox/icon-packs/ /usr/local/share/bitthink/icons/
 COPY sandbox/product_smoke.cjs /usr/local/lib/bitthink/product_smoke.cjs
 
 ENV WORKSPACES_DIR=/workspaces \

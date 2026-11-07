@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Tuple
 from app.services.run_protocol import WORKFLOW_RULES
 from app.services.autonomy import RULES as AUTONOMY_RULES
-from app.services.code_change_policy import code_change_rules, bounded_code_change, CODE_EDIT_TOOLS
+from app.services.code_change_policy import code_change_rules, bounded_code_change, local_project_change, CODE_EDIT_TOOLS
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,9 @@ def _desktop_work_instructions() -> str:
             "Все workspace_* выполняются ЛОКАЛЬНО в этой папке, а не в контейнере. "
             "Для git/npm/сборки/тестов вызывай desktop_run_command. Файлы сразу доступны пользователю на диске. "
             "Не утверждай, что работаешь в Linux, не используй /workspace. "
-            "Сначала исследуй проект, затем внеси изменения и проверь результат. "
+            "Для правки проекта найди конкретное место, измени только его и проверь возвращённый фрагмент. "
+            "Чужую проблему назови и не правь, пока об этом не попросили. "
+            "Для остальных задач сначала найди нужные данные, затем выполни просьбу и проверь результат. "
             "Запрашивай уточнение, если без него невозможно выполнить задачу. "
             "Не предлагай другой режим: в BitClient используется только Оркестратор.]"
         ) + local_skills_instructions()
@@ -1159,7 +1161,8 @@ async def _execute_employee(
         "Не проси пользователя скопировать страницу или выполнить команду за тебя. "
         "Не спрашивай пользователя и не давай нумерованный опросник: делай работу сам."
     )
-    if employee.get('bounded_code_change'):
+    focused_patch = bool(employee.get('bounded_code_change') or employee.get('project_patch'))
+    if focused_patch:
         from app.services.desktop_context import desktop_executor
         environment = ('Среда: BitClient, Windows/PowerShell. Для команд используй desktop_run_command.'
                        if desktop_executor.get() is not None else
@@ -1168,12 +1171,15 @@ async def _execute_employee(
             f'{date_note}{history_block}{doc_block}{prefs_note}\n{WORKFLOW_RULES}\n'
             f'{code_change_rules(task)}\n{domain_note}\nЗадача пользователя: {task}\n'
             f'{environment}\n'
-            'Ты единственный исполнитель этой локальной правки. Используй workspace_edit '
-            'для точечного патча, desktop_run_command в BitClient или workspace_run в облаке '
-            'для реальной проверки. Подходящий скил ниже уже загружен, не загружай его повторно. '
+            'Ты один агент в открытой папке проекта. Найди конкретное место через grep или чтение, '
+            'измени его через workspace_edit и посмотри возвращённый фрагмент. '
+            'Делай только текущую просьбу. Проблему, которую заметил попутно, назови в конце и не правь. '
+            'Если замена задела лишнее поведение, верни его. Затем запусти проверку этого места. '
+            'Когда просьба выполнена и проверка прошла, остановись и не начинай правку рядом. '
+            'Подходящий скил ниже уже загружен, не загружай его повторно. '
             'Не ищи внешние источники и не создавай отдельный проект без причины. '
-            'Если обнаружена большая связанная проблема, опиши конкретные факты; не скрывай '
-            'непройденную проверку. В конце кратко: что изменил и какая проверка прошла.'
+            'Если проверка не прошла, исправь только её причину и не скрывай непройденный результат. '
+            'В конце кратко: что изменил и какая проверка прошла.'
         )
     from app.services.run_protocol import current_run
     run = current_run.get()
@@ -1191,7 +1197,7 @@ async def _execute_employee(
         # The task alone: matching on the whole chat history pulled in unrelated skills
         # (a 7 KB "documents" playbook because someone once said "договор").
         skill_block = preload_skills_block(
-            'Правка кода. ' + task if employee.get('bounded_code_change') else task,
+            'Правка кода. ' + task if focused_patch else task,
             has_images=has_images or "image_search" in (task or "").lower() or "фото" in (task or "").lower(),
             user_id=user_id,
             sandbox=True,
@@ -1244,14 +1250,16 @@ async def _execute_employee(
             loops = 12 if model in {HAIKU_MODEL, "gpt-6-luna", "gpt-5-nano", ROUTINE_MODEL, 'minimax-m3.1-flash'} else 40
         else:
             loops = (60 if cad_employee_phase(employee)=="gui_geometry" else 30) if cad_build else PACKAGE_EMPLOYEE_TOOL_LOOPS if builds_file else None
-        if employee.get('bounded_code_change'):
+        if employee.get('project_patch'):
+            loops = 16
+        elif employee.get('bounded_code_change'):
             loops = 12
         def product_accepted(name, result):
             from app.services.autonomy import product_evidence
             evidence = product_evidence.get() or {}
             return name == 'product_lifecycle' and evidence.get('product_id') == employee.get('product_id') and bool(evidence.get('ready'))
         stop_options = {'stop_after_tool': product_accepted} if employee.get('product_phase') == 'build' and employee.get('product_id') else {}
-        if employee.get('bounded_code_change'):
+        if focused_patch:
             tools = CODE_EDIT_TOOLS - ({'workspace_run'} if desktop_executor.get() is not None else
                                       {name for name in CODE_EDIT_TOOLS if name.startswith('desktop_')})
             stop_options.update(allowed_tools=frozenset(tools), use_skills=False)
@@ -1284,7 +1292,7 @@ async def _execute_employee(
             response = await get_chat_response(
                 employee_messages, model=model, user_id=user_id, use_tools=True, max_tool_loops=loops,
                 force_web_search=bool(employee.get("web", legacy_search)),
-                reasoning_effort="low" if employee.get('bounded_code_change') else "high" if cad_build and model == "gpt-6-astra" else None,
+                reasoning_effort="low" if employee.get('bounded_code_change') and not employee.get('project_patch') else "high" if cad_build and model == "gpt-6-astra" else None,
                 **stop_options,
             )
             answer, _, reasoning, search = response
@@ -1298,6 +1306,7 @@ async def _execute_employee(
             **({'validation_checks':dict(validation_state.checks)} if validation_state.checks else {}),
             **({'code_change_checked': validation_state.checked_after_write and not validation_state.failed}
                if employee.get('bounded_code_change') else {}),
+            **({'project_patch': True} if employee.get('project_patch') else {}),
             **({'status':'error', 'validation_failed':True,
                 'result':answer + '\nПроверка результата не пройдена: исправь ошибку теста/сборки и повтори только проверку, сначала проверь сохранённые изменения.'} if validation_state.failed else {}),
             "reasoning": reasoning, "search": search,
@@ -2138,6 +2147,8 @@ async def _run_director(
     bounded_patch = (economy_enabled() and bounded_code_change(user_text) and not journal
                      and not projects and not turn_has_images and not cad_extensions
                      and not place_request)
+    local_fix = (desktop_executor.get() is not None and not cad_extensions and not journal
+                 and not bounded_patch and not place_request and local_project_change(user_text))
     routed = {'action': 'defer', 'goal': '', 'workspace_id': ''}
     if desktop_executor.get() is None and not place_request and not cad_extensions and not bounded_patch:
         routed = await _route_turn(user_text, user_id, projects, history_text)
@@ -2196,7 +2207,7 @@ async def _run_director(
                 revised_task = f'Доработай существующий проект.\nИсходные требования:\n{brief}\n\nНовые правки пользователя:\n{user_text[:4500]}'
                 from app.services.sandbox_client import run_workspace_tool
                 revision = json.loads(await run_workspace_tool('product_lifecycle', {
-                    'action': 'revise', 'product_id': followup_id, 'brief': revised_task}, user_id))
+                    'action': 'begin_revision', 'product_id': followup_id, 'brief': revised_task}, user_id))
                 if revision.get('error') or revision.get('product_id') != followup_id:
                     raise ValueError('Не удалось открыть проект для правки')
                 product_state.update(revision)
@@ -2321,6 +2332,23 @@ async def _run_director(
             }]}
         elif bounded_patch and journal and journal[-1].get('code_change_checked') and journal[-1].get('status') == 'ok' and not steering:
             break  # A real write followed by a passing check; prose alone cannot stop the run.
+        elif local_fix and round_num == 1 and not steering:
+            allowed = _employee_models(user_id)
+            coder = next((m for m in (PLANNER_MODEL, SONNET_MODEL, FALLBACK_EMPLOYEE_MODEL) if m in allowed), DIRECT_ANSWER_MODEL)
+            plan = {'status': 'continue', 'new_employees': [{
+                'role': 'Правка в проекте', 'task': user_text, 'model': coder, 'project_patch': True,
+            }]}
+        elif local_fix and journal and not steering:
+            last = journal[-1]
+            repairs = sum(1 for entry in journal if entry.get('project_patch'))
+            if last.get('validation_failed') and repairs < 2:
+                plan = {'status': 'continue', 'new_employees': [{
+                    'role': 'Правка в проекте', 'model': last.get('model') or PLANNER_MODEL,
+                    'project_patch': True,
+                    'task': user_text + '\nПроверка не прошла. Исправь только её причину в уже изменённом месте и повтори проверку.\n' + str(last.get('result') or '')[:1500],
+                }]}
+            else:
+                break
         elif initial_plan is not None and round_num == 1:
             plan = initial_plan
         elif light and round_num == 1:
@@ -2459,6 +2487,8 @@ async def _run_director(
             'Завершение всей задачи пока не подтверждено; продолжить можно с сохранённого состояния.'), ''
     elif bounded_patch and len(journal) == 1 and journal[0].get('code_change_checked') and journal[0].get('status') == 'ok':
         answer, compose_reasoning = journal[0]['result'], ''
+    elif local_fix and journal and journal[-1].get('status') == 'ok' and not journal[-1].get('validation_failed'):
+        answer, compose_reasoning = journal[-1]['result'], ''
     elif product_build:
         # Completion is derived from receipts, never from a composer's claim.
         answer, compose_reasoning = '', ''
@@ -2466,7 +2496,7 @@ async def _run_director(
         answer, compose_reasoning = await _compose_answer(
             user_text, journal, user_id, history_text, document_context, built_files=built_files
         )
-    if built_files and len(built_files) > 1:
+    if not product_build and built_files and len(built_files) > 1:
         from turn_scope import choose_deliverables
 
         answer, chosen = _split_file_choice(answer, built_files)
@@ -2477,16 +2507,35 @@ async def _run_director(
             final_product = await verified_product(user_id, product_state.get('product_id', ''), package=True)
         except (ValueError, TypeError):
             final_product = {}
+        from turn_scope import choose_deliverables
         if not final_product.get('packaged') or not final_product.get('ready'):
+            choose_deliverables([], strict=True)
             from app.services.orchestrator_metrics import mark_outcome
             mark_outcome(accepted=False)
-            gates = final_product.get('gates') or {'build': False, 'test': False}
-            failed = [name for name, passed in gates.items() if not passed]
-            if not failed:
-                failed = ['упаковка проекта']
-            answer = ('Продукт пока не прошёл приёмку: ' + ', '.join(failed) + '. Готовность не подтверждена. '
-                      'Сохранённые исходники можно доработать в следующем запросе.\n\n' +
-                      ('Папка проекта: ' + final_product['path'] if final_product.get('path') else 'Не удалось создать проверяемый проект.'))
+            labels = {'build': 'сборка', 'test': 'тесты', 'smoke': 'проверка в браузере'}
+            revision = final_product.get('revision')
+            checks = final_product.get('checks') or {}
+            problems = []
+            for name, passed in (final_product.get('gates') or {}).items():
+                if passed:
+                    continue
+                check = checks.get(name) or {}
+                if not check or check.get('revision') != revision:
+                    detail = 'нет результата для текущей версии'
+                elif 'pthread_create' in check.get('output', ''):
+                    detail = 'в песочнице не хватило ресурсов для запуска проверки'
+                else:
+                    detail = f"завершилась с ошибкой (код {check.get('exit_code', 'неизвестен')})"
+                problems.append(f"• {labels.get(name, name)} — {detail}")
+            if budget_exhausted:
+                problems.append('• Достигнут бюджет выполнения запроса.')
+            if final_product.get('package_error'):
+                problems.append('• Не удалось упаковать проверенный проект.')
+            answer = 'Готовность проекта пока не подтверждена.'
+            if problems:
+                answer += '\n\n' + '\n'.join(problems)
+            if final_product.get('path'):
+                answer += '\n\nИсходники сохранены. Доработку можно продолжить в этой беседе.'
         else:
             from app.services.orchestrator_metrics import mark_outcome
             mark_outcome(accepted=True)
@@ -2502,8 +2551,7 @@ async def _run_director(
             from app.services.product_response import compose_product_response
             answer, compose_reasoning = await compose_product_response(
                 user_text, final_product, user_id, budget_exhausted=budget_exhausted)
-            from turn_scope import choose_deliverables
-            choose_deliverables([final_product['archive']])
+            choose_deliverables([final_product['archive']], strict=True)
 
     if any(entry.get('live_verification') for entry in journal):
         from marketplace_verification import guard_answer_links

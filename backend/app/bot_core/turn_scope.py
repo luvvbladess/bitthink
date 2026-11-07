@@ -70,11 +70,11 @@ def turn_conversation(conv_id: str | None, *, reader_detail: str = "full") -> It
 
 # Files the reply decided to hand over. None: no decision, everything the
 # sandbox produced goes out (the behaviour of every mode except Pilot).
-_chosen_deliverables: ContextVar[tuple[str, ...] | None] = ContextVar("chosen_deliverables", default=None)
+_chosen_deliverables: ContextVar[tuple[tuple[str, ...], bool] | None] = ContextVar("chosen_deliverables", default=None)
 
 
-def choose_deliverables(names: list[str] | None) -> None:
-    _chosen_deliverables.set(tuple(names) if names else None)
+def choose_deliverables(names: list[str] | None, *, strict: bool = False) -> None:
+    _chosen_deliverables.set((tuple(names or ()), strict) if names or strict else None)
 
 
 def pick_deliverables(files: list[dict]) -> list[dict]:
@@ -86,10 +86,12 @@ def pick_deliverables(files: list[dict]) -> list[dict]:
     files = [item for item in files if str(item.get("filename") or "").casefold() not in sent]
     if not chosen:
         return files
-    wanted = {name.casefold() for name in chosen}
-    wanted.update(Path(path).name.casefold() for path in export_paths())
+    names, strict = chosen
+    wanted = {name.casefold() for name in names}
+    if not strict:
+        wanted.update(Path(path).name.casefold() for path in export_paths())
     picked = [item for item in files if str(item.get("filename") or "").casefold() in wanted]
-    return picked or files
+    return picked if strict else picked or files
 
 
 # Posting a finished file into the chat before the reply ends (Pilot's

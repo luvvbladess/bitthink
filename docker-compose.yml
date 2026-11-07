@@ -119,6 +119,7 @@ services:
     restart: unless-stopped
 
   sandbox:
+    init: true
     build:
       context: .
       dockerfile: sandbox/Dockerfile

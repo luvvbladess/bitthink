@@ -216,11 +216,41 @@ def operate(uid, args):
         root = fs.resolve_in_jail(uid, state['path'])
         if action == 'status':
             return _public(state, root)
-        if action == 'revise':
+        if action == 'icons':
+            pack = args.get('pack')
+            if pack not in ('lucide', 'ph', 'iconoir'):
+                raise ValueError('Наборы иконок: lucide, ph (Phosphor), iconoir.')
+            query = str(args.get('query') or '').strip().lower()[:60]
+            names = str(args.get('icons') or '').split()
+            if len(names) > 30 or any(not re.fullmatch(r'[a-z0-9-]{1,80}', name) for name in names):
+                raise ValueError('Укажи до 30 имён иконок через пробел.')
+            with zipfile.ZipFile(Path('/usr/local/share/bitthink/icons') / (pack + '.zip')) as catalog:
+                available = set(catalog.namelist())
+                if not names:
+                    return {'icons': sorted(name[:-4] for name in available if name.endswith('.svg') and query in name)[:40]}
+                missing = [name for name in names if name + '.svg' not in available]
+                if missing:
+                    raise ValueError('Иконки не найдены: ' + ', '.join(missing))
+                exported = []
+                for filename in ['LICENSE.txt', *(name + '.svg' for name in dict.fromkeys(names))]:
+                    relative = f'assets/icons/{pack}/{filename}'
+                    target = fs.resolve_in_jail(uid, state['path'] + '/' + relative)
+                    payload = catalog.read(filename).decode('utf-8')
+                    if target.exists() and target.read_text(encoding='utf-8') != payload:
+                        raise ValueError('Файл уже занят: ' + relative)
+                    if not target.exists():
+                        result = fs.write(uid, state['path'] + '/' + relative, payload)
+                        if not target.is_file():
+                            raise ValueError(result)
+                    exported.append(relative)
+                return {'files': exported}
+        if action in {'revise', 'begin_revision'}:
             brief = str(args.get('brief') or '').strip()[:16000]
             if not brief:
                 raise ValueError('Нужно новое описание требований.')
             state.update(brief=brief, checks={})
+            if action == 'begin_revision':
+                state['attempts'] = 0
             state.pop('packaged_revision', None)
             _save(path, state)
             return {**_public(state, root), 'next': 'Обнови BRIEF.md и исходники по новым требованиям; повтори все проверки.'}
