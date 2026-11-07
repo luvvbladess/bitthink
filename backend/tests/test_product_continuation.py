@@ -160,7 +160,7 @@ def test_followup_revises_existing_sources_before_acceptance(monkeypatch, source
         return {**base, 'ready': bool(executed), 'packaged': bool(executed)} if package else base
     async def tool(name, args, uid):
         assert name == 'product_lifecycle' and uid == 92001
-        assert args['action'] == 'revise' and args['product_id'] == PID
+        assert args['action'] == 'begin_revision' and args['product_id'] == PID
         assert 'Сайт переработки лития' in args['brief'] and 'шрифты бы покрупнее' in args['brief']
         revisions.append(args)
         return __import__('json').dumps({**base, 'ready': False, 'packaged': False})

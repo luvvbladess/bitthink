@@ -601,10 +601,12 @@ from app.services.desktop_swarm import SWARM_TOOL_SPECS, SWARM_TOOL_NAMES, activ
 _TOOL_SPECS.extend(SWARM_TOOL_SPECS)
 _TOOL_SPECS.extend([
     ('product_lifecycle', 'Создать и собрать готовый продукт в облачной песочнице. start выбирает стек и папку; install/build/test выполняют настоящие команды; package выдаёт zip только после проверок текущих исходников. status возвращает доказательства. Исходники пиши workspace_*.',
-     {'action': {'type': 'string', 'enum': ['start', 'status', 'revise', 'install', 'build', 'test', 'smoke', 'package']},
+     {'action': {'type': 'string', 'enum': ['start', 'status', 'revise', 'install', 'build', 'test', 'smoke', 'package', 'icons']},
       'product_id': {'type': 'string'}, 'brief': {'type': 'string'},
       'stack': {'type': 'string', 'enum': ['static', 'react', 'next', 'astro', 'python', 'node']},
-      'reason': {'type': 'string'}}, ['action']),
+      'reason': {'type': 'string'}, 'pack': {'type': 'string', 'enum': ['lucide', 'ph', 'iconoir']},
+      'query': {'type': 'string', 'description': 'Поиск иконок по части английского имени'},
+      'icons': {'type': 'string', 'description': 'Имена выбранных иконок через пробел для копирования в продукт'}}, ['action']),
     ('autonomy', 'Рабочая модель Bit-Think и приватный опыт PDCA. identity: миссия/правила/границы; recall: прошлые подтверждённые уроки; learn: закрепить урок после сборки, тестов и архива продукта.',
      {'action': {'type': 'string', 'enum': ['identity', 'recall', 'learn']},
       'query': {'type': 'string'}, 'product_id': {'type': 'string'}, 'problem': {'type': 'string'},
@@ -1374,6 +1376,8 @@ async def _run_budgeted_computer_tool(name: str, args: dict[str, Any], user_id: 
 
 
 async def _run_computer_tool(name: str, args: dict[str, Any], user_id: int | None) -> str:
+    if name == 'product_lifecycle' and args.get('action') == 'begin_revision':
+        return json.dumps({'error': 'Начало новой ревизии доступно только Оркестратору.'}, ensure_ascii=False)
     if name == 'calculate':
         from app.services.calculator import calculate
         return json.dumps(calculate(args.get('expression')), ensure_ascii=False)
@@ -1672,7 +1676,8 @@ async def _run_computer_tool(name: str, args: dict[str, Any], user_id: int | Non
             return await _studio_build(user_id, args)
 
         if name in TOOL_OPS:
-            return await run_workspace_tool(name, args, user_id)
+            from app.services.code_change_policy import with_edit_preview
+            return with_edit_preview(name, args, await run_workspace_tool(name, args, user_id))
 
         if name.startswith("google_"):
             from app.services.google_oauth import GoogleAuthError

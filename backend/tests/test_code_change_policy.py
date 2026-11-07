@@ -174,6 +174,72 @@ def test_code_worker_limits_tools_and_observes_real_checks(monkeypatch, desktop)
     assert not {'google_drive_upload', 'ssh_exec', 'product_lifecycle'} & opts['allowed_tools']
 
 
+def test_edit_preview_shows_only_the_replacement_and_ignores_a_failed_write():
+    from app.services.code_change_policy import with_edit_preview
+    saved = with_edit_preview('workspace_edit', {'path': 'f.py', 'old_string': 'a + 1', 'new_string': 'a - 1'}, 'Сохранён f.py.')
+    assert 'Было:\na + 1' in saved and 'Стало:\na - 1' in saved and 'не исправляй' in saved
+    assert with_edit_preview('workspace_edit', {'path': 'f.py', 'old_string': 'a', 'new_string': 'b'}, saved) == saved
+    missed = 'Фрагмент не найден. Сначала workspace_read.'
+    assert with_edit_preview('workspace_edit', {'path': 'f.py', 'old_string': 'a', 'new_string': 'b'}, missed) == missed
+
+
+@pytest.mark.parametrize('task', [
+    'Ну исправь эту проблему',
+    'Поправь расчёт скидки, она увеличивает сумму',
+    'Fix the crash when the list is empty',
+])
+def test_project_fix_stays_with_one_coding_agent(task):
+    from app.services.code_change_policy import local_project_change
+    assert local_project_change(task)
+
+
+@pytest.mark.parametrize('task', [
+    'Почему скидка увеличивается?',
+    'Исправь договор и пришли docx',
+    'Исправь авторизацию в auth.py',
+    'Как исправить эту функцию',
+])
+def test_questions_documents_and_risky_work_are_not_a_local_patch(task):
+    from app.services.code_change_policy import local_project_change
+    assert not local_project_change(task)
+
+
+def test_desktop_fix_uses_one_agent_and_stops(monkeypatch):
+    from app.config import get_settings  # noqa: F401
+    import director_router as dr
+    from app.services.desktop_context import desktop_executor
+    calls = []
+
+    async def plan(*args, **kw):
+        raise AssertionError('A fix in the open project does not hire another round')
+
+    async def worker(item, *args, **kw):
+        calls.append((item['model'], item.get('project_patch'), item.get('bounded_code_change')))
+        return {'role': item['role'], 'task': item['task'], 'round': 1, 'status': 'ok',
+                'result': 'Исправлено', 'model': item['model'], 'project_patch': True}
+
+    async def compose(*args, **kw):
+        raise AssertionError('The coding agent answer is already the result')
+
+    async def no_files(*args, **kw):
+        return []
+
+    monkeypatch.setattr(dr, '_plan_round', plan)
+    monkeypatch.setattr(dr, '_execute_employee', worker)
+    monkeypatch.setattr(dr, '_compose_answer', compose)
+    monkeypatch.setattr(dr, '_new_file_names', no_files)
+    monkeypatch.setattr(dr, '_employee_models', lambda uid: ['gpt-6-sol', 'gpt-6-luna'])
+    monkeypatch.setattr(dr, '_is_shopping_task', lambda *a: False)
+    monkeypatch.setattr(dr, '_turn_has_images', lambda *a: False)
+    token = desktop_executor.set(lambda *a: None)
+    try:
+        answer = asyncio.run(dr._run_director([], 'Ну исправь эту проблему', 99, None))
+    finally:
+        desktop_executor.reset(token)
+    assert answer[0] == 'Исправлено'
+    assert calls == [('gpt-6-sol', True, None)]
+
+
 @pytest.mark.parametrize('count', [1, 2])
 def test_one_owner_gets_no_instructions_to_poll_imaginary_colleagues(count):
     from app.services.desktop_swarm import execute_swarm_batch, active_agent

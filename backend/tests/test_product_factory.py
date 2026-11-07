@@ -276,9 +276,17 @@ def test_actual_orchestrator_requires_tool_evidence_and_preserves_project(worksp
         return {'round': round_num, 'role': item['role'], 'status': 'ok', 'result': 'Готово по мнению сотрудника',
                 'model': item['model'], 'product_phase': item['product_phase']}
     monkeypatch.setattr(dr, '_execute_employee', employee)
+    async def run():
+        from turn_scope import pick_deliverables
+
+        answer, _, _, _ = await dr._run_director([], 'Создай приложение для скидок', 92001, None)
+        candidates = [{"filename": "onest.ttf"}, {"filename": "browser.test.mjs"}]
+        assert pick_deliverables(candidates) == []
+        return answer
+
     token = autonomy.product_evidence.set({})
     try:
-        answer, _, _, _ = asyncio.run(dr._run_director([], 'Создай приложение для скидок', 92001, None))
+        answer = asyncio.run(run())
     finally:
         autonomy.product_evidence.reset(token)
     assert rounds[:2] == ['brief', 'build']
@@ -286,7 +294,43 @@ def test_actual_orchestrator_requires_tool_evidence_and_preserves_project(worksp
         assert 'приложение для расчёта скидок' in answer and '[!SUCCESS]' in answer
         assert len(rounds) == 2
     else:
-        assert 'Готовность не подтверждена' in answer
+        assert 'Готовность проекта пока не подтверждена' in answer
         assert 'Всё готово и опубликовано' not in answer
         # Brief, one build and one repair; no third paid pass.
         assert rounds == ['brief', 'build', 'build']
+
+
+def test_new_user_revision_restores_check_budget(workspace):
+    state, root = start()
+    pid = state['product_id']
+    state = operation(state, 'build')
+    state['attempts'] = 24
+    factory._save(factory._state_path(92001, pid), state)
+    revision = {'product_id': pid, 'brief': 'Доработай расчёт скидок'}
+    assert factory.operate(92001, dict(revision, action='revise'))['attempts'] == 24
+    with pytest.raises(ValueError, match='Лимит'):
+        operation(state, 'build')
+    renewed = factory.operate(92001, dict(revision, action='begin_revision'))
+    assert renewed['attempts'] == 0 and not renewed['ready']
+    assert (root / 'calculator.py').is_file()
+    assert operation(state, 'build')['gates']['build']
+
+
+def test_simulation_gets_subject_specific_design_guidance(monkeypatch):
+    from studio import design_skills
+
+    kinds = []
+    monkeypatch.setattr(design_skills, 'design_guidance', lambda task, kind: kinds.append(kind) or '')
+    design = autonomy._visual_design('Сделай сайт: симуляция чёрной дыры с анимацией')
+    assert kinds == ['simulation']
+    assert 'что исследуют, чем управляют' in design
+    assert 'stagger' not in design
+    assert 'При локальной доработке сохраняй принятый дизайн' in design
+
+
+
+def test_new_site_brief_requires_its_own_design_system():
+    brief = autonomy.product_employee('Сделай сайт для музея', {}, [])['task']
+    assert 'создай собственную дизайн-систему' in brief
+    assert 'Если пользователь дал дизайн-систему, используй её правила и токены' in brief
+    assert 'меняй систему, только если пользователь просит редизайн' in brief
