@@ -367,3 +367,32 @@ def test_yandex_short_cart_redirect_is_not_verified(monkeypatch):
     result=asyncio.run(mv.verify_marketplace_cards('Сравни https://market.yandex.ru/cc/abc',[]))
     assert result[0]['status']=='error'
     assert 'персональными' not in result[0]['result']
+
+
+def test_price_lookup_can_verify_direct_card_with_relay_offline(monkeypatch):
+    monkeypatch.setattr(type(home_relay), 'online', property(lambda _: False))
+
+    async def direct(url):
+        assert url == CARD
+        return {'status': 'ok', 'url': url, 'text': 'Наушники Logitech G435. Товар в наличии. Цена 4990 рублей. Продавец указан в карточке.'}
+
+    async def rank(*args):
+        return [CARD], [], []
+
+    async def assess(*args):
+        return 1
+
+    monkeypatch.setattr(mv, '_read_live_card', direct)
+    monkeypatch.setattr(mv, 'rank_candidates', rank)
+    monkeypatch.setattr(mv, 'assess_offers', assess)
+    rows = asyncio.run(mv.verify_marketplace_cards('Сколько стоят Logitech G435 на Ozon?', [{'result': CARD}]))
+    assert rows[0]['verified_url'] == CARD
+    assert rows[0]['search'][0]['reader'] == 'direct'
+
+
+def test_failed_live_price_lookup_does_not_repeat_snippet_price():
+    answer = mv.guard_answer_links('В поиске мелькает 4 599 ₽.', [
+        {'live_verification': True, 'status': 'error'}
+    ], task='Сколько стоит Logitech G435 в DNS?')
+    assert '4 599' not in answer
+    assert 'подтвердить не удалось' in answer

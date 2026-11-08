@@ -91,7 +91,8 @@ def test_desktop_unittest_and_write_failure_invalidate_completion():
 
 
 @pytest.mark.parametrize('desktop,checked', [(False, True), (True, True), (False, False), (True, False)])
-def test_bounded_edit_skips_planning_only_with_checked_result(monkeypatch, desktop, checked):
+@pytest.mark.parametrize('fails_once', [False, True])
+def test_bounded_edit_skips_planning(monkeypatch, desktop, checked, fails_once):
     from app.config import get_settings  # noqa: F401
     import director_router as dr
     from app.services.desktop_context import desktop_executor
@@ -104,8 +105,10 @@ def test_bounded_edit_skips_planning_only_with_checked_result(monkeypatch, deskt
 
     async def worker(item, *args, **kw):
         calls.append(('worker', item['model'], item.get('bounded_code_change')))
-        return {'role': item['role'], 'task': item['task'], 'round': 1, 'status': 'ok',
-                'result': 'Изменено', 'model': item['model'], 'code_change_checked': checked}
+        failed = fails_once and len(calls) == 1
+        return {'role': item['role'], 'task': item['task'], 'round': 1, 'status': 'error' if failed else 'ok',
+                'result': 'Изменено', 'model': item['model'], 'code_change_checked': checked and not failed,
+                'validation_failed': failed}
 
     async def compose(*args, **kw):
         return 'Результат', ''
@@ -131,9 +134,9 @@ def test_bounded_edit_skips_planning_only_with_checked_result(monkeypatch, deskt
     finally:
         desktop_executor.reset(t)
         workspaces.reset(w)
-    assert answer[0] == ('Изменено' if checked else 'Результат')
+    assert answer[0] == ('Изменено' if checked else 'Изменение не подтверждено успешной проверкой.\n\nИзменено')
     assert calls[0] == ('worker', 'gpt-6-luna', True)
-    assert calls.count('plan') == (0 if checked else 1)
+    assert calls == [('worker', 'gpt-6-luna', True)] * (2 if fails_once else 1)
 
 
 @pytest.mark.parametrize('desktop', [False, True])

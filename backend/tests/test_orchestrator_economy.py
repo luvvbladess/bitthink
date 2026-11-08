@@ -364,3 +364,37 @@ def test_catalog_exposes_terra_but_explicit_chat_models_stay_unchanged():
     assert ROUTINE_MODEL in dr._pool_description(1,'Прочитай README')
     assert vision_route('gpt-6-astra','creator','Посмотри скриншот')=='gpt-6-astra'
     assert vision_route('gpt-6-sol','creator','Посмотри скриншот')=='gpt-6-sol'
+
+
+def test_chinese_worker_pool_is_opt_in_and_tier_scoped(monkeypatch):
+    from app.billing.plans import computer_models
+    from app.services.model_registry import model_spec
+
+    monkeypatch.delenv('ORCHESTRATOR_CHINESE_POOL', raising=False)
+    assert 'hy4' not in computer_models('pro')
+    monkeypatch.setenv('ORCHESTRATOR_CHINESE_POOL', '1')
+    pro = computer_models('pro')
+    assert {'gpt-6-sol', 'claude-sonnet-5.5', 'glm-5.3-flash'} <= set(pro)
+    assert 'kimi-k3.1-pro' not in pro
+    assert {'gpt-6-sol', 'claude-sonnet-5.5', 'kimi-k3.1-pro'} <= set(computer_models('proplus'))
+    assert 'gpt-6-sol' in computer_models('pro', chinese_pool=False)
+    assert model_spec('kimi-k3.1-pro').provider == 'openrouter'
+
+
+def test_kimi_only_repairs_once(monkeypatch):
+    monkeypatch.setattr(dr, '_needs_strong_model', lambda *args: True)
+    plan = {'new_employees': [{'role': 'Сборщик', 'task': 'Доработай сайт',
+                              'model': 'gpt-6-sol', 'product_phase': 'build'}]}
+    monkeypatch.setattr(dr, '_employee_models', lambda uid: ['gpt-6-luna', 'gpt-6-sol', 'kimi-k3.1-pro'])
+    assert dr._clamp_employee_plan(plan, 1)['new_employees'][0]['model'] == 'gpt-6-sol'
+    journal = [{'product_phase': 'build', 'model': 'gpt-6-sol'}]
+    assert dr._clamp_employee_plan(plan, 1, journal=journal)['new_employees'][0]['model'] == 'kimi-k3.1-pro'
+    journal.append({'product_phase': 'build', 'model': 'kimi-k3.1-pro'})
+    assert dr._clamp_employee_plan(plan, 1, journal=journal)['new_employees'][0]['model'] == 'gpt-6-sol'
+
+
+def test_inline_line_removal_is_text_only():
+    from app.services.response_policy import compact_answer_kind
+    prompt = 'Удали только вторую строку. Верни сам текст, без оформления.\nпервый\nвторой\nтретий'
+    assert compact_answer_kind(prompt) == 'text'
+    assert not compact_answer_kind(prompt.replace('строку.', 'строку в файле.'))

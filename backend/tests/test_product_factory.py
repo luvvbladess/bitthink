@@ -52,6 +52,8 @@ def test_real_python_product_build_test_archive_and_stale_evidence(workspace):
     with zipfile.ZipFile(archive) as stream:
         assert {'calculator.py', 'README.md', 'tests/test_calculator.py', 'BITTHINK_CHECKS.json'} <= set(stream.namelist())
         assert not any('__pycache__' in name for name in stream.namelist())
+        version = json.loads(stream.read('BITTHINK_VERSION.json'))
+        assert version == {'product_id': state['product_id'], 'revision': packaged['revision'], 'previous_revision': None}
     (root / 'calculator.py').write_text('def discount(price, rate):\n    return 0\n', encoding='utf-8')
     assert not operation(state, 'status')['ready']
     assert not operation(state, 'status')['packaged']
@@ -59,6 +61,15 @@ def test_real_python_product_build_test_archive_and_stale_evidence(workspace):
         operation(state, 'package')
     failure = operation(state, 'test')
     assert not failure['ready'] and failure['last_check']['exit_code'] != 0
+    (root / 'calculator.py').write_text('def discount(price, rate):\n    return price * (1 - rate)\n# revision two\n', encoding='utf-8')
+    assert operation(state, 'build')['gates']['build']
+    assert operation(state, 'test')['ready']
+    updated = operation(state, 'package')
+    with zipfile.ZipFile(archive) as stream:
+        version = json.loads(stream.read('BITTHINK_VERSION.json'))
+    assert version['revision'] == updated['revision'] != packaged['revision']
+    assert version['previous_revision'] == packaged['revision']
+
 
 
 def test_products_and_receipts_are_private_and_unforgeable_through_workspace_tools(workspace):
@@ -119,7 +130,8 @@ def test_product_dependency_chain_and_retry_limit():
     assert '# impeccable' in first['task'] and '#d9f16d' in first['task']
     second = autonomy.product_employee('Сделай сайт', {'product_id': 'id', 'path': 'products/id', 'stack': 'static'}, [])
     assert second['product_phase'] == 'build' and second['model'] == 'gpt-6-sol' and 'load_skill code' in second['task']
-    assert '# impeccable' in second['task']
+    assert '# impeccable' not in second['task']
+    assert 'создай собственную дизайн-систему' in second['task']
     api = autonomy.product_employee('Сделай API-сервис учёта заявок', {}, [])
     assert '#d9f16d' not in api['task'] and 'browse_visual' not in api['task']
     assert autonomy.product_employee('Сделай сайт', {'packaged': True}, []) is None

@@ -72,3 +72,12 @@ def test_long_translation_is_not_upgraded_by_source_length_or_keywords():
     text = 'Переведи на английский: ' + ('Архитектура системы и безопасность. ' * 40)
     assert best_route(text, 'none', True, True) == ('deepseek-v4-flash', False)
     assert best_route(text, 'high', True, True)[0] == 'gpt-6-sol'
+
+def test_clock_diagnostics_are_grounded_in_target_and_hardware():
+    for prompt in ('Процессор STM32F1xx последовательность настройки тактирования',
+                   'Не запускается PLL, не меняется PLLRDY'):
+        note = subject_note(prompt)
+        assert 'startup/SystemInit' in note
+        assert 'PLL/2' in note
+        assert 'Отделяй сборку от подтверждения запуска' in note
+    assert 'startup/SystemInit' not in subject_note('Объясни сортировку пузырьком')

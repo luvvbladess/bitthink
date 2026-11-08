@@ -39,7 +39,12 @@ def inline_code_task(text):
     from app.services.orchestrator_policy import critical_task
     if not text or len(text) > 6000 or subject_for_query(text) != 'code':
         return False
-    if not re.search(r'(?i)(?:только|only)\s+(?:(?:один|one)\s+)?(?:блок\s+(?:кода|sql)|код\b|json\b|code\b)', text):
+    explicit_format = re.search(r'(?i)(?:только|only)\s+(?:(?:один|one)\s+)?(?:блок\s+(?:кода|sql)|код\b|json\b|code\b)', text)
+    standalone_snippet = re.fullmatch(
+        r'(?i)(?:напиши|покажи|приведи) код [^\n.!?]{1,140} на (?:python|javascript|typescript|rust|go|c\+\+|c#)[.!?]?',
+        text.strip(),
+    )
+    if not (explicit_format or standalone_snippet):
         return False
     scope = re.sub(r'(?i)не\s+создавай\s+(?:вложения|файлы)|без\s+создания\s+файлов', '', text)
     scope = re.sub(r'(?i)источник\w*\s+отмен\w*', '', scope)

@@ -40,6 +40,7 @@ MODEL_MULTIPLIER: dict[str, int] = {
     "claude-sonnet-5.5": 20,
     "claude-opus-5.5": 40,
     "glm-5.3-flash": 1,
+    "kimi-k3.1-pro": 40,
     "minimax-m3.1-flash": 2,
 }
 
@@ -267,7 +268,7 @@ def research_model(tier: str | None) -> str | None:
     return None
 
 
-def computer_models(tier: str | None) -> list[str]:
+def computer_models(tier: str | None, *, chinese_pool: bool = True) -> list[str]:
     allowed = allowed_models(tier)
     pool = [item for item in ("gpt-5-nano", "gpt-6-luna", "claude-haiku-5.5", "deepseek-v4-pro") if item in allowed]
     if "gpt-6.1-terra" in allowed:
@@ -283,6 +284,12 @@ def computer_models(tier: str | None) -> list[str]:
     if 'director' in allowed:
         from app.services.model_registry import experimental_workers, production_workers
         pool.extend(dict.fromkeys(production_workers() + experimental_workers()))
+    if "director" in allowed:
+        import os
+        if chinese_pool and os.getenv("ORCHESTRATOR_CHINESE_POOL") == "1":
+            level = canonical_tier(tier)
+            if level in {"proplus", "ultra", "creator"}:
+                pool.append("kimi-k3.1-pro")
     return pool or ["gpt-6-luna"]
 
 

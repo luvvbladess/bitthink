@@ -83,7 +83,7 @@ def test_imported_assets_and_internal_files_are_not_auto_delivered(tmp_path, mon
     assert json.loads(collect_deliverables(88003)) == []
 
 
-@pytest.mark.parametrize('kind,expected', [('extract_text','glm-5.3-flash'), ('classify','glm-5.3-flash'), ('file_operation','minimax-m3.1-flash'), ('small_edit','minimax-m3.1-flash')])
+@pytest.mark.parametrize('kind,expected', [('extract_text','glm-5.3-flash'), ('classify','glm-5.3-flash'), ('file_operation','glm-5.3-flash'), ('small_edit','glm-5.3-flash')])
 def test_semantic_stage_uses_live_economy_workers(monkeypatch, kind, expected):
     monkeypatch.delenv('ORCHESTRATOR_ECONOMY_WORKERS', raising=False)
     monkeypatch.setattr(dr, '_employee_models', lambda uid: list(dr.MODEL_POOL))

@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 import stat
 import zipfile
 from types import ModuleType
@@ -104,3 +105,14 @@ def test_product_archive_and_preview_are_both_persisted_and_delivered(tmp_path, 
     assert len(files) == 2 and files[0]['name'] == NAME and files[1]['canvas']
     assert files[1]['url'].startswith('/uploads/previews/')
     assert len(delivered) == 2 and delivered[1][-1] == files[1]['url']
+
+
+def test_preview_retains_revision_lineage(tmp_path, monkeypatch):
+    monkeypatch.setattr(get_settings(), 'UPLOAD_DIR', tmp_path)
+    version = {'product_id': 'a' * 24, 'revision': 'b' * 64, 'previous_revision': 'c' * 64}
+    _, _, meta = create('owner', NAME, archive({
+        'index.html': '<html></html>',
+        'BITTHINK_VERSION.json': json.dumps(version),
+    }))
+    assert meta['workspace'] == {'kind': 'product', 'id': 'a' * 24,
+                                 'revision': 'b' * 64, 'previous_revision': 'c' * 64}

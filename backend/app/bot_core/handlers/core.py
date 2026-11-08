@@ -744,6 +744,9 @@ async def get_smart_response(
     # Sources provide context and attribution, never a delivery gate. Do not
     # rerun generation or erase an answer based on citation/read-state heuristics.
     answer = resolve_numbered_citations(answer, _merge_sources(sources, previous_sources, limit=40))
+    if record and (web_required or model == 'search') and not intent.web_forbidden:
+        from app.services.source_quality import guard_current_numbers
+        answer = guard_current_numbers(answer, record.page_texts)
     cited = cited_urls(answer)
     sources = [s for s in sources if s.get('origin') != 'history' or s['summary'].splitlines()[0] in cited]
     sources = _merge_sources(sources, [s for s in previous_sources if s['summary'].splitlines()[0] in cited], limit=source_limit)

@@ -1,5 +1,6 @@
 """Bounded static previews; archived code is copied as data and never run on the server."""
 import hashlib
+import json
 import io
 import re
 import shutil
@@ -67,6 +68,18 @@ def create(web_user_id, filename, data):
         entry = next((name for name in ('dist/index.html', 'build/index.html', 'index.html') if name in members), None)
         if not entry:
             return None
+        workspace = {'kind': 'product', 'id': match[1]}
+        version = members.get('BITTHINK_VERSION.json')
+        if version and version.file_size <= 1024:
+            try:
+                lineage = json.loads(archive.read(version))
+                if isinstance(lineage, dict) and lineage.get('product_id') == match[1]:
+                    for field in ('revision', 'previous_revision'):
+                        digest = lineage.get(field)
+                        if isinstance(digest, str) and re.fullmatch(r'[0-9a-f]{64}', digest):
+                            workspace[field] = digest
+            except (ValueError, UnicodeError):
+                pass
         page = archive.read(members[entry]).decode('utf-8-sig')
         # shortcut: preview built browser files only; a source-only TS/JSX project needs its build output.
         if re.search(r'<script\b[^>]*\bsrc\s*=\s*["\'][^"\']+\.(?:tsx?|jsx)(?:[?"\'])', page, re.I):
@@ -94,4 +107,4 @@ def create(web_user_id, filename, data):
     name = f'product-{match[1]}-preview.html'
     return name, page.encode(), {'name': name, 'size': len(page.encode()), 'type': 'generated',
         'status': 'done', 'url': base + 'index.html', 'canvas': True,
-        'workspace': {'kind': 'product', 'id': match[1]}}
+        'workspace': workspace}
