@@ -68,6 +68,8 @@ def test_answer_grader_separates_partial_delivery_from_reliability():
     assert result['reliability_passed'] is True
     assert result['task_completed'] is False
     assert result['completion_errors'] == ['partial_result']
+    result = score_answer(dict(id='missing'), 'Не смог подтвердить актуальный топ-4.', [])
+    assert result['reliability_passed'] is True and result['task_completed'] is False
 
 
 def test_expensive_route_follows_topic_not_every_short_message():
