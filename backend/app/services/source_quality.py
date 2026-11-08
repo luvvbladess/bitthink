@@ -145,7 +145,7 @@ def evidence_issues(answer: str, sources, *, has_previous_evidence=False, observ
     if not answer or answer.lstrip().startswith('❌'):
         return ['empty_or_failed']
     known, cited = source_urls(sources), cited_urls(answer)
-    if re.search(r'(?:не\s+могу[^.!?]{0,65}(?:назвать|подтвердить|перечислить)|'
+    if re.search(r'(?:не\s+(?:могу|смог(?:ла|ли)?)[^.!?]{0,65}(?:назвать|подтвердить|перечислить)|'
                  r'поиск\s+не\s+вернул|не\s+удалось[^.!?]{0,40}(?:найти|подтвердить))',answer[:550],re.I):
         issues.append('incomplete_answer_needs_recovery')
     if cited - known:
@@ -294,14 +294,21 @@ _METRICS = {
     'annual': r'yearly|annual(?:ly)?|в\s+год|годов\w*|/\s*(?:yr|year)|per\s+year',
     'monthly': r'monthly|в\s+месяц|помесяч\w*|/\s*(?:мес|mo|month)|per\s+(?:user\s*/\s*)?month',
 }
-_METRICS = {name: re.compile(r'(?i)(?<!\w)(?:' + pattern + r')(?!\w)') for name, pattern in _METRICS.items()}
+_METRICS = {name: re.compile(r'(?i)(?:(?<!\w)|(?=/))(?:' + pattern + r')(?!\w)')
+            for name, pattern in _METRICS.items()}
 _RATES = {'win', 'pick', 'ban'}
 _BILLING = {'annual', 'monthly'}
 _CONTRACT = re.compile(r'(?i)\b(?:billed\s+(?:annually|yearly)|при\s+(?:годов\w+\s+оплат\w*|оплате\s+за\s+год))\b')
+_STARTING = re.compile(
+    r'(?i)\b(?:от|from|starting at)\s+(?:[$€₽]\s*\d|\d+(?:[.,]\d+)?\s*(?:[$€₽]|USD\b|руб\w*))'
+    r'|[$€₽]\s*\d+(?:[.,]\d+)?\s*\+'
+)
 
 
 def _metrics(text):
     result = {'annual_contract'} if _CONTRACT.search(text) else set()
+    if _STARTING.search(text):
+        result.add('starting_price')
     text = _CONTRACT.sub('', text)
     return result | {name for name, pattern in _METRICS.items() if pattern.search(text)}
 
@@ -313,6 +320,8 @@ def _same_metric(expected, observed, unit, amount):
     if ('credits' in expected) != ('credits' in observed):
         return False
     if ('annual_contract' in expected) != ('annual_contract' in observed):
+        return False
+    if ('starting_price' in expected) != ('starting_price' in observed):
         return False
     billing = expected & _BILLING
     return not billing or amount == '0' or billing == observed & _BILLING
@@ -332,6 +341,7 @@ def _numeric_evidence(page):
     headings = []
     plan = ''
     plan_start = 0
+    split_rates = re.search(r'(?im)^Hero\s*\nWin Rate\s*\nPick Rate\s*\nMatches\b', page)
     for i, line in enumerate(lines):
         if found := set(_PERIOD.findall(line)):
             period = found
@@ -340,18 +350,26 @@ def _numeric_evidence(page):
             plan = _claim_words(heading)
             plan_start = i
             continue
+        # Some responsive tables become one field per line in reader mode.
+        if (split_rates and line.isdigit() and i + 6 < len(lines)
+                and lines[i+3].casefold() == 'pick rate:' and lines[i+5].casefold() == 'matches:'):
+            for offset, rate in ((2, 'win'), (4, 'pick')):
+                for unit, amount in _number_keys(lines[i+offset]):
+                    if unit == '%':
+                        yield _claim_words(lines[i+1]), unit, amount, period, {rate}
         cells = line.strip('|').split('|')
         if not _number_keys(line):
             if len(cells) > 1:
                 headings = [_metrics(cell) for cell in cells]
             continue
         if len(cells) > 1:
+            label = cells[1] if cells[0].strip().isdigit() else cells[0]
             for column, cell in enumerate(cells):
                 for unit, amount in _number_keys(cell):
                     metric = _metrics(cell)
                     if len(headings) == len(cells):
                         metric |= headings[column]
-                    yield _claim_words(cells[0] + ' ' + cell), unit, amount, period, metric
+                    yield _claim_words(label + ' ' + cell), unit, amount, period, metric
             continue
         # Flattened pricing cards separate the plan, amount and billing cadence.
         metric = _metrics(line)

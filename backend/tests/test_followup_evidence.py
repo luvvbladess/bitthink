@@ -454,3 +454,18 @@ def test_current_numbers_do_not_borrow_a_different_plans_price_from_same_row():
     result = guard_current_numbers(answer, pages)
     assert '| Cursor Plus | Не подтверждено |' in result
     assert '| Cursor Premium | $30 |' in result
+
+
+def test_current_numbers_preserve_starting_price_and_split_hero_rows():
+    from app.services.source_quality import guard_current_numbers
+
+    pricing = {'https://cursor.com/pricing': 'Feature | Premium $30 /month | Teams $30 +/user/month'}
+    answer = ('| План | Цена |\n|---|---|\n| Cursor Teams | от $30 в месяц |\n'
+              '| Cursor Teams | $30 в месяц |')
+    result = guard_current_numbers(answer, pricing)
+    assert '| Cursor Teams | от $30 в месяц |' in result
+    assert '| Cursor Teams | Не подтверждено |' in result
+    stats = {'https://example.com/stats': 'Hero\nWin Rate\nPick Rate\nMatches\n'
+             '1\nWraith King Wraith King\n55.24%\nPick Rate:\n12.75%\nMatches:\n300'}
+    result = guard_current_numbers('Wraith King — 55.24%\nWraith King — 12.75%', stats, query='топ по винрейту')
+    assert '55.24%' in result and '12.75%' not in result
