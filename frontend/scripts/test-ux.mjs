@@ -1049,6 +1049,56 @@ try {
       }
     } finally { await f.context.close(); }
   });
+  for (const [width, mode] of [[320, 'register'], [390, 'login']]) await test(`launch: first question survives ${mode} on mobile ${width}`, async () => {
+    const f = await fixture({ signedOut: true, startPath: '/', viewport: { width, height: 780 }, touch: true,
+      handleRoute: async ({ path, route }) => {
+        if (path === `/auth/${mode}`) {
+          await route.fulfill({ json: { access_token: 'audit-access', refresh_token: 'audit-refresh' } }); return true;
+        }
+      },
+    });
+    try {
+      const question = f.page.getByRole('textbox', { name: 'Ваш вопрос' });
+      await expect(question).toBeVisible();
+      await f.page.getByRole('button', { name: 'Подготовить ответ' }).click();
+      await expect(question).toHaveValue(/сообщение соседу/);
+      const draft = 'Помоги написать соседу без канцелярита.';
+      await question.fill(draft);
+      if (mode === 'login') await f.page.getByRole('link', { name: 'Уже есть аккаунт' }).click();
+      else await f.page.getByRole('button', { name: 'Продолжить в чате' }).click();
+      await expect(f.page).toHaveURL(new RegExp(`/${mode}\\?next=`));
+      assert.ok(!decodeURIComponent(f.page.url()).includes(draft));
+      await f.page.reload();
+      if (mode === 'register') await f.page.getByLabel('Имя').fill('Анна');
+      await f.page.getByLabel('Email').fill('audit@example.com');
+      await f.page.locator('input[autocomplete$="password"]').fill('test-password');
+      await f.page.getByRole('button', { name: mode === 'register' ? 'Зарегистрироваться' : 'Войти', exact: true }).click();
+      await expect(f.input).toHaveValue(draft);
+      await expect(f.page).toHaveURL(/\/chat\?c=chat-new-\d+$/);
+      assert.equal(f.state.sends.length, 0);
+      await f.page.reload();
+      await expect(f.input).toHaveValue(draft);
+    } finally { await f.context.close(); }
+  });
+  await test('launch: mobile feedback submits only a reason', async () => {
+    const f = await fixture({ startPath: '/chat?c=chat-a', viewport: { width: 390, height: 844 }, touch: true,
+      handleRoute: async ({ path, route, state }) => {
+        if (path === '/conversations/chat-a/history') {
+          await route.fulfill({ json: { items: [{ id: 'answer', message_id: 42, role: 'assistant', content: 'Ответ для проверки.' }], has_more: false } }); return true;
+        }
+        if (path === '/conversations/chat-a/messages/42/feedback') {
+          state.feedback = route.request().postDataJSON();
+          await route.fulfill({ json: { ok: true } }); return true;
+        }
+      },
+    });
+    try {
+      await f.page.getByRole('button', { name: 'Сообщить о проблеме' }).click();
+      await f.page.getByRole('menuitem', { name: 'Не понял правку' }).click();
+      await expect(f.page.getByRole('status').filter({ hasText: 'Спасибо, отзыв отправлен' })).toBeVisible();
+      assert.deepEqual(f.state.feedback, { reason: 'missed_edit' });
+    } finally { await f.context.close(); }
+  });
   await test('ux27: first delivery clears its migrated draft and keeps it clear after reload', async () => {
     const f = await fixture({ receiptDelay: 500, handleRoute: async ({ path, method, route, state }) => {
       if (path === '/conversations' && method === 'GET' && !state.created.length) { await route.fulfill({ json: [] }); return true; }

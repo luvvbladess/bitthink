@@ -78,6 +78,31 @@ def test_pricing_prefetch_reads_both_sides_once_and_keeps_partial_result(monkeyp
     assert active == 2
 
 
+def test_ranked_answer_uses_read_rows_and_preserves_requested_scope(monkeypatch):
+    import computer_tools
+    from app.services.answer_tools import dota_top_answer, _DOTA_STATS
+    from app.services.source_quality import guard_current_numbers
+
+    record = RunRecord()
+    calls = []
+
+    async def browse(name, args, user_id):
+        calls.append(args['url'])
+        page = ('Dota 2 Meta Tier List 7.41f\nNow showing: All ranks combined\n'
+                '# | Hero | Win Rate | Pick Rate | Matches\n'
+                '1 | Wraith King Wraith King | 55.24% | 12.75% | 300\n'
+                '2 | Spectre | 52.89% | 9.71% | 250\n')
+        record.observe_page(f'URL: {_DOTA_STATS}\n\n{page}')
+
+    monkeypatch.setattr(computer_tools, 'run_computer_tool', browse)
+    assert asyncio.run(dota_top_answer('Дай топ 2 по винрейту в доте за неделю', 1, record)) is None
+    answer, _, _, sources = asyncio.run(dota_top_answer('Дай топ 2 по винрейту в доте', 1, record))
+    assert calls == [_DOTA_STATS] and sources[0]['evidence_state'] == 'read'
+    assert 'Wraith King — 55,24%' in answer and 'Spectre — 52,89%' in answer and '12.75%' not in answer
+    assert guard_current_numbers(answer, record.page_texts, query='винрейт') == answer
+    assert asyncio.run(dota_top_answer('Дай топ 4 по винрейту в доте', 1, record)) is None
+
+
 def test_cancelled_batch_drains_children():
     active = 0
     async def read(call):

@@ -1,5 +1,5 @@
 import { Box, Container, Typography, Stack, useTheme } from '@mui/material';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { ArrowRight, Check, FileText, Images, MagnifyingGlass, Desktop } from '@phosphor-icons/react';
@@ -9,6 +9,13 @@ import { BRAND_FONT, BRAND_NAME, BRAND_SEARCH_NAME } from '@/brand';
 import { useAuthStore } from '@/stores/authStore';
 import { composerShellSx } from '@/theme/effects';
 import { SITE_DESCRIPTION, SITE_FAQ, SITE_OG_TITLE, SITE_TITLE, applyPageMeta } from '@/seo';
+import { firstQuestionLimit, firstQuestionRoute, saveFirstQuestion } from '@/features/chat/firstQuestion';
+
+const examples = [
+  ['Сравнить варианты', 'Сравни тарифы Cursor и GitHub Copilot. Укажи, за что платишь в каждом, и приложи ссылки на тарифы.'],
+  ['Разобрать документ', 'Разбери документ, который я приложу. Кратко выдели главное, сроки и вопросы, которые стоит уточнить.'],
+  ['Подготовить ответ', 'Напиши короткое сообщение соседу: попроси предупредить меня заранее, если в выходные будет шумный ремонт. Тон дружелюбный.'],
+];
 
 const features = [
   { title: 'Поиск с источниками', desc: 'Свежие факты и ссылки в ответе — ИИ ищет как Perplexity.', icon: MagnifyingGlass },
@@ -47,6 +54,7 @@ export default function LandingPage() {
   const navigate = useNavigate();
   const { hash } = useLocation();
   const token = useAuthStore((s) => s.accessToken);
+  const [question, setQuestion] = useState('');
   const reduce = useReducedMotion();
   const fade = {
     initial: reduce ? false : { opacity: 0, y: 14 },
@@ -74,11 +82,15 @@ export default function LandingPage() {
     return () => window.clearTimeout(timer);
   }, [hash, reduce]);
 
-  const goAsk = () => navigate(token ? '/chat' : '/register');
+  const start = question.trim() ? firstQuestionRoute : '/chat';
+  const goAsk = () => {
+    saveFirstQuestion(question);
+    navigate(token ? start : question.trim() ? `/register?next=${encodeURIComponent(start)}` : '/register');
+  };
 
   return (
     <Box sx={{ overflowX: 'hidden', position: 'relative' }}>
-      <Box sx={{ minHeight: { xs: '100dvh', md: 'min(88dvh, 800px)' }, pt: { xs: 10, md: 12 }, pb: 8, display: 'flex', alignItems: 'center' }}>
+      <Box sx={{ minHeight: { xs: 'min(100dvh, 630px)', md: 'min(88dvh, 800px)' }, pt: { xs: 9, md: 12 }, pb: { xs: 5, md: 8 }, display: 'flex', alignItems: 'center' }}>
         <Container maxWidth="sm" sx={{ px: { xs: 2, sm: 3 } }}>
           <Stack alignItems="center" textAlign="center" spacing={2.25}>
             <motion.div {...fade}>
@@ -97,20 +109,18 @@ export default function LandingPage() {
                   color: 'text.primary',
                 }}
               >
-                Bit-Think — спросите что угодно
+                Спросите, разберитесь, сделайте
               </Typography>
             </motion.div>
             <motion.div {...fade} transition={{ ...fade.transition, delay: 0.05 }}>
               <Typography sx={{ color: 'text.secondary', maxWidth: '42ch', mx: 'auto', fontSize: '1.0625rem', lineHeight: 1.55 }}>
-                Нейросеть в браузере: поиск с источниками, документы, картинки и холст прямо в чате.
+                Bit Think найдёт ответ с источниками, разберёт документ или поможет написать сообщение.
               </Typography>
             </motion.div>
             <motion.div {...fade} transition={{ ...fade.transition, delay: 0.1 }} style={{ width: '100%' }}>
               <Box
-                component="button"
-                type="button"
-                onClick={goAsk}
-                aria-label="Перейти к чату"
+                component="form"
+                onSubmit={(event) => { event.preventDefault(); goAsk(); }}
                 sx={{
                   ...composerShellSx,
                   width: '100%',
@@ -122,21 +132,27 @@ export default function LandingPage() {
                   px: 2,
                   py: 1.6,
                   color: 'text.secondary',
-                  cursor: 'pointer',
                   textAlign: 'left',
                   font: 'inherit',
                   boxSizing: 'border-box',
-                  '&:hover': { borderColor: 'primary.light' },
+                  '&:focus-within': { borderColor: 'primary.light' },
                 }}
               >
                 <Box sx={{ color: 'primary.light', display: 'grid', placeItems: 'center' }}>
                   <MagnifyingGlass size={18} />
                 </Box>
-                <Box sx={{ flex: 1, minWidth: 0, color: 'text.secondary' }}>Задайте вопрос</Box>
+                <Box component="input" aria-label="Ваш вопрос" placeholder="Задайте вопрос"
+                  value={question} maxLength={firstQuestionLimit} onChange={event => setQuestion(event.target.value)}
+                  sx={{ flex: 1, minWidth: 0, border: 0, outline: 0, bgcolor: 'transparent', color: 'text.primary', font: 'inherit', '&::placeholder': { color: 'text.secondary' } }} />
                 <Box
+                  component="button"
+                  type="submit"
+                  aria-label="Продолжить в чате"
                   sx={{
-                    width: 34,
-                    height: 34,
+                    width: 44,
+                    height: 44,
+                    border: 0,
+                    cursor: 'pointer',
                     borderRadius: '50%',
                     bgcolor: 'primary.main',
                     color: 'primary.contrastText',
@@ -150,9 +166,15 @@ export default function LandingPage() {
                 </Box>
               </Box>
             </motion.div>
+            <Stack direction="row" flexWrap="wrap" justifyContent="center" gap={0.75} aria-label="Примеры вопросов">
+              {examples.map(([label, prompt]) => (
+                <IslandButton key={label} type="button" onClick={() => setQuestion(prompt)}>{label}</IslandButton>
+              ))}
+            </Stack>
             {!token && (
               <motion.div {...fade} transition={{ ...fade.transition, delay: 0.16 }}>
-                <IslandButton component={Link} to="/login">Уже есть аккаунт</IslandButton>
+                <IslandButton component={Link} to={question.trim() ? `/login?next=${encodeURIComponent(start)}` : '/login'}
+                  onClick={() => saveFirstQuestion(question)}>Уже есть аккаунт</IslandButton>
               </motion.div>
             )}
           </Stack>
@@ -256,7 +278,7 @@ export default function LandingPage() {
             ))}
           </Box>
           <Typography variant="body2" sx={{ color: 'text.secondary', textAlign: 'center', mb: 3 }}>
-            У каждого тарифа окно 5 часов и недельный лимит, они обновляются сами.
+            Лимиты обновляются автоматически. В кабинете видно, сколько осталось до обновления 5-часового и недельного лимитов.
           </Typography>
           <Box sx={{ textAlign: 'center' }}>
             <IslandButton component={Link} to={token ? '/billing' : '/register'}>Смотреть кабинет</IslandButton>

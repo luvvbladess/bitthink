@@ -91,8 +91,13 @@ def bounded_text_revision(task: str, messages) -> bool:
     # shortcut: trace at most six consecutive revisions; older context uses normal routing.
     for index, candidate in enumerate([text, *reversed(users[-6:])]):
         revision = (len(candidate) <= 300 and re.search(
-            r'(?i)^(?:(?:сделай|перепиши|сократи|измени)\b.{0,80}(?:теплее|короче|вежливее|официальн|дружелюбн|тон)|(?:ещ[её]\s+)?(?:короче|теплее|вежливее)\b|убери\s+вступление\b)', candidate))
-        scope = re.sub(r'(?i)сохрани\s+(?:все\s+)?(?:ограничени\w*|факт\w*|смысл|цифр\w*|дат\w*|срок\w*|имен\w*|обращени\w*)\b', '', candidate)
+            r'(?i)^(?:а\s+теперь\s+)?(?:'
+            r'(?:сделай|перепиши|сократи|измени)\b.{0,80}(?:теплее|короче|вежливее|официальн|дружелюбн|тон)|'
+            r'(?:ещ[её]\s+)?(?:короче|теплее|вежливее)\b|убери\s+вступление\b|'
+            r'оставь\s+только\s+(?:сам[оё]\s+)?(?:сообщение|письмо)\b)', candidate))
+        scope = re.sub(
+            r'(?i)сохрани\s+(?:все\s+)?(?:ограничени\w*|факт\w*|смысл|цифр\w*|дат\w*|'
+            r'срок\w*|имен\w*|обращени\w*|день(?:\s+и\s+время)?|время)\b', '', candidate)
         actions = _TEXT_ACTION.search(scope) or re.search(r'(?i)отправ|опублику|сохрани|скачай|запусти|выполни|установи|посчитай|рассчитай|вычисли|пересчитай|инструмент|файл|прикрепл|вложени|источник|актуальн|документаци|проверь|сверь|найди|поищи|\b(?:docx|pdf|xlsx|pptx|csv|word|excel)\b|https?://', scope)
         if revision and not actions and not critical_task(candidate):
             continue
