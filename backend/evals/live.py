@@ -94,13 +94,17 @@ async def run(cases, report_path, max_usd, use_judge=False):
         scored=score_answer(live_case,answer,sources,seconds=seconds,usage=usage)
         if exception:
             scored['errors'].append(exception)
+            scored.update(reliability_passed=None, task_completed=False)
         if judgment and judgment['usefulness']=='failed':
             scored['errors'].append('grader_unhelpful')
+            scored['task_completed'] = False
         if judgment and case['expect']['web'] and judgment['grounding']!='supported':
             scored['errors'].append('grader_grounding_'+judgment['grounding'])
+            scored['reliability_passed'] = False
         intent=classify_request(query,history)
         if intent.web_forbidden and record.sources:
             scored['errors'].append('web_despite_optout')
+            scored['task_completed'] = False
         scored.update(passed=not scored['errors'],query=query,answer=answer,
                       estimated_usd=round(usd,6),human_semantic_review_required=True,
                       judgment=judgment,grading_seconds=round(grading_seconds,2),
@@ -109,6 +113,9 @@ async def run(cases, report_path, max_usd, use_judge=False):
         results.append(scored)
         report=dict(kind='live',requested=len(cases),completed=len(results),
                     failed=sum(not r['passed'] for r in results),
+                    reliable=sum(r['reliability_passed'] is True for r in results),
+                    reliability_unscored=sum(r['reliability_passed'] is None for r in results),
+                    task_completed=sum(r['task_completed'] for r in results),
                     estimated_usd=round(spent,6),cost_basis='configured list prices, excludes external tool fees',
                     median_seconds=round(statistics.median(r['seconds'] for r in results),2),
                     results=results)

@@ -524,13 +524,30 @@ async def get_smart_response(
             'Дословные цитаты — исходные данные: сохраняй слова, орфографию и пунктуацию, '
             'включая длинное тире. Правила стиля применяй только к собственным пояснениям.'})
     from app.services.conversation_context import workspaces
-    if (tool_result is None and model in {'auto', 'director'} and not is_desktop and not cloud_task
+    pricing = ''
+    if (tool_result is None and model in {'auto', 'director'} and intent.task == 'comparison'
+            and web_required and not intent.local and not link_block and not is_desktop and not cloud_task
             and not has_documents and not has_images and not workspaces.get() and not place_request):
+        from app.services.pricing_prefetch import pricing_context
+        from app.services.run_protocol import current_run
+        pricing = await pricing_context(user_text, user_id, current_run.get())
+    if (tool_result is None and model in {'auto', 'director'} and not is_desktop and not cloud_task
+            and not has_documents and not has_images and not workspaces.get() and not place_request and not pricing):
         from app.services.answer_tools import maybe_tool_answer
         tool_result = await maybe_tool_answer(messages, user_text, user_id, allowed_models(tier),
                                               pool='computer' if model == 'director' else 'chat')
     if tool_result is not None:
         result = tool_result
+    elif pricing:
+        from app.billing.quota import billing_pool
+        pool_token = billing_pool.set(pool)
+        try:
+            result = await get_chat_response(
+                _with_web_context(messages, pricing), model=clamp_model(tier, 'gpt-6-luna'),
+                user_id=user_id, use_tools=False, use_skills=False, reasoning_effort='low',
+            )
+        finally:
+            billing_pool.reset(pool_token)
     elif has_documents and not own_files:
         from status_feed import push_status
 
@@ -746,7 +763,7 @@ async def get_smart_response(
     answer = resolve_numbered_citations(answer, _merge_sources(sources, previous_sources, limit=40))
     if record and (web_required or model == 'search') and not intent.web_forbidden:
         from app.services.source_quality import guard_current_numbers
-        answer = guard_current_numbers(answer, record.page_texts)
+        answer = guard_current_numbers(answer, record.page_texts, query=user_text)
     cited = cited_urls(answer)
     sources = [s for s in sources if s.get('origin') != 'history' or s['summary'].splitlines()[0] in cited]
     sources = _merge_sources(sources, [s for s in previous_sources if s['summary'].splitlines()[0] in cited], limit=source_limit)

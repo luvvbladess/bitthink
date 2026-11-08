@@ -18,26 +18,42 @@ from app.services.request_intent import classify_request
 
 def score_answer(case, answer, sources, *, seconds=0, usage=None):
     from app.services.source_quality import evidence_issues, cited_urls
-    errors = list(evidence_issues(answer, sources))
+    evidence = evidence_issues(answer, sources)
+    reliability = [error for error in evidence
+                   if error not in {'empty_or_failed', 'incomplete_answer_needs_recovery'}]
+    completion = [error for error in evidence
+                  if error in {'empty_or_failed', 'incomplete_answer_needs_recovery'}]
+    errors = list(evidence)
     rubric = case.get('answer', {})
     for pattern in rubric.get('required', []):
         if not re.search(pattern, answer, re.I):
-            errors.append('missing_content:' + pattern)
+            completion.append('missing_content:' + pattern)
+            errors.append(completion[-1])
     for pattern in rubric.get('forbidden', []):
         if re.search(pattern, answer, re.I):
-            errors.append('forbidden_content:' + pattern)
+            completion.append('forbidden_content:' + pattern)
+            errors.append(completion[-1])
     if len(cited_urls(answer)) < rubric.get('min_citations', 0):
-        errors.append('not_enough_citations')
+        reliability.append('not_enough_citations')
+        errors.append(reliability[-1])
     if sum(s.get('evidence_state') == 'read' for s in sources) < rubric.get('min_read', 0):
-        errors.append('not_enough_read_pages')
+        reliability.append('not_enough_read_pages')
+        errors.append(reliability[-1])
     if seconds > case.get('max_seconds', 120):
         errors.append('latency_budget')
     # Explicit fixture facts catch wrong values even when the URL is valid.
     # They must only be used with a pinned, dated snapshot, not live prices.
     for fact in rubric.get('facts', []):
         if not re.search(fact, answer, re.I):
-            errors.append('incorrect_snapshot_fact:' + fact)
+            reliability.append('incorrect_snapshot_fact:' + fact)
+            completion.append(reliability[-1])
+            errors.append(reliability[-1])
+    if re.search(r'(?i)\|\s*не подтверждено\s*\||часть цифр или периодов не удалось подтвердить|'
+                 r'(?:цен\w*|стоимост\w*)[^.\n]{0,65}(?:не подтвержд\w*|не удалось подтвердить)', answer):
+        completion.append('partial_result')
     return dict(id=case['id'], passed=not errors, errors=errors,
+                reliability_passed=None if 'empty_or_failed' in evidence else not reliability,
+                task_completed=not completion, reliability_errors=reliability, completion_errors=completion,
                 seconds=round(seconds, 3), usage=usage,
                 citations=len(cited_urls(answer)))
 

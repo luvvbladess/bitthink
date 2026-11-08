@@ -31,17 +31,51 @@ def test_parallel_reads_are_bounded_and_failing_sibling_isolated():
         if call.name == 'project_read': raise RuntimeError('private-token')
         return call.name
     started = time.monotonic()
-    result = asyncio.run(read_batch(calls('server_search', 'browse_page', 'project_read', 'server_search'), PARALLEL_READS, read))
+    result = asyncio.run(read_batch(calls('workspace_read', 'workspace_glob', 'project_read', 'workspace_grep'), PARALLEL_READS, read))
     assert peak == 3 and active == 0
     assert time.monotonic() - started < .23
-    assert result[0] == 'server_search' and result[3] == 'server_search'
+    assert result[0] == 'workspace_read' and result[3] == 'workspace_grep'
     assert 'Ошибка' in result[2] and 'private-token' not in result[2]
 
 
 def test_mutations_and_unoffered_tools_never_preexecute():
     async def forbidden(call): raise AssertionError('must stay in sequential executor')
-    assert asyncio.run(read_batch(calls('browse_page', 'workspace_write'), PARALLEL_READS, forbidden)) is None
+    assert asyncio.run(read_batch(calls('workspace_read', 'workspace_write'), PARALLEL_READS, forbidden)) is None
     assert asyncio.run(read_batch(calls('browse_page', 'server_search'), {'browse_page'}, forbidden)) is None
+
+
+def test_pricing_prefetch_reads_both_sides_once_and_keeps_partial_result(monkeypatch):
+    import computer_tools
+    import search_engine
+    from app.services.pricing_prefetch import pricing_context
+
+    record = RunRecord()
+    active = 0
+    both_started = asyncio.Event()
+
+    async def browse(name, args, user_id):
+        nonlocal active
+        assert name == 'browse_page'
+        active += 1
+        if active == 2:
+            both_started.set()
+        await asyncio.wait_for(both_started.wait(), 1)
+        url = args['url']
+        text = ('Pro\n$10 per month\nFor everyday coding with agents. Includes autocomplete.'
+                if 'github' in url else '[Ошибка: сайт недоступен]')
+        result = f'URL: {url}\n\n{text}'
+        record.observe_page(result)
+        return result
+
+    async def search(*args, **kwargs):
+        raise AssertionError('Known official pages need no discovery')
+
+    monkeypatch.setattr(computer_tools, 'run_computer_tool', browse)
+    monkeypatch.setattr(search_engine, 'search_web', search)
+    context = asyncio.run(pricing_context('В чем разница тарифов Cursor и Copilot?', 1, record))
+    assert '$10' in context and 'cursor: цена на странице тарифов не подтверждена' in context
+    assert not asyncio.run(pricing_context('Сравни цены на G435 в Ozon и DNS', 1, record))
+    assert active == 2
 
 
 def test_cancelled_batch_drains_children():

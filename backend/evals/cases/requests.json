@@ -99,6 +99,11 @@
   {
     "id": "q012",
     "query": "В чем разница тарифов Cursor и Copilot?",
+    "answer": {
+      "min_citations": 2,
+      "min_read": 2,
+      "required": ["Cursor[^\\n]*\\$\\s*\\d+", "Copilot[^\\n]*\\$\\s*\\d+"]
+    },
     "expect": {
       "task": "comparison",
       "web": true
