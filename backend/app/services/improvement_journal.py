@@ -111,7 +111,8 @@ def capture_error(component, error_type, *, account='', event_key=None, code=Non
     try:
         component = re.sub(r'[^a-zA-Z0-9_.-]', '', str(component))[:100]
         error_type = re.sub(r'[^a-zA-Z0-9_.-]', '', str(error_type))[:100]
-        return record(event_key or uuid.uuid4().hex, 'provider' if component.startswith('provider') else 'other',
+        category = 'provider' if component.startswith('provider') else 'product' if component.startswith('product.') else 'other'
+        return record(event_key or uuid.uuid4().hex, category,
                       f'{component}: {error_type}', f'component={component}; type={error_type}; code={code if isinstance(code, int) else "unknown"}',
                       account=account, cluster=f'{component}:{error_type}:{code}')
     except Exception:

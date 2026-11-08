@@ -1340,9 +1340,11 @@ async def _run_budgeted_computer_tool(name: str, args: dict[str, Any], user_id: 
                 check = data.get('last_check') or {}
                 if check.get('passed') is False:
                     from app.services.improvement_journal import capture_error
-                    await asyncio.to_thread(capture_error, 'product.' + str(args.get('action')), 'ValidationFailed',
+                    output = check.get('output') or ''
+                    failure = 'ResourceExhausted' if 'pthread_create' in output else 'ValidationFailed'
+                    await asyncio.to_thread(capture_error, 'product.' + str(args.get('action')), failure,
                         account=user_id, code=check.get('exit_code'),
-                        event_key='product:' + str(data.get('product_id')) + ':' + str(data.get('attempts')))
+                        event_key=f"product:{data.get('product_id')}:{args.get('action')}:{check.get('revision')}:{check.get('checked_at')}")
             except (ValueError, TypeError):
                 pass
         from app.services.orchestrator_policy import observe_validation

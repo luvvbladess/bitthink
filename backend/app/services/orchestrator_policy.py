@@ -54,6 +54,11 @@ def bounded_text_task(task: str) -> bool:
                 and not _TEXT_ACTION.search(text)
                 and not re.search(r'(?i)актуальн|сегодня|\b(?:цен\w*|курс\w*|закон\w*|лечение|лекарств\w*)\b', text)):
             return True
+    directive, _, inline_text = text.partition('\n')
+    if (len(text) <= 4000 and len(inline_text.splitlines()) >= 2
+            and re.fullmatch(r'(?i)удали только (?:первую|вторую|третью|последнюю) строку\. '
+                             r'верни сам текст, без оформления\.', directive)):
+        return True
     if not text or len(text) > 4000 or not (_TEXT_TRANSFORM.search(text) or _TEXT_CREATE.search(text)):
         return False
     if _TEXT_TRANSFORM.search(text) and not re.search(r'[:«"\n].*\S', text, re.S):
@@ -208,7 +213,7 @@ ECONOMY_RULES = (
     'Экономия без потери результата: для короткого чтения, извлечения полей, перевода, '
     'фильтрации строк и простой сводки обычно достаточно одного дешёвого исполнителя. '
     'Классификацию и извлечение из текста поручай glm-5.3-flash, а ограниченные операции с файлами '
-    'и мелкие правки — minimax-m3.1-flash, если они есть в доступном каталоге. '
+    'и мелкие правки — тоже glm-5.3-flash, если модель есть в доступном каталоге. '
     'Для иных простых этапов оставляй gpt-6-luna, в том числе '
     'при работе с файлами и браузером. Не повышай модель только из-за наличия файла. '
     'gpt-6.1-terra — промежуточный выбор вместо Sol для точных небольших правок и '

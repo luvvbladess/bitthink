@@ -353,3 +353,16 @@ def test_all_modes_preserve_answer_without_source_validation(monkeypatch, mode, 
     result = asyncio.run(core.get_smart_response(user, query, [{'role': 'user', 'content': query}], None))
     assert result[0] == answer
     assert len(calls) == 1
+
+def test_current_numbers_guard_preserves_supported_rows_and_removes_bad_dates():
+    from app.services.source_quality import guard_current_numbers
+
+    page = 'https://example.com/plans'
+    answer = ('| План | Цена |\n|---|---|\n| Pro | $10 |\n| Max | $100 |\n\n'
+              'Это срез за 8 дней, с 7 октября по 8 ноября 2026 года.')
+    result = guard_current_numbers(answer, {page: 'Pro: 10 $ per month'})
+    assert '| Pro | $10 |' in result
+    assert '$100' not in result and 'за 8 дней' not in result
+    assert 'не удалось подтвердить' in result
+    assert guard_current_numbers('Вход: 4 599 рублей.', {page: 'Цена: 4599 ₽'}) == 'Вход: 4 599 рублей.'
+    assert guard_current_numbers('За 8 дней, с 1 ноября по 8 ноября 2026 года.', {}) == 'За 8 дней, с 1 ноября по 8 ноября 2026 года.'

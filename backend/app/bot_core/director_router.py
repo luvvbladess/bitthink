@@ -80,8 +80,9 @@ def _employee_models(user_id: int) -> list[str]:
 
         from config import OPENROUTER_API_KEY
         from app.services.model_registry import model_spec
-        return [model for model in computer_models(conversation_manager.get_subscription(user_id).get("tier"))
-                if model in MODEL_POOL and (not model_spec(model) or model_spec(model).provider != 'openrouter' or OPENROUTER_API_KEY)]
+        return [model for model in computer_models(conversation_manager.get_subscription(user_id).get("tier"),
+                                                    chinese_pool=bool(OPENROUTER_API_KEY))
+                if model in {*MODEL_POOL, 'kimi-k3.1-pro'} and (not model_spec(model) or model_spec(model).provider != 'openrouter' or OPENROUTER_API_KEY)]
     except Exception:
         return [FALLBACK_EMPLOYEE_MODEL]
 
@@ -393,6 +394,7 @@ _SPEND_RANK = {
     OPUS_MODEL: 6,
     "gpt-6-astra": 7,
     'glm-5.3-flash': .5,
+    'kimi-k3.1-pro': 6,
     'minimax-m3.1-flash': 1.5,
 }
 
@@ -433,20 +435,32 @@ def _clamp_employee_plan(
     astra_used = already
     opus_used = any(entry.get("model") in {OPUS_MODEL, "gpt-6-astra"} for entry in (journal or [])) and not cad_astra
     sol_this_product = False
+    kimi_used = any(entry.get('model') == 'kimi-k3.1-pro' for entry in (journal or []))
     for item in plan.get("new_employees") or []:
         model = item.get("model")
         work_kind = item.get('work_kind')
+        if model == 'kimi-k3.1-pro':
+            model = PLANNER_MODEL
+        if (not cad_astra and not kimi_used and 'kimi-k3.1-pro' in allowed
+                and item.get('product_phase') == 'build' and strong
+                and any(entry.get('product_phase') == 'build' for entry in (journal or []))):
+            model = 'kimi-k3.1-pro'
+            kimi_used = True
         # The semantic planner classifies the stage; the controller enforces its
         # capabilities and price. A specialist/failed stage is never downgraded.
         from app.services.model_registry import production_workers
         enabled = set(production_workers()) & set(allowed)
-        if not cad_astra and not recovery and not critical_task(original_task + '\n' + document_context[:12000]) and not item.get('product_phase'):
-            if work_kind in {'classify', 'extract_text'} and not has_images and 'glm-5.3-flash' in enabled:
-                model = 'glm-5.3-flash'
-            elif work_kind in {'file_operation', 'small_edit'} and 'minimax-m3.1-flash' in enabled:
-                model = 'minimax-m3.1-flash'
-        if model == 'glm-5.3-flash' and (has_images or work_kind not in {'classify', 'extract_text'}):
-            model = 'minimax-m3.1-flash' if 'minimax-m3.1-flash' in enabled else FALLBACK_EMPLOYEE_MODEL
+        flash_eligible = (
+            not has_images and not cad_astra and not recovery
+            and not critical_task(original_task + '\n' + document_context[:12000])
+            and (not strong or work_kind in {'classify', 'extract_text'})
+            and not item.get('product_phase')
+            and work_kind in {'classify', 'extract_text', 'file_operation', 'small_edit'}
+        )
+        if flash_eligible and 'glm-5.3-flash' in enabled:
+            model = 'glm-5.3-flash'
+        elif model == 'glm-5.3-flash':
+            model = PLANNER_MODEL if (strong or recovery) and PLANNER_MODEL in allowed else FALLBACK_EMPLOYEE_MODEL
         extra: Dict[str, Any] = {}
         # BitClient staged CAD specialists
         from app.services.desktop_cad_completion import cad_employee_phase, cad_phase_model, CAD_SPECIALIST_SCOPE
@@ -463,8 +477,8 @@ def _clamp_employee_plan(
             # Sonnet and Sol share the same price ceiling. Opus/Astra stay specialist-only.
             from config import OPENROUTER_API_KEY
             affordable = {FALLBACK_EMPLOYEE_MODEL, ROUTINE_MODEL, HAIKU_MODEL, PLANNER_MODEL, SONNET_MODEL}
-            if item.get('work_kind') in {'file_operation', 'small_edit'} and 'minimax-m3.1-flash' in enabled:
-                affordable.add('minimax-m3.1-flash')
+            if item.get('product_phase') == 'build':
+                affordable.add('kimi-k3.1-pro')
             haiku_ok = bool(OPENROUTER_API_KEY) and HAIKU_MODEL in allowed
             chosen = model if model in affordable and model in allowed else None
             if chosen is None:
@@ -1247,7 +1261,7 @@ async def _execute_employee(
             loops = 8
         elif employee.get("product_phase"):
             # Haiku on a 40-step build costs more than one Sol pass and still fails the checks.
-            loops = 12 if model in {HAIKU_MODEL, "gpt-6-luna", "gpt-5-nano", ROUTINE_MODEL, 'minimax-m3.1-flash'} else 40
+            loops = 12 if model in {HAIKU_MODEL, "gpt-6-luna", "gpt-5-nano", ROUTINE_MODEL, 'glm-5.3-flash', 'minimax-m3.1-flash'} else 40
         else:
             loops = (60 if cad_employee_phase(employee)=="gui_geometry" else 30) if cad_build else PACKAGE_EMPLOYEE_TOOL_LOOPS if builds_file else None
         if employee.get('project_patch'):
@@ -1380,8 +1394,7 @@ def _pool_description(user_id: int, original_task: str = "", document_context: s
         (HAIKU_MODEL, "короткие ограниченные операции, код и извлечение. Базовая цена как у Luna, но вход свыше 100 тысяч токенов повышает цену в пять раз. Для расчёта используй инструменты."),
         ("gpt-6-sol", "в 20 раз дороже. Сборка сайта, лендинга или приложения (один раз), починка после провала, плотный разбор. Не для поиска и снимков."),
         (SONNET_MODEL, "альтернатива Sol по той же базовой цене: сложный код, сборка и точечная починка. Не нанимай Sol и Sonnet для дублирующей работы."),
-        ('glm-5.3-flash', 'дешёвое извлечение и классификация текста: work_kind extract_text/classify. Только текст, без изображений и создания продукта.'),
-        ('minimax-m3.1-flash', 'основной экономный исполнитель ограниченных операций с файлами и небольших правок: work_kind file_operation/small_edit. Включая импорт аудио/видео в assets. Не большой проект и не экспертный вывод.'),
+        ('glm-5.3-flash', 'экономный текстовый исполнитель: classify, extract_text, file_operation и small_edit. Без изображений и сложных этапов.'),
         (OPUS_MODEL, "договор, аудит, архитектура, расследование. Один такой сотрудник. Не геометрия и не SDK."),
         (
             "gpt-6-astra",
@@ -1567,7 +1580,7 @@ async def _plan_round(
         'file_operation (копирование/преобразование/встраивание готовых файлов), small_edit (ограниченная небольшая правка), '
         'research, expert или build. Это смысл этапа, а не название инструмента. '
         'Для classify/extract_text используй glm-5.3-flash, если он доступен и не нужны изображения; '
-        'для file_operation/small_edit — minimax-m3.1-flash. Сложные этапы оставляй сильной модели.\n')
+        'для простых file_operation/small_edit — тоже glm-5.3-flash. Сложные этапы оставляй сильной модели.\n')
 
     from app.services.conversation_context import workspaces
     if workspaces.get() is not None:
@@ -2230,8 +2243,15 @@ async def _run_director(
     light = light or price_lookup
     if route == 'reply':
         light = True
-    elif route in {'file', 'research'}:
+    elif route == 'file':
         light = False
+    elif route == 'research':
+        # A short lookup needs evidence, but no open-ended planning loop.
+        light = (
+            not projects and not document_context and not turn_has_images and not cad_extensions
+            and not wants_file and len(user_text) <= 240 and needs_research(user_text, False)
+            and not re.search(r'(?i)исследован|подробн|глубок|аудит|отч[её]т|все источники', user_text)
+        )
     if bounded_patch:
         light = False  # Missing evidence returns to planning, never to a light research retry.
     if _is_shopping_task(user_text, user_id):
@@ -2330,8 +2350,17 @@ async def _run_director(
                 'role': 'Правка кода', 'task': user_text, 'model': coder,
                 'bounded_code_change': True,
             }]}
-        elif bounded_patch and journal and journal[-1].get('code_change_checked') and journal[-1].get('status') == 'ok' and not steering:
-            break  # A real write followed by a passing check; prose alone cannot stop the run.
+        elif bounded_patch and journal and not steering:
+            last = journal[-1]
+            if len(journal) != 1 or not last.get('validation_failed'):
+                break
+            plan = {'status': 'continue', 'new_employees': [{
+                'role': 'Правка кода', 'model': last.get('model') or DIRECT_ANSWER_MODEL,
+                'bounded_code_change': True,
+                'task': user_text + '\nЦелевая проверка не прошла. Проверь уже сделанный diff, '
+                'исправь только связанную причину и повтори целевую проверку.\n'
+                + str(last.get('result') or '')[:1500],
+            }]}
         elif local_fix and round_num == 1 and not steering:
             allowed = _employee_models(user_id)
             coder = next((m for m in (PLANNER_MODEL, SONNET_MODEL, FALLBACK_EMPLOYEE_MODEL) if m in allowed), DIRECT_ANSWER_MODEL)
@@ -2485,8 +2514,11 @@ async def _run_director(
         mark_outcome(accepted=False)
         answer, compose_reasoning = ('Достигнут бюджет работы моделей. Выполненные действия и созданные файлы сохранены. '
             'Завершение всей задачи пока не подтверждено; продолжить можно с сохранённого состояния.'), ''
-    elif bounded_patch and len(journal) == 1 and journal[0].get('code_change_checked') and journal[0].get('status') == 'ok':
-        answer, compose_reasoning = journal[0]['result'], ''
+    elif bounded_patch and journal and not steering:
+        last = journal[-1]
+        answer, compose_reasoning = last['result'], ''
+        if not last.get('code_change_checked') or last.get('status') != 'ok':
+            answer = 'Изменение не подтверждено успешной проверкой.\n\n' + answer
     elif local_fix and journal and journal[-1].get('status') == 'ok' and not journal[-1].get('validation_failed'):
         answer, compose_reasoning = journal[-1]['result'], ''
     elif product_build:
@@ -2555,7 +2587,7 @@ async def _run_director(
 
     if any(entry.get('live_verification') for entry in journal):
         from marketplace_verification import guard_answer_links
-        answer=guard_answer_links(answer,journal)
+        answer=guard_answer_links(answer, journal, task=user_text)
 
     reasoning_sections = [
         f"### {entry['role']} (раунд {entry['round']})\n{entry['reasoning']}"

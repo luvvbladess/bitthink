@@ -195,7 +195,7 @@ async def tool(uid, args):
 _WANTS_MOTION = re.compile(r'(?i)анимаци|анимаш|вау|\bwow\b|эффект|параллакс|parallax|плавн|скролл|motion')
 
 
-def _visual_design(task):
+def _visual_design(task, *, include_references=True):
     """Design law for a site or infographic. Other products stay on their own brief."""
     from studio.design_skills import design_guidance, visual_build
     interface = bool(re.search(r'(?i)веб[- ]?приложени|интерфейс|web app|dashboard', task or ''))
@@ -208,7 +208,7 @@ def _visual_design(task):
     if 'инфографик' in (task or '').lower():
         kind = 'infographic'
     try:
-        guidance = design_guidance(task, kind)
+        guidance = design_guidance(task, kind) if include_references else ''
     except Exception:
         guidance = ''
     law = (
@@ -253,7 +253,7 @@ def product_employee(task, evidence, journal):
     # One build and one repair: a third identical pass of a strong model rarely fixes what two did not.
     if attempts >= 4 or builds >= 2 or evidence.get('packaged'):
         return None
-    design = _visual_design(task)
+    design = _visual_design(task, include_references=not evidence.get('product_id'))
     suffix = ('\n\n' + design) if design else ''
     if not evidence.get('product_id'):
         phase = 'brief'

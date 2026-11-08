@@ -1,4 +1,5 @@
 """Bounded source contract and structural checks; not a semantic truth oracle."""
+from datetime import date
 import re
 from urllib.parse import urlsplit
 from app.services.run_protocol import public_url
@@ -12,7 +13,10 @@ SOURCE_RULES = """Работа с источниками:
 доступна пользователю; добавляй ссылки в ответ, когда они помогают открыть материал.
 Для текущих тарифов предпочитай действующую страницу цен старому анонсу.
 Учитывай регион, состояние товара, дату и условия предложения. Не придумывай цены,
-наличие, версии и даты публикации. Различай сведения источника и свой вывод.
+наличие, версии и даты публикации. Если цифра не видна в прочитанном источнике,
+не включай её в таблицу или рекомендацию. Сохраняй ограничения тарифа, которые
+меняют выбор. Для рейтинга сверяй длительность с датами начала и конца.
+Различай сведения источника и свой вывод.
 Если часть сведений недоступна, ответь по доступным данным и коротко обозначь
 конкретный пробел. Не заменяй весь ответ заглушкой о недостатке проверенных данных.
 Общий вопрос требует готового обзора по разумному критерию, а не обязательного
@@ -229,3 +233,60 @@ def supported_partial(answer: str, sources, *, observed_text=None, require_curre
     if kept:
         return '\n\n'.join(kept)+'\n\nОстальные точные сведения подтвердить не удалось; в вывод их не включаю.'
     return 'Проверенных данных для точного ответа пока недостаточно. Найденные материалы доступны в источниках.'
+
+
+_NUMBER = re.compile(r'(?i)(?:[$€₽]\s*\d+(?:[.,]\d+)?|\d+(?:[.,]\d+)?\s*(?:%|₽|€|\$|руб(?:лей|ля)?\b))')
+_DAY_RANGE = re.compile(
+    r'(?i)за\s+(\d+)\s+(?:день|дня|дней)[^.!?\n]{0,35}?'
+    r'с\s+(\d{1,2})\s+(\w+)\s*(?:(\d{4})\s*)?по\s+(\d{1,2})\s+(\w+)\s+(\d{4})'
+)
+
+
+def _inconsistent_day_range(text):
+    for count, first, month, year, last, end_month, end_year in _DAY_RANGE.findall(text):
+        if month.lower() not in _MONTHS or end_month.lower() not in _MONTHS:
+            continue
+        try:
+            end = date(int(end_year), _MONTHS[end_month.lower()], int(last))
+            start = date(int(year or end_year), _MONTHS[month.lower()], int(first))
+        except ValueError:
+            return True
+        days = (end - start).days
+        if (year or days >= 0) and int(count) not in {days, days + 1}:
+            return True
+    return False
+
+
+def guard_current_numbers(answer, page_texts):
+    # shortcut: lexical evidence only, upgrade when structured claim-to-source checks are available.
+    def numbers(text):
+        text = re.sub(r'(?<=\d)[ \u00a0\u202f](?=\d{3}\b)', '', text)
+        result = set()
+        for match in _NUMBER.finditer(text):
+            value = re.sub(r'\s+', '', match.group()).replace(',', '.').lower()
+            value = re.sub(r'руб(?:лей|ля)?$', '₽', value)
+            unit = value[0] if value[0] in '$€₽' else value[-1]
+            result.add((unit, value.strip('$€₽%')))
+        return result
+
+    observed = numbers('\n'.join(page_texts.values()))
+    removed = False
+
+    def filter_prose(prose):
+        nonlocal removed
+        kept = []
+        for line in prose.split('\n'):
+            refs = cited_urls(line)
+            evidence = numbers('\n'.join(page_texts[url] for url in refs if url in page_texts)) if refs else observed
+            plain = re.sub(r'https?://[^\s)]+', '', line)
+            if _inconsistent_day_range(plain) or numbers(plain) - evidence:
+                removed = True
+                continue
+            kept.append(line)
+        return '\n'.join(kept)
+
+    from app.services.prose_transform import transform_prose
+    result = transform_prose(answer, filter_prose).strip()
+    if removed:
+        result = (result + '\n\n' if result else '') + 'Часть цифр или периодов не удалось подтвердить по прочитанным источникам.'
+    return result

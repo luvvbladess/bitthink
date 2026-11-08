@@ -56,6 +56,8 @@ MODELS = {
         output_cap=24_000, explicit_cache=True),
     'claude-opus-5.5': ModelSpec('anthropic/claude-opus-5.5', 'openrouter', 4., 20., .20,
         output_cap=24_000, explicit_cache=True),
+    'kimi-k3.1-pro': ModelSpec('moonshotai/kimi-k3.1-pro', 'openrouter', 4., 20., .47,
+        context=1_048_576, output_cap=24_000),
     'glm-5.3-flash': ModelSpec('z-ai/glm-5.3-flash', 'openrouter', .10, .50, .02,
         context=1_048_576, efforts=('low', 'high', 'max'), default_effort='low'),
     # Conservative peak rate. The actual endpoint's usage.cost wins over this estimate.
@@ -82,7 +84,7 @@ def experimental_workers():
 
 
 def production_workers():
-    requested = os.getenv('ORCHESTRATOR_ECONOMY_WORKERS', 'minimax-m3.1-flash,glm-5.3-flash')
-    return [name for name in dict.fromkeys(item.strip() for item in requested.split(','))
-            if name in {'minimax-m3.1-flash', 'glm-5.3-flash'}]
+    requested = os.getenv('ORCHESTRATOR_ECONOMY_WORKERS', 'glm-5.3-flash')
+    names = {item.strip() for item in requested.split(',')}
+    return ['glm-5.3-flash'] if names & {'minimax-m3.1-flash', 'glm-5.3-flash'} else []
 

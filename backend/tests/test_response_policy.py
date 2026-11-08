@@ -87,3 +87,9 @@ def test_compaction_preserves_custom_rules_memory_history_and_safety():
     assert not any(m.get('content') == SEARCH_PLAN for m in result)
     assert original[0]['content'] == SYSTEM_PROMPT
     assert custom == compact_messages([custom])[0]
+
+def test_standalone_code_snippet_does_not_need_tools():
+    from app.services.response_policy import compact_answer_kind
+
+    assert compact_answer_kind('Напиши код сортировки на Python') == 'text'
+    assert compact_answer_kind('Напиши код для файла app.py на Python') != 'text'

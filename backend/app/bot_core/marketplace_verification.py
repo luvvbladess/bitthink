@@ -46,18 +46,23 @@ def page_failure_reason(body, title=''):
     return None
 
 
-def guard_answer_links(answer,journal):
+def guard_answer_links(answer, journal, *, task=""):
     """Only emit shop URLs with successful live evidence from this turn."""
     from web_scraper import is_ru_marketplace
     verified={}
     for item in journal:
         if not item.get('live_verification') or item.get('status')!='ok':continue
         for source in item.get('search',[]):
-            if source.get('reader')!='home' or source.get('read_status')!='ok':continue
+            if source.get('reader') not in {'home', 'direct'} or source.get('read_status')!='ok':continue
             found=public_shop_url(source.get('query',''))
             if found and found[0]=='card':verified[found[1]]=found[1]
         original=item.get('requested_url');final=item.get('verified_url')
         if original and final and final in verified:verified[original]=final
+    if (not verified and price_store_domains(task)
+            and re.search(r'(?i)сколько\s+сто|\bцен[ауы]\b|стоимость', task)
+            and re.search(r'(?i)\d[\d\s.,]*\s*(?:₽|руб)', answer)):
+        return ('Актуальную цену подтвердить не удалось. Карточка магазина недоступна для проверки, '
+                'а цена в поисковой выдаче может быть устаревшей.')
     removed=0
     def target(raw):
         nonlocal removed
@@ -312,6 +317,26 @@ async def replacement_search(task, queries, rejected, user_id=None):
     return journal
 
 
+async def _read_live_card(url):
+    """Read a public product page without archive or search-snippet fallback."""
+    import aiohttp
+    from web_scraper import HEADERS, _clean_html
+
+    card = public_shop_url(url)
+    if not card or card[0] != 'card' or urlsplit(url).hostname not in {'ozon.ru', 'www.ozon.ru', 'dns-shop.ru', 'www.dns-shop.ru'}:
+        return None
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5), headers=HEADERS) as session:
+        async with session.get(url, allow_redirects=False) as response:
+            if response.status != 200 or response.content_type != 'text/html':
+                return None
+            body = bytearray()
+            async for chunk in response.content.iter_chunked(65536):
+                body.extend(chunk)
+                if len(body) > 2_000_000:
+                    return None
+            return {'url': url, 'status': 'ok', 'text': _clean_html(body.decode(response.charset or 'utf-8', errors='replace'), url)}
+
+
 async def verify_marketplace_cards(task, journal, user_id=None):
     from app.services.marketplace_relay import home_relay
     from web_scraper import _looks_like_bot_wall
@@ -322,7 +347,9 @@ async def verify_marketplace_cards(task, journal, user_id=None):
                 "status": "ok" if status == "ok" else "error", "live_verification": True,
                 "result": f"URL: {url}\nПроверено: {now}\nРезультат читателя: {status}\n{body}",
                 "search": [{"query": url, "summary": url, "reader": "home", "read_status": status, "checked_at": now}] if url else []}
-    if not await home_relay.available():
+    relay_available = await home_relay.available()
+    live_price_lookup = bool(price_store_domains(task) and re.search(r'(?i)сколько\s+сто|\bцен[ауы]\b|стоимость', task))
+    if not relay_available and not live_price_lookup:
         return [entry("", "offline", "Домашний читатель офлайн. Карточки через него НЕ открывались. Данные поиска не проверены.")]
     price_only = single_store_price_lookup(task)
     deadline = time.monotonic() + (75 if price_only else BUDGET_SECONDS)
@@ -351,7 +378,7 @@ async def verify_marketplace_cards(task, journal, user_id=None):
             # Ranking is an optimization. Its timeout must not prevent reading
             # direct links that we already have, or manufacture a guessed URL.
             cards, listings = candidates(task, journal)
-    requested_domains = price_store_domains(task) if price_only else []
+    requested_domains = price_store_domains(task)
     def relevant(url):
         host = urlsplit(url).hostname or ''
         return not requested_domains or any(host == d or host.endswith('.' + d) for d in requested_domains)
@@ -360,7 +387,20 @@ async def verify_marketplace_cards(task, journal, user_id=None):
         remaining = deadline - time.monotonic()
         if remaining <= 0: return None
         try:
-            return await asyncio.wait_for(home_relay.fetch(url), min(60,remaining))
+            result = None
+            if relay_available:
+                try:
+                    result = await asyncio.wait_for(home_relay.fetch(url), min(8 if live_price_lookup else 60, remaining))
+                except asyncio.TimeoutError:
+                    if not live_price_lookup:
+                        return None
+                if result and result.get('status') == 'ok':
+                    return result
+            if live_price_lookup and deadline > time.monotonic():
+                direct = await asyncio.wait_for(_read_live_card(url), min(5, deadline - time.monotonic()))
+                if direct:
+                    return {**direct, 'reader': 'direct'}
+            return result
         except (TimeoutError, asyncio.TimeoutError): return None
         except Exception as exc:
             log.warning("marketplace_verify error=%s url=%s",type(exc).__name__,url)
@@ -397,6 +437,9 @@ async def verify_marketplace_cards(task, journal, user_id=None):
             if current_run.get():
                 observed = body[:15000] if status == 'ok' else '[Ошибка проверки карточки: ' + status + ']'
                 current_run.get().observe_page(f'URL: {verified_url}\n\n{observed}')
+            if result and result.get('reader') == 'direct':
+                item['model'] = 'direct-reader'
+                item['search'][0]['reader'] = 'direct'
             item['requested_url']=url
             item['verified_url']=verified_url if status=='ok' else None
             item["result"]="Исходная ссылка покупателя: "+url+"\n"+item["result"]

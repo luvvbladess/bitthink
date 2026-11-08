@@ -266,18 +266,28 @@ def operate(uid, args):
             archive = fs.resolve_in_jail(uid, 'product-' + state['product_id'] + '.zip')
             with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as target:
                 for source in _files(root):
-                    target.write(source, source.relative_to(root).as_posix())
+                    relative = source.relative_to(root).as_posix()
+                    if relative not in {'BITTHINK_CHECKS.json', 'BITTHINK_VERSION.json'}:
+                        target.write(source, relative)
                 for name in ('desktop.png', 'mobile.png'):
                     image = root / 'qa' / name
                     if image.is_file() and not image.is_symlink() and image.stat().st_size <= 2 * 1024 * 1024:
                         target.write(image, 'qa/' + name)
                 target.writestr('BITTHINK_CHECKS.json', json.dumps(state['checks'], ensure_ascii=False))
+                target.writestr('BITTHINK_VERSION.json', json.dumps({
+                    'product_id': state['product_id'], 'revision': before,
+                    'previous_revision': state.get('last_accepted_revision')
+                    if state.get('last_accepted_revision') != before else state.get('previous_revision'),
+                }))
             if _revision(root) != before:
                 archive.unlink(missing_ok=True)
                 raise ValueError('Исходники изменились во время упаковки. Повтори проверки.')
             if archive.stat().st_size > fs.MAX_FILE_BYTES:
                 archive.unlink(missing_ok=True)
                 raise ValueError('Архив больше лимита вложения 8 МБ. Убери тяжёлые медиа из исходников и повтори проверки.')
+            if state.get('last_accepted_revision') != before:
+                state['previous_revision'] = state.get('last_accepted_revision')
+                state['last_accepted_revision'] = before
             state.update(archive=archive.name, packaged_revision=before)
             _save(path, state)
             return _public(state, root)
