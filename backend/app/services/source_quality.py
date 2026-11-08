@@ -283,7 +283,14 @@ def _claim_words(text):
 
 
 _PERIOD = re.compile(r'(?i)\b(\d+)\s*[- ]?\s*(?:days?\b|день\b|дня\b|дней\b)')
-_PLAN = re.compile(r'(?i)^(?:free|plus|premium|pro\+?|max|super|ultra|teams?|business|enterprise)$')
+_PLAN_NAME = r'(?:free|plus|premium|pro\+?|max|super|ultra|teams?|business|enterprise)'
+_PLAN = re.compile(r'(?i)^' + _PLAN_NAME + '$')
+
+
+def _vendor_pages(vendor, urls):
+    aliases = {'copilot': 'github', 'github copilot': 'github'}
+    vendor = aliases.get(vendor, vendor)
+    return {url for url in urls if vendor in (urlsplit(url).hostname or '').split('.')}
 
 
 def _numeric_evidence(page):
@@ -332,34 +339,42 @@ def guard_current_numbers(answer, page_texts):
     def filter_prose(prose):
         nonlocal removed
         kept = []
+        headers = []
         for line in prose.split('\n'):
             refs = cited_urls(line)
             plain = re.sub(r'https?://[^\s)]+', '', line)
             if _inconsistent_day_range(plain):
                 removed = True
                 continue
-            if not _number_keys(plain):
-                kept.append(line)
-                continue
+            if not line.strip().startswith('|'):
+                headers = []
             if line.strip().startswith('|'):
                 cells = line.strip().strip('|').split('|')
+                if not headers:
+                    headers = [_claim_words(cell) for cell in cells]
                 label = _claim_words(cells[0])
                 brand, _, plan = label.rpartition(' ')
-                row_refs = refs
-                if brand and _PLAN.fullmatch(plan):
-                    # The vendor must agree as well as the plan name.
-                    vendor = brand.split()[-1]
-                    row_refs = {url for url in (refs or pages)
-                                if vendor in (urlsplit(url).hostname or '').split('.')
-                                or (vendor == 'copilot' and (urlsplit(url).hostname or '').split('.')[-2:] == ['github', 'com'])}
-                    label = plan
-                if brand and _PLAN.fullmatch(plan) and not row_refs:
-                    label = ''
                 for i, cell in enumerate(cells[1:], 1):
-                    if not supported(re.sub(r'https?://[^\s)]+', '', cell), label, row_refs):
+                    cell_text = re.sub(r'https?://[^\s)]+', '', cell)
+                    if not _number_keys(cell_text):
+                        continue
+                    anchor, cell_refs = label, refs
+                    vendor = headers[i] if i < len(headers) else ''
+                    named_plan = re.search(r'(?i)(?<![\w+])(' + _PLAN_NAME + r')(?![\w+])', cell_text)
+                    if vendor and (scoped := _vendor_pages(vendor, refs or pages)):
+                        cell_refs = scoped
+                        if named_plan:
+                            anchor = named_plan.group(1).casefold()
+                    elif brand and _PLAN.fullmatch(plan):
+                        cell_refs = _vendor_pages(brand, refs or pages)
+                        anchor = plan if cell_refs else ''
+                    if not supported(cell_text, anchor, cell_refs):
                         cells[i] = ' Не подтверждено '
                         removed = True
                 kept.append('|' + '|'.join(cells) + '|')
+                continue
+            if not _number_keys(plain):
+                kept.append(line)
                 continue
             plain = _ungroup_numbers(plain)
             first = _NUMBER.search(plain)
@@ -377,5 +392,7 @@ def guard_current_numbers(answer, page_texts):
     from app.services.prose_transform import transform_prose
     result = transform_prose(answer, filter_prose).strip()
     if removed:
+        # Removing a ranked entry can leave an inaccurate promise of a complete top-N.
+        result = re.sub(r'(?im)^([^\n]*?)топ[-‑– ]?\d+([^\n]*):\s*$', 'Подтверждённая часть рейтинга:', result)
         result = (result + '\n\n' if result else '') + 'Часть цифр или периодов не удалось подтвердить по прочитанным источникам.'
     return result
