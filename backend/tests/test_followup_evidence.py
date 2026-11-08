@@ -389,3 +389,15 @@ def test_current_numbers_require_matching_plan_vendor_product_and_period():
     assert '61%' not in guard_current_numbers('Visage — 61%', {
         'https://example.com/stats': '[Копия из веб-архива, может быть устаревшей]\nVisage | 61%'
     })
+
+
+def test_current_numbers_keep_prices_when_vendors_are_column_headers():
+    from app.services.source_quality import guard_current_numbers
+
+    result = guard_current_numbers(
+        '| Уровень | Cursor | GitHub Copilot |\n|---|---|---|\n'
+        '| Базовый | Plus — $8 | Pro — $10 |\n| Другой | Plus — $10 | Pro — $8 |',
+        {'https://cursor.com/pricing': 'Plus\n$8/month',
+         'https://github.com/features/copilot/plans': 'Pro\n$10/month'})
+    assert '| Базовый | Plus — $8 | Pro — $10 |' in result
+    assert '| Другой | Не подтверждено | Не подтверждено |' in result
