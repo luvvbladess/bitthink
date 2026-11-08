@@ -105,7 +105,7 @@
     "answer": {
       "min_citations": 2,
       "min_read": 2,
-      "required": ["Cursor[^\\n]*\\$\\s*\\d+", "Copilot[^\\n]*\\$\\s*\\d+"]
+      "required": ["Cursor[^\\n]*(?:\\$\\s*\\d+|\\d+\\s*USD\\b)", "Copilot[^\\n]*(?:\\$\\s*\\d+|\\d+\\s*USD\\b)"]
     },
     "expect": {
       "task": "comparison",
