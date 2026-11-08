@@ -14,7 +14,9 @@ SOURCE_RULES = """Работа с источниками:
 Для текущих тарифов предпочитай действующую страницу цен старому анонсу.
 Учитывай регион, состояние товара, дату и условия предложения. Не придумывай цены,
 наличие, версии и даты публикации. Если цифра не видна в прочитанном источнике,
-не включай её в таблицу или рекомендацию. Сохраняй ограничения тарифа, которые
+не включай её в таблицу или рекомендацию. Для точных цен и процентов используй
+отдельные строки: название тарифа, товара или участника, значение и ссылка на страницу.
+Сохраняй ограничения тарифа, которые
 меняют выбор. Для рейтинга сверяй длительность с датами начала и конца.
 Различай сведения источника и свой вывод.
 Если часть сведений недоступна, ответь по доступным данным и коротко обозначь
@@ -257,32 +259,119 @@ def _inconsistent_day_range(text):
     return False
 
 
-def guard_current_numbers(answer, page_texts):
-    # shortcut: lexical evidence only, upgrade when structured claim-to-source checks are available.
-    def numbers(text):
-        text = re.sub(r'(?<=\d)[ \u00a0\u202f](?=\d{3}\b)', '', text)
-        result = set()
-        for match in _NUMBER.finditer(text):
-            value = re.sub(r'\s+', '', match.group()).replace(',', '.').lower()
-            value = re.sub(r'руб(?:лей|ля)?$', '₽', value)
-            unit = value[0] if value[0] in '$€₽' else value[-1]
-            result.add((unit, value.strip('$€₽%')))
-        return result
+def _ungroup_numbers(text):
+    return re.sub(r'(?<=\d)[ \u00a0\u202f](?=\d{3}\b)', '', text)
 
-    observed = numbers('\n'.join(page_texts.values()))
+
+def _number_keys(text):
+    text = _ungroup_numbers(text)
+    result = set()
+    for match in _NUMBER.finditer(text):
+        value = re.sub(r'\s+', '', match.group()).replace(',', '.').lower()
+        value = re.sub(r'руб(?:лей|ля)?$', '₽', value)
+        unit = value[0] if value[0] in '$€₽' else value[-1]
+        amount = value.strip('$€₽%')
+        if '.' in amount:
+            amount = amount.rstrip('0').rstrip('.')
+        result.add((unit, amount))
+    return result
+
+
+def _claim_words(text):
+    text = re.sub(r'\]\(https?://[^)]+\)|https?://[^\s)]+', ' ', text)
+    return ' '.join(re.findall(r'[a-zа-яё0-9+]+', text.casefold()))
+
+
+_PERIOD = re.compile(r'(?i)\b(\d+)\s*[- ]?\s*(?:days?\b|день\b|дня\b|дней\b)')
+_PLAN = re.compile(r'(?i)^(?:free|plus|premium|pro\+?|max|super|ultra|teams?|business|enterprise)$')
+
+
+def _numeric_evidence(page):
+    """Use individual rows or the beginning of a named pricing section."""
+    lines = [line.strip() for line in page.splitlines() if line.strip()]
+    period = set()
+    for i, line in enumerate(lines):
+        if found := set(_PERIOD.findall(line)):
+            period = found
+        if amounts := _number_keys(line):
+            yield _claim_words(line), amounts, period
+        heading = line.strip('#* ')
+        if not _PLAN.fullmatch(heading):
+            continue
+        # Flattened HTML often puts the plan and its monthly price on separate lines.
+        for following in lines[i+1:i+5]:
+            if _PLAN.fullmatch(following.strip('#* ')):
+                break
+            if amounts := _number_keys(following):
+                yield _claim_words(heading), amounts, period
+                break
+
+
+def guard_current_numbers(answer, page_texts):
+    # shortcut: local text evidence, upgrade to structured entities when readers expose them.
+    pages = {url: list(_numeric_evidence(page)) for url, page in page_texts.items()
+             if not page.startswith('[Копия из веб-архива')}
     removed = False
+    bad_period = _inconsistent_day_range(answer)
+    day_counts = set(re.findall(r'(?i)(?:за|последние|последних)\s+(\d+)\s+(?:день|дня|дней)', answer))
+
+    def supported(claim, anchor, refs):
+        amounts = _number_keys(claim)
+        if not amounts:
+            return True
+        percentages = any(unit == '%' for unit, _ in amounts)
+        if bad_period and percentages:
+            return False
+        if not anchor:
+            return False
+        pattern = re.compile(r'(?<![\w+])' + re.escape(anchor) + r'(?![\w+])')
+        return any(amounts <= seen and pattern.search(fragment) and (not percentages or day_counts <= period)
+                   for url, fragments in pages.items() if not refs or url in refs
+                   for fragment, seen, period in fragments)
 
     def filter_prose(prose):
         nonlocal removed
         kept = []
         for line in prose.split('\n'):
             refs = cited_urls(line)
-            evidence = numbers('\n'.join(page_texts[url] for url in refs if url in page_texts)) if refs else observed
             plain = re.sub(r'https?://[^\s)]+', '', line)
-            if _inconsistent_day_range(plain) or numbers(plain) - evidence:
+            if _inconsistent_day_range(plain):
                 removed = True
                 continue
-            kept.append(line)
+            if not _number_keys(plain):
+                kept.append(line)
+                continue
+            if line.strip().startswith('|'):
+                cells = line.strip().strip('|').split('|')
+                label = _claim_words(cells[0])
+                brand, _, plan = label.rpartition(' ')
+                row_refs = refs
+                if brand and _PLAN.fullmatch(plan):
+                    # The vendor must agree as well as the plan name.
+                    vendor = brand.split()[-1]
+                    row_refs = {url for url in (refs or pages)
+                                if vendor in (urlsplit(url).hostname or '').split('.')
+                                or (vendor == 'copilot' and (urlsplit(url).hostname or '').split('.')[-2:] == ['github', 'com'])}
+                    label = plan
+                if brand and _PLAN.fullmatch(plan) and not row_refs:
+                    label = ''
+                for i, cell in enumerate(cells[1:], 1):
+                    if not supported(re.sub(r'https?://[^\s)]+', '', cell), label, row_refs):
+                        cells[i] = ' Не подтверждено '
+                        removed = True
+                kept.append('|' + '|'.join(cells) + '|')
+                continue
+            plain = _ungroup_numbers(plain)
+            first = _NUMBER.search(plain)
+            if first is None:
+                kept.append(line)
+                continue
+            prefix = re.sub(r'^\s*(?:[-*]\s+|\d+[.)]\s+)', '', plain[:first.start()])
+            anchor = _claim_words(prefix)
+            if supported(plain, anchor, refs):
+                kept.append(line)
+            else:
+                removed = True
         return '\n'.join(kept)
 
     from app.services.prose_transform import transform_prose

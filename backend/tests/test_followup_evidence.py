@@ -362,7 +362,30 @@ def test_current_numbers_guard_preserves_supported_rows_and_removes_bad_dates():
               'Это срез за 8 дней, с 7 октября по 8 ноября 2026 года.')
     result = guard_current_numbers(answer, {page: 'Pro: 10 $ per month'})
     assert '| Pro | $10 |' in result
-    assert '$100' not in result and 'за 8 дней' not in result
+    assert '| Max | Не подтверждено |' in result and '$100' not in result and 'за 8 дней' not in result
     assert 'не удалось подтвердить' in result
-    assert guard_current_numbers('Вход: 4 599 рублей.', {page: 'Цена: 4599 ₽'}) == 'Вход: 4 599 рублей.'
+    assert guard_current_numbers('Logitech G435: 4 599 рублей.', {page: 'Logitech G435 | Цена: 4599 ₽'}) == 'Logitech G435: 4 599 рублей.'
     assert guard_current_numbers('За 8 дней, с 1 ноября по 8 ноября 2026 года.', {}) == 'За 8 дней, с 1 ноября по 8 ноября 2026 года.'
+
+
+def test_current_numbers_require_matching_plan_vendor_product_and_period():
+    from app.services.source_quality import guard_current_numbers
+
+    sources = {
+        'https://cursor.com/pricing': 'Plus\n$8/month\nPremium\n$30/month',
+        'https://github.com/features/copilot/plans': 'Pro | $10\nPro+ | $39',
+        'https://example.com/products': 'Logitech G435 | 4599 ₽\nLogitech G733 | 8999 ₽',
+        'https://example.com/stats': 'Last 30 days\nVisage | 61%\nPuck | 50%\nLast 7 days\nVisage | 58%',
+    }
+    result = guard_current_numbers(
+        '| План | Цена |\n|---|---|\n| Cursor Plus | $8 |\n| Copilot Pro | $39 |\n'
+        '| Cursor Plus | $10 |\n| Logitech G435 | 8999 ₽ |', sources)
+    assert '| Cursor Plus | $8 |' in result
+    assert '| Copilot Pro | Не подтверждено |' in result
+    assert result.count('Не подтверждено') == 3
+    assert 'Visage — 61,0%' in guard_current_numbers('Visage — 61,0%\nЗа 30 дней.', sources)
+    assert '61,0%' not in guard_current_numbers('Visage — 61,0%\nЗа 7 дней.', sources)
+    assert '50%' not in guard_current_numbers('Visage — 50%', sources)
+    assert '61%' not in guard_current_numbers('Visage — 61%', {
+        'https://example.com/stats': '[Копия из веб-архива, может быть устаревшей]\nVisage | 61%'
+    })
