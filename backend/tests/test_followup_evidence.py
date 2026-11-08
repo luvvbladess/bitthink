@@ -408,7 +408,7 @@ def test_current_numbers_handle_split_currency_in_real_copilot_reader_format():
 
     page = ('Free\nFor getting started with GitHub Copilot.\n0\nUSD\n'
             'Pro\nFor everyday coding with agents.\n10\nUSD\nper user / month\n'
-            '$15 monthly total credits for Pro\nPro+\nFor more complex development.\n39\nUSD')
+            '$15 monthly total credits for Pro\nPro+\nFor more complex development.\n39\nUSD\nper user / month')
     answer = ('| План | Цена в месяц, USD |\n|---|---|\n'
               '| GitHub Copilot Free | 0 |\n| Copilot Pro | $10 |\n| Copilot Pro+ | $39 |\n'
               '| Copilot Pro | $39 |')
@@ -417,3 +417,40 @@ def test_current_numbers_handle_split_currency_in_real_copilot_reader_format():
     assert '| Copilot Pro | $10 |' in result
     assert '| Copilot Pro+ | $39 |' in result
     assert '| Copilot Pro | Не подтверждено |' in result
+
+
+def test_current_numbers_keep_price_credits_and_billing_cadences_separate():
+    from app.services.source_quality import guard_current_numbers
+
+    pages = {'https://github.com/features/copilot/plans':
+             'Pro\n10\nUSD\nper user / month\n$15 monthly total credits for Pro\n'
+             '$100 per year\nBusiness\n$19 per month\nbilled annually'}
+    answer = ('| Тариф | Цена в месяц | Цена в год | Кредиты в месяц |\n|---|---|---|---|\n'
+              '| Copilot Pro | $10 | $100 | $15 |\n'
+              '| Copilot Pro | $15 | $10 | $10 |\n'
+              '| Copilot Pro | $19 | $15 | $19 |\n'
+              '| Copilot Business | $19 при годовой оплате | $19 | — |')
+    result = guard_current_numbers(answer, pages)
+    assert '| Copilot Pro | $10 | $100 | $15 |' in result
+    assert '| Copilot Business | $19 при годовой оплате | Не подтверждено | — |' in result
+    assert result.count('Не подтверждено') == 7
+
+
+def test_current_numbers_match_requested_statistic_to_source_column():
+    from app.services.source_quality import guard_current_numbers
+
+    pages = {'https://example.com/stats': 'Hero | Win Rate | Pick Rate | Ban Rate\nPuck | 52% | 12% | 6%'}
+    result = guard_current_numbers('Puck — 12%\nPuck — 52%', pages, query='Какой винрейт у Puck?')
+    assert 'Puck — 52%' in result and '12%' not in result
+    answer = '| Герой | Пикрейт | Винрейт |\n|---|---|---|\n| Puck | 12% | 6% |'
+    assert '| Puck | 12% | Не подтверждено |' in guard_current_numbers(answer, pages)
+
+
+def test_current_numbers_do_not_borrow_a_different_plans_price_from_same_row():
+    from app.services.source_quality import guard_current_numbers
+
+    pages = {'https://cursor.com/pricing': 'Feature | Plus $8 /month | Premium $30 /month'}
+    answer = '| План | Цена |\n|---|---|\n| Cursor Plus | $30 |\n| Cursor Premium | $30 |'
+    result = guard_current_numbers(answer, pages)
+    assert '| Cursor Plus | Не подтверждено |' in result
+    assert '| Cursor Premium | $30 |' in result

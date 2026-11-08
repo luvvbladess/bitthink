@@ -286,6 +286,36 @@ def _claim_words(text):
 _PERIOD = re.compile(r'(?i)\b(\d+)\s*[- ]?\s*(?:days?\b|день\b|дня\b|дней\b)')
 _PLAN_NAME = r'(?:free|plus|premium|pro\+?|max|super|ultra|teams?|business|enterprise)'
 _PLAN = re.compile(r'(?i)^' + _PLAN_NAME + '$')
+_METRICS = {
+    'win': r'вин\s*рейт\w*|win\s*rate|win(?=\s*%)|дол\w*\s+побед\w*|процент\w*\s+побед\w*',
+    'pick': r'пик\s*рейт\w*|pick\s*rate|pick(?=\s*%)|частот\w*\s+выбор\w*',
+    'ban': r'бан\s*рейт\w*|ban\s*rate|ban(?=\s*%)|частот\w*\s+бан\w*',
+    'credits': r'credits?|кредит\w*',
+    'annual': r'yearly|annual(?:ly)?|в\s+год|годов\w*|/\s*(?:yr|year)|per\s+year',
+    'monthly': r'monthly|в\s+месяц|помесяч\w*|/\s*(?:мес|mo|month)|per\s+(?:user\s*/\s*)?month',
+}
+_METRICS = {name: re.compile(r'(?i)(?<!\w)(?:' + pattern + r')(?!\w)') for name, pattern in _METRICS.items()}
+_RATES = {'win', 'pick', 'ban'}
+_BILLING = {'annual', 'monthly'}
+_CONTRACT = re.compile(r'(?i)\b(?:billed\s+(?:annually|yearly)|при\s+(?:годов\w+\s+оплат\w*|оплате\s+за\s+год))\b')
+
+
+def _metrics(text):
+    result = {'annual_contract'} if _CONTRACT.search(text) else set()
+    text = _CONTRACT.sub('', text)
+    return result | {name for name, pattern in _METRICS.items() if pattern.search(text)}
+
+
+def _same_metric(expected, observed, unit, amount):
+    if unit == '%':
+        requested = expected & _RATES
+        return not requested or requested == observed & _RATES
+    if ('credits' in expected) != ('credits' in observed):
+        return False
+    if ('annual_contract' in expected) != ('annual_contract' in observed):
+        return False
+    billing = expected & _BILLING
+    return not billing or amount == '0' or billing == observed & _BILLING
 
 
 def _vendor_pages(vendor, urls):
@@ -299,32 +329,56 @@ def _numeric_evidence(page):
     page = re.sub(r'(?im)^(\d+(?:[.,]\d+)?)\s*\n[ \t]*(USD|₽|€)[ \t]*$', r'\1 \2', page)
     lines = [line.strip() for line in page.splitlines() if line.strip()]
     period = set()
+    headings = []
+    plan = ''
+    plan_start = 0
     for i, line in enumerate(lines):
         if found := set(_PERIOD.findall(line)):
             period = found
-        if amounts := _number_keys(line):
-            yield _claim_words(line), amounts, period
         heading = line.strip('#* ')
-        if not _PLAN.fullmatch(heading):
+        if _PLAN.fullmatch(heading):
+            plan = _claim_words(heading)
+            plan_start = i
             continue
-        # Flattened HTML often puts the plan and its monthly price on separate lines.
-        for following in lines[i+1:i+5]:
-            if _PLAN.fullmatch(following.strip('#* ')):
-                break
-            if amounts := _number_keys(following):
-                yield _claim_words(heading), amounts, period
-                break
+        cells = line.strip('|').split('|')
+        if not _number_keys(line):
+            if len(cells) > 1:
+                headings = [_metrics(cell) for cell in cells]
+            continue
+        if len(cells) > 1:
+            for column, cell in enumerate(cells):
+                for unit, amount in _number_keys(cell):
+                    metric = _metrics(cell)
+                    if len(headings) == len(cells):
+                        metric |= headings[column]
+                    yield _claim_words(cells[0] + ' ' + cell), unit, amount, period, metric
+            continue
+        # Flattened pricing cards separate the plan, amount and billing cadence.
+        metric = _metrics(line)
+        if i + 1 < len(lines) and not _number_keys(lines[i + 1]):
+            following = lines[i + 1]
+            if re.match(r'(?i)^(?:per\b|/|billed\b)', following):
+                metric |= _metrics(following) & (_BILLING | {'annual_contract'})
+        amounts = _number_keys(line)
+        if len(amounts) > 1 and (metric & (_BILLING | _RATES | {'credits'})):
+            continue  # Multiple unlabeled values need table columns or separate lines.
+        fragment = _claim_words(line)
+        if plan and i - plan_start <= 4:
+            fragment = plan + ' ' + fragment
+        for unit, amount in amounts:
+            yield fragment, unit, amount, period, metric
 
 
-def guard_current_numbers(answer, page_texts):
+def guard_current_numbers(answer, page_texts, *, query=''):
     # shortcut: local text evidence, upgrade to structured entities when readers expose them.
     pages = {url: list(_numeric_evidence(page)) for url, page in page_texts.items()
              if not page.startswith('[Копия из веб-архива')}
     removed = False
     bad_period = _inconsistent_day_range(answer)
     day_counts = set(re.findall(r'(?i)(?:за|последние|последних)\s+(\d+)\s+(?:день|дня|дней)', answer))
+    requested_rates = _metrics(query) & _RATES
 
-    def supported(claim, anchor, refs):
+    def supported(claim, anchor, refs, label=''):
         amounts = _number_keys(claim)
         if not amounts:
             return True
@@ -334,9 +388,15 @@ def guard_current_numbers(answer, page_texts):
         if not anchor:
             return False
         pattern = re.compile(r'(?<![\w+])' + re.escape(anchor) + r'(?![\w+])')
-        return any(amounts <= seen and pattern.search(fragment) and (not percentages or day_counts <= period)
-                   for url, fragments in pages.items() if not refs or url in refs
-                   for fragment, seen, period in fragments)
+        expected = _metrics(claim + ' ' + label)
+        if percentages and not expected & _RATES and len(requested_rates) == 1:
+            expected |= requested_rates
+        return all(any(unit == seen_unit and amount == seen_amount and pattern.search(fragment)
+                       and (unit != '%' or day_counts <= period)
+                       and _same_metric(expected, observed, unit, amount)
+                       for url, fragments in pages.items() if not refs or url in refs
+                       for fragment, seen_unit, seen_amount, period, observed in fragments)
+                   for unit, amount in amounts)
 
     def filter_prose(prose):
         nonlocal removed
@@ -372,7 +432,7 @@ def guard_current_numbers(answer, page_texts):
                     elif brand and _PLAN.fullmatch(plan):
                         cell_refs = _vendor_pages(brand, refs or pages)
                         anchor = plan if cell_refs else ''
-                    if not supported(cell_text, anchor, cell_refs):
+                    if not supported(cell_text, anchor, cell_refs, vendor):
                         cells[i] = ' Не подтверждено '
                         removed = True
                 kept.append('|' + '|'.join(cells) + '|')
@@ -387,6 +447,9 @@ def guard_current_numbers(answer, page_texts):
                 continue
             prefix = re.sub(r'^\s*(?:[-*]\s+|\d+[.)]\s+)', '', plain[:first.start()])
             anchor = _claim_words(prefix)
+            for metric in _METRICS.values():
+                anchor = metric.sub('', anchor).strip()
+            anchor = re.sub(r'\s+(?:цена|стоимость|price|cost)$', '', anchor).strip()
             brand, _, plan = anchor.rpartition(' ')
             if brand and _PLAN.fullmatch(plan):
                 refs = _vendor_pages(brand, refs or pages)

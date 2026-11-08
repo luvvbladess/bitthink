@@ -58,6 +58,18 @@ def test_live_grader_records_latency_and_usage():
     assert result['usage']['input_tokens']==42
 
 
+def test_answer_grader_separates_partial_delivery_from_reliability():
+    from evals.quality import score_answer
+
+    sources = [dict(summary='https://example.com/pricing\n$20', evidence_state='read')]
+    answer = ('| План | Цена | Источник |\n|---|---|---|\n'
+              '| A | $20 | [Тарифы](https://example.com/pricing) |\n| B | Не подтверждено | — |')
+    result = score_answer(dict(id='partial'), answer, sources)
+    assert result['reliability_passed'] is True
+    assert result['task_completed'] is False
+    assert result['completion_errors'] == ['partial_result']
+
+
 def test_expensive_route_follows_topic_not_every_short_message():
     from routing import route_for_turn
     previous='Проанализируй архитектуру распределенной системы'
