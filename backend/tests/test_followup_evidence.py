@@ -401,3 +401,19 @@ def test_current_numbers_keep_prices_when_vendors_are_column_headers():
          'https://github.com/features/copilot/plans': 'Pro\n$10/month'})
     assert '| Базовый | Plus — $8 | Pro — $10 |' in result
     assert '| Другой | Не подтверждено | Не подтверждено |' in result
+
+
+def test_current_numbers_handle_split_currency_in_real_copilot_reader_format():
+    from app.services.source_quality import guard_current_numbers
+
+    page = ('Free\nFor getting started with GitHub Copilot.\n0\nUSD\n'
+            'Pro\nFor everyday coding with agents.\n10\nUSD\nper user / month\n'
+            '$15 monthly total credits for Pro\nPro+\nFor more complex development.\n39\nUSD')
+    answer = ('| План | Цена в месяц, USD |\n|---|---|\n'
+              '| GitHub Copilot Free | 0 |\n| Copilot Pro | $10 |\n| Copilot Pro+ | $39 |\n'
+              '| Copilot Pro | $39 |')
+    result = guard_current_numbers(answer, {'https://github.com/features/copilot/plans': page})
+    assert '| GitHub Copilot Free | 0 |' in result
+    assert '| Copilot Pro | $10 |' in result
+    assert '| Copilot Pro+ | $39 |' in result
+    assert '| Copilot Pro | Не подтверждено |' in result

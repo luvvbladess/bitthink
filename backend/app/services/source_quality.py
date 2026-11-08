@@ -237,7 +237,7 @@ def supported_partial(answer: str, sources, *, observed_text=None, require_curre
     return 'Проверенных данных для точного ответа пока недостаточно. Найденные материалы доступны в источниках.'
 
 
-_NUMBER = re.compile(r'(?i)(?:[$€₽]\s*\d+(?:[.,]\d+)?|\d+(?:[.,]\d+)?\s*(?:%|₽|€|\$|руб(?:лей|ля)?\b))')
+_NUMBER = re.compile(r'(?i)(?:[$€₽]\s*\d+(?:[.,]\d+)?|\d+(?:[.,]\d+)?\s*(?:%|₽|€|\$|USD\b|руб(?:лей|ля)?\b))')
 _DAY_RANGE = re.compile(
     r'(?i)за\s+(\d+)\s+(?:день|дня|дней)[^.!?\n]{0,35}?'
     r'с\s+(\d{1,2})\s+(\w+)\s*(?:(\d{4})\s*)?по\s+(\d{1,2})\s+(\w+)\s+(\d{4})'
@@ -269,6 +269,7 @@ def _number_keys(text):
     for match in _NUMBER.finditer(text):
         value = re.sub(r'\s+', '', match.group()).replace(',', '.').lower()
         value = re.sub(r'руб(?:лей|ля)?$', '₽', value)
+        value = re.sub(r'usd$', '$', value)
         unit = value[0] if value[0] in '$€₽' else value[-1]
         amount = value.strip('$€₽%')
         if '.' in amount:
@@ -295,6 +296,7 @@ def _vendor_pages(vendor, urls):
 
 def _numeric_evidence(page):
     """Use individual rows or the beginning of a named pricing section."""
+    page = re.sub(r'(?im)^(\d+(?:[.,]\d+)?)\s*\n[ \t]*(USD|₽|€)[ \t]*$', r'\1 \2', page)
     lines = [line.strip() for line in page.splitlines() if line.strip()]
     period = set()
     for i, line in enumerate(lines):
@@ -356,10 +358,12 @@ def guard_current_numbers(answer, page_texts):
                 brand, _, plan = label.rpartition(' ')
                 for i, cell in enumerate(cells[1:], 1):
                     cell_text = re.sub(r'https?://[^\s)]+', '', cell)
+                    vendor = headers[i] if i < len(headers) else ''
+                    if 'usd' in vendor.split() and re.fullmatch(r'\s*\d+(?:[.,]\d+)?\s*', cell_text):
+                        cell_text += ' USD'
                     if not _number_keys(cell_text):
                         continue
                     anchor, cell_refs = label, refs
-                    vendor = headers[i] if i < len(headers) else ''
                     named_plan = re.search(r'(?i)(?<![\w+])(' + _PLAN_NAME + r')(?![\w+])', cell_text)
                     if vendor and (scoped := _vendor_pages(vendor, refs or pages)):
                         cell_refs = scoped
@@ -383,6 +387,10 @@ def guard_current_numbers(answer, page_texts):
                 continue
             prefix = re.sub(r'^\s*(?:[-*]\s+|\d+[.)]\s+)', '', plain[:first.start()])
             anchor = _claim_words(prefix)
+            brand, _, plan = anchor.rpartition(' ')
+            if brand and _PLAN.fullmatch(plan):
+                refs = _vendor_pages(brand, refs or pages)
+                anchor = plan if refs else ''
             if supported(plain, anchor, refs):
                 kept.append(line)
             else:
@@ -393,6 +401,8 @@ def guard_current_numbers(answer, page_texts):
     result = transform_prose(answer, filter_prose).strip()
     if removed:
         # Removing a ranked entry can leave an inaccurate promise of a complete top-N.
-        result = re.sub(r'(?im)^([^\n]*?)топ[-‑– ]?\d+([^\n]*):\s*$', 'Подтверждённая часть рейтинга:', result)
+        result = re.sub(r'(?im)^[^\n]*?топ[-‑– ]?\d+[^\n]*:[ \t]*$',
+                        'Подтверждённая часть рейтинга:' if re.search(r'\d\s*%', result) else
+                        'Точный рейтинг подтвердить не удалось.', result)
         result = (result + '\n\n' if result else '') + 'Часть цифр или периодов не удалось подтвердить по прочитанным источникам.'
     return result
