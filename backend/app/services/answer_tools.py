@@ -10,6 +10,46 @@ CALC_RULES = (
     'round(x,n) округляет HALF_UP. Ошибка инструмента не является результатом. '
     'Верни ответ в запрошенном формате, без каталога инструментов и отчёта о шагах.'
 )
+_DOTA = r'(?:дот[аеуы]|dota(?:\s*2)?)'
+_DOTA_TOP = re.compile(
+    r'(?i)(?:(?:дай|покажи|назови)\s+)?топ[\s‑–-]+(10|[1-9])\s+(?:героев\s+)?'
+    rf'(?:по\s+винрейту\s+(?:в\s+)?{_DOTA}|(?:в\s+)?{_DOTA}\s+по\s+винрейту)[.?!]?'
+)
+_DOTA_STATS = 'https://batru.gg/dota2/meta/heroes'
+
+
+async def dota_top_answer(task, user_id, record):
+    # shortcut: all-rank, patch-level top only; rank/date/role requests keep general search.
+    request = _DOTA_TOP.fullmatch(task.strip())
+    if not request or not record:
+        return None
+    from computer_tools import run_computer_tool
+    from status_feed import push_status
+    await push_status('browse', 'Проверяю таблицу винрейтов')
+    try:
+        await asyncio.wait_for(run_computer_tool('browse_page', {'url': _DOTA_STATS}, user_id), 8)
+    except (asyncio.TimeoutError, OSError):
+        return None
+    page = record.page_texts.get(_DOTA_STATS, '')
+    patch = re.search(r'(?im)^Dota 2 Meta Tier List (\d+\.\d+[a-z]?)\s*$', page)
+    if not patch or not re.search(r'(?i)All ranks combined', page) or page.startswith('[Копия из веб-архива'):
+        return None
+    header = re.search(r'(?im)^#\s*\|\s*Hero\s*\|\s*Win Rate\s*\|\s*Pick Rate[^\n]*\n', page)
+    if not header:
+        return None
+    rows = re.findall(r'(?m)^(\d+)\s*\|\s*([A-Za-z][A-Za-z .’\'-]{0,80}?)\s*\|\s*(\d{1,3}(?:\.\d+)?%)\s*\|',
+                      page[header.end():])[:int(request[1])]
+    if [int(row[0]) for row in rows] != list(range(1, int(request[1]) + 1)):
+        return None
+    rates = [float(row[2][:-1]) for row in rows]
+    if rates != sorted(rates, reverse=True) or not all(0 <= rate <= 100 for rate in rates):
+        return None
+    lines = []
+    for rank, hero, rate in rows:
+        duplicate = re.fullmatch(r'(.+) \1', hero)
+        lines.append(f'{rank}. {duplicate[1] if duplicate else hero} — {rate.replace(".", ",")} [Batru]({_DOTA_STATS})')
+    answer = f'**Патч {patch[1]}, рейтинговые матчи всех рангов**\n\n' + '\n'.join(lines)
+    return answer, [], '', record.enrich_sources([])
 
 
 def _previous_user(task, messages):
@@ -120,12 +160,15 @@ async def _read_references(urls, task, user_id, record):
 
 
 async def maybe_tool_answer(messages, task, user_id, available, *, pool='chat'):
+    from app.services.run_protocol import current_run, RunRecord
+    ranking = await dota_top_answer(task, user_id, current_run.get())
+    if ranking is not None:
+        return ranking
     urls = python_reference_urls(task, messages)
     calculation = not urls and computation_query(task, messages)
     if not urls and not calculation:
         return None
     from app.billing.quota import billing_pool
-    from app.services.run_protocol import current_run, RunRecord
     from app.services.response_policy import compact_messages
     from app.services.answer_quality import COMPACT_ANSWER_RULES
     from app.services.subject_guidance import subject_note

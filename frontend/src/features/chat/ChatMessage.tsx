@@ -24,6 +24,7 @@ import { resultReferences, type ProjectResultRef } from './projectResultLinks';
 import { EvidenceLink, type ProjectCitation } from './EvidenceLink';
 import { AnswerCallout, AnswerCard, AnswerCheckbox } from './RichAnswer';
 import { AnswerUsage } from './AnswerUsage';
+import { AnswerFeedback } from './AnswerFeedback';
 import { copyableAnswer, parseAnswerCard, remarkAnswerCallouts } from './richAnswerData';
 import '@/theme/highlight.css';
 
@@ -43,6 +44,7 @@ function MarkdownCell({ children, style }: { children?: ReactNode; style?: CSSPr
 }
 
 interface Props {
+  feedbackTarget?: { conversationId: string; messageId: number };
   role: 'user' | 'assistant';
   content: string;
   file?: { filename: string; data: string; url?: string; canvas?: boolean };
@@ -264,6 +266,7 @@ function RevealedMarkdown({ full, components }: { full: string; components: Comp
 }
 
 const ChatMessageView = memo(function ChatMessageView({
+  feedbackTarget,
   role,
   content,
   file,
@@ -584,6 +587,7 @@ const ChatMessageView = memo(function ChatMessageView({
                 </IconButton>
               </Tooltip>
               {!typing && <AnswerUsage search={search} />}
+              {!typing && feedbackTarget && <AnswerFeedback key={feedbackTarget.messageId} {...feedbackTarget} />}
               {file && (
                 <Tooltip title="Скачать файл">
                   <IconButton

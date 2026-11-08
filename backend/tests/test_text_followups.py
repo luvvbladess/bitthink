@@ -9,7 +9,9 @@ HISTORY = [
 ]
 
 
-@pytest.mark.parametrize('task',['Сделай короче','Ещё короче','Теплее','Убери вступление','Сделай вежливее'])
+@pytest.mark.parametrize('task',['Сделай короче','Ещё короче','Теплее','Убери вступление','Сделай вежливее',
+                                 'Сделай короче, сохрани день и время.',
+                                 'А теперь теплее, без официоза','Оставь только само сообщение, без вступления'])
 def test_text_followups_use_the_existing_draft(task):
     assert bounded_text_revision(task,HISTORY)
     assert compact_answer_kind(task,messages=HISTORY)== 'text'
@@ -31,6 +33,7 @@ def test_repeated_identical_revision_keeps_its_origin():
     'Сделай короче и пересчитай сумму',
     'Сделай короче и установи пакет',
     'Сделай короче и открой почту',
+    'Оставь только само сообщение и отправь по почте',
 ])
 def test_revision_is_not_permission_to_act(task):
     assert not bounded_text_revision(task,HISTORY)

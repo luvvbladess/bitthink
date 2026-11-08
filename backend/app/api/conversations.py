@@ -1,6 +1,7 @@
 import asyncio
-from typing import Optional
+from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from app.domains import conversations as library
 
 from app.auth import get_current_user
@@ -8,6 +9,37 @@ from app.core.repository import repo
 from app.models.schemas import AsideCreate, AsideOut, ConversationCreate, ConversationRename, ConversationOut, MessageOut
 
 router = APIRouter()
+
+_ANSWER_FEEDBACK = {
+    'incorrect': ('response', 'Пользователь отметил неверный факт'),
+    'incomplete': ('response', 'Пользователь отметил незавершённый ответ'),
+    'missed_edit': ('response', 'Пользователь отметил непонятую правку'),
+    'slow': ('performance', 'Пользователь отметил долгий ответ'),
+}
+
+
+class AnswerFeedback(BaseModel):
+    reason: Literal['incorrect', 'incomplete', 'missed_edit', 'slow']
+
+
+@router.post('/{conv_id}/messages/{message_id}/feedback')
+async def answer_feedback(conv_id: str, message_id: int, data: AnswerFeedback,
+                          user_id: str = Depends(get_current_user)):
+    from app.services.improvement_journal import record
+
+    bot_id = repo._bot_id(user_id)
+    if message_id <= 0:
+        raise HTTPException(404, 'Ответ недоступен')
+    try:
+        page = await asyncio.to_thread(library.history, bot_id, conv_id, 1, None, message_id)
+    except (PermissionError, ValueError):
+        raise HTTPException(404, 'Ответ недоступен') from None
+    if not page['items'] or page['items'][0]['role'] != 'assistant':
+        raise HTTPException(404, 'Ответ недоступен')
+    category, title = _ANSWER_FEEDBACK[data.reason]
+    await asyncio.to_thread(record, ('answer-feedback', bot_id, message_id, data.reason),
+                            category, title, account=bot_id, cluster=f'answer-feedback-{data.reason}')
+    return {'ok': True}
 
 
 @router.get("", response_model=list[ConversationOut])

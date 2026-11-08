@@ -19,7 +19,7 @@ import { ChatWindow, DisplayMessage } from '@/features/chat/ChatWindow';
 import { CanvasNavigation, canvasVisibility, rememberCanvasVisibility } from '@/features/chat/CanvasNavigation';
 import { DesignCanvas, findStudioCanvas, studioCanvasVersions, type StudioCanvasSource } from '@/features/chat/DesignCanvas';
 import { MessageInput } from '@/features/chat/MessageInput';
-import { adoptNewComposerDraft } from '@/features/chat/useComposerDraft';
+import { adoptNewComposerDraft, seedComposerDraft } from '@/features/chat/useComposerDraft';
 import { AttachmentInfo } from '@/features/chat/DocumentAttachment';
 import { lastChatImageUrl } from '@/features/chat/chatImages';
 import { useChatGeneration } from '@/features/chat/useChatGeneration';
@@ -48,6 +48,7 @@ import type { ProjectCitation } from '@/features/chat/EvidenceLink';
 import { applyPageMeta } from '@/seo';
 import { useVisualViewport } from '@/features/chat/useVisualViewportHeight';
 import { conversationMode, rememberConversationMode, setConversationModeOwner } from '@/features/chat/conversationMode';
+import { takeFirstQuestion } from '@/features/chat/firstQuestion';
 
 function keepLiveUploads(current: DisplayMessage[], derived: DisplayMessage[]): DisplayMessage[] {
   const uploads = current.filter((message) => (
@@ -64,6 +65,7 @@ export default function ChatPage() {
   const deliveryRef = useRef({ payload: '', key: '' });
   const navigationTime = useRef<number | null>(null);
   const [locationParams] = useSearchParams();
+  const hasProfile = useAuthStore((state) => Boolean(state.user));
   const [projectPanel, setProjectPanel] = useState<string | null>(null);
   const { activeConvId, setActiveConvId, activeConvRef, selectionRequestRef, openNewChat, setSearchParams,
     conversationsQuery, conversations, conversationsFetched, activateMutation } = useConversationNavigation({
@@ -395,6 +397,10 @@ export default function ChatPage() {
         if (selected) await activateMutation.mutateAsync(selected);
         return;
       }
+      if (ownerId && openNewChat && locationParams.get('start') === '1') {
+        const question = takeFirstQuestion();
+        if (question) seedComposerDraft(String(ownerId), conv.id, question);
+      }
       setActiveConvId(conv.id);
       setSearchParams({ c: conv.id }, { replace: openNewChat });
       setDisplayMessages([]);
@@ -417,12 +423,12 @@ export default function ChatPage() {
   };
 
   useEffect(() => {
-    if (!openNewChat || !conversationsFetched || openingNewRef.current) return;
+    if (!openNewChat || !conversationsFetched || openingNewRef.current || (locationParams.get('start') === '1' && !hasProfile)) return;
     openingNewRef.current = true;
     void handleCreate().finally(() => {
       openingNewRef.current = false;
     });
-  }, [openNewChat, conversationsFetched]);
+  }, [openNewChat, conversationsFetched, hasProfile, locationParams]);
 
   const moveChatToProject = async (cid: string, pid: string | null) => {
     await apiFetch(`/projects/chat/${cid}`, { method: 'PUT', body: JSON.stringify({ project_id: pid }) });

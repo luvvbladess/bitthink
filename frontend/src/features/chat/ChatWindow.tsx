@@ -587,6 +587,7 @@ export function ChatWindow({
             style={{ minWidth: 0, width: '100%' }}
           >
             <ChatMessage
+              feedbackTarget={msg.role === 'assistant' && convId && msg.message_id ? { conversationId: convId, messageId: msg.message_id } : undefined}
               role={msg.role}
               content={msg.content}
               file={msg.file}

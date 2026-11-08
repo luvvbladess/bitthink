@@ -10,6 +10,31 @@ from app.db.models import User
 from app.main import app
 
 
+def test_answer_feedback_accepts_only_accessible_assistant_messages(monkeypatch):
+    from app.domains import conversations
+    from app.services import improvement_journal
+
+    client = TestClient(app)
+    path = '/conversations/example/messages/42/feedback'
+    assert client.post(path, json={'reason': 'slow'}).status_code == 401
+    monkeypatch.setitem(app.dependency_overrides, get_current_user, lambda: 'beta@example.com')
+    events = []
+
+    def history(uid, cid, limit, before, around):
+        assert uid == repo._bot_id('beta@example.com') and limit == 1 and before is None
+        if cid != 'example':
+            raise PermissionError
+        return {'items': [{'role': 'assistant' if around == 42 else 'user', 'content': 'private text'}]}
+
+    monkeypatch.setattr(conversations, 'history', history)
+    monkeypatch.setattr(improvement_journal, 'record', lambda *args, **kwargs: events.append((args, kwargs)))
+    assert client.post(path, json={'reason': 'missed_edit'}).json() == {'ok': True}
+    assert client.post(path, json={'reason': 'arbitrary'}).status_code == 422
+    assert client.post(path.replace('example', 'other'), json={'reason': 'slow'}).status_code == 404
+    assert client.post(path.replace('42', '43'), json={'reason': 'slow'}).status_code == 404
+    assert len(events) == 1 and 'private text' not in repr(events) and 'missed_edit' in repr(events)
+
+
 def test_empty_conversations_are_distinct_even_when_created_concurrently(monkeypatch):
     email = f"new-chats-{uuid4().hex}@example.com"
     with SyncSessionLocal() as session:

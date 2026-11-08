@@ -57,6 +57,12 @@ export function adoptNewComposerDraft(account: string, conversationId: string) {
   redirects.set(draft, target);
 }
 
+export function seedComposerDraft(account: string, conversationId: string, text: string) {
+  const scope = `${account}:${conversationId}`;
+  const draft = read(scope);
+  write(scope, { ...draft, text: draft.text ? `${draft.text}\n\n${text}` : text });
+}
+
 export function useComposerDraft(conversationId: string | null | undefined) {
   const account = useAuthStore(s => s.user?.id || s.user?.email || 'anonymous');
   const scope = `${account}:${conversationId || 'new'}`;
