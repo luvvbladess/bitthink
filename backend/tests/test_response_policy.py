@@ -129,3 +129,10 @@ def test_cpp_delimiter_check_ignores_literals_and_detects_malformed_snippets():
     assert cpp_delimiter_error(task, '```cpp\nconst char* s = "("; char c = \'}\';\n```') is False
     assert cpp_delimiter_error(task, '```cpp\n#if X\nfoo();\n#endif\n```') is None
     assert cpp_delimiter_error(task + ' Измени код в проекте.', '```cpp\nfoo(\n```') is None
+
+
+def test_stm32_clock_snapshot_uses_a_single_writer():
+    task = 'STM32F072: HSEBYP=0, HSERDY=0, PLLRDY=0. Что проверить сначала? Без рефакторинга.'
+    assert compact_answer_kind(task) == 'text'
+    assert compact_answer_kind(task + ' Исправь прошивку в проекте.') == ''
+    assert compact_answer_kind(task, web_required=True) != 'text'

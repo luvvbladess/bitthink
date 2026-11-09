@@ -99,6 +99,17 @@ def everyday_answer(text):
         r'^(?:сделай|сократи)\s+сообщение\s+короче\b', text or '', re.S))
 
 
+def _clock_snapshot_question(text):
+    from app.services.orchestrator_policy import critical_task
+
+    scope = re.sub(r'(?i)\bбез\s+рефакторинга\b', '', text)
+    return (len(text) <= 1500 and not critical_task(scope)
+            and bool(re.search(r'(?i)\bstm32[a-z]\d{3}\w*\b', text))
+            and bool(re.search(r'(?i)\b(?:HSERDY|HSIRDY|PLLRDY|HSEBYP|SWS)\s*=\s*(?:[01]|HSI|HSE|PLL)\b', text))
+            and bool(re.search(r'(?i)какой\s+этап|что\s+проверить|почему\s+не', text))
+            and not re.search(r'(?i)https?://|источник|документаци|проект|файл|прошивк|вложени', text))
+
+
 def compact_answer_kind(text, *, web_required=False, messages=None):
     from app.services.orchestrator_policy import bounded_text_task, calculation_task, critical_task
     from app.services.request_intent import classify_request
@@ -136,6 +147,8 @@ def compact_answer_kind(text, *, web_required=False, messages=None):
         return ''
     # Personal circumstances can contain "today" without requiring current web facts.
     if everyday_answer(text):
+        return 'text'
+    if not web_required and _clock_snapshot_question(text):
         return 'text'
     if re.search(r'(?i)\bлечени\w*|\bлекарств\w*|\bдоз\w*', text):
         return ''
