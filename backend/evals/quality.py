@@ -33,6 +33,20 @@ def score_answer(case, answer, sources, *, seconds=0, usage=None):
         if re.search(pattern, answer, re.I):
             completion.append('forbidden_content:' + pattern)
             errors.append(completion[-1])
+    if 'max_words' in case and len(answer.split()) > case['max_words']:
+        completion.append('word_limit')
+        errors.append(completion[-1])
+    if 'json_expected' in case:
+        expected = case['json_expected']
+        try:
+            actual = json.loads(answer)
+        except ValueError:
+            actual = None
+        if (actual != expected or isinstance(expected, dict) and any(
+                isinstance(actual[key], bool) != isinstance(value, bool) for key, value in expected.items())):
+            reliability.append('incorrect_json_result')
+            completion.append(reliability[-1])
+            errors.append(reliability[-1])
     if len(cited_urls(answer)) < rubric.get('min_citations', 0):
         reliability.append('not_enough_citations')
         errors.append(reliability[-1])

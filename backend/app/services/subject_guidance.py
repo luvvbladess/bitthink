@@ -30,7 +30,8 @@ _CPP = re.compile(r'(?i)(?<!\w)[cс]\+\+(?:\d{2})?(?!\w)')
 def subject_for_query(text):
     if _TRANSFORM.search(text or ''):
         return None
-    if _CODE.search(text or '') or _CPP.search(text or ''):
+    if (_CODE.search(text or '') or _CPP.search(text or '') or
+            re.search(r'(?i)\b(?:алгоритм|функция)\b[^\n.!?]{0,120}\b(?:в|на)\s+питоне\b', text or '')):
         return 'code'
     if _ENGINEERING.search(text or ''):
         return 'engineering'
@@ -101,14 +102,18 @@ def subject_note(text):
             'При сбое запуска сначала найди в доступном проекте точный МК, плату, startup/SystemInit, текущий clock init '
             'и конфигурацию сборки. Уточни только недостающие данные, включая частоту и тип источника (кварц или внешний сигнал). '
             'Раздели готовность источника, захват PLL, фактическое переключение SYSCLK и тактирование периферии. '
+            'Начни с первого неподтверждённого этапа: при неготовом HSE сначала проверь его режим и плату, '
+            'а при готовом PLL и прежнем SYSCLK сравни запрос переключения со статусом источника. '
             'Запроси первый флаг, который не меняется, или значения регистров в точке сбоя; '
             'если есть закрытая рабочая прошивка, достаточно сравнить обезличенные снимки регистров. '
-            'Сверь порядок, пределы питания/Flash/шин и errata с документацией точной модели. '
+            'Сверь имена регистров, порядок, пределы питания/Flash/шин и errata с документацией точной модели. '
             'Предложи минимальную правку с таймаутом и способом проверки; не начинай с рефакторинга. '
-            'Для MCO укажи реальный делитель и ограничение вывода. Для STM32F103 по RM0008 PLL на MCO идёт как PLL/2; '
-            'при PLL 72 МГц ожидаются 36 МГц, прямой SYSCLK 72 МГц превышает предел вывода 50 МГц. '
+            'Для MCO укажи реальный делитель и ограничение вывода этой модели. '
             'Отделяй сборку от подтверждения запуска на плате; без измерения или отладчика не заявляй, что МК запущен.'
         )
+        if re.search(r'(?i)\bstm32f103', query):
+            note += (' Для STM32F103 по RM0008 PLL на MCO идёт как PLL/2; при PLL 72 МГц ожидаются 36 МГц. '
+                     'Прямой SYSCLK 72 МГц превышает предел вывода 50 МГц.')
     if subject != 'code':
         return note
     note += (' Сначала сверь контракт: граничные случаи, переполнение, мутацию входа, '
@@ -132,6 +137,7 @@ def subject_note(text):
                  'Учитывай повторную регистрацию callback, снятие подписок и время жизни объектов. '
                  'Проверенная справка Arma Reforger API (2026-11-04): '
                  'ScriptComponent имеет protected void OnDelete(IEntity owner), не EOnDelete. '
+                 'В описании жизненного цикла встречается EOnDelete, но в списке и объявлении метода указано OnDelete. '
                  'Другие события компонента включают EOnInit(IEntity owner) и EOnFrame(IEntity owner, float timeSlice). '
                  'Источник: https://community.bistudio.com/wikidata/external-data/arma-reforger/EnfusionScriptAPIPublic/interfaceScriptComponent.html. '
                  'ScriptCallQueue: CallLater(func fn, int delay, bool repeat), Remove(func fn); '

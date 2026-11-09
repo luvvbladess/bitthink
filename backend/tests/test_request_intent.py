@@ -72,6 +72,16 @@ def test_answer_grader_separates_partial_delivery_from_reliability():
     assert result['reliability_passed'] is True and result['task_completed'] is False
 
 
+def test_answer_grader_checks_exact_structured_values_and_word_budget():
+    from evals.quality import score_answer
+
+    case = dict(id='structured', json_expected={'flag': False, 'value': 3.5})
+    assert score_answer(case, '{"flag":false,"value":3.5}', [])['passed']
+    assert 'incorrect_json_result' in score_answer(case, '{"flag":0,"value":3.5}', [])['errors']
+    assert 'incorrect_json_result' in score_answer(case, 'Ответ: {"flag":false,"value":3.5}', [])['errors']
+    assert 'word_limit' in score_answer(dict(id='short', max_words=2), 'один два три', [])['errors']
+
+
 def test_expensive_route_follows_topic_not_every_short_message():
     from routing import route_for_turn
     previous='Проанализируй архитектуру распределенной системы'

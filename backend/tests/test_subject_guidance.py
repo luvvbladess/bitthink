@@ -78,6 +78,9 @@ def test_clock_diagnostics_are_grounded_in_target_and_hardware():
                    'Не запускается PLL, не меняется PLLRDY'):
         note = subject_note(prompt)
         assert 'startup/SystemInit' in note
-        assert 'PLL/2' in note
+        assert 'первого неподтверждённого этапа' in note
         assert 'Отделяй сборку от подтверждения запуска' in note
+        assert 'PLL/2' not in note
+    assert 'PLL/2' in subject_note('Тактирование STM32F103C8T6: что подать на MCO?')
+    assert 'PLL/2' not in subject_note('Тактирование STM32F072: что подать на MCO?')
     assert 'startup/SystemInit' not in subject_note('Объясни сортировку пузырьком')

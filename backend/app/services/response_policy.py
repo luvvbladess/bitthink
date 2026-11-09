@@ -44,12 +44,22 @@ def inline_code_task(text):
         r'(?i)(?:напиши|покажи|приведи) код [^\n.!?]{1,140} на (?:python|javascript|typescript|rust|go|c\+\+|c#)[.!?]?',
         text.strip(),
     )
+    if not standalone_snippet:
+        standalone_snippet = re.fullmatch(
+            r'(?i)(?:короч[, ]+)?(?:(?:подскажи|покажи)(?:\s+пж|,?\s+пожалуйста)?[, ]+)?'
+            r'как\s+(?:выглядит\s+(?:алгоритм|функция)\s+[^\n.!?]{1,90}|'
+            r'(?:алгоритм|функция)\s+[^\n.!?]{1,90}\s+выглядит)\s+(?:в|на)\s+питоне[.!?]?',
+            text.strip(),
+        )
     if not (explicit_format or standalone_snippet):
         return False
     scope = re.sub(r'(?i)не\s+создавай\s+(?:вложения|файлы)|без\s+создания\s+файлов', '', text)
     scope = re.sub(r'(?i)источник\w*\s+отмен\w*', '', scope)
+    # Removing duplicates describes the function's behavior, not an external action.
+    scope = re.sub(r'(?i)\bудал(?:и|ить)\s+(?:(?:только\s+)?(?:соседние\s+)?(?:повторы|дубликаты)|'
+                   r'(?:все\s+)?неч[её]тные)\b', '', scope)
     if re.search(r'(?i)https?://|документаци|источник|актуальн|текущ\w*\s+верс|'
-                 r'\b(?:файл\w*|проект\w*|репозитори\w*|вложени\w*|прикрепл\w*|сервер\w*|'
+                 r'\b(?:файл\w*|папк\w*|проект\w*|репозитори\w*|вложени\w*|прикрепл\w*|сервер\w*|'
                  r'сохрани|запусти|протестируй|выполни|отправь|опубликуй|открой|прочитай|установи|скачай)\b', scope):
         return False
     return not critical_task(scope)
@@ -60,7 +70,8 @@ def everyday_answer(text):
     from app.services.orchestrator_policy import critical_task
     from app.services.subject_guidance import subject_for_query
     from app.services.request_intent import classify_request
-    if len(text or '') > 1800 or critical_task(text) or subject_for_query(text):
+    scope = re.sub(r'(?i)\bбез\s+диагнозов\b', '', text or '')
+    if len(text or '') > 1800 or critical_task(scope) or subject_for_query(text):
         return False
     if classify_request(text).topic != 'general':
         return False
@@ -129,6 +140,12 @@ def compact_answer_kind(text, *, web_required=False, messages=None):
     if re.search(r'(?i)\bлечени\w*|\bлекарств\w*|\bдоз\w*', text):
         return ''
     if supplied_analysis_task(text) and not web_required:
+        return 'text'
+    if (not web_required and re.search(r'(?i)enfusion|enforce\s+script|arma\s+reforger', text)
+            and re.search(r'(?i)\bScriptComponent\b', text)
+            and re.search(r'(?i)\b(?:E?OnDelete|EOnInit|EOnFrame)\b', text)
+            and re.search(r'(?i)сигнатур|\bcallback\b', text)
+            and not critical_task(re.sub(r'(?i)\bcallback\s+удаления\b', '', text))):
         return 'text'
     if (subject_for_query(text) == 'engineering' and len(text) <= 1800
             and re.search(r'(?i)других\s+данных\s+нет|больше\s+ничего\s+не\s+известно', text)
@@ -222,6 +239,7 @@ def compact_messages(messages, *, web=False):
         result.append({'role': 'system', 'content':
             'Сейчас нужен только готовый текст для адресата. Используй только сообщённые факты. '
             'Не добавляй обстоятельства, сроки, обещания написать или встретиться позже. '
+            'Если пол автора неизвестен, выбери нейтральную формулировку. '
             'Не переноси ограничения пользователя в реплику адресату. Пример: '
             '«Напиши коллеге: отчёт ещё проверяю. Не обещай срок. Только сообщение» → '
             '«Я ещё проверяю отчёт». Закончи текст после последней нужной фразы, без приписок. '
@@ -233,6 +251,8 @@ def compact_messages(messages, *, web=False):
                 'Отредактируй предыдущий текст по текущему уточнению и верни сам результат без вступления. '
                 'Сохрани факты, даты, суммы, контакты, язык и прежние ограничения, которые пользователь '
                 'не отменил. Новое уточнение меняет только названное свойство текста. '
+                'Сохраняй признаки, ограничивающие предмет просьбы. Если пол автора неизвестен, '
+                'оставь формулировку нейтральной. '
                 'При сокращении убери повторы и необязательные слова. Более тёплый тон передай мягкой формулировкой '
                 'без подколов, фамильярности и обвинений, если пользователь их не просил. '
                 'Не добавляй обещания, обстоятельства и предложения сделать работу позже.'})
