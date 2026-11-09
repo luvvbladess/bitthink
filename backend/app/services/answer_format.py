@@ -13,6 +13,12 @@ def requested_json(text):
 
 def normalize_answer_format(answer, task):
     if not requested_json(task):
+        # Drop a filler-only introduction, leaving the code and explanation intact.
+        lead = re.match(r'(?i)^\s*конечно,?\s+вот\s+(?:простой\s+)?вариант\s*:\s*(?=```)', answer or '')
+        if lead:
+            from app.services.response_policy import inline_code_task
+            if inline_code_task(task):
+                return answer[lead.end():]
         return answer
     match = re.fullmatch(r'\s*```(?:json)?\s*\n?([\s\S]*?)\n?```\s*', answer or '', re.I)
     candidate = match.group(1).strip() if match else (answer or '').strip()

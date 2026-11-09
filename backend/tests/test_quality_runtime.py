@@ -78,6 +78,38 @@ def test_pricing_prefetch_reads_both_sides_once_and_keeps_partial_result(monkeyp
     assert active == 2
 
 
+def test_enfusion_reference_answer_carries_the_page_read_for_this_turn(monkeypatch):
+    import computer_tools
+    import openai_client
+    from app.services.answer_tools import maybe_tool_answer, enfusion_reference_urls
+
+    task = 'Enfusion: какая сигнатура callback удаления ScriptComponent, OnDelete или EOnDelete?'
+    url, = enfusion_reference_urls(task)
+    calls = []
+
+    async def browse(name, args, user_id):
+        assert name == 'browse_page' and args['url'] == url
+        calls.append('read')
+        page = f'URL: {url}\n\nDocumentation for ScriptComponent. Protected member: void ScriptComponent.OnDelete(IEntity owner).'
+        current_run.get().observe_page(page)
+        return page
+
+    async def writer(chat, **kwargs):
+        calls.append('answer')
+        assert not kwargs['use_tools'] and any('void ScriptComponent.OnDelete' in row['content'] for row in chat)
+        return '`OnDelete(IEntity owner)`.', [], '', []
+
+    monkeypatch.setattr(computer_tools, 'run_computer_tool', browse)
+    monkeypatch.setattr(openai_client, 'get_chat_response', writer)
+    answer, _, _, sources = asyncio.run(maybe_tool_answer([{'role': 'user', 'content': task}], task, 1, ['gpt-6-luna']))
+    assert 'OnDelete(IEntity owner)' in answer and calls == ['read', 'answer']
+    assert f'[Справка ScriptComponent]({url})' in answer
+    assert sources[0]['evidence_state'] == 'read'
+    short = task + ' Верни только сигнатуру.'
+    answer, _, _, sources = asyncio.run(maybe_tool_answer([{'role': 'user', 'content': short}], short, 1, ['gpt-6-luna']))
+    assert answer == '`OnDelete(IEntity owner)`.' and sources[0]['evidence_state'] == 'read'
+
+
 def test_ranked_answer_uses_read_rows_and_preserves_requested_scope(monkeypatch):
     import computer_tools
     from app.services.answer_tools import dota_top_answer, _DOTA_STATS

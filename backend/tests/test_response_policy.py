@@ -107,9 +107,22 @@ def test_local_constraints_do_not_escalate_an_inline_answer():
 
 
 def test_enfusion_lifecycle_reference_does_not_start_a_project():
+    from app.services.answer_tools import enfusion_reference_urls
+
     question = 'Enfusion: у ScriptComponent какой callback удаления имеет сигнатуру с IEntity owner: OnDelete или EOnDelete?'
     assert compact_answer_kind(question) == 'text'
     assert compact_answer_kind(question + ' Измени код в проекте.') == ''
+    assert enfusion_reference_urls(question)[0].endswith('/interfaceScriptComponent.html')
+    assert not enfusion_reference_urls(question + ' Не ищи в интернете.')
+    assert compact_answer_kind(question + ' Не ищи в интернете.') == 'text'
+    assert not enfusion_reference_urls(question + ' Измени код в проекте.')
+
+
+def test_inline_code_format_preserves_the_code_and_substantive_explanation():
+    task = 'Напиши код сортировки на Python'
+    answer = '```python\nprint(sorted([2, 1]))\n```\nСортировка по возрастанию.'
+    assert normalize_answer_format('Конечно, вот простой вариант:\n\n' + answer, task) == answer
+    assert normalize_answer_format('Сортируем по возрастанию:\n' + answer, task).startswith('Сортируем')
 
 
 def test_informal_python_snippet_and_cpp_list_operation_stay_inline():
