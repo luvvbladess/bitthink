@@ -93,3 +93,39 @@ def test_standalone_code_snippet_does_not_need_tools():
 
     assert compact_answer_kind('Напиши код сортировки на Python') == 'text'
     assert compact_answer_kind('Напиши код для файла app.py на Python') != 'text'
+
+
+def test_local_constraints_do_not_escalate_an_inline_answer():
+    from app.services.response_policy import everyday_answer, inline_code_task
+
+    daily = 'Человек не отвечает три часа. Помоги разобраться без диагнозов.'
+    code = 'Rust: напиши функцию, удалить только соседние повторы. Верни только блок кода.'
+    assert everyday_answer(daily) and compact_answer_kind(daily) == 'text'
+    assert not everyday_answer(daily + ' Есть симптомы инсульта.')
+    assert inline_code_task(code) and compact_answer_kind(code) == 'text'
+    assert not inline_code_task(code + ' Потом удали файл с тестами.')
+
+
+def test_enfusion_lifecycle_reference_does_not_start_a_project():
+    question = 'Enfusion: у ScriptComponent какой callback удаления имеет сигнатуру с IEntity owner: OnDelete или EOnDelete?'
+    assert compact_answer_kind(question) == 'text'
+    assert compact_answer_kind(question + ' Измени код в проекте.') == ''
+
+
+def test_informal_python_snippet_and_cpp_list_operation_stay_inline():
+    python = 'короч, подскажи пж как алгоритм сортировки пузырьком выглядит в питоне'
+    cpp = 'C++17: напиши void erase_odds(std::vector<int>& values). На месте удалить все нечётные. Верни только один блок кода.'
+    assert compact_answer_kind(python) == 'text'
+    assert compact_answer_kind(cpp) == 'text'
+    assert compact_answer_kind(cpp + ' Удали папку проекта.') != 'text'
+
+
+def test_cpp_delimiter_check_ignores_literals_and_detects_malformed_snippets():
+    from app.services.answer_format import cpp_delimiter_error
+
+    task = 'C++17: верни только один блок кода для функции.'
+    assert cpp_delimiter_error(task, '```cpp\nresult.reserve a.size() - k + 1);\n```') is True
+    assert cpp_delimiter_error(task, '```cpp\nresult.reserve(a.size() - k + 1); // ]\n```') is False
+    assert cpp_delimiter_error(task, '```cpp\nconst char* s = "("; char c = \'}\';\n```') is False
+    assert cpp_delimiter_error(task, '```cpp\n#if X\nfoo();\n#endif\n```') is None
+    assert cpp_delimiter_error(task + ' Измени код в проекте.', '```cpp\nfoo(\n```') is None

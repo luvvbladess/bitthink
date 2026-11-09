@@ -21,3 +21,27 @@ def normalize_answer_format(answer, task):
     except (ValueError, TypeError):
         return answer
     return candidate
+
+
+def cpp_delimiter_error(task, answer):
+    """Return None when a structural check is inapplicable."""
+    from app.services.response_policy import inline_code_task
+
+    if not re.search(r'(?i)(?<!\w)[cс]\+\+', task) or not inline_code_task(task):
+        return None
+    block = re.fullmatch(r'\s*```(?:cpp|c\+\+|cxx)[ \t]*\n([\s\S]*?)\n```\s*', answer, re.I)
+    if not block:
+        return None
+    code = block[1]
+    # shortcut: ordinary snippets only; raw strings and preprocessor branches need a compiler.
+    if re.search(r'R"|\\\r?\n|(?m:^\s*#\s*(?!include\b|pragma\b)\w+)', code):
+        return None
+    plain = re.sub(r'//[^\n]*|/\*[\s\S]*?\*/|"(?:\\.|[^"\\\n])*"|\'(?:(?:\\.)|[^\'\\\n])*\'', '', code)
+    stack = []
+    matching = {')': '(', ']': '[', '}': '{'}
+    for char in plain:
+        if char in '([{':
+            stack.append(char)
+        elif char in matching and (not stack or stack.pop() != matching[char]):
+            return True
+    return bool(stack)

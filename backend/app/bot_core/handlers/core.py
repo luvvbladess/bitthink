@@ -748,14 +748,36 @@ async def get_smart_response(
 
     answer, files, reasoning, model_sources = result
     from status_feed import push_status
+    from app.services.run_protocol import current_run
+    record = current_run.get()
+    if (model in {'auto', 'director'} and not is_desktop and not cloud_task and not files
+            and not intent.needs_web and not followup_web and not model_sources
+            and not has_documents and not has_images and not workspaces.get()
+            and (not record or not record.tools)):
+        from app.services.answer_format import cpp_delimiter_error
+        if cpp_delimiter_error(user_text, answer):
+            from app.billing.quota import billing_pool
+            from app.services.response_policy import compact_messages
+            await push_status("think", "Исправляю синтаксис фрагмента C++")
+            retry_chat = [*compact_messages(messages), {'role': 'assistant', 'content': answer},
+                          {'role': 'system', 'content': 'В черновике не совпадают скобки. Исправь синтаксис и '
+                           'сохрани контракт задачи. Верни только один полный блок Markdown с языком cpp.'}]
+            pool_token = billing_pool.set(pool)
+            try:
+                corrected, _, _, _ = await get_chat_response(
+                    retry_chat, model=clamp_model(tier, 'gpt-6-sol'), user_id=user_id,
+                    use_tools=False, use_skills=False, reasoning_effort='low',
+                )
+            finally:
+                billing_pool.reset(pool_token)
+            answer = (corrected if cpp_delimiter_error(user_text, corrected) is False else
+                      'Не удалось подготовить синтаксически целый фрагмент C++.')
     await push_status("think", "Оформляю ответ")
     source_limit = 28 if model == "director" else (24 if model in {"gpt-6-sol", "gpt-6-astra", "search"} else 18)
     sources = _merge_sources(grounded_sources, model_sources, limit=source_limit)
     from app.services.followup_evidence import previous_source_rows
     from app.services.source_quality import cited_urls, resolve_numbered_citations
-    from app.services.run_protocol import current_run
     previous_sources = previous_source_rows(evidence_note)
-    record = current_run.get()
     if record:
         sources = record.enrich_sources(sources)
     # Sources provide context and attribution, never a delivery gate. Do not

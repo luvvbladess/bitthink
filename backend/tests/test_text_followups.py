@@ -61,6 +61,7 @@ def test_revision_guidance_preserves_transcript_and_facts():
     result=compact_messages(rows)
     assert result[:-1]==rows
     assert 'Сохрани факты, даты, суммы, контакты' in result[-1]['content']
+    assert 'признаки, ограничивающие предмет просьбы' in result[-1]['content']
 
 
 def test_fenced_code_is_not_downgraded_to_prose_revision():
