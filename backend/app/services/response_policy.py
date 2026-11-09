@@ -154,12 +154,11 @@ def compact_answer_kind(text, *, web_required=False, messages=None):
         return ''
     if supplied_analysis_task(text) and not web_required:
         return 'text'
-    if (not web_required and re.search(r'(?i)enfusion|enforce\s+script|arma\s+reforger', text)
-            and re.search(r'(?i)\bScriptComponent\b', text)
-            and re.search(r'(?i)\b(?:E?OnDelete|EOnInit|EOnFrame)\b', text)
-            and re.search(r'(?i)сигнатур|\bcallback\b', text)
-            and not critical_task(re.sub(r'(?i)\bcallback\s+удаления\b', '', text))):
-        return 'text'
+    if not web_required:
+        from app.services.answer_tools import enfusion_signature_question
+        # Direct fallback when the dedicated reference read cannot return a result.
+        if enfusion_signature_question(text):
+            return 'text'
     if (subject_for_query(text) == 'engineering' and len(text) <= 1800
             and re.search(r'(?i)других\s+данных\s+нет|больше\s+ничего\s+не\s+известно', text)
             and not re.search(r'(?i)https?://|источник|документаци', text)):

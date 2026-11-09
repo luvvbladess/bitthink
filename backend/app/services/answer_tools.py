@@ -159,12 +159,34 @@ async def _read_references(urls, task, user_id, record):
     return '\n\n'.join(bodies)
 
 
+def enfusion_signature_question(task):
+    from app.services.orchestrator_policy import critical_task
+
+    if (len(task) > 600
+            or re.search(r'(?i)https?://|проект|файл|вложени|прикрепл|исправь|измени|реализуй|запусти|добавь|сохрани', task)
+            or critical_task(re.sub(r'(?i)\bcallback\s+удаления\b', '', task))):
+        return False
+    return bool(re.search(r'(?i)enfusion|enforce\s+script|arma\s+reforger', task)
+                and re.search(r'(?i)\bScriptComponent\b', task)
+                and re.search(r'(?i)\b(?:E?OnDelete|EOnInit|EOnFrame)\b', task)
+                and re.search(r'(?i)сигнатур|\bcallback\b', task))
+
+
+def enfusion_reference_urls(task):
+    from app.services.request_intent import forbids_web
+
+    if enfusion_signature_question(task) and not forbids_web(task):
+        return ['https://community.bistudio.com/wikidata/external-data/arma-reforger/EnfusionScriptAPIPublic/interfaceScriptComponent.html']
+    return []
+
+
 async def maybe_tool_answer(messages, task, user_id, available, *, pool='chat'):
     from app.services.run_protocol import current_run, RunRecord
     ranking = await dota_top_answer(task, user_id, current_run.get())
     if ranking is not None:
         return ranking
-    urls = python_reference_urls(task, messages)
+    enfusion_urls = enfusion_reference_urls(task)
+    urls = enfusion_urls or python_reference_urls(task, messages)
     calculation = not urls and computation_query(task, messages)
     if not urls and not calculation:
         return None
@@ -194,7 +216,15 @@ async def maybe_tool_answer(messages, task, user_id, available, *, pool='chat'):
                 'Для цитат копируй слова источника дословно.\n\n' + body})
             result = await get_chat_response(chat, model='gpt-6-luna', user_id=user_id,
                 use_tools=False, use_skills=False, reasoning_effort='low')
-            return result[0], result[1], result[2], record.enrich_sources(result[3])
+            answer, files, reasoning, sources = result
+            if (enfusion_urls and answer.strip() and not answer.lstrip().startswith('❌')
+                    and not re.search(r'(?i)без\s+ссылок|не\s+(?:добавляй|давай)\s+ссылок|'
+                                      r'только\s+(?:сигнатур\w*|код|json)', task)):
+                from app.services.source_quality import cited_urls
+                url = enfusion_urls[0]
+                if url not in cited_urls(answer):
+                    answer = f'{answer.rstrip()}\n\n[Справка ScriptComponent]({url})'
+            return answer, files, reasoning, record.enrich_sources(sources)
         engineering = teaching_calculation(task)
         strong = engineering or bool(re.search(r'(?i)вероятност|условн\w*|байес|без\s+возвращения|матожидан|дисперс', task))
         model = 'gpt-6-sol' if strong and 'gpt-6-sol' in available else 'gpt-6-luna'
