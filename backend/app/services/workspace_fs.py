@@ -1030,6 +1030,16 @@ def glob_paths(user_id: int, pattern: str, path: str = ".") -> str:
 
 def dispatch(user_id: int, op: str, args: dict[str, Any]) -> str:
     op = (op or "").strip().lower()
+    repair_product_id = args.get('repair_product_id')
+    if repair_product_id:
+        if op not in {'ls', 'glob', 'grep', 'read', 'edit'} or not re.fullmatch(r'[0-9a-f]{24}', str(repair_product_id)):
+            raise ValueError('Недопустимый инструмент точечной починки.')
+        project = f'products/{repair_product_id}'
+        relative = _safe_rel(str(args.get('path') or '.'))
+        account = user_root(user_id)
+        target = resolve_in_jail(user_id, relative)
+        if (not target.is_relative_to(account / project) or target != account / relative):
+            raise ValueError('Точечная починка ограничена исходниками выбранного проекта.')
     if op == "page_shot":
         try:
             from page_shot import capture

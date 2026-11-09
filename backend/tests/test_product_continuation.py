@@ -143,34 +143,53 @@ def test_ordinary_request_does_not_start_product_acceptance(monkeypatch, text):
     assert 'Браузерная проверка' not in answer
 
 
-@pytest.mark.parametrize('source_available', [True, False])
-def test_followup_revises_existing_sources_before_acceptance(monkeypatch, source_available):
+@pytest.mark.parametrize('source_available, failed_check, repair_passes', [
+    (True, False, False), (False, False, False), (True, True, True), (True, True, False),
+])
+def test_followup_revises_existing_sources_before_acceptance(monkeypatch, source_available, failed_check, repair_passes):
     import director_router as dr
     from conversations import conversation_manager
     from app.services import autonomy, sandbox_client
     from app.services.desktop_context import desktop_executor
     executed, revisions, checks = [], [], []
     base = {'product_id': PID, 'path': f'products/{PID}', 'brief': 'Сайт переработки лития. Сине-серое оформление.',
-            'stack': 'static', 'ready': True, 'packaged': True, 'archive': f'product-{PID}.zip'}
+            'stack': 'static', 'ready': not failed_check, 'packaged': not failed_check,
+            'archive': f'product-{PID}.zip', 'revision': 'rev'}
+    if failed_check:
+        base['checks'] = {'test': {'passed': False, 'revision': 'rev', 'exit_code': 1, 'output': 'TypeError: bad state'}}
+    text = 'почини сайт' if failed_check else 'шрифты бы покрупнее, больше анимаций'
     async def verified(uid, pid, package=False):
         assert uid == 92001 and pid == PID
         checks.append(package)
         if not source_available:
             return {'error': 'Not found for this user'}
-        return {**base, 'ready': bool(executed), 'packaged': bool(executed)} if package else base
+        ready = len(executed) >= (2 if failed_check and not repair_passes else 1)
+        return {**base, 'ready': ready, 'packaged': ready} if package else base
     async def tool(name, args, uid):
         assert name == 'product_lifecycle' and uid == 92001
         assert args['action'] == 'begin_revision' and args['product_id'] == PID
-        assert 'Сайт переработки лития' in args['brief'] and 'шрифты бы покрупнее' in args['brief']
+        assert 'Сайт переработки лития' in args['brief'] and text in args['brief']
         revisions.append(args)
         return __import__('json').dumps({**base, 'ready': False, 'packaged': False})
     async def employee(item, round_num, journal, uid, *args):
         assert revisions and checks[0] is False
         assert item['product_phase'] == 'build'
         assert f'products/{PID}' in item['task']
-        assert 'шрифты бы покрупнее' in item['task']
+        assert text in item['task']
+        if failed_check and not executed:
+            assert item['product_repair']
+            assert 'TypeError: bad state' in item['task']
+            assert item['model'] == dr.PLANNER_MODEL
+            if not repair_passes:
+                autonomy.product_evidence.get()['_repair_edits'] = ['Подтверждённое изменение app.js']
+        else:
+            assert not item.get('product_repair')
+            if failed_check:
+                assert 'Подтверждённое изменение app.js' in item['task']
+                assert 'Свежий вывод test' in item['task']
         executed.append(item)
-        return {'round': round_num, 'role': item['role'], 'task': item['task'], 'model': item['model'], 'status': 'ok', 'result': 'Edited'}
+        return {'round': round_num, 'role': item['role'], 'task': item['task'], 'model': item['model'],
+                'status': 'ok', 'result': 'Edited', 'product_repair': bool(item.get('product_repair'))}
     async def no_files(*args):
         return []
     async def no_plan(*args, **kwargs):
@@ -190,18 +209,39 @@ def test_followup_revises_existing_sources_before_acceptance(monkeypatch, source
     desktop_token = desktop_executor.set(None)
     context_token = workspaces.set([{'product_id': PID, 'artifact': f'product-{PID}.zip'}])
     try:
-        answer, _, _, _ = asyncio.run(dr._run_director(HISTORY, 'шрифты бы покрупнее, больше анимаций', 92001, None))
+        answer, _, _, _ = asyncio.run(dr._run_director(HISTORY, text, 92001, None))
     finally:
         autonomy.product_evidence.reset(product_token)
         desktop_executor.reset(desktop_token)
         workspaces.reset(context_token)
     if source_available:
-        assert len(executed) == 1
+        assert len(executed) == (2 if failed_check and not repair_passes else 1)
         assert '[!SUCCESS]' in answer and 'Сборка' in answer and 'Тесты' in answer
         assert revisions[0]['product_id'] == PID
     else:
         assert executed == [] and revisions == []
         assert 'Прикрепите выданный ZIP-архив' in answer
+
+
+def test_focused_repair_requires_a_current_reproducible_failure_and_scopes_edits():
+    from app.services.autonomy import focused_product_repair, repair_tool_allowed
+    root = f'products/{PID}'
+    failure = {'passed': False, 'exit_code': 1, 'revision': 'rev', 'output': 'AssertionError'}
+    project = {'product_id': PID, 'path': root, 'stack': 'static', 'revision': 'rev',
+               'checks': {'test': failure}}
+    assert 'build, test и smoke' in focused_product_repair('почини, пожалуйста', project)
+    assert not focused_product_repair('почини и перепиши архитектуру', project)
+    assert not focused_product_repair('почини', {**project, 'revision': 'different'})
+    for code in (124, 127):
+        assert not focused_product_repair('почини', {**project, 'checks': {'test': {**failure, 'exit_code': code}}})
+    scope = (PID, root)
+    assert repair_tool_allowed('workspace_edit', {'path': f'{root}/src/app.js'}, scope)
+    assert repair_tool_allowed('workspace_read', {'path': f'{root}/tests/app.test.js'}, scope)
+    for path in (f'{root}/tests/app.test.js', f'{root}/package.json', f'{root}/../other/app.js'):
+        assert not repair_tool_allowed('workspace_edit', {'path': path}, scope)
+    assert not repair_tool_allowed('workspace_write', {'path': f'{root}/src/app.js'}, scope)
+    assert not repair_tool_allowed('product_lifecycle', {'product_id': PID, 'action': 'package'}, scope)
+    assert not repair_tool_allowed('product_lifecycle', {'product_id': 'different', 'action': 'test'}, scope)
 
 
 @pytest.mark.parametrize('text, revises', [
