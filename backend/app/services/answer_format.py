@@ -1,4 +1,5 @@
-"""Remove a whole JSON fence only when requested and validated; no extra inference."""
+"""Normalize explicitly requested JSON and Python code block formats."""
+import ast
 import json
 import re
 
@@ -19,6 +20,19 @@ def normalize_answer_format(answer, task):
             from app.services.response_policy import inline_code_task
             if inline_code_task(task):
                 return answer[lead.end():]
+        if (answer and '```' not in answer and re.search(r'(?i)\b(?:python|питон\w*)\b', task or '')
+                and re.search(r'(?i)(?:^|[.!?\n]\s*)(?:верни|выведи|дай|return|output)\s+'
+                              r'(?:только\s+)?(?:один\s+)?блок\s+кода\b', task)):
+            from app.services.response_policy import inline_code_task
+            if inline_code_task(task):
+                code = answer.strip('\r\n')
+                try:
+                    body = ast.parse(code).body
+                except (SyntaxError, ValueError, RecursionError):
+                    return answer
+                # shortcut: Python definitions only, add language-specific validation for other snippets.
+                if any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) for node in body):
+                    return f'```python\n{code}\n```'
         return answer
     match = re.fullmatch(r'\s*```(?:json)?\s*\n?([\s\S]*?)\n?```\s*', answer or '', re.I)
     candidate = match.group(1).strip() if match else (answer or '').strip()
