@@ -38,6 +38,23 @@ def test_command_cannot_choose_another_workspace(workspace):
     with pytest.raises(ValueError):fs.run_command(123,['python','-c','print(1)'],cwd='../u456')
 
 
+def test_focused_repair_cannot_follow_an_alias_outside_its_project(workspace):
+    product = '1' * 24
+    project = workspace / 'products' / product
+    project.mkdir(parents=True)
+    outside = workspace / 'outside.py'
+    outside.write_text('original')
+    try:
+        (project / 'alias.py').symlink_to(outside)
+    except OSError:
+        pytest.skip('Creating symlinks is unavailable')
+    args = {'repair_product_id': product, 'path': f'products/{product}/alias.py',
+            'old_string': 'original', 'new_string': 'changed'}
+    with pytest.raises(ValueError, match='выбранного проекта'):
+        fs.dispatch(123, 'edit', args)
+    assert outside.read_text() == 'original'
+
+
 def test_compiled_program_resolves_only_inside_its_project(workspace,monkeypatch):
     from app.services import product_factory
     (workspace/'project').mkdir()

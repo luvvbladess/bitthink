@@ -49,6 +49,11 @@ async def run_workspace_tool(name: str, args: dict[str, Any], user_id: int) -> s
     extra = dict(args or {})
     extra.pop("user_id", None)
     extra.pop("op", None)
+    extra.pop("repair_product_id", None)
+    from app.services.autonomy import product_repair_scope
+    repair = product_repair_scope.get()
+    if repair and op in {"ls", "glob", "grep", "read", "edit"}:
+        extra["repair_product_id"] = repair[0]
     payload = {**extra, "user_id": int(user_id), "op": op}
     url = sandbox_url()
     if url:

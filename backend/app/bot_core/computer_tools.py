@@ -1378,6 +1378,10 @@ async def _run_budgeted_computer_tool(name: str, args: dict[str, Any], user_id: 
 
 
 async def _run_computer_tool(name: str, args: dict[str, Any], user_id: int | None) -> str:
+    from app.services.autonomy import product_repair_scope, repair_tool_allowed
+    scope = product_repair_scope.get()
+    if scope and not repair_tool_allowed(name, args, scope):
+        return 'Этот проход разрешает только точечную правку текущего проекта и его штатные проверки.'
     if name == 'product_lifecycle' and args.get('action') == 'begin_revision':
         return json.dumps({'error': 'Начало новой ревизии доступно только Оркестратору.'}, ensure_ascii=False)
     if name == 'calculate':
@@ -1679,7 +1683,10 @@ async def _run_computer_tool(name: str, args: dict[str, Any], user_id: int | Non
 
         if name in TOOL_OPS:
             from app.services.code_change_policy import with_edit_preview
-            return with_edit_preview(name, args, await run_workspace_tool(name, args, user_id))
+            result = with_edit_preview(name, args, await run_workspace_tool(name, args, user_id))
+            if scope and name == 'workspace_edit' and result.startswith(('Записал ', 'Сохранён ')):
+                scope[2].append(result[:1400])
+            return result
 
         if name.startswith("google_"):
             from app.services.google_oauth import GoogleAuthError

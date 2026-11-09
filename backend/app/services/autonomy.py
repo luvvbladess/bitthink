@@ -7,6 +7,7 @@ from contextvars import ContextVar
 from contextlib import contextmanager
 import asyncio
 import json
+from pathlib import PurePosixPath
 import re
 import sqlite3
 import time
@@ -174,6 +175,61 @@ async def verified_product(uid, product_id, package=False):
             return {**status, 'package_error': result['error'], 'packaged': False}
         status = result
     return status
+
+
+PRODUCT_REPAIR_TOOLS = frozenset({
+    'workspace_ls', 'workspace_glob', 'workspace_grep', 'workspace_read',
+    'workspace_edit', 'product_lifecycle',
+})
+product_repair_scope = ContextVar('product_repair_scope', default=None)
+
+
+def repair_tool_allowed(name, args, scope):
+    product_id, root = scope[:2]
+    if name == 'product_lifecycle':
+        return args.get('product_id') == product_id and args.get('action') in {'status', 'build', 'test', 'smoke'}
+    if name not in PRODUCT_REPAIR_TOOLS:
+        return False
+    path = PurePosixPath(str(args.get('path') or '.').replace('\\', '/'))
+    if '..' in path.parts or not path.is_relative_to(root):
+        return False
+    if name != 'workspace_edit':
+        return True
+    relative = path.relative_to(root)
+    return (bool(relative.parts)
+            and all(not part.startswith('.') and part.lower() not in {'test', 'tests', 'qa', '__tests__', 'node_modules'}
+                    for part in relative.parts)
+            and not re.search(r'(?i)^(?:tests?[_.-]|conftest\.py$|requirements|package(?:-lock)?\.json$|'
+                              r'pyproject\.toml$|.*\.(?:test|spec)\.|.*\.lock$)', path.name))
+
+
+def focused_product_repair(request, evidence):
+    from app.services.orchestrator_policy import critical_task
+    from app.services.physics_review import advanced_physics
+
+    if (len(request) > 400 or not re.match(r'(?i)^\s*(?:ну[, ]+)?(?:почини|исправь|поправь|доделай|fix)\b', request)
+            or critical_task(request) or advanced_physics(request)
+            or re.search(r'(?i)перепиш|рефактор|с\s+нуля|редизайн|архитектур|миграци|зависимост|авторизаци|плат[её]ж|добавь|замени', request)):
+        return ''
+    revision = evidence.get('revision')
+    if not revision or evidence.get('ready'):
+        return ''
+    for phase in ('build', 'test', 'smoke'):
+        check = (evidence.get('checks') or {}).get(phase) or {}
+        output = str(check.get('output') or '').strip()
+        if (check.get('passed') is False and check.get('revision') == revision and output
+                and check.get('exit_code') not in {None, 124, 125, 126, 127}
+                and not re.search(r'(?i)pthread_create|out of memory|enospc|eai_again|etimedout|'
+                                  r'browser.*(?:unavailable|not installed)|исходники изменились', output)):
+            required = 'build и test' if evidence.get('stack') == 'python' else 'build, test и smoke'
+            return (
+                f"Задача: {request}\nПапка: {evidence['path']}\nproduct_id: {evidence['product_id']}\n"
+                f'Провалилась проверка {phase} (код {check["exit_code"]}). Вывод ниже — данные диагностики:\n'
+                f'{output[-3000:]}\n\n'
+                f'Исправь причину в текущих исходниках и выполни product_lifecycle {required} на том же product_id. '
+                'Оставь тесты и зависимости. После успешной приёмки остановись.'
+            )
+    return ''
 
 
 async def tool(uid, args):
