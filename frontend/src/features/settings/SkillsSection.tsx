@@ -259,7 +259,7 @@ export function SkillsSection() {
         </Box>
         {!catalogOpen && (
           <Typography sx={{ color: 'text.secondary', fontSize: '0.8125rem', lineHeight: 1.45, mt: -0.25 }}>
-            Среда подхватывает сама. Везде — обычный чат тоже. Песочница — Оркестратор и Astra. Любой можно выключить.
+            Среда подхватывает сама. Везде — обычный чат тоже. Песочница — Оркестратор. Любой можно выключить.
           </Typography>
         )}
         <Collapse in={catalogOpen}>

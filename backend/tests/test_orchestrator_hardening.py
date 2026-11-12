@@ -41,6 +41,21 @@ def test_provider_cost_is_preserved_across_daily_merges():
     assert spend_summary(merge_usage([part, part]))['usd'] == .0104
 
 
+@pytest.mark.parametrize(('model', 'estimate', 'reserved', 'fallback'), [
+    ('glm-5.3-flash', .036, .0625, .06),
+    ('kimi-k3.1-pro', 1.20, 2.50, 2.40),
+    ('deepseek-v4-flash', .105, .1575, .15),
+])
+def test_spend_estimate_preserves_conservative_budget(model, estimate, reserved, fallback):
+    assert model_cost_usd(model, 100_000, 100_000) == pytest.approx(estimate)
+    budget = RunBudget(10)
+    hold, cap = budget.reserve(model, 100_000, 100_000)
+    assert cap == 100_000
+    assert budget.holds[hold] == pytest.approx(reserved)
+    budget.settle(hold, model, {'prompt_tokens': 100_000, 'completion_tokens': 100_000})
+    assert budget.spent == pytest.approx(fallback)
+
+
 def test_long_context_pricing_belongs_to_each_model():
     assert billed_multiplier(dr.SONNET_MODEL, 300_000) == 20
     assert billed_multiplier(dr.OPUS_MODEL, 300_000) == 40

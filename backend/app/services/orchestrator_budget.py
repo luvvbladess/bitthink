@@ -33,13 +33,13 @@ class RunBudget:
     def reserve(self, model, input_tokens, output_cap):
         from app.billing.costs import model_cost_usd
         remaining = max(0., self.limit - self.spent - sum(self.holds.values()))
-        base = model_cost_usd(model, input_tokens, cache_write_tokens=input_tokens)
-        output_rate = model_cost_usd(model, input_tokens, 1) - model_cost_usd(model, input_tokens, 0)
+        base = model_cost_usd(model, input_tokens, cache_write_tokens=input_tokens, for_budget=True)
+        output_rate = model_cost_usd(model, input_tokens, 1, cache_write_tokens=input_tokens, for_budget=True) - base
         cap = min(output_cap, max(0, int((remaining - base) / max(output_rate, 1e-12))))
         if cap < min(1024, output_cap):
             self.exhausted = True
             raise RunBudgetExceeded('Достигнут бюджет работы моделей. Выполненные действия и файлы сохранены; готовность незавершённой части не подтверждена.')
-        amount = model_cost_usd(model, input_tokens, cap, cache_write_tokens=input_tokens)
+        amount = model_cost_usd(model, input_tokens, cap, cache_write_tokens=input_tokens, for_budget=True)
         hold = uuid.uuid4().hex
         self.holds[hold] = amount
         return hold, cap
@@ -65,7 +65,7 @@ class RunBudget:
             inp, out, cached, writes = token_counts(usage)
             actual = provider_cost_usd(usage)
             self.spent += actual if actual is not None else model_cost_usd(
-                model, inp, out, cached_input_tokens=cached, cache_write_tokens=writes)
+                model, inp, out, cached_input_tokens=cached, cache_write_tokens=writes, for_budget=True)
         else:
             self.spent += amount
             self.unknown += amount

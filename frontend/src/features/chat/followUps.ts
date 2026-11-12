@@ -1,12 +1,10 @@
 export type FollowUpChip = { label: string; text: string };
-export type FollowUpMode = 'auto' | 'computer' | 'studio' | 'search' | 'research' | 'astra' | 'docgen';
+export type FollowUpMode = 'auto' | 'computer' | 'studio' | 'research' | 'docgen';
 
 export function followUpMode(selected?: string | null): FollowUpMode {
   if (selected === 'director') return 'computer';
   if (selected === 'studio') return 'studio';
   if (selected === 'docgen') return 'docgen';
-  if (selected === 'gpt-6-astra') return 'astra';
-  if (selected === 'search') return 'search';
   if (selected === 'gpt-6-sol' || selected === 'gpt-5.6-sol' || selected === 'gpt-5.6-sol-pro' || selected === 'gpt-5.6-terra') {
     return 'research';
   }
@@ -73,12 +71,6 @@ export function followUpChips(
       { label: 'Что рядом', text: 'Что посмотреть рядом в радиусе 15 минут пешком' },
     ];
   }
-  if (mode === 'astra') {
-    return [
-      { label: 'Запусти в песочнице', text: 'Доведи это в песочнице: напиши файлы, запусти проверку и приложи артефакт на скачивание' },
-      { label: 'Проверь кодом', text: 'Не описывай гипотезу – проверь скриптом в песочнице и покажи фактический вывод' },
-    ];
-  }
   if (/код|python|скрипт|ошибк|баг|функци/.test(user)) {
     return [
       { label: 'Проверки', text: 'Добавь проверки на ошибочный ввод и короткий пример запуска' },
@@ -94,7 +86,7 @@ export function followUpChips(
   if (mode === 'computer') {
     return [];
   }
-  if (mode === 'search' || mode === 'research' || /новост|сейчас|актуаль|найд/.test(user)) {
+  if (mode === 'research' || /новост|сейчас|актуаль|найд/.test(user)) {
     return [
       { label: 'Что изменилось', text: 'Что изменилось за последний месяц и на что смотреть дальше' },
       { label: 'Альтернативы', text: 'Какие есть близкие альтернативы и чем они хуже или лучше' },

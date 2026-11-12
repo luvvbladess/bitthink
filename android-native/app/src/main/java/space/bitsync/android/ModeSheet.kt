@@ -23,18 +23,17 @@ internal data class AnswerMode(val id:String,val name:String,val description:Str
 
 /** Site's mobile mode drawer, implemented with native Views and branded surfaces. */
 internal fun MainActivity.showModeSheet(data: JSONObject) {
-    val selected=data.optString("selected","auto")
+    val raw=data.optString("selected","auto")
+    val selected=if(raw=="search"||raw=="gpt-6-astra"||raw=="kimi-k2.6")"auto" else raw
     val catalog=data.optJSONArray("models")
     fun allowed(id:String):Boolean = catalog?.let { array -> (0 until array.length()).any { array.getJSONObject(it).optString("id")==id && array.getJSONObject(it).optBoolean("available") } }?:false
     val modes=mutableListOf(
         AnswerMode("auto","Экспресс","Быстро и экономно: сам подберёт модель",R.drawable.ic_mode_fast,allowed("auto")),
-        AnswerMode("search","Поиск","Свежие ответы с источниками",R.drawable.ic_mode_search,data.optBoolean("searchAvailable")),
         AnswerMode("director","Оркестратор","Задачи с файлами, поиском и инструментами",R.drawable.ic_mode_desktop,data.optBoolean("computerAvailable",allowed("director"))),
         AnswerMode(data.optString("researchModel").takeIf{it.isNotBlank()&&it!="null"}?:"gpt-6-sol","Исследование","Глубокий разбор и проверка источников",R.drawable.ic_mode_research,!data.isNull("researchModel")),
-        AnswerMode("gpt-6-astra","Astra","Сложные задачи: код, договоры, файлы",R.drawable.ic_mode_astra,data.optBoolean("astraAvailable")),
         AnswerMode("docgen","Документы","Большой Word-файл или комплект документов",R.drawable.ic_mode_document,data.optBoolean("docgenAvailable"))
     )
-    if(modes.none{it.id==selected})modes.add(AnswerMode(selected,data.optString("selectedName","Выбранная модель"),data.optString("selectedDescription"),R.drawable.ic_mode_astra,true))
+    if(modes.none{it.id==selected})modes.add(AnswerMode(selected,data.optString("selectedName","Выбранная модель"),data.optString("selectedDescription"),R.drawable.ic_mode_fast,true))
     val sheet=BottomSheetDialog(this)
     val panel=column().apply { setPadding(dp(16),dp(8),dp(16),dp(20)) }
     fun shape(fill:Int,radius:Int=14,stroke:Int?=null)=GradientDrawable().apply { setColor(fill);cornerRadius=dp(radius).toFloat();if(stroke!=null)setStroke(dp(1),stroke) }

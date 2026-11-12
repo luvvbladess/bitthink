@@ -1184,7 +1184,7 @@ try {
     const f = await fixture({ fullModes: true, viewport: { width, height: 900 } });
     try {
       await expect(f.input).toBeEnabled(); await f.input.fill('Не потерять текст при переключении');
-      const choices = [['Поиск', 'search'], ['Исследование', 'gpt-6-sol'], ['Astra', 'gpt-6-astra'], ['Документы', 'docgen'], ['Оркестратор', 'director'], ['Экспресс', 'auto']];
+      const choices = [['Исследование', 'gpt-6-sol'], ['Документы', 'docgen'], ['Оркестратор', 'director'], ['Экспресс', 'auto']];
       for (const [label, model] of choices) {
         await f.page.getByRole('button', { name: /^Режим ответа:/ }).click();
         const dialog = f.page.getByRole('dialog', { name: 'Выбор режима', exact: true });
@@ -1216,26 +1216,26 @@ try {
       await expect(f.input).toBeEnabled(); await f.input.fill('Черновик переживёт ошибку');
       await f.page.getByRole('button', { name: 'Режим ответа: Экспресс', exact: true, includeHidden: true }).click();
       const dialog = f.page.getByRole('dialog', { name: 'Выбор режима', exact: true });
-      await dialog.getByRole('button', { name: /^Поиск / }).click();
+      await dialog.getByRole('button', { name: /^Оркестратор / }).click();
       await expect(dialog.getByRole('alert')).toContainText('Не удалось подтвердить выбор режима');
       await expect(f.page.getByRole('button', { name: 'Режим ответа: Экспресс', exact: true, includeHidden: true })).toHaveCount(1);
-      f.state.modeFailure = false; await dialog.getByRole('button', { name: /^Поиск / }).click();
+      f.state.modeFailure = false; await dialog.getByRole('button', { name: /^Оркестратор / }).click();
       await expect(dialog).toBeHidden();
-      await expect(f.page.getByRole('button', { name: 'Режим ответа: Поиск', exact: true })).toBeVisible();
+      await expect(f.page.getByRole('button', { name: 'Режим ответа: Оркестратор', exact: true })).toBeVisible();
       await expect(f.input).toHaveValue('Черновик переживёт ошибку');
     } finally { await f.context.close(); }
   });
   await test('modes: pending preferences prevent sending in an unconfirmed mode', async () => {
-    const f = await fixture({ modeDelay: 1200 });
+    const f = await fixture({ modeDelay: 1200, fullModes: true });
     try {
       await expect(f.input).toBeEnabled(); await f.input.fill('Подождать подтверждения');
       await f.page.getByRole('button', { name: /^Режим ответа:/ }).click();
-      await f.page.getByRole('dialog', { name: 'Выбор режима', exact: true }).getByRole('button', { name: /^Поиск / }).click();
+      await f.page.getByRole('dialog', { name: 'Выбор режима', exact: true }).getByRole('button', { name: /^Исследование / }).click();
       await expect(f.page.getByRole('button', { name: 'Отправить сообщение', exact: true, includeHidden: true })).toBeDisabled();
       assert.equal(f.state.sends.length, 0);
-      await expect(f.page.getByRole('button', { name: 'Режим ответа: Поиск', exact: true })).toBeEnabled();
+      await expect(f.page.getByRole('button', { name: 'Режим ответа: Исследование', exact: true })).toBeEnabled();
       await f.input.press('Enter'); await expect.poll(() => f.state.sends.length).toBe(1);
-      assert.equal(f.state.sends[0].model, 'search');
+      assert.equal(f.state.sends[0].model, 'gpt-6-sol');
     } finally { await f.context.close(); }
   });
   await test('modes: upload locks settings and preserves the mode seen before another tab changed it', async () => {
@@ -1251,13 +1251,14 @@ try {
       assert.equal(f.state.sends[0].model, 'auto');
     } finally { await f.context.close(); }
   });
-  await test('modes: locked search has an explanation and cannot be selected', async () => {
-    const f = await fixture({ searchLocked: true });
+  await test('modes: locked research has an explanation and cannot be selected', async () => {
+    const f = await fixture();
     try {
       await expect(f.input).toBeEnabled(); await f.page.getByRole('button', { name: /^Режим ответа:/ }).click();
       const dialog = f.page.getByRole('dialog', { name: 'Выбор режима', exact: true });
-      await dialog.getByRole('button', { name: /^Ещё/ }).click();
-      await expect(dialog.getByRole('button', { name: /^Поиск / })).toBeDisabled();
+      await expect(dialog.getByRole('button', { name: /^Исследование / })).toBeDisabled();
+      await expect(dialog.getByRole('button', { name: /^Поиск / })).toHaveCount(0);
+      await expect(dialog.getByRole('button', { name: /^Astra / })).toHaveCount(0);
       assert.deepEqual(f.state.modeSelections || [], []);
       await f.page.screenshot({ path: `${output}/modes-access.png`, fullPage: true });
     } finally { await f.context.close(); }
@@ -1286,16 +1287,16 @@ try {
     } finally { await f.context.close(); }
   });
   await test('modes: accepting a suggested mode handles errors and reflects later mode changes', async () => {
-    const f = await fixture({ modeFailure: true, handleRoute: async ({ path, route }) => {
+    const f = await fixture({ modeFailure: true, startPath: '/chat?c=chat-a', handleRoute: async ({ path, route }) => {
       if (path === '/conversations/chat-a/history') {
-        await route.fulfill({ json: { items: [{ id: 'chat-a_0', role: 'assistant', content: 'Для этого подойдёт Поиск.', search: [{ query: '__mode_switch__', summary: JSON.stringify({ model: 'search', label: 'Поиск', reason: 'Для актуальных источников', accept: 'Перейти в Поиск', done: 'Поиск выбран' }) }] }], has_more: false, before: null, has_newer: false } }); return true;
+        await route.fulfill({ json: { items: [{ id: 'chat-a_0', role: 'assistant', content: 'Для этого подойдёт Исследование.', search: [{ query: '__mode_switch__', summary: JSON.stringify({ model: 'gpt-6-sol', label: 'Исследование', reason: 'Для актуальных источников', accept: 'Перейти в Исследование', done: 'Исследование включено' }) }] }], has_more: false, before: null, has_newer: false } }); return true;
       } return false;
     } });
     try {
-      const accept = f.page.getByRole('button', { name: 'Перейти в Поиск', exact: true });
+      const accept = f.page.getByRole('button', { name: 'Перейти в Исследование', exact: true });
       await accept.click(); await expect(f.page.getByRole('alert').filter({ hasText: 'Не удалось подтвердить переключение режима.' })).toBeVisible();
       f.state.modeFailure = false; await accept.click();
-      await expect(f.page.getByRole('button', { name: 'Поиск выбран', exact: true })).toBeDisabled();
+      await expect(f.page.getByRole('button', { name: 'Исследование включено', exact: true })).toBeDisabled();
       await f.page.getByRole('button', { name: /^Режим ответа:/ }).click();
       await f.page.getByRole('dialog', { name: 'Выбор режима', exact: true }).getByRole('button', { name: /^Экспресс / }).click();
       await expect(accept).toBeEnabled();

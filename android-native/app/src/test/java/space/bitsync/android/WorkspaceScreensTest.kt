@@ -80,8 +80,10 @@ class WorkspaceScreensTest {
         app.showModeSheet(data)
         val dialog=org.robolectric.shadows.ShadowDialog.getLatestDialog()
         val all=views(dialog.window!!.decorView).filterIsInstance<TextView>().map{it.text.toString()}
-        assertTrue(all.containsAll(listOf("Как отвечать","Экспресс","Поиск","Оркестратор","Ещё режимы")))
-        assertFalse(all.contains("Исследование"))
+        assertTrue(all.containsAll(listOf("Как отвечать","Экспресс","Оркестратор","Исследование","Ещё режимы")))
+        assertFalse(all.contains("Поиск"))
+        assertFalse(all.contains("Astra"))
+        assertFalse(all.contains("Документы"))
         dialog.dismiss()
     }
     @Test fun drawerOpensOverChatAndPreservesDraftAndList(){

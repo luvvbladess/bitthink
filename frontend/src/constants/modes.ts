@@ -4,7 +4,5 @@ export const EXPRESS_LABEL = 'Экспресс';
 export const PILOT_LABEL = 'Оркестратор';
 /** Live HTML canvas: slides, landing, dashboard, infographic. */
 export const STUDIO_LABEL = 'Студия';
-/** GPT-6 sandbox available from Pro+: one agent with tools. */
-export const ASTRA_LABEL = 'Astra';
 /** Docgen mode: turns a prompt + attached files into one large .docx or a set of .docx files. */
 export const DOCGEN_LABEL = 'Документы';

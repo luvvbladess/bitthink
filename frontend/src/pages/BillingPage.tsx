@@ -229,7 +229,7 @@ export default function BillingPage() {
       {!sub?.unlimited && (
         <AccountSection title="Как расходуется запас" hint="Единицы зависят от модели, длины контекста и ответа. Собственный поиск не имеет отдельной платы; обработка найденного моделью расходует общий запас. Контекст больше 272 тыс. входных токенов считается вдвойне.">
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
-            {Object.entries(sub?.multipliers || { 'Luna / Nano': 1, Поиск: 1, DeepSeek: 9, Sol: 20, Astra: 100 }).map(
+            {Object.entries(sub?.multipliers || { 'Luna / Nano': 1, DeepSeek: 9, Sol: 20, Astra: 100 }).map(
               ([name, factor]) => (
                 <Box
                   key={name}

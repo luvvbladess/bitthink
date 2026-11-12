@@ -290,9 +290,9 @@ async def get_smart_response(
     computer_request.set(user_text or "")
     desktop_chat = desktop_mode.get() == "chat"
     model = "director" if is_desktop or cloud_task else desktop_chat_model.get() if desktop_chat else conversation_manager.get_user_model(user_id)
-    if desktop_chat:
-        from app.services.chat_modes import normalize_chat_mode
-        model = normalize_chat_mode(model)
+    if not (is_desktop or cloud_task):
+        from app.services.chat_modes import normalize_chat_mode, retire_chat_mode
+        model = normalize_chat_mode(model) if desktop_chat else retire_chat_mode(model)
     reasoning_effort = conversation_manager.get_user_reasoning_effort(user_id)
     sub = conversation_manager.get_subscription(user_id)
     from app.billing.plans import allowed_models, clamp_model

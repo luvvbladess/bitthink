@@ -46,7 +46,8 @@ MODEL_MULTIPLIER: dict[str, int] = {
 
 # Saved chats and in-flight requests may still name the previous generation.
 LEGACY_MODEL_ALIASES = {
-    "kimi-k2.6": "search",  # Migrate saved chats without calling the retired provider.
+    "kimi-k2.6": "auto",  # Migrate saved chats without calling the retired provider.
+    "search": "auto",
     "gpt-5.6-luna": "gpt-6-luna",
     "gpt-5.6-terra": "gpt-6-sol",
     "gpt-5.6-sol": "gpt-6-sol",
@@ -66,7 +67,6 @@ HAIKU_TIER_INPUT = 100_000
 CHEAP_MODELS = [
     "auto",
     "correspondent",
-    "search",
     "gpt-5-nano",
     "gpt-6-luna",
     "deepseek-v4-pro",
@@ -100,7 +100,7 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "chat_tokens": 0,
         "computer_tokens": 0,
         "images": 3,
-        "models": ["auto", "search", "gpt-5-nano", "gpt-6-luna", "claude-haiku-5.5"],
+        "models": ["auto", "gpt-5-nano", "gpt-6-luna", "claude-haiku-5.5"],
         "daily_replies": 30,
         "daily_searches": 15,
         "features": ["30 ответов в день, из них до 15 с поиском", "3 картинки в месяц", "без Оркестратора, холста и Исследования"],
@@ -142,7 +142,7 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "name": "Pro+",
         "price_rub": 3_990,
         "price_year_rub": 39_900,
-        "description": "GPT-6 Astra и больше ресурсов для сложных задач",
+        "description": "Больше ресурсов для сложных задач",
         "chat_tokens": 81_000_000,
         "computer_tokens": 50_000_000,
         "chat_week": 20_250_000,
@@ -151,7 +151,7 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "computer_session": 3_570_000,
         "images": 40,
         "models": list(PROPLUS_MODELS),
-        "features": ["всё из Pro", "GPT-6 Astra"],
+        "features": ["всё из Pro", "больше ресурса на сложные задачи"],
     },
     "ultra": {
         "id": "ultra",
@@ -180,7 +180,7 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "images": 0,
         "models": list(CREATOR_MODELS),
         "unlimited": True,
-        "features": ["без лимитов", "все возможности Ultra, включая GPT-6 Astra"],
+        "features": ["без лимитов", "все возможности Ultra"],
     },
 }
 
@@ -207,7 +207,7 @@ for _tier in ("trial", "pro", "proplus", "ultra"):
     if _tier != "trial":
         _plan["features"] = [f'{_plan["total_tokens"] // 1_000_000} млн общих единиц в месяц',
             'Единый запас для чата, Оркестратора и холста', 'Увеличенное окно на 5 часов',
-            'Поиск в пределах общего запаса', *_plan['features'], f'{_plan["images"]} изображений в месяц']
+            'Источники в пределах общего запаса', *_plan['features'], f'{_plan["images"]} изображений в месяц']
 
 
 def canonical_tier(tier: str | None) -> str:
@@ -228,10 +228,10 @@ def allowed_models(tier: str | None) -> set[str]:
             "correspondent",
             "director",
             "studio",
-            "search",
         }
         allowed.discard("*")
     allowed.discard("kimi-k2.6")  # Historical billing rates are not model availability.
+    allowed.discard("search")  # Retired conversation mode; the multiplier stays for old usage rows.
     return allowed
 
 

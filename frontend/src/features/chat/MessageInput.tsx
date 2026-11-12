@@ -333,13 +333,9 @@ export function MessageInput({
                 ? 'Прикрепите шаблоны и данные, затем опишите документ...'
                 : isComputer
                   ? 'Какой результат нужен? Можно прикрепить файлы…'
-                  : selectedModel === 'search'
-                      ? 'Что найти прямо сейчас?'
-                      : selectedModel === 'gpt-6-astra'
-                        ? 'Прикрепите материалы или опишите сложную задачу…'
-                        : selectedModel === 'gpt-6-sol' || selectedModel === 'gpt-5.6-sol' || selectedModel === 'gpt-5.6-terra'
-                          ? 'Какую тему разобрать с источниками?'
-                          : 'Спросите что угодно...'
+                  : selectedModel === 'gpt-6-sol' || selectedModel === 'gpt-5.6-sol' || selectedModel === 'gpt-5.6-terra'
+                    ? 'Какую тему разобрать с источниками?'
+                    : 'Спросите что угодно...'
         }
         fullWidth
         multiline
