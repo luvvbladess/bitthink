@@ -108,11 +108,12 @@ async def chat_websocket(websocket: WebSocket):
                 # if another tab changes the account setting during an upload.
                 requested_model = payload.get('model')
                 if requested_model is not None:
-                    from app.billing.plans import LEGACY_MODEL_ALIASES, allowed_models
+                    from app.billing.plans import allowed_models
                     from app.billing.quota import effective_tier
+                    from app.services.chat_modes import retire_chat_mode
                     import config as bot_config
                     if not isinstance(requested_model, str):raise RuntimeError('Некорректный режим ответа.')
-                    requested_model = LEGACY_MODEL_ALIASES.get(requested_model, requested_model)
+                    requested_model = retire_chat_mode(requested_model)
                     if requested_model not in bot_config.AVAILABLE_MODELS:raise RuntimeError('Этот режим ответа не поддерживается.')
                     subscription = await repo.get_subscription(user_id)
                     if requested_model not in allowed_models(effective_tier(subscription)):raise RuntimeError('Режим недоступен на текущем тарифе. Выберите другой режим.')

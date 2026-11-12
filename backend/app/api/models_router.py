@@ -4,7 +4,6 @@ import config as bot_config
 from app.auth import get_current_user
 from app.billing.quota import effective_tier
 from app.billing.plans import (
-    LEGACY_MODEL_ALIASES,
     MODEL_MULTIPLIER,
     allowed_models,
     clamp_model,
@@ -22,18 +21,16 @@ WEB_MODEL_INFO = {
     "director": {"name": "Оркестратор", "description": "Раздаёт должности подходящим ИИ-агентам в песочнице и собирает результат"},
     "studio": {"name": "Студия", "description": "Картинки, слайды и инфографика на холсте"},
     "docgen": {"name": "Документы", "description": "Большой .docx или комплект документов по промпту и вашим файлам"},
-    "search": {"name": "Поиск в интернете", "description": "Актуальные данные и источники"},
     "gpt-5-nano": {"name": "Быстрый ответ (GPT-5 Nano)", "description": "Мгновенные ответы на простые вопросы"},
     "gpt-6-luna": {"name": "Быстрый", "description": "Повседневные вопросы пачками, с минимальным расходом"},
     "gpt-6-sol": {"name": "Эксперт", "description": "Сложный код, агенты и многошаговые задачи"},
     "gpt-6.1-terra": {"name": "GPT-6.1 Terra", "description": "Изображения, скриншоты и точные правки"},
-    "gpt-6-astra": {"name": "Astra", "description": "Песочница GPT-6: код, договоры, файлы, многошаговые задачи"},
     "deepseek-v4-pro": {"name": "Код и логика", "description": "Программирование и технические задачи"},
 }
 
 # Perplexity-like public surface: users choose an intent, not a provider catalog.
 # Hidden routes remain available internally to Auto, OCR and specialist pipelines.
-PUBLIC_MODEL_IDS = ["gpt-6.1-terra", "auto", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra", "director", "docgen"]
+PUBLIC_MODEL_IDS = ["gpt-6.1-terra", "auto", "gpt-6-luna", "gpt-6-sol", "director", "docgen"]
 
 # The API lets Sol and Luna run up to max. The product dial keeps max on Astra
 # so everyday Luna does not burn reasoning tokens, and xhigh on Sol and Astra.
@@ -70,11 +67,13 @@ async def list_models(user_id: str = Depends(get_current_user)):
     subscription = await repo.get_subscription(user_id)
     tier = effective_tier(subscription)
     allowed = _allowed_for(tier)
-    selected_model = await repo.get_user_model(user_id)
+    from app.services.chat_modes import retire_chat_mode
+    saved_model = await repo.get_user_model(user_id)
+    selected_model = retire_chat_mode(saved_model)
     clamped = clamp_model(tier, 'auto' if selected_model == 'studio' else selected_model)
-    if clamped != selected_model:
+    if clamped != saved_model:
         await repo.set_user_model(user_id, clamped)
-        selected_model = clamped
+    selected_model = clamped
     reasoning_effort = await repo.get_user_reasoning_effort(user_id) or "none"
     reasoning_effort = _clamp_reasoning_effort(reasoning_effort, selected_model)
     research = research_model(tier)
@@ -100,13 +99,13 @@ async def list_models(user_id: str = Depends(get_current_user)):
         "xhighCapable": selected_model in XHIGH_CAPABLE_MODELS or selected_model in MAX_CAPABLE_MODELS,
         "supportsReasoningEffort": selected_model in REASONING_EFFORT_CAPABLE_MODELS,
         "researchModel": research,
-        "searchAvailable": "search" in allowed,
+        "searchAvailable": False,
         "computerAvailable": "director" in allowed,
         "studioAvailable": "studio" in allowed,
         "canvasAvailable": "studio" in allowed,
         "docgenAvailable": "docgen" in allowed,
-        "astraAvailable": "gpt-6-astra" in allowed,
-        "modeRequirements": {'research': 'Нужен Pro', 'astra': 'Нужен Pro+', 'studio': 'Нужен Pro',
+        "astraAvailable": False,
+        "modeRequirements": {'research': 'Нужен Pro', 'studio': 'Нужен Pro',
             'computer': 'Нужен Pro', 'docgen': 'Внутренний режим Creator'},
         "multipliers": {m:v for m,v in MODEL_MULTIPLIER.items() if not m.startswith("kimi-")},
     }
@@ -114,7 +113,8 @@ async def list_models(user_id: str = Depends(get_current_user)):
 
 @router.post("/select")
 async def select_model(data: ModelSelect, user_id: str = Depends(get_current_user)):
-    requested = LEGACY_MODEL_ALIASES.get(data.model, data.model)
+    from app.services.chat_modes import retire_chat_mode
+    requested = retire_chat_mode(data.model)
     if requested == 'studio':
         requested = 'auto'
     if requested not in bot_config.AVAILABLE_MODELS:

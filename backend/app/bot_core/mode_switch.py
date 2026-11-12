@@ -12,8 +12,8 @@ from typing import Iterable, Optional
 
 MODE_SWITCH_QUERY = "__mode_switch__"
 
-_PILOT_CAPABLE = {"director", "gpt-6-astra"}
-_STUDIO_CAPABLE = {"studio", "director", "gpt-6-astra"}
+_PILOT_CAPABLE = {"director"}
+_STUDIO_CAPABLE = {"studio", "director"}
 _NO_WEB = {"studio", "docgen"}
 
 _PILOT_ACTION = re.compile(
@@ -105,12 +105,12 @@ _SPECS = {
         "accept": "Перейти в Оркестратор",
         "done": "Оркестратор включён",
     },
-    "search": {
-        "model": "search",
-        "label": "Поиск",
-        "reason": "Свежий ответ с источниками даёт режим «Поиск».",
-        "accept": "Перейти в Поиск",
-        "done": "Поиск включён",
+    "auto": {
+        "model": "auto",
+        "label": "Экспресс",
+        "reason": "Свежий ответ с источниками даёт режим «Экспресс».",
+        "accept": "Перейти в Экспресс",
+        "done": "Экспресс включён",
     },
     "gpt-6-sol": {
         "model": "gpt-6-sol",
@@ -163,9 +163,9 @@ def suggest_mode_switch(
         target = "docgen"
     # Canvas creation is selected for this turn by the chat dispatcher.
     elif model in _NO_WEB and _RESEARCH.search(text):
-        target = "gpt-6-sol" if _allowed("gpt-6-sol", allowed) else "search"
+        target = "gpt-6-sol" if _allowed("gpt-6-sol", allowed) else "auto"
     elif model in _NO_WEB and _SEARCH.search(text):
-        target = "search"
+        target = "auto"
 
     if not target or target == model or not _allowed(target, allowed):
         return None

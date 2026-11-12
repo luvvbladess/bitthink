@@ -42,6 +42,14 @@ for _name, _spec in MODELS.items():
     MODEL_USD[_name] = {'input': _spec.input_price, 'output': _spec.output_price, 'cached': _spec.cached_price}
 
 
+# Per-call estimates when OpenRouter did not supply a charge.
+# GLM uses OpenInference's rate and Kimi uses the common $2/$10 tier.
+_OPENROUTER_ESTIMATE_RATES = {
+    'glm-5.3-flash': (0.06, 0.30, 0.03),
+    'kimi-k3.1-pro': (2.00, 10.00, 0.20),
+}
+
+
 def model_cost_usd(
     model: str,
     input_tokens: int = 0,
@@ -51,8 +59,9 @@ def model_cost_usd(
     cache_write_tokens: int = 0,
     *,
     apply_tiers: bool = True,
+    for_budget: bool = False,
 ) -> float:
-    """List-price estimate. Cached prompt hits use the model's own cached rate, else 10% of input."""
+    """Estimate a call, using conservative rates for the run budget."""
     from app.billing.plans import canonical_billing_model
 
     model = canonical_billing_model(model)
@@ -60,6 +69,10 @@ def model_cost_usd(
     spec = model_spec(model)
     inp_rate, out_rate, cached_rate = spec.rates(int(input_tokens or 0), apply_tiers=apply_tiers) if spec else (
         rates['input'], rates['output'], rates.get('cached', rates['input'] * .1))
+    if for_budget and model == 'deepseek-v4-flash':
+        inp_rate, out_rate, cached_rate = 0.30, 1.20, 0.006
+    elif not for_budget and apply_tiers and model in _OPENROUTER_ESTIMATE_RATES:
+        inp_rate, out_rate, cached_rate = _OPENROUTER_ESTIMATE_RATES[model]
     fresh_input = max(0, int(input_tokens or 0))
     cached = min(max(0, int(cached_input_tokens or 0)), fresh_input)
     fresh_input -= cached

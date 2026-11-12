@@ -1,11 +1,11 @@
 import { useId, useLayoutEffect, useState } from 'react';
 import { Alert, Box, Collapse, Drawer, Popover, Button, IconButton, Typography, Tooltip, useMediaQuery } from '@mui/material';
-import { CaretDown, Check, Lightning, MagnifyingGlass, Books, Desktop, Atom, FileText, Lock, Brain, X, Image as ImageIcon } from '@phosphor-icons/react';
+import { CaretDown, Check, Lightning, Books, Desktop, FileText, Lock, Brain, X, Image as ImageIcon } from '@phosphor-icons/react';
 import { useQuery, useMutation, useQueryClient, useIsMutating, useMutationState, type QueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/api/client';
 import { composerChipSelectedSx, composerChipSx } from '@/theme/effects';
 import { GlowSwitch } from '@/components/GlowSwitch';
-import { ASTRA_LABEL, DOCGEN_LABEL, EXPRESS_LABEL, PILOT_LABEL } from '@/constants/modes';
+import { DOCGEN_LABEL, EXPRESS_LABEL, PILOT_LABEL } from '@/constants/modes';
 import { conversationModeOwner, rememberConversationMode } from '@/features/chat/conversationMode';
 import { useVisualViewportHeight } from '@/features/chat/useVisualViewportHeight';
 
@@ -38,9 +38,7 @@ interface ModelsCache {
 
 const ANSWER_MODES = [
   { id: 'auto', label: EXPRESS_LABEL, description: 'Быстро и экономно: сам подберёт модель', model: 'auto', icon: Lightning },
-  { id: 'search', label: 'Поиск', description: 'Свежие ответы с источниками', model: 'search', icon: MagnifyingGlass },
   { id: 'research', label: 'Исследование', description: 'Глубокий разбор и проверка источников', model: 'gpt-6-sol', icon: Books },
-  { id: 'astra', label: ASTRA_LABEL, description: 'Сложные задачи: код, договоры, файлы', model: 'gpt-6-astra', icon: Atom },
   { id: 'docgen', label: DOCGEN_LABEL, description: 'Большой .docx или комплект документов по Word, PDF, Excel и архивам', model: 'docgen', icon: FileText },
   { id: 'computer', label: PILOT_LABEL, description: 'Выполняет задачи с файлами, поиском и инструментами', model: 'director', icon: Desktop },
 ] as const;
@@ -54,7 +52,7 @@ interface ModeItem {
 }
 
 /** What the menu shows at first: the everyday modes. The rest sit behind «Ещё». */
-const PRIMARY_MODE_IDS = ['auto', 'search', 'computer'] as const;
+const PRIMARY_MODE_IDS = ['auto', 'research', 'computer'] as const;
 
 const REASONING_CAPABLE = new Set([
   'auto',
@@ -62,12 +60,11 @@ const REASONING_CAPABLE = new Set([
   'gpt-6-luna',
   'gpt-6.1-terra',
   'gpt-6-sol',
-  'gpt-6-astra',
 ]);
-const XHIGH_CAPABLE = new Set(['gpt-6-sol', 'gpt-6-astra', 'gpt-6.1-terra']);
+const XHIGH_CAPABLE = new Set(['gpt-6-sol', 'gpt-6.1-terra']);
 
 export function useModelsQuery() {
-  return useQuery<ModelsCache>({ queryKey: ['models'], queryFn: async ({ signal }) => { const data = await apiFetch('/models', { signal, timeoutMs: 15000 }) as ModelsCache; return { ...data, selected: data.selected === 'studio' ? 'auto' : data.selected }; }, staleTime: 10_000, retry: 1 });
+  return useQuery<ModelsCache>({ queryKey: ['models'], queryFn: async ({ signal }) => { const data = await apiFetch('/models', { signal, timeoutMs: 15000 }) as ModelsCache; const retired = new Set(['studio', 'search', 'gpt-6-astra', 'kimi-k2.6']); return { ...data, selected: retired.has(data.selected) ? 'auto' : data.selected }; }, staleTime: 10_000, retry: 1 });
 }
 
 function patchModelsCache(queryClient: QueryClient, patch: Partial<ModelsCache>) {
@@ -149,7 +146,6 @@ export function SearchModeSelector({ disabled = false }: { disabled?: boolean })
   const researchModel = data?.researchModel || null;
   const computerAvailable = Boolean(data?.computerAvailable);
   const docgenAvailable = Boolean(data?.docgenAvailable);
-  const astraAvailable = Boolean(data?.astraAvailable);
   const multipliers = data?.multipliers || {};
   const baseModes: ModeItem[] = ANSWER_MODES.map((mode) => {
     if (mode.id === 'research') {
@@ -204,31 +200,21 @@ export function SearchModeSelector({ disabled = false }: { disabled?: boolean })
             const Icon = mode.icon;
             const available =
               mode.id === 'auto' ||
-              (mode.id === 'search' && data?.searchAvailable !== false) ||
               mode.id === 'selected-model' ||
               (mode.id === 'research' && Boolean(researchModel)) ||
-              (mode.id === 'astra' && astraAvailable) ||
               (mode.id === 'docgen' && docgenAvailable) ||
               (mode.id === 'computer' && computerAvailable);
             const isActive = selectedMode.id === mode.id;
             const factor =
-              mode.id === 'search'
-                ? multipliers['search']
-                : mode.id === 'research'
-                  ? multipliers[mode.model]
-                  : mode.id === 'astra'
-                    ? multipliers['gpt-6-astra']
-                      : mode.id === 'auto'
-                        ? 1
-                        : undefined;
+              mode.id === 'research'
+                ? multipliers[mode.model]
+                : mode.id === 'auto'
+                  ? 1
+                  : undefined;
             const lockedHint = data?.modeRequirements?.[mode.id] || (
-              mode.id === 'astra'
-                ? 'Нужен Pro+'
-                : mode.id === 'docgen'
-                  ? 'Нужен Creator'
-                  : mode.id === 'computer'
-                    ? 'Нужен Pro'
-                    : 'Нужен Pro');
+              mode.id === 'docgen'
+                ? 'Нужен Creator'
+                : 'Нужен Pro');
             return (
               <Box
                 key={mode.id}
@@ -578,18 +564,13 @@ export function ReasoningEffortSelector({ disabled = false }: { disabled?: boole
   const selected = data?.selected || 'auto';
   const currentEffort = data?.reasoningEffort || 'none';
   const supportsEffort = !!data?.supportsReasoningEffort;
-  const isAstra = selected === 'gpt-6-astra';
-  const enabled = isAstra ? currentEffort === 'max' : currentEffort !== 'none';
+  const enabled = currentEffort !== 'none';
 
   if (!supportsEffort) return null;
 
-  const tooltip = isAstra
-    ? enabled
-      ? 'Снизить до обычной глубины Astra'
-      : 'Включить максимальную глубину Astra'
-    : enabled
-      ? 'Выключить глубокий многошаговый анализ и снизить расход'
-      : 'Включить глубокий многошаговый анализ';
+  const tooltip = enabled
+    ? 'Выключить глубокий многошаговый анализ и снизить расход'
+    : 'Включить глубокий многошаговый анализ';
 
   return (
     <>
@@ -605,15 +586,11 @@ export function ReasoningEffortSelector({ disabled = false }: { disabled?: boole
         onMouseDown={(e) => e.preventDefault()}
         onClick={() =>
           selectEffort.mutate(
-            isAstra
-              ? enabled
+            enabled
+              ? 'none'
+              : selected === 'gpt-6-sol' || selected === 'gpt-5.6-sol'
                 ? 'high'
-                : 'max'
-              : enabled
-                ? 'none'
-                : selected === 'gpt-6-sol' || selected === 'gpt-5.6-sol'
-                  ? 'high'
-                  : 'medium',
+                : 'medium',
           )
         }
         sx={{

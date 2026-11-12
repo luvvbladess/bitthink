@@ -25,15 +25,15 @@ def token():
 
 @pytest.mark.parametrize('value,expected',[
     ('studio','auto'),('gpt-6-luna','auto'),('gpt-6.1-terra','auto'),
-    ('claude-opus-5.5','auto'),('deepseek-v4-pro','auto'),('kimi-k2.6','search'),
-    ('gpt-6-sol','gpt-6-sol'),('gpt-6-astra','gpt-6-astra'),('docgen','docgen'),('director','director'),
+    ('claude-opus-5.5','auto'),('deepseek-v4-pro','auto'),('kimi-k2.6','auto'),
+    ('gpt-6-sol','gpt-6-sol'),('gpt-6-astra','auto'),('search','auto'),('docgen','docgen'),('director','director'),
 ])
 def test_desktop_wire_choices_are_product_modes(value,expected):
     assert normalize_chat_mode(value)==expected
     assert expected in PUBLIC_CHAT_MODE_IDS
 
 
-@pytest.mark.parametrize('requested,expected',[('claude-opus-5.5','auto'),('studio','auto'),('kimi-k2.6','search'),('gpt-6-sol','gpt-6-sol')])
+@pytest.mark.parametrize('requested,expected',[('claude-opus-5.5','auto'),('studio','auto'),('kimi-k2.6','auto'),('search','auto'),('gpt-6-astra','auto'),('gpt-6-sol','gpt-6-sol')])
 def test_desktop_request_binds_mode_and_exact_canvas_without_persisting_account_choice(monkeypatch,token,requested,expected):
     email,access=token
     save=AsyncMock(side_effect=AssertionError('Per-chat mode must not change the account setting'))

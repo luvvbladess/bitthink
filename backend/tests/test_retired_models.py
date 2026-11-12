@@ -13,8 +13,9 @@ def test_kimi_is_unavailable_even_for_creator_and_saved_chats_migrate():
     for tier in ('free','trial','pro','proplus','ultra','creator'):
         assert 'kimi-k2.6' not in allowed_models(tier)
         assert 'kimi-k2.6' not in computer_models(tier)
-        assert clamp_model(tier,'kimi-k2.6') == 'search'
-        assert 'search' in allowed_models(tier)
+        assert clamp_model(tier,'kimi-k2.6') == 'auto'
+        assert clamp_model(tier,'search') == 'auto'
+        assert 'search' not in allowed_models(tier)
     assert 'kimi-k2.6' not in config.AVAILABLE_MODELS
     assert not config.KIMI_API_KEY
     # Historical bills must keep their original price.
@@ -37,27 +38,27 @@ def test_models_payload_never_advertises_retired_provider(monkeypatch):
     payload=asyncio.run(api.list_models('synthetic'))
     import json
     assert 'kimi' not in json.dumps(payload).lower()
-    assert payload['selected']=='search'
-    assert payload['searchAvailable']
-    assert stored==['search']
+    assert payload['selected']=='auto'
+    assert payload['searchAvailable'] is False
+    assert payload['astraAvailable'] is False
+    assert stored==['auto']
 
 
-def test_search_uses_luna_and_shared_tools(monkeypatch):
+def test_retired_search_mode_answers_as_express(monkeypatch):
     from handlers import core
-    from app.services.request_intent import classify_request
-    # Exercise routing through the real entry point; no hosted provider is used.
     monkeypatch.setattr(core.conversation_manager,'get_user_model',lambda _: 'search')
     monkeypatch.setattr(core.conversation_manager,'get_user_reasoning_effort',lambda _: 'none')
     monkeypatch.setattr(core.conversation_manager,'get_subscription',lambda _: {'tier':'pro'})
     calls=[]
     async def fake(messages,**kwargs):
         calls.append(kwargs)
-        return 'Проверено [по источнику](https://example.com).',[], '',[]
+        return 'HTTP — протокол обмена в вебе.',[], '',[]
     monkeypatch.setattr(core,'get_chat_response',fake)
     import web_scraper
     async def nothing(*_,**__): return ''
     monkeypatch.setattr(web_scraper,'walled_links_context',nothing)
     result=asyncio.run(core.get_smart_response(998831,'Объясни, что такое HTTP',[],None))
-    assert calls and calls[-1]['model']=='gpt-6-luna'
-    assert calls[-1]['force_web_search'] is True
+    assert calls
+    assert calls[-1]['model'] != 'gpt-6-astra'
+    assert calls[-1].get('force_web_search') is not True
     assert not result[0].startswith('❌')

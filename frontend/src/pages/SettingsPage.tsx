@@ -268,7 +268,7 @@ export default function SettingsPage() {
 
       <AccountSection
         title="Скилы"
-        hint="Свои действуют в любом чате. Из общих: часть везде, остальные только в Оркестраторе и Astra."
+        hint="Свои действуют в любом чате. Из общих: часть везде, остальные только в Оркестраторе."
       >
         <SkillsSection />
       </AccountSection>

@@ -34,7 +34,7 @@ def test_mail_and_server_suggest_pilot_only_when_missing():
     suggestion = suggest_mode_switch("studio", ask, allowed=PRO)
     assert suggestion is not None and suggestion["model"] == "director"
     assert suggest_mode_switch("director", ask, allowed=PRO) is None
-    assert suggest_mode_switch("gpt-6-astra", ask, allowed=CREATOR) is None
+    assert suggest_mode_switch("gpt-6-astra", ask, allowed=CREATOR)["model"] == "director"
     assert suggest_mode_switch("auto", "Зайди на сервер по ssh и выполни команду df", allowed=PRO)["model"] == "director"
 
 
@@ -54,13 +54,12 @@ def test_plain_document_question_stays_put():
     assert suggest_mode_switch("auto", "Напиши короткий договор на одну страницу", allowed=CREATOR) is None
 
 
-def test_web_question_in_studio_suggests_search_not_in_chat():
+def test_web_question_in_studio_suggests_express_not_in_chat():
     ask = "Что сегодня произошло в мире? Коротко и по источникам."
     suggestion = suggest_mode_switch("studio", ask, allowed=PRO)
-    assert suggestion is not None and suggestion["model"] == "search"
-    assert suggest_mode_switch("docgen", ask, allowed=CREATOR)["model"] == "search"
+    assert suggestion is not None and suggestion["model"] == "auto"
+    assert suggest_mode_switch("docgen", ask, allowed=CREATOR)["model"] == "auto"
     assert suggest_mode_switch("auto", ask, allowed=PRO) is None
-    assert suggest_mode_switch("search", ask, allowed=PRO) is None
     assert suggest_mode_switch("director", ask, allowed=PRO) is None
 
 
