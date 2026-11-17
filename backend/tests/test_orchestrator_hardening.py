@@ -155,7 +155,7 @@ def test_unlimited_orchestrator_still_counts_responses_input_for_its_spend_budge
     client = NS(responses=NS(create=create, input_tokens=NS(count=count)))
     async def exercise():
         with run_budget('web'):
-            await model_call(client, {'model': 'gpt-6.1-sol', 'input': 'x' * 2_000_000,
+            await model_call(client, {'model': 'gpt-6.2-sol', 'input': 'x' * 2_000_000,
                 'max_output_tokens': 1024}, model='gpt-6-sol', responses=True)
     asyncio.run(exercise())
     assert len(counted) == len(calls) == 1

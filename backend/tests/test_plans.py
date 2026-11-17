@@ -256,6 +256,7 @@ def test_spend_summary_uses_vendor_rates():
     assert summary["models"][0]["model"] == "gpt-5.6-luna"
     assert abs(model_cost_usd("gpt-5.6-luna", 1_000_000, 0, cached_input_tokens=1_000_000) - 0.025) < 1e-9
     assert abs(model_cost_usd("gpt-6.1-sol", 1_000_000, 0) - 4.0) < 1e-9
+    assert abs(model_cost_usd("gpt-6.2-sol", 1_000_000, 0) - 4.0) < 1e-9
 
 
 def test_month_spend_includes_usage_under_email_hash_and_stored_bot_id():

@@ -31,7 +31,7 @@ const plans = [
     price: '1 990 ₽',
     note: 'Sol, Исследование и Оркестратор',
     featured: false,
-    items: ['75 млн общих единиц для чата и Оркестратора', 'GPT-6.1 Sol и Исследование', 'Источники, документы и холст в чате', '25 картинок в месяц'],
+    items: ['75 млн общих единиц для чата и Оркестратора', 'GPT-6.2 Sol и Исследование', 'Источники, документы и холст в чате', '25 картинок в месяц'],
   },
   {
     name: 'Pro+',
@@ -253,7 +253,7 @@ export default function LandingPage() {
                   <Typography sx={{ fontWeight: 650 }}>{plan.name}</Typography>
                   {plan.featured && (
                     <Box component="span" sx={{ color: 'primary.light', fontSize: '0.75rem', fontWeight: 600 }}>
-                      с GPT-6.1 Sol
+                      с GPT-6.2 Sol
                     </Box>
                   )}
                 </Box>

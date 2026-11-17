@@ -106,14 +106,14 @@ def _get_reasoning_config(model: str, user_effort: Optional[str] = None) -> dict
     """Возвращает конфиг reasoning в зависимости от модели и пользовательской настройки.
 
     user_effort, если задан, переопределяет дефолт модели.
-    Luna и Terra поддерживают none; у Sol 6.1 минимальный режим low. max остаётся у Astra,
+    Luna и Terra поддерживают none; у Sol 6.2 минимальный режим low. max остаётся у Astra,
     xhigh — у Sol и Astra, остальным понижается до high.
     """
     effort = (user_effort or "").strip().lower()
     if effort == "none" and model in {"gpt-6-luna", "gpt-6.1-terra"}:
         return {"effort": "none"}
     if effort == "none" and model == "gpt-6-sol":
-        return {"effort": "low"}  # Sol 6.1 has no API `none` setting.
+        return {"effort": "low"}  # Sol 6.2 rejects API effort `none`.
     if effort in {"", "none"}:
         effort = ""
     if effort:
@@ -127,7 +127,7 @@ def _get_reasoning_config(model: str, user_effort: Optional[str] = None) -> dict
     if model == "gpt-6-sol":
         # «Без размышлений» в интерфейсе раньше давало high: переключатель на Sol
         # ничего не менял, а выходные токены стоят $10 за миллион. medium на
-        # GPT-6.1 Sol держит почти тот же результат, глубина – по тумблеру.
+        # GPT-6.2 Sol держит почти тот же результат, глубина – по тумблеру.
         return {"effort": "medium"}
     if model in ("gpt-5-nano", "gpt-6-luna", "gpt-6.1-terra"):
         return {"effort": "low"}
@@ -150,27 +150,13 @@ def _resolve_api_model(model: str) -> str:
 
 
 # Внутренний id остаётся gpt-6-sol: на нём держатся тарифы, лимиты, учёт токенов
-# и сохранённые чаты. Только в запросе к API Sol заменяется на GPT-6.1 Sol –
-# та же цена ($2/$10), дешевле кэш, выше качество в коде и агентных задачах.
-_API_MODEL_IDS = {"gpt-6-sol": "gpt-6.1-sol"}
-_sol61_unavailable = False  # ponytail: сбрасывается рестартом; один отказ – и до рестарта идём на gpt-6-sol
+# и сохранённые чаты. В запрос к API всегда уходит GPT-6.2 Sol.
+# Цена коротким контекстом та же ($2/$10, кэш $0.10).
+_API_MODEL_IDS = {"gpt-6-sol": "gpt-6.2-sol"}
 
 
 def _api_model_id(model: str) -> str:
-    if _sol61_unavailable:
-        return model
     return _API_MODEL_IDS.get(model, model)
-
-
-def _sol61_missing(err: str) -> bool:
-    """True when gpt-6.1-sol is not on this key yet (404 / no access)."""
-    text = (err or "").lower()
-    if "gpt-6.1-sol" not in text:
-        return False
-    return any(
-        marker in text
-        for marker in ("model_not_found", "not found", "does not exist", "no access", "not available", "unknown model", "invalid model")
-    )
 
 
 def _with_astra_agent_prompt(messages: List[dict]) -> List[dict]:
@@ -952,27 +938,6 @@ async def get_chat_response(
                                 code=getattr(e, 'status_code', None))
         logger.error(f"OpenAI Responses API error: {e}")
         requested = (model or DEFAULT_MODEL)
-        global _sol61_unavailable
-        if not _sol61_unavailable and _sol61_missing(err):
-            logger.warning("gpt-6.1-sol unavailable on this key, falling back to gpt-6-sol")
-            _sol61_unavailable = True
-            return await get_chat_response(
-                messages,
-                model=model,
-                image_base64=image_base64,
-                image_mime_type=image_mime_type,
-                user_id=user_id,
-                use_tools=use_tools,
-                reasoning_effort=reasoning_effort,
-                on_reasoning_delta=on_reasoning_delta,
-                force_web_search=force_web_search,
-                use_skills=use_skills,
-                chat_tools=chat_tools,
-                max_tool_loops=max_tool_loops,
-                allowed_tools=allowed_tools,
-                required_first_tool=required_first_tool,
-                output_token_limit=output_token_limit,
-            )
         if requested == "gpt-6-astra" and _astra_unavailable(err):
             logger.warning("gpt-6-astra unavailable, falling back to gpt-6-sol")
             return await get_chat_response(

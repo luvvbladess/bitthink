@@ -40,7 +40,7 @@ def fake_client(create, inp=100):
 
 
 def request():
-    return {"model": "gpt-6.1-sol", "input": "hello", "max_output_tokens": 1000}
+    return {"model": "gpt-6.2-sol", "input": "hello", "max_output_tokens": 1000}
 
 
 def test_response_cap_refund_and_single_actual_debit(user):

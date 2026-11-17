@@ -45,7 +45,7 @@ MODELS = {
         context=1_050_000, tiers=(PriceTier(272_000, .20, .75, .02),)),
     'gpt-6.1-terra': ModelSpec('gpt-6.1-terra', 'openai', 1., 5., .05,
         context=1_050_000, tiers=(PriceTier(272_000, 2., 7.5, .10),)),
-    'gpt-6-sol': ModelSpec('gpt-6.1-sol', 'openai', 2., 10., .10,
+    'gpt-6-sol': ModelSpec('gpt-6.2-sol', 'openai', 2., 10., .10,
         context=1_050_000, output_cap=24_000, tiers=(PriceTier(272_000, 4., 15., .20),)),
     'gpt-6-astra': ModelSpec('gpt-6-astra', 'openai', 10., 50., 1.,
         context=1_050_000, output_cap=24_000, tiers=(PriceTier(272_000, 20., 75., 2.),)),

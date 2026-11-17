@@ -62,6 +62,8 @@ PROVIDER_MODEL_ALIASES = {
 }
 from app.services.model_registry import MODEL_ALIASES
 PROVIDER_MODEL_ALIASES.update(MODEL_ALIASES)
+# Usage rows stored under the previous Sol API id keep the same tiered price.
+PROVIDER_MODEL_ALIASES["gpt-6.1-sol"] = "gpt-6-sol"
 HAIKU_TIER_INPUT = 100_000
 
 CHEAP_MODELS = [
@@ -126,7 +128,7 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "name": "Pro",
         "price_rub": 1_990,
         "price_year_rub": 19_900,
-        "description": "GPT-6.1 Sol, Исследование и Оркестратор",
+        "description": "GPT-6.2 Sol, Исследование и Оркестратор",
         "chat_tokens": 45_000_000,
         "computer_tokens": 15_000_000,
         "chat_week": 11_250_000,
@@ -135,7 +137,7 @@ PLAN_CATALOG: dict[str, dict[str, Any]] = {
         "computer_session": 1_075_000,
         "images": 25,
         "models": list(PRO_MODELS),
-        "features": ["GPT-6.1 Sol и Исследование", "Холст в чате"],
+        "features": ["GPT-6.2 Sol и Исследование", "Холст в чате"],
     },
     "proplus": {
         "id": "proplus",
