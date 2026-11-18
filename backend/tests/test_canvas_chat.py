@@ -72,10 +72,42 @@ def test_visual_edits_use_existing_result(canvases,text):
     assert canvas_request(7,text)=='edit'
 
 
+@pytest.mark.parametrize('with_canvases', [False, True], ids=['only-images', 'older-canvases'])
+@pytest.mark.parametrize('text', [
+    'Данный вариант глушителя 3.1 оказался очень неплохим: снижение шума 48–115 дБ. '
+    'Давай сделаем обновленную конструкцию, исходя из расчетов нам хватает абсорбционной секции, '
+    'а две реактивные секции выглядят избыточными. Лучше сделать одну? И как ее тогда лучше сделать?',
+    'Обнови конструкцию глушителя по расчётам: убери одну реактивную секцию. Как изменится шум?',
+    'Уменьши ширину реактивной секции. Как проверить результат?',
+    'Сделай короче',
+])
+def test_engineering_followup_stays_in_chat(canvases, with_canvases, text):
+    add, messages = canvases
+    if with_canvases:
+        add('first.html')
+        add('second.html')
+    messages.extend([
+        SimpleNamespace(role='user', attachment={'type': 'image', 'name': 'section.png',
+                                                  'url': '/uploads/section.png'}),
+        SimpleNamespace(role='user', attachment={'type': 'image', 'name': 'loss.png',
+                                                  'url': '/uploads/loss.png'}),
+        SimpleNamespace(role='assistant', content='Вариант 3.1 стоит принять за основу.'),
+    ])
+    assert canvas_request(7, text) is None
+
+
+def test_generated_image_card_is_not_an_editable_html_canvas(canvases):
+    add, messages = canvases
+    add()
+    messages[-1].attachment.update(type='image', name='diagram.png')
+    assert canvas_request(7, 'Сделай заголовок крупнее') is None
+
+
 def test_versions_require_exact_selection_and_cannot_open_foreign_url(canvases):
     add,_=canvases
     first=add('first.html');add('second.html')
-    assert canvas_request(7,'Сделай заголовок крупнее')=='ambiguous'
+    assert canvas_request(7,'Сделай заголовок крупнее')=='edit'
+    assert canvas_request(7,'Сделай заголовок крупнее в текущем макете')=='ambiguous'
     token=generation_preferences.set({'user_id':7,'canvas_target':first})
     try:
         assert canvas_request(7,'Сделай заголовок крупнее')=='edit'
@@ -87,6 +119,62 @@ def test_versions_require_exact_selection_and_cannot_open_foreign_url(canvases):
         assert canvas_request(7,'Сделай заголовок крупнее')=='missing'
         assert load_previous_html(7) is None
     finally:generation_preferences.reset(token)
+
+
+@pytest.mark.parametrize('text', [
+    'Мне нужно понять, как сделать сайт для музея.',
+    'Стоит ли сделать сайт для записи на консультацию?',
+    'Хочу обновить отчёт: добавь туда график ключевых метрик.',
+    'Сделай таблицу с результатами презентации.',
+    'Предложи три варианта и скажи, как сделать сайт лучше.',
+    'Можно убрать кнопку с главной без потери заявок?',
+    'Напиши, что произойдёт, если удалить слайд.',
+    'Уменьши высоту камеры. В презентации мы указали другое значение.',
+    'Не меняй цвет кнопки.',
+])
+def test_mentions_and_advice_do_not_dispatch_to_canvas(canvases, text):
+    add, _ = canvases
+    target = add()
+    token = generation_preferences.set({'user_id': 7, 'canvas_target': target})
+    try:
+        assert canvas_request(7, text) is None
+    finally:
+        generation_preferences.reset(token)
+
+
+def test_implicit_edit_uses_recent_result_instead_of_all_historical_canvases(canvases):
+    add, messages = canvases
+    add('old.html')
+    add('latest.html')
+    assert canvas_request(7, 'Убери кнопку') == 'edit'
+    messages.append(SimpleNamespace(role='assistant', content='Текст отчёта.', attachment=None))
+    assert canvas_request(7, 'Убери кнопку') is None
+    assert canvas_request(7, 'Убери кнопку в текущем макете') == 'ambiguous'
+
+
+@pytest.mark.parametrize('text', [
+    'Подготовьте презентацию, а ниже добавьте комментарии.',
+    'Хочу собрать адаптивный сайт для мастерской.',
+    'Сделай понятную инфографику по бухгалтерскому отчёту.',
+    'Собери страницу товара из этого описания.',
+])
+def test_requested_artifact_is_identified_at_the_action(canvases, text):
+    assert canvas_request(7, text) == 'create'
+
+
+@pytest.mark.parametrize('text, expected', [
+    ('Можно ли уместить контакты на одном экране? Затем собери лендинг для мастерской.', 'create'),
+    ('Объясни, что такое инфографика. Затем создай инфографику по этим цифрам.', 'create'),
+    ('На сайте можно поменять цвет кнопки? И как убрать меню?', None),
+    ('Посоветуй, как убрать кнопку, чтобы сохранить заявки.', None),
+    ('Сделай картинку для презентации, а не презентацию.', None),
+    ('Обнови давление до 5 кПа. Холст оставь для следующего шага.', None),
+    ('Нужен сайт, который показывает результаты измерений.', 'create'),
+])
+def test_dispatch_uses_the_independent_action_and_its_target(canvases, text, expected):
+    add, _ = canvases
+    add()
+    assert canvas_request(7, text) == expected
 
 
 def test_uploaded_html_is_not_a_generated_canvas(canvases):

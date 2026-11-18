@@ -124,6 +124,20 @@ def test_chat_draws_and_edits_pictures_instead_of_refusing(monkeypatch):
     assert len(calls)==before
 
 
+def test_new_image_request_does_not_reuse_unrelated_upload_or_previous_picture(monkeypatch):
+    calls = []
+
+    async def render(messages, prompt, user_id, status, **kwargs):
+        calls.append(kwargs['source_images'])
+        return 'rendered', [], '', []
+
+    monkeypatch.setattr(sr, '_run_image_studio', render)
+    monkeypatch.setattr(sr, '_last_reply_image', lambda uid: b'older-picture')
+    monkeypatch.setattr(sr, '_chat_image_bytes', lambda uid, current_turn_only: [b'attachment'])
+    asyncio.run(sr.get_image_response([], 'Нарисуй новую картинку с лесом с нуля.', 1, None))
+    assert calls == [None]
+
+
 @pytest.mark.parametrize('prompt', [
     'Измени текущий макет: чуть поменьше размер текста сделать в кнопке "от 490". Сохрани остальные элементы и содержание.',
     'В текущем макете измени элемент «от 490» (img): уменьши текст цены.',

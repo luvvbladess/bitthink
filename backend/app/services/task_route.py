@@ -90,7 +90,7 @@ def parse_route(raw, projects):
     workspace_id = str(data.get('workspace_id') or '').strip()
     if action == 'revise':
         if workspace_id not in ids:
-            workspace_id = ids[0] if len(ids) == 1 else ''
+            workspace_id = ids[0] if not workspace_id and len(ids) == 1 else ''
         if not workspace_id:
             return {'action': 'reply', 'goal': goal, 'workspace_id': ''}
     else:

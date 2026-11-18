@@ -15,7 +15,10 @@ def test_parser_reads_the_model_decision_and_ignores_markdown():
     built = parse_route('{"action":"product","goal":"сайт по промпту","workspace_id":"p1"}', PROJECTS)
     assert built['action'] == 'product' and built['workspace_id'] == ''
     revised = parse_route('{"action":"revise","goal":"крупнее шрифт","workspace_id":"missing"}', PROJECTS)
-    assert revised == {'action': 'revise', 'goal': 'крупнее шрифт', 'workspace_id': 'p1'}
+    assert revised == {'action': 'reply', 'goal': 'крупнее шрифт', 'workspace_id': ''}
+    assert parse_route('{"action":"revise","workspace_id":"p1"}', PROJECTS)['workspace_id'] == 'p1'
+    assert parse_route('{"action":"revise"}', PROJECTS)['workspace_id'] == 'p1'
+    assert parse_route('{"action":"revise"}', PROJECTS + [{'product_id': 'p2'}])['action'] == 'reply'
     assert parse_route('{"action":"revise","goal":"правка"}', [])['action'] == 'reply'
     assert parse_route('не json', PROJECTS) is None
     assert parse_route('{"action":"dance"}', PROJECTS) is None

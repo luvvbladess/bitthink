@@ -613,15 +613,14 @@ async def get_image_response(
     Без этого просьба «добавь ребёнку очки» к приложенному фото уходила в модель,
     которая только смотрит на снимок, и она отвечала, что рисовать не умеет.
     """
-    from studio.html_canvas import detect_kind_explicit, explicitly_requests_raster
+    from studio.html_canvas import detect_kind_explicit, explicitly_requests_raster, requests_new_work
 
-    from canvas_intent import artifact_brief
+    from canvas_intent import action_clauses, artifact_brief
     text = artifact_brief(user_text)
     # Explicit source/vector deliverables keep their code workflow.
     if re.search(r'(?i)(?:в\s+формате|формат|создай|сделай|нужен)\s+(?:svg|html)\b|\bsvg[ -]код', user_text or ''):
         return None
-    if text is None and re.search(r'(?i)^\s*(?:у тебя|а теперь|теперь)\b', user_text or '') and _IMAGE_COMMAND.search(user_text or '') and not _NOT_A_PICTURE_JOB.search(user_text or '') and _last_reply_image(user_id):
-        text = user_text
+
     if text is None:
         return None
     # A selected image canvas is authoritative even when its editing instruction
@@ -652,14 +651,19 @@ async def get_image_response(
             break
     if reference_only and not reference_brief:
         return None
-    command = bool(_IMAGE_COMMAND.search(text)) and not _NOT_A_PICTURE_JOB.search(text)
+    command = not _NOT_A_PICTURE_JOB.search(text) and any(
+        _IMAGE_COMMAND.match(re.sub(r'(?i)^(?:а\s+)?теперь\s+', '', clause))
+        for clause in action_clauses(text)
+    )
     turn_images = _chat_image_bytes(user_id, current_turn_only=True)
     if reference_brief:
         sources = turn_images or _chat_image_bytes(user_id, current_turn_only=False)[-1:]
         if not sources:
             return 'Не удалось открыть исходное изображение. Прикрепите эскиз ещё раз.', [], '', []
         return await _run_image_studio(messages, reference_brief, user_id, status_msg, source_images=sources)
-    if turn_images:
+    if image_request and requests_new_work(text):
+        sources = None
+    elif turn_images:
         if not (command or explicitly_requests_raster(text)):
             return None
         sources: list[bytes] | None = turn_images

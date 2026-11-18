@@ -169,9 +169,10 @@ export default function ChatPage() {
   }, [activeConvId, Boolean(models), openNewChat]);
   const latestCanvas = useMemo(() => displayConversationId === activeConvId ? findStudioCanvas(displayMessages) : null, [displayMessages, displayConversationId, activeConvId]);
   const canvasVersions = useMemo(() => displayConversationId === activeConvId ? studioCanvasVersions(displayMessages) : [], [displayMessages, displayConversationId, activeConvId]);
-  const [selectedCanvas, setSelectedCanvas] = useState<StudioCanvasSource | null>(null);
+  const [canvasSelection, setCanvasSelection] = useState<{ conversationId: string; source: StudioCanvasSource } | null>(null);
+  const selectedCanvas = canvasSelection?.conversationId === activeConvId ? canvasSelection?.source : null;
   const canvasSource = displayConversationId === activeConvId ? (selectedCanvas || latestCanvas) : null;
-  useEffect(() => setSelectedCanvas(null), [activeConvId, latestCanvas?.url, latestCanvas?.html]);
+  useEffect(() => setCanvasSelection(null), [activeConvId, latestCanvas?.url, latestCanvas?.html]);
   const [canvasVisibleById, setCanvasVisibleById] = useState(canvasVisibility);
   const canvasVisible = Boolean(canvasSource && activeConvId && canvasVisibleById[activeConvId] !== false);
   const closeCanvas = () => {
@@ -182,8 +183,10 @@ export default function ChatPage() {
     closePreview();
     setProjectPanel(null);
     setPanelExpanded(false);
-    setSelectedCanvas(source);
-    if (activeConvId) setCanvasVisibleById(current => rememberCanvasVisibility(current, activeConvId, true));
+    if (activeConvId) {
+      setCanvasSelection({ conversationId: activeConvId, source });
+      setCanvasVisibleById(current => rememberCanvasVisibility(current, activeConvId, true));
+    }
   };
   const [exporting, setExporting] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
@@ -594,8 +597,11 @@ export default function ChatPage() {
       // completes before treating the send as delivered.
       const ready = await waitUntilReady(45000);
       if (!ready) throw new Error('нет соединения с сервером, попробуйте ещё раз');
+      const canvasTarget = canvasVisible && conversationId === activeConvId
+        ? (canvasEdit ? canvasSource?.url : selectedCanvas?.url)
+        : undefined;
       const payload = { content: text, conversation_id: conversationId, model: canvasEdit ? 'auto' : models.selected,
-        ...(!selectionQuote && canvasVisible && canvasSource?.url ? { canvas_target: canvasSource.url } : {}) };
+        ...(!selectionQuote && canvasTarget ? { canvas_target: canvasTarget } : {}) };
       const operation = JSON.stringify(payload);
       if (deliveryRef.current.payload !== operation) deliveryRef.current = { payload: operation, key: submissionId(operation) };
       patchJob(conversationId, { statusText: 'Отправляется…' });

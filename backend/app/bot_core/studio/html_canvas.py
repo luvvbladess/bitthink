@@ -237,12 +237,12 @@ def wants_pptx_file(user_text: str) -> bool:
     return bool(_PPTX_FILE.search(image_brief_text(user_text)))
 
 
+def requests_new_work(user_text: str) -> bool:
+    return bool(_NEW_WORK.search(user_text or ""))
+
+
 def should_iterate(user_text: str, previous_html: str | None) -> bool:
-    if not (previous_html or "").strip():
-        return False
-    if _NEW_WORK.search(user_text or ""):
-        return False
-    return True
+    return bool((previous_html or "").strip()) and not requests_new_work(user_text)
 
 
 def extract_html(text: str) -> str | None:
@@ -464,7 +464,7 @@ def apply_ai_images(html: str, images: dict[str, str]) -> str:
     return _AI_IMG.sub(repl, html or "")
 
 
-def load_previous_html(user_id: int) -> str | None:
+def load_previous_html(user_id: int, target: str | None = None) -> str | None:
     try:
         from conversations import conversation_manager
 
@@ -474,8 +474,8 @@ def load_previous_html(user_id: int) -> str | None:
         return None
     if not conv:
         return None
-    from canvas_intent import target_for_turn
-    target = target_for_turn(user_id)
+    from canvas_intent import is_canvas_attachment, target_for_turn
+    target = target or target_for_turn(user_id)
     messages = list(getattr(conv, "messages", None) or [])
     for message in reversed(messages):
         role = message.get('role') if isinstance(message, dict) else getattr(message, 'role', None)
@@ -486,20 +486,10 @@ def load_previous_html(user_id: int) -> str | None:
             attachment = message.get("attachment")
         if not isinstance(attachment, dict):
             continue
-        items = [attachment]
         extra = attachment.get("files")
-        if isinstance(extra, list):
-            items.extend(item for item in extra if isinstance(item, dict))
+        items = extra if isinstance(extra, list) and extra else [attachment]
         for item in items:
-            name = str(item.get("name") or "")
-            url = str(item.get("url") or "")
-            if target and url != target:
-                continue
-            if not (
-                item.get("canvas")
-                or name.lower().endswith((".html", ".htm"))
-                or url.lower().endswith((".html", ".htm"))
-            ):
+            if not is_canvas_attachment(item) or (target and item['url'] != target):
                 continue
             try:
                 path = conversation_manager._attachment_disk_path(item)
