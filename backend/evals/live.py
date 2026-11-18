@@ -60,7 +60,7 @@ async def run(cases, report_path, max_usd, use_judge=False):
                     filtered_drafts.append(dict(text=draft,issues=source_quality.evidence_issues(draft,rows)))
                     return original_partial(draft,rows,**kwargs)
                 stack.enter_context(patch.object(source_quality,'supported_partial',side_effect=trace_partial))
-                stack.enter_context(patch.object(manager,'get_user_model',return_value='auto'))
+                stack.enter_context(patch.object(manager,'get_user_model',return_value=case.get('mode', 'auto')))
                 stack.enter_context(patch.object(manager,'conversation_for_turn',return_value=snapshot))
                 stack.enter_context(patch.object(manager,'track_tokens',side_effect=track))
                 answer,_,_,sources=await asyncio.wait_for(
@@ -95,19 +95,24 @@ async def run(cases, report_path, max_usd, use_judge=False):
         if exception:
             scored['errors'].append(exception)
             scored.update(reliability_passed=None, task_completed=False)
-        if judgment and judgment['usefulness']=='failed':
-            scored['errors'].append('grader_unhelpful')
+        if judgment and judgment['usefulness'] in {'partial', 'failed'}:
+            scored['errors'].append('grader_partial' if judgment['usefulness']=='partial' else 'grader_unhelpful')
             scored['task_completed'] = False
-        if judgment and case['expect']['web'] and judgment['grounding']!='supported':
+        if judgment and case['expect']['web'] and judgment['grounding']=='unsupported':
             scored['errors'].append('grader_grounding_'+judgment['grounding'])
             scored['reliability_passed'] = False
+        if judgment and case['expect']['web'] and judgment['grounding']=='unknown':
+            scored['reliability_passed'] = None
         intent=classify_request(query,history)
         if intent.web_forbidden and record.sources:
             scored['errors'].append('web_despite_optout')
             scored['task_completed'] = False
         scored.update(passed=not scored['errors'],query=query,answer=answer,
+                      mode=case.get('mode', 'auto'), topic=case.get('topic', 'general'),
+                      review_criteria=case.get('review_criteria', []),
                       estimated_usd=round(usd,6),human_semantic_review_required=True,
-                      judgment=judgment,grading_seconds=round(grading_seconds,2),
+                      judgment=judgment,verification_required=bool(judgment and case['expect']['web'] and judgment['grounding']=='unknown'),
+                      grading_seconds=round(grading_seconds,2),
                       filtered_drafts=filtered_drafts,
                       sources=sources,tools=record.tools)
         results.append(scored)

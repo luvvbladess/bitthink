@@ -14,6 +14,7 @@ class SearchBudget:
     reads: int = 3
     queries: set = field(default_factory=set)
     pages: set = field(default_factory=set)
+    provider_fallback_used: bool = False
     pending: dict = field(default_factory=dict, repr=False)
 
     @property
@@ -53,11 +54,24 @@ LIMIT_NOTE = 'Лимит поиска для этого ответа дости�
 SEARCH_PLAN = ('Ищи экономно: сначала один точный запрос с названием объекта, задачей и важными '
                'ограничениями (бюджет, регион, период). Не добавляй текущий год автоматически. '
                'Используй полученные фрагменты сразу. Второй запрос — только по конкретному пробелу, '
-               'без синонимичного повторения успешного поиска. Если источник недоступен или '
+               'без синонимичного повторения успешного поиска. Если название записано на слух, '
+               'проверь оригинальное написание на языке производителя. Если выдача не подтверждает одно из названий, '
+               'вызови server_search с recovery=true для этого пробела до просьбы уточнить запрос. Если источник недоступен или '
                'открылся без нужной таблицы, попробуй независимый источник вместо повторного чтения той же страницы. '
+               'Для сравнения конструкций открой техническое описание, паспорт или PDF каждого производителя. '
+               'Если каталог содержит только список серий, открой документ с устройством выбранной серии. '
                'Открывай лишь нужные страницы; '
                'для изменений оформления и уже приложенных данных поиск не нужен. '
                'После получения достаточных данных сразу дай результат.')
+
+
+def configure_request_budget(intent, query):
+    budget = current_search_budget.get()
+    if budget and intent.needs_web and (
+            intent.task in {'comparison', 'recommendation'}
+            or re.search(r'(?i)исследован|стать[юи]\s+\d', query or '')):
+        budget.searches = max(budget.searches, 4)
+        budget.reads = max(budget.reads, 6)
 
 
 def search_turn(function):
@@ -93,7 +107,7 @@ def limited_search(empty):
             key = (normalized, tuple(sorted(str(x).casefold() for x in sites)))
             if _active_lookup.get() == key:
                 return await function(query, *args, **kwargs)
-            cache_key = (function.__module__, function.__name__, key)
+            cache_key = (function.__module__, function.__name__, key, kwargs.get('recovery', False))
             if cache_key in budget.pending:
                 return copy.deepcopy(await budget.pending[cache_key])
             if key not in budget.queries:

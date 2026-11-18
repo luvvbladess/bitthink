@@ -138,8 +138,8 @@ def plan_card(tier, top, dark=False):
     rule(start, W - M - 20, top + 82, colors.HexColor("#37505E") if dark else LINE)
     model_line = {
         "pro": "GPT-6.2 Sol + Исследование",
-        "proplus": "GPT-6 Astra + всё из Pro",
-        "ultra": "Sol, Astra и самые большие лимиты",
+        "proplus": "Больше ресурса на сложные задачи",
+        "ultra": "Самые большие лимиты",
     }
     text(model_line[tier], start, top + 95, 11.6, "Medium", WHITE if dark else CYAN)
     text("Поиск с источниками · файлы · Студия", start, top + 118, 9.4, color=secondary)
@@ -183,7 +183,6 @@ rows = [
     ("Оркестратор / месяц", [None] + [millions(PLAN_CATALOG[t]["computer_tokens"]) for t in tiers[1:]]),
     ("Изображения / месяц", [str(PLAN_CATALOG[t]["images"]) for t in tiers]),
     ("GPT-6.2 Sol и Исследование", ["gpt-6-sol" in allowed_models(t) for t in tiers]),
-    ("GPT-6 Astra", ["gpt-6-astra" in allowed_models(t) for t in tiers]),
     ("Студия", ["studio" in allowed_models(t) for t in tiers]),
     ("Поиск с источниками", ["5 / день", "Да", "Да", "Да"]),
     ("Отдельный режим «Документы»", ["docgen" in allowed_models(t) for t in tiers]),

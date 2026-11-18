@@ -2360,17 +2360,20 @@ class DatabaseConversationManager:
         docs = self.get_documents(user_id)
         images = self.list_chat_image_files(user_id)
         originals = []
+        generated = []
         conv = self.conversation_for_turn(user_id)
         seen = set()
         for message in getattr(conv, 'messages', []) if conv else []:
-            if getattr(message, 'role', 'user') != 'user':
-                continue
             att = getattr(message, 'attachment', None) or {}
+            role = getattr(message, 'role', 'user')
+            bucket = generated if role == 'assistant' else originals
             for entry in [att, *(att.get('files') or [])]:
+                if not isinstance(entry, dict):
+                    continue
                 name = entry.get('name') or entry.get('filename')
                 if name and entry.get('url') and name not in seen:
-                    originals.append(str(name)); seen.add(name)
-        if not docs and not images and not originals:
+                    bucket.append(str(name)); seen.add(name)
+        if not docs and not images and not originals and not generated:
             return "В этом чате нет загруженных файлов."
         lines = [
             "Файлы этого чата. Документ читай read_chat_document, фото ищи image_search. Имя бери точное:"
@@ -2384,6 +2387,9 @@ class DatabaseConversationManager:
         if originals:
             lines.append('Оригиналы любых вложений (аудио, видео, архивы и другие): workspace_import_file(filename=точное имя, destination=путь в проекте). Для чертежей также есть engineering_import. Готовые файлы — workspace_export_files:')
             lines.extend('- ' + name for name in originals)
+        if generated:
+            lines.append('Файлы прошлых ответов на месте. GLB, OBJ и STL отдай через workspace_export_files, чтобы открылся 3D-холст. Не пиши, что файл пропал, пока workspace_glob его не проверил:')
+            lines.extend('- ' + name for name in generated)
         return "\n".join(lines)
 
     def search_user_chats(self, user_id: int, query: str, limit: int = 5) -> str:

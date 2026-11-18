@@ -43,6 +43,12 @@ def test_ambiguous_name_without_query_context_is_not_a_result():
     assert search.rank_results(rows[:2], 'Melissa Mobile Legends winrate 2026', []) == []
 
 
+def test_search_engine_result_pages_are_not_sources():
+    assert not search.safe_result_url('https://www.google.com/search?q=polycarbonate')
+    assert not search.safe_result_url('https://yandex.ru/search/?text=polycarbonate')
+    assert search.safe_result_url('https://shop.example/search?q=polycarbonate')
+
+
 def test_product_homepage_is_not_enough_for_specific_plan_pricing():
     rows = [
         {'title':'GitHub homepage', 'url':'https://github.com/', 'snippet':'GitHub Copilot for programming'},
@@ -169,3 +175,107 @@ def test_recovery_preserves_model_ids_quotes_and_skips_provider_outage(monkeypat
     monkeypatch.setattr(search,'_search',blocked)
     result=asyncio.run(search._search_with_recovery('Melissa current patch 2026',[]))
     assert len(calls)==1 and result['status']=='unavailable'
+
+
+def test_hybrid_recovers_once_and_keeps_domain_and_evidence_boundaries(monkeypatch):
+    import search_engine
+    from app.services.search_budget import search_turn
+
+    async def empty(*args):
+        return [], 'empty'
+
+    attempts = []
+    async def hosted(query, limit, **kwargs):
+        attempts.append((query, kwargs))
+        return [dict(url=url, title='Candidate', snippet='Index fragment') for url in (
+            'https://manufacturer.example/catalog', 'https://other.example/catalog', 'http://127.0.0.1/page')]
+
+    monkeypatch.setenv('WEB_SEARCH_BACKEND', 'hybrid')
+    monkeypatch.setattr(search, '_fetch', empty)
+    monkeypatch.setattr(search_engine, 'OPENAI_API_KEY', 'test-key')
+    monkeypatch.setattr(search_engine, '_search_openai_sources', hosted)
+
+    @search_turn
+    async def check():
+        result = await search.server_search('unknown supplier', sites=['manufacturer.example'])
+        assert result['status'] == 'ok' and result['paid_api_used']
+        assert [(row['url'], row['evidence_state']) for row in result['results']] == [
+            ('https://manufacturer.example/catalog', 'retrieved')]
+        assert (await search.server_search('different supplier'))['status'] == 'empty'
+
+    asyncio.run(check())
+    assert attempts == [('unknown supplier (site:manufacturer.example)', {'attempts': 1, 'timeout': 18})]
+
+
+def test_unreadable_page_returns_search_candidates_without_read_evidence(monkeypatch):
+    import search_engine
+    import web_scraper
+    from app.services.run_protocol import RunRecord, current_run
+    from app.services.search_budget import search_turn
+
+    async def failed(url):
+        return url, '[Ошибка загрузки: HTTP 404]'
+
+    async def discover(*args, **kwargs):
+        return [dict(title='Official catalogue', url='https://manufacturer.example/new-catalogue', snippet='Index data')]
+
+    monkeypatch.setattr(web_scraper, '_fetch_url_content_local', failed)
+    monkeypatch.setattr(search_engine, 'search_web', discover)
+
+    @search_turn
+    async def check():
+        record = RunRecord()
+        token = current_run.set(record)
+        try:
+            url = 'https://manufacturer.example/old-catalogue'
+            _, text = await web_scraper.fetch_url_content(url)
+            assert 'https://manufacturer.example/new-catalogue' in text
+            assert record.sources[0]['status'] == 'retrieved'
+            assert url not in record.page_texts
+        finally:
+            current_run.reset(token)
+
+    asyncio.run(check())
+
+
+def test_hybrid_can_retry_same_query_when_local_results_are_incomplete(monkeypatch):
+    import search_engine
+    from app.services.search_budget import search_turn
+
+    async def local(*args):
+        return {'results': [dict(url='https://retailer.example/item', title='Retailer', snippet='Local match')],
+                'status': 'ok', 'paid_api_used': False}
+
+    async def hosted(*args, **kwargs):
+        return [dict(url='https://manufacturer.example/catalog', title='Manufacturer', snippet='Official catalogue')]
+
+    monkeypatch.setenv('WEB_SEARCH_BACKEND', 'hybrid')
+    monkeypatch.setattr(search, '_search_with_recovery', local)
+    monkeypatch.setattr(search_engine, 'OPENAI_API_KEY', 'test-key')
+    monkeypatch.setattr(search_engine, '_search_openai_sources', hosted)
+
+    @search_turn
+    async def check():
+        initial = await search.server_search('supplier catalogue')
+        assert not initial['paid_api_used']
+        retry = await search.server_search('supplier catalogue', recovery=True)
+        assert retry['paid_api_used']
+        assert [row['title'] for row in retry['results']] == ['Manufacturer', 'Retailer']
+
+    asyncio.run(check())
+
+
+def test_preparing_search_context_can_use_the_complete_original_query(monkeypatch):
+    import search_engine
+
+    query = 'Сравни конструкцию насосов двух производителей по каталогам'
+
+    async def lookup(text, *, limit, recovery):
+        assert text == query and recovery
+        return {'results': [{'title': 'Паспорт', 'url': 'https://manufacturer.example/catalog.pdf',
+                             'snippet': 'Перечень серий', 'evidence_state': 'retrieved'}]}
+
+    monkeypatch.setattr(search, 'server_search', lookup)
+    text, rows = asyncio.run(search_engine.build_grounded_web_context(query, recovery=True))
+    assert 'страница не прочитана' in text
+    assert rows[0]['evidence_state'] == 'retrieved'

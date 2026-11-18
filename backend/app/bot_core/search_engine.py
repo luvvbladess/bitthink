@@ -126,29 +126,30 @@ async def _search_ddg(query: str, max_results: int) -> List[Dict[str, str]]:
     return sources
 
 
-async def _search_openai_sources(query: str, max_results: int) -> List[Dict[str, str]]:
+async def _search_openai_sources(query: str, max_results: int, *, attempts: int = 2, timeout: int = 45) -> List[Dict[str, str]]:
     """Фоллбэк: поиск источников через OpenAI Responses API (web_search tool)."""
     if not OPENAI_API_KEY:
         return []
     client = AsyncOpenAI(api_key=OPENAI_API_KEY)
     from app.billing.call_budget import model_call
     last_error: Exception | None = None
-    for attempt in range(2):
+    for attempt in range(attempts):
         try:
             resp = await asyncio.wait_for(
                 model_call(client, {
                     "model": "gpt-6-luna",
-                    "input": f"Выполни веб-поиск по запросу и используй актуальные источники: {query}",
+                    "instructions": "Найди первоисточники. Для названий, записанных на слух или кириллицей, проверь оригинальное написание и запросы на языке источника. Сохраняй ограничения запроса.",
+                    "input": query,
                     "tools": [{"type": "web_search"}], "tool_choice": "required",
                     "include": ["web_search_call.results", "web_search_call.action.sources"],
-                    "max_output_tokens": 4000, "max_tool_calls": 1,
-                }, model="gpt-6-luna", responses=True, timeout=40,
+                    "max_output_tokens": 1000, "max_tool_calls": 1,
+                }, model="gpt-6-luna", responses=True, timeout=timeout,
                    input_token_ceiling=1_050_000),
-                timeout=45,
+                timeout=timeout,
             )
         except Exception as exc:
             last_error = exc
-            if attempt == 0:
+            if attempt + 1 < attempts:
                 await asyncio.sleep(0.5)
                 continue
             break
@@ -170,7 +171,7 @@ async def _search_openai_sources(query: str, max_results: int) -> List[Dict[str,
             seen.add(url)
             sources.append({"title": title, "url": url, "snippet": _clean_snippet(snippet)})
 
-        for item in resp.output:
+        for item in sorted(resp.output, key=lambda item: getattr(item, 'type', None) != 'message'):
             if getattr(item, "type", None) == "web_search_call":
                 for result in (getattr(item, "results", None) or []):
                     add_source(result)
@@ -185,7 +186,7 @@ async def _search_openai_sources(query: str, max_results: int) -> List[Dict[str,
 
         if sources:
             return sources[:max_results]
-        if attempt == 0:
+        if attempt + 1 < attempts:
             await asyncio.sleep(0.5)
 
     if last_error:
@@ -239,13 +240,48 @@ async def get_web_search_sources(query: str, max_results: int = 14) -> List[Dict
     return await search_web(query, max_results=max_results)
 
 
-async def build_grounded_web_context(query: str, max_results: int = 14, pages_to_read: int = 6) -> tuple[str, List[Dict[str, str]]]:
-    """Shared retrieval before an answer. Sources come from our metasearch, not a hosted search API."""
+async def read_supplier_candidates(query, rows, user_id):
+    """Use the existing page budget to read two different candidates in parallel."""
+    from app.services.run_protocol import public_url
+    from app.services.search_budget import current_search_budget
+    from computer_tools import run_computer_tool
+
+    budget = current_search_budget.get()
+    limit = min(2, budget.read_left) if budget else 2
+    selected = {}
+    for index, row in enumerate(rows):
+        host = (urlparse(row['url']).hostname or '').removeprefix('www.')
+        if host and len(selected) < limit:
+            selected.setdefault(host, index)
+    async def read(index):
+        return await asyncio.wait_for(run_computer_tool(
+            'browse_page', {'url': rows[index]['url'], 'query': query}, user_id), timeout=8)
+
+    results = list(rows)
+    indexes = list(selected.values())
+    pages = await asyncio.gather(*(read(i) for i in indexes), return_exceptions=True)
+    for index, page in zip(indexes, pages):
+        if not isinstance(page, str) or not page.startswith('URL: ') or '\n\n' not in page:
+            continue
+        header, body = page.split('\n\n', 1)
+        resolved = public_url(header.splitlines()[0].removeprefix('URL: '))
+        if resolved and len(body) >= 50 and not body.startswith(('[Ошибка', '[Копия из веб-архива', '[Сайт')):
+            results[index] = {**rows[index], 'url': resolved, 'evidence_state': 'read',
+                              'snippet': 'Прочитанный фрагмент каталога:\n' + body[:1800]}
+    return results
+
+
+async def build_grounded_web_context(query: str, max_results: int = 14, pages_to_read: int = 6, *, recovery: bool = False) -> tuple[str, List[Dict[str, str]]]:
+    """Supply discovered sources before synthesis. Snippets remain unverified."""
     from kimi_web_search import evidence_from_results
     from status_feed import push_status
 
     await push_status("search", f"Ищу: {query[:90]}")
-    sources = await search_web(query, max_results=max_results)
+    if recovery:
+        from app.services.server_search import server_search
+        sources = (await server_search(query, limit=max_results, recovery=True))['results']
+    else:
+        sources = await search_web(query, max_results=max_results)
     pro_results = []
     if not sources:
         await push_status("search", "Свежих источников не найдено — отвечаю по контексту")

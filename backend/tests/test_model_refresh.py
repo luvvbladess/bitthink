@@ -124,3 +124,28 @@ def test_empty_provider_message_is_failure_for_auto_reserve(monkeypatch):
     result=asyncio.run(deepseek_client.get_deepseek_response(
         [{'role':'user','content':'Вопрос'}],use_tools=False,use_skills=False))
     assert result[0].startswith('❌') and 'Нет ответа от модели' not in result[0]
+
+@pytest.mark.parametrize('after_read', [False, True])
+def test_raw_tool_protocol_is_never_displayed_or_executed(monkeypatch, after_read):
+    fake_provider(monkeypatch)
+    requests = []
+    reads = []
+    async def read(name, args, uid):
+        reads.append(name)
+        return 'observed'
+    async def generate(client, request, **kwargs):
+        requests.append(deepcopy(request))
+        if after_read and len(requests) == 1:
+            chunks = [chunk(tool_calls=[NS(index=0, id='read', function=NS(
+                name='workspace_read', arguments='{"path":"sample.txt"}'))])]
+        else:
+            chunks = [chunk(content='<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name="browse_page">')]
+        return await kwargs['consume'](Stream(chunks))
+    monkeypatch.setattr(computer_tools, 'run_computer_tool', read)
+    monkeypatch.setattr(call_budget, 'model_call', generate)
+    answer, *_ = asyncio.run(deepseek_client.get_deepseek_response(
+        [{'role':'user','content':'Проверь источник'}], model='deepseek-v4-flash',
+        use_tools=True, use_skills=False))
+    assert 'DSML' not in answer and 'browse_page' not in answer
+    assert answer.startswith('❌') is not after_read
+    assert reads == (['workspace_read'] if after_read else [])

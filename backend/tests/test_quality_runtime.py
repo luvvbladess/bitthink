@@ -72,10 +72,33 @@ def test_pricing_prefetch_reads_both_sides_once_and_keeps_partial_result(monkeyp
 
     monkeypatch.setattr(computer_tools, 'run_computer_tool', browse)
     monkeypatch.setattr(search_engine, 'search_web', search)
-    context = asyncio.run(pricing_context('В чем разница тарифов Cursor и Copilot?', 1, record))
+    context, table = asyncio.run(pricing_context('В чем разница тарифов Cursor и Copilot?', 1, record))
     assert '$10' in context and 'cursor: цена на странице тарифов не подтверждена' in context
-    assert not asyncio.run(pricing_context('Сравни цены на G435 в Ozon и DNS', 1, record))
+    assert not table
+    assert asyncio.run(pricing_context('Сравни цены на G435 в Ozon и DNS', 1, record)) == ('', '')
     assert active == 2
+
+
+def test_published_table_keeps_individual_subscription_prices_and_not_credits():
+    from app.services.pricing_prefetch import _published_price_table
+    from app.services.source_quality import guard_current_numbers
+
+    pages = {
+        'https://cursor.com/pricing': 'Free\n$0\n/month\nPlus\n$8\n/month\nTeams\n$30\n/user/month',
+        'https://github.com/features/copilot/plans': (
+            'Free\n0\nUSD\nGet started\nPro\nFor everyday coding\n10\nUSD\nper user / month\n'
+            '$15 monthly total credits for Pro\nPro+\n39\nUSD\nper user / month'
+        ),
+    }
+    query = 'В чем разница тарифов Cursor и Copilot?'
+    table = _published_price_table(query, pages)
+    assert '| Cursor Plus | $8 в месяц |' in table
+    assert '| GitHub Copilot Pro | $10 за пользователя в месяц |' in table
+    assert '$15' not in table and '$30' not in table
+    assert guard_current_numbers(table, pages, query=query) == table
+    assert not _published_price_table(query + ' Для команды.', pages)
+    pages['https://cursor.com/pricing'] = '[Копия из веб-архива]\n' + pages['https://cursor.com/pricing']
+    assert not _published_price_table(query, pages)
 
 
 def test_enfusion_reference_answer_carries_the_page_read_for_this_turn(monkeypatch):

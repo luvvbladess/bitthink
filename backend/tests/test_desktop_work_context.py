@@ -16,8 +16,13 @@ def test_context_separate_from_request_and_scoped(monkeypatch):
         db.commit()
     seen = []
     async def local(user, content, cid, status, chunk, file, **kwargs):
+        from app.bot_core.director_router import _desktop_work_instructions
         seen.append((content, desktop_work_context.get(), kwargs["history"]))
         assert desktop_mode.get() == "director"
+        instructions = _desktop_work_instructions()
+        assert "один раз поищи по имени через workspace_glob" in instructions
+        assert "найди файл через server_search" in instructions
+        assert "Не передавай в веб-поиск локальные пути" in instructions
         await chunk("checked")
     async def subscription(user): return {"name": "Pro"}
     monkeypatch.setattr(desktop, "run_local_chat", local)

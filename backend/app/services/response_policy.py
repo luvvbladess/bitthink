@@ -145,6 +145,10 @@ def compact_answer_kind(text, *, web_required=False, messages=None):
                  r'внеси|реализуй|создай|собери|сгенерируй|исправь|измени|протестируй|открой|прочитай|'
                  r'выполни|посчитай|вычисли|рассчитай|проверь|инструмент\w*|мой|мои|мою|моих|наши)\b', action_scope):
         return ''
+    intent = classify_request(text)
+    if (intent.topic == 'procurement' and intent.needs_web and len(text) <= 1800
+            and not re.search(r'(?i)\b(?:исследован\w*|глубок\w*|аудит\w*|сравн\w*|цен\w*|наличи\w*|сколько стоит)\b', text)):
+        return 'web'
     # Personal circumstances can contain "today" without requiring current web facts.
     if everyday_answer(text):
         return 'text'
@@ -171,7 +175,6 @@ def compact_answer_kind(text, *, web_required=False, messages=None):
         return 'text'
     if calculation_task(text) or critical_task(text) or subject_for_query(text) == 'engineering':
         return ''
-    intent = classify_request(text)
     if intent.topic in {'shopping', 'places'} or intent.task in {'recommendation', 'overview'}:
         return ''
     source_lookup = (not intent.web_forbidden and bool(re.search(

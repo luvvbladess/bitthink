@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>3D-модель · Bit Think</title>
+<style>
+  :root{color-scheme:dark;--bg:#0c1012;--paper:#161c1e;--raised:#1c2427;--ink:#f2f4f5;--muted:#b0b8bb;--accent:#21a0ce;--line:#ffffff14}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:1rem/1.5 Inter,system-ui,sans-serif}
+  main{max-width:1280px;margin:auto;padding:clamp(12px,3vw,28px)}
+  header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:12px}
+  h1,p{margin:0}h1{font-size:1.5rem;overflow-wrap:anywhere}
+  small,label{color:var(--muted);font-size:.875rem}
+  .view{position:relative;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#0a0e10}
+  canvas{display:block;width:100%;height:clamp(280px,64vh,740px);cursor:grab;touch-action:none}
+  canvas:active{cursor:grabbing}canvas:focus-visible{outline-offset:-3px}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .camera{position:absolute;right:10px;bottom:10px;display:flex;gap:6px}
+  button{min-height:44px;min-width:44px;border:1px solid var(--line);border-radius:8px;background:var(--raised);color:var(--ink);font:inherit;cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  .timeline{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:12px;margin-top:12px;padding:12px;background:var(--paper);border-radius:12px}
+  [hidden]{display:none!important}
+  #play{border-radius:999px;padding:0 16px;background:var(--accent);color:#0b1214;font-weight:600}
+  label{min-width:0;overflow-wrap:anywhere}
+  input{width:100%;display:block;accent-color:var(--accent);margin:0;min-height:24px}
+  .hint{display:block;margin-top:10px}
+  #error{padding:24px;color:var(--muted)}
+</style>
+</head>
+<body>
+<main>
+  <header><h1>3D-модель</h1><small id="format"></small></header>
+  <div class="view">
+    <canvas tabindex="0" aria-label="Интерактивная 3D-модель" aria-describedby="help"></canvas>
+    <div class="camera">
+      <button type="button" data-camera=".85" aria-label="Отдалить">−</button>
+      <button type="button" data-camera="1.18" aria-label="Приблизить">+</button>
+      <button type="button" data-camera="0" aria-label="Сбросить ракурс">↺</button>
+    </div>
+    <p id="error" role="status" hidden>Браузер не смог запустить 3D-просмотр. Модель можно скачать из ответа.</p>
+  </div>
+  <div class="timeline" hidden>
+    <button type="button" id="play">Показать по деталям</button>
+    <label><span id="stage"></span><input id="progress" type="range" min="1" aria-label="Количество показанных частей"></label>
+  </div>
+  <small class="hint" id="help">Перетащите модель для поворота. Колесо мыши или кнопки меняют масштаб. С клавиатуры доступны стрелки, +, − и Home.</small>
+</main>
+<script>
+(async () => {
+  const model = __MESH_DATA__;
+  const $ = selector => document.querySelector(selector);
+  const canvas = $('canvas'), gl = canvas.getContext('webgl', {antialias:true});
+  $('h1').textContent = model.name.replace(/[_-]+/g,' ');
+  $('#format').textContent = model.format;
+  function unavailable(){
+    canvas.hidden=true;
+    $('.camera').hidden=true;
+    $('.timeline').hidden=true;
+    $('#help').hidden=true;
+    $('#error').hidden=false;
+  }
+  if (!gl || !gl.getExtension('OES_standard_derivatives')) { unavailable(); return; }
+  canvas.addEventListener('webglcontextlost',unavailable);
+  const program = gl.createProgram();
+  for (const [type, source] of [
+    [gl.VERTEX_SHADER,`attribute vec3 point;
+      uniform vec2 yaw, tilt, scale;
+      varying vec3 view;
+      void main(){
+        float x=point.x*yaw.x-point.y*yaw.y, y=point.x*yaw.y+point.y*yaw.x;
+        view=vec3(x,point.z*tilt.x+y*tilt.y,point.z*tilt.y-y*tilt.x);
+        gl_Position=vec4(view.xy*scale,-view.z*.5,1.);
+      }`],
+    [gl.FRAGMENT_SHADER,`#extension GL_OES_standard_derivatives : enable
+      precision mediump float;
+      varying vec3 view;
+      uniform vec3 color;
+      void main(){
+        vec3 n=normalize(cross(dFdx(view),dFdy(view)));
+        float light=.38+.62*max(0.,dot(n,normalize(vec3(-.35,.6,1.))));
+        gl_FragColor=vec4(color*light,1.);
+      }`]
+  ]) {
+    const shader=gl.createShader(type);
+    gl.shaderSource(shader,source);gl.compileShader(shader);gl.attachShader(program,shader);
+  }
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program,gl.LINK_STATUS)) { unavailable(); return; }
+  gl.useProgram(program);
+  gl.enable(gl.DEPTH_TEST);
+  const buffer=gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
+  let packed=Uint8Array.from(atob(model.data),char=>char.charCodeAt(0));
+  if (model.compressed){
+    try {
+      const stream=new Blob([packed]).stream().pipeThrough(new DecompressionStream('deflate'));
+      packed=new Uint8Array(await new Response(stream).arrayBuffer());
+    } catch { unavailable(); return; }
+  }
+  const vertices=packed.length/6;
+  gl.bufferData(gl.ARRAY_BUFFER,packed,gl.STATIC_DRAW);
+  const point=gl.getAttribLocation(program,'point');
+  gl.enableVertexAttribArray(point);gl.vertexAttribPointer(point,3,gl.SHORT,true,0,0);
+  const uniform=Object.fromEntries(['yaw','tilt','scale','color'].map(name=>[name,gl.getUniformLocation(program,name)]));
+  const groups=model.groups, slider=$('#progress'), play=$('#play');
+  let yaw=-.62,tilt=.27,zoom=1,visible=groups.length,timer=null,drag=null;
+  function draw(){
+    const ratio=Math.min(devicePixelRatio,2), w=Math.round(canvas.clientWidth*ratio), h=Math.round(canvas.clientHeight*ratio);
+    if (!w || !h) return;
+    if (canvas.width!==w || canvas.height!==h) {canvas.width=w;canvas.height=h;}
+    gl.viewport(0,0,w,h);
+    gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+    gl.uniform2f(uniform.yaw,Math.cos(yaw),Math.sin(yaw));
+    gl.uniform2f(uniform.tilt,Math.cos(tilt),Math.sin(tilt));
+    gl.uniform2f(uniform.scale,1.46*zoom*Math.min(1,h/w),1.46*zoom*Math.min(1,w/h));
+    for (let i=0;i<visible;i++){
+      const [,start,material]=groups[i];
+      const end=groups[i+1] ? groups[i+1][1]*3 : vertices;
+      const color=visible<groups.length && i===visible-1 ? [.13,.63,.81] : material || [.77,.80,.81];
+      gl.uniform3f(uniform.color,...color);
+      gl.drawArrays(gl.TRIANGLES,start*3,end-start*3);
+    }
+  }
+  function stage(index){
+    visible=index;slider.value=index;
+    $('#stage').textContent=index===groups.length ? 'Вся модель · '+index+' частей' : index+' / '+groups.length+' · '+groups[index-1][0];
+    draw();
+  }
+  function pause(){
+    clearInterval(timer);timer=null;
+    play.textContent=visible===groups.length ? 'Показать по деталям' : 'Продолжить';
+  }
+  if (groups.length>1){
+    $('.timeline').hidden=false;slider.max=groups.length;stage(visible);
+    slider.addEventListener('input',()=>{stage(Number(slider.value));pause();});
+    play.addEventListener('click',()=>{
+      if (timer){pause();return;}
+      if (visible===groups.length) stage(1);
+      play.textContent='Пауза';
+      timer=setInterval(()=>{stage(visible+1);if(visible===groups.length)pause();},Math.max(140,Math.min(650,5000/groups.length)));
+    });
+  }
+  function rotate(dx,dy){
+    yaw+=dx;tilt=Math.max(-1.45,Math.min(1.45,tilt+dy));draw();
+  }
+  function camera(factor){
+    if(factor)zoom=Math.max(.45,Math.min(5,zoom*factor));
+    else {yaw=-.62;tilt=.27;zoom=1;}
+    draw();
+  }
+  document.querySelectorAll('[data-camera]').forEach(button=>button.onclick=()=>camera(Number(button.dataset.camera)));
+  canvas.onpointerdown=event=>{
+    if(event.button!==0 || drag)return;
+    drag={id:event.pointerId,x:event.clientX,y:event.clientY};
+    canvas.setPointerCapture(event.pointerId);
+  };
+  canvas.onpointermove=event=>{
+    if(drag?.id!==event.pointerId)return;
+    rotate((event.clientX-drag.x)*.01,(event.clientY-drag.y)*.01);
+    drag.x=event.clientX;drag.y=event.clientY;
+  };
+  canvas.onlostpointercapture=()=>{drag=null;};
+  canvas.addEventListener('wheel',event=>{event.preventDefault();camera(event.deltaY<0?1.18:.85);},{passive:false});
+  canvas.onkeydown=event=>{
+    const orbit={ArrowLeft:[-.12,0],ArrowRight:[.12,0],ArrowUp:[0,-.12],ArrowDown:[0,.12]};
+    const factors={Home:0,'+':1.18,'=':1.18,'-':.85};
+    if(event.key in orbit)rotate(...orbit[event.key]);
+    else if(event.key in factors)camera(factors[event.key]);
+    else return;
+    event.preventDefault();
+  };
+  new ResizeObserver(draw).observe(canvas);
+  draw();
+})();
+</script>
+</body>
+</html>

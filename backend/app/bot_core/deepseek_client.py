@@ -262,6 +262,12 @@ async def get_deepseek_response(
             total_cached_tokens += cached_prompt_tokens(stream_usage)
 
         message_content = "".join(content_parts)
+        if '<｜｜DSML｜｜' in message_content:
+            # Text pretending to be a tool call is not an executable tool event.
+            # Auto may retry only before a previous loop could have performed work.
+            failure = ('Не удалось завершить ответ модели. Выполненные действия сохранены.'
+                       if loop_i else '❌ Модель вернула некорректный вызов инструмента.')
+            return failure, generated_files, '', search_results[:20]
         loop_reasoning = "".join(loop_reasoning_parts)
         if loop_reasoning:
             reasoning_parts.append(loop_reasoning)

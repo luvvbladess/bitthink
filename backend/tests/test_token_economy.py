@@ -128,8 +128,8 @@ def test_cost_table_uses_each_models_cached_rate():
     assert round(model_cost_usd("kimi-k2.6", one_m, 0, cached_input_tokens=one_m), 4) == 0.16
     assert round(model_cost_usd("gpt-6-luna", 0, one_m), 4) == 0.50
     assert round(model_cost_usd("gpt-6.1-sol", one_m, 0), 4) == 4.0
-    assert round(model_cost_usd("gpt-6.2-sol", one_m, 0), 4) == 4.0
     assert round(model_cost_usd("gpt-6.1-sol", one_m, 0, cached_input_tokens=one_m), 4) == 0.20
+    assert round(model_cost_usd("gpt-6.2-sol", one_m, 0), 4) == 4.0
     assert round(model_cost_usd("gpt-6.2-sol", one_m, 0, cached_input_tokens=one_m), 4) == 0.20
     assert round(model_cost_usd("claude-haiku-5.5", 50_000, 0), 6) == 0.005
     assert round(model_cost_usd("claude-haiku-5.5", one_m, 0), 4) == 0.50

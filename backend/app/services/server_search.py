@@ -1,9 +1,9 @@
 """Bounded server-side metasearch. No paid API, account, browser or page crawl.
 
-Public result pages can rate-limit us. Empty/blocked results stay empty rather
-than silently invoking a paid provider. Search snippets are not page evidence.
+Public result pages can rate-limit us. Hybrid mode can use a bounded hosted
+fallback. Search snippets are not page evidence.
 """
-from app.services.search_budget import limited_search, LIMIT_NOTE
+from app.services.search_budget import current_search_budget, limited_search, LIMIT_NOTE
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -47,6 +47,11 @@ def safe_result_url(value: str) -> str:
             if not target:
                 return ''
             return safe_result_url(target)
+        if parsed.path.rstrip('/') in {'/search', '/search/touch'} and (
+            host.removeprefix('www.') in {'bing.com', 'yandex.ru', 'yandex.com'}
+            or re.fullmatch(r'(?:www\.)?google\.(?:com|[a-z]{2}|co\.[a-z]{2})', host)
+        ):
+            return ''
         if parsed.scheme not in {'http', 'https'} or not host or parsed.username or parsed.password:
             return ''
         if host == 'localhost' or host.endswith(('.localhost', '.local')) or '.' not in host:
@@ -152,7 +157,10 @@ async def _fetch(provider: str, query: str) -> tuple[list[dict], str]:
                 async with session.get(url, params=params, headers=HEADERS, allow_redirects=False) as response:
                     if response.status != 200:
                         return [], 'limited' if response.status in {202, 403, 429} else 'unavailable'
-                    data = await response.content.read(MAX_BYTES + 1)
+                    try:
+                        data = await response.content.readexactly(MAX_BYTES + 1)
+                    except asyncio.IncompleteReadError as exc:
+                        data = exc.partial
                     if len(data) > MAX_BYTES:
                         return [], 'unavailable'
                     body = data.decode('utf-8', errors='replace')
@@ -228,8 +236,34 @@ async def _search_with_recovery(query, sites):
     return result
 
 
+async def _recover_with_provider(result, query, sites, limit, *, recovery):
+    budget = current_search_budget.get()
+    if ((result['results'] and not recovery) or os.getenv('WEB_SEARCH_BACKEND') != 'hybrid'
+            or budget is None or budget.provider_fallback_used):
+        return result
+    from search_engine import OPENAI_API_KEY, _search_openai_sources
+    if not OPENAI_API_KEY:
+        return result
+    budget.provider_fallback_used = True
+    qualified = query + (' (' + ' OR '.join('site:' + site for site in sites) + ')' if sites else '')
+    rows = await _search_openai_sources(qualified, limit, attempts=1, timeout=18)
+    retrieved_at = datetime.now(timezone.utc).isoformat()
+    recovered = []
+    for row in rows:
+        url = safe_result_url(row['url'])
+        host = urlsplit(url).hostname or ''
+        if url and (not sites or any(host == site or host.endswith('.' + site) for site in sites)):
+            recovered.append({**row, 'url': url, 'provider': 'openai',
+                              'evidence_state': 'retrieved', 'read_at': retrieved_at})
+    seen = {row['url'] for row in recovered}
+    combined = recovered + [row for row in result['results'] if row['url'] not in seen]
+    return {**result, 'results': combined[:limit], 'status': 'ok' if combined else result['status'],
+            'cached': False,
+            'paid_api_used': True}
+
+
 @limited_search(lambda: {'results': [], 'status': 'budget_exhausted', 'note': LIMIT_NOTE, 'paid_api_used': False})
-async def server_search(query: str, *, limit: int = 10, sites: list[str] | None = None) -> dict:
+async def server_search(query: str, *, limit: int = 10, sites: list[str] | None = None, recovery: bool = False) -> dict:
     try:
         limit = max(1, min(20, int(limit)))
     except (ValueError, TypeError):
@@ -254,6 +288,7 @@ async def server_search(query: str, *, limit: int = 10, sites: list[str] | None 
     cached = current.cache.get(key)
     if cached and time.monotonic() - cached[0] < (TTL if cached[1]['results'] else 15):
         result = {**cached[1], 'results': [{**row, 'cached': True} for row in cached[1]['results'][:limit]], 'cached': True}
+        result = await _recover_with_provider(result, text, domains, limit, recovery=recovery)
         observe_results(result)
         return result
     task = current.pending.get(key)
@@ -270,6 +305,7 @@ async def server_search(query: str, *, limit: int = 10, sites: list[str] | None 
         while len(current.cache) > MAX_CACHE:
             current.cache.popitem(last=False)
         result = {**result, 'results': [{**row, 'cached': False} for row in result['results'][:limit]], 'cached': False}
+        result = await _recover_with_provider(result, text, domains, limit, recovery=recovery)
         observe_results(result)
         return result
     finally:

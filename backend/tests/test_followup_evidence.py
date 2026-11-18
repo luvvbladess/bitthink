@@ -162,6 +162,36 @@ def test_followup_response_does_not_trigger_a_source_verification_round(monkeypa
     assert len(requests)==1
 
 
+def test_chat_search_retains_both_official_prices_without_an_existing_record(monkeypatch):
+    import computer_tools
+    from app.services.run_protocol import current_run
+
+    core, _, user = _mock_auto_turn(monkeypatch)
+    monkeypatch.setattr(core.conversation_manager, 'get_user_model', lambda uid: 'search')
+    monkeypatch.setattr(core.conversation_manager, 'conversation_for_turn', lambda uid: NS(messages=[]))
+
+    async def read(name, args, uid):
+        url = args['url']
+        text = ('Free\n$0\n/month\nPlus\n$8\n/month' if 'cursor' in url
+                else 'Free\n0\nUSD\nPro\n10\nUSD\nper user / month')
+        result = f'URL: {url}\n\n{text}\nCompare tools and included features on the official pricing page.'
+        current_run.get().observe_page(result)
+        return result
+
+    async def answer(messages, **kwargs):
+        assert not kwargs['use_tools']
+        return 'Сравнение условий.', [], '', []
+
+    monkeypatch.setattr(computer_tools, 'run_computer_tool', read)
+    monkeypatch.setattr(core, 'get_chat_response', answer)
+    query = 'В чем разница тарифов Cursor и Copilot?'
+    text, _, _, sources = asyncio.run(core.get_smart_response(user, query, [{'role': 'user', 'content': query}], None))
+    assert current_run.get() is None
+    assert '| Cursor Plus | $8 в месяц |' in text
+    assert '| GitHub Copilot Pro | $10 за пользователя в месяц |' in text
+    assert sum(row.get('evidence_state') == 'read' for row in sources) == 2
+
+
 def test_kimi_keeps_verified_numbered_links_before_cleanup(monkeypatch):
     import kimi_client
     calls=[]
@@ -469,3 +499,12 @@ def test_current_numbers_preserve_starting_price_and_split_hero_rows():
              '1\nWraith King Wraith King\n55.24%\nPick Rate:\n12.75%\nMatches:\n300'}
     result = guard_current_numbers('Wraith King — 55.24%\nWraith King — 12.75%', stats, query='топ по винрейту')
     assert '55.24%' in result and '12.75%' not in result
+
+
+def test_citations_include_plain_clickable_urls_without_trailing_punctuation():
+    from app.services.source_quality import cited_urls
+
+    assert cited_urls(
+        'Страница релиза: https://example.org/releases/v3.2.1/. '
+        '[Документация](https://example.org/docs/)'
+    ) == {'https://example.org/releases/v3.2.1/', 'https://example.org/docs/'}

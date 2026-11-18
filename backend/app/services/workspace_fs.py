@@ -14,7 +14,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Optional
 
-QUOTA_BYTES = 3 * 1024 * 1024 * 1024
+QUOTA_BYTES = 2 * 1024 * 1024 * 1024
 MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_TRANSFER_BYTES = 100 * 1024 * 1024
 MAX_READ_CHARS = 120_000
@@ -146,6 +146,31 @@ def workspaces_root() -> Path:
     return root
 
 
+def newest_mesh(user_id: int) -> tuple[str, bytes] | None:
+    """Newest OBJ, STL or GLB already stored for this account."""
+    root = user_root(user_id)
+    best: tuple[float, Path] | None = None
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = [name for name in dirnames if name not in _SKIP_DIRS and not name.startswith('.')]
+        for name in filenames:
+            if Path(name).suffix.lower() not in {'.obj', '.stl', '.glb'}:
+                continue
+            path = Path(dirpath) / name
+            if path.is_symlink():
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            if stat.st_size <= 0 or stat.st_size > 20 * 1024 * 1024:
+                continue
+            if best is None or stat.st_mtime > best[0]:
+                best = (stat.st_mtime, path)
+    if best is None:
+        return None
+    return best[1].name, best[1].read_bytes()
+
+
 def user_root(user_id: int) -> Path:
     if not isinstance(user_id, int) or user_id <= 0:
         raise ValueError("Нужен пользователь")
@@ -255,6 +280,16 @@ def read(user_id: int, path: str, start_line: int = 0, end_line: int = 0) -> str
     data = target.read_bytes()
     if len(data) > MAX_FILE_BYTES:
         return "Файл слишком большой, чтобы читать его целиком."
+    suffix = target.suffix.lower()
+    if suffix in {'.glb', '.gltf', '.fcstd', '.step', '.stp', '.3mf'} or (
+        suffix == '.stl' and not data.lstrip().lower().startswith(b'solid')
+    ):
+        return (
+            f"{path} на месте: {len(data)} байт, формат {suffix}. "
+            "Это бинарная модель, не текст. Файл не пропал. "
+            "Отдай его через workspace_export_files: GLB, OBJ и STL откроются на 3D-холсте. "
+            "Для CAD построй STEP или FCStd по соседнему скрипту и этим размерам."
+        )
     text = data.decode("utf-8", errors="replace")
     if start_line > 0 or end_line > 0:
         lines = text.splitlines()
@@ -295,7 +330,7 @@ def write(user_id: int, path: str, content: str) -> str:
     used = _dir_size(user_root(user_id))
     existing = target.stat().st_size if target.is_file() else 0
     if used - existing + len(payload) > QUOTA_BYTES:
-        return "Квота песочницы 3 ГБ закончилась. Удали лишнее."
+        return f"Квота песочницы {QUOTA_BYTES // (1024 ** 3)} ГБ закончилась. Удали лишнее."
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(target.suffix + ".tmp")
     tmp.write_bytes(payload)
@@ -599,7 +634,7 @@ def run_command(user_id: int, argv, cwd: str = '.', timeout: int = 90) -> str:
     The product runner keeps filesystem, CPU/process, output and wall limits,
     a bounded JS heap, a sanitized environment and process-group cleanup.
     """
-    allowed = {'python','python3','node','npm','npx','gcc','g++','cc','c++','make','go','rustc','cargo','dotnet','javac','java'}
+    allowed = {'python','python3','freecad-python','node','npm','npx','gcc','g++','cc','c++','make','go','rustc','cargo','dotnet','javac','java'}
     if not isinstance(argv, list) or not 1 <= len(argv) <= 100 or any(
             not isinstance(arg, str) or not arg or '\x00' in arg or len(arg)>8000 for arg in argv):
         raise ValueError('argv должен содержать от 1 до 100 непустых строк.')

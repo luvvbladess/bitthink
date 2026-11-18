@@ -37,6 +37,15 @@ def test_source_lookup_uses_a_single_agent_but_keeps_web_tools():
     assert compact_answer_kind('По официальной документации Python объясни copy.copy и copy.deepcopy') == 'web'
 
 
+def test_supplier_lookup_uses_the_short_web_route():
+    query = ('Мне нужно подобрать термостойкую металлическую сетку для перфорированной трубки, '
+             'сетка должна быть покупной, от производителя.')
+    assert compact_answer_kind(query) == 'web'
+    assert compact_answer_kind('Без поиска: ' + query) != 'web'
+    assert compact_answer_kind(query + ' Сохрани поставщиков в XLSX.') == ''
+    assert compact_answer_kind(query + ' Сравни цены поставщиков.') == ''
+
+
 def test_url_inside_supplied_code_does_not_require_research():
     text = 'Почему этот Python код блокирует event loop? async def fetch():\n    return requests.get("https://example.com").text'
     assert compact_answer_kind(text, web_required=True) == 'text'
@@ -134,14 +143,21 @@ def test_informal_python_snippet_and_cpp_list_operation_stay_inline():
 
 
 def test_cpp_delimiter_check_ignores_literals_and_detects_malformed_snippets():
-    from app.services.answer_format import cpp_delimiter_error
+    from app.services.answer_format import cpp_snippet_error
 
     task = 'C++17: верни только один блок кода для функции.'
-    assert cpp_delimiter_error(task, '```cpp\nresult.reserve a.size() - k + 1);\n```') is True
-    assert cpp_delimiter_error(task, '```cpp\nresult.reserve(a.size() - k + 1); // ]\n```') is False
-    assert cpp_delimiter_error(task, '```cpp\nconst char* s = "("; char c = \'}\';\n```') is False
-    assert cpp_delimiter_error(task, '```cpp\n#if X\nfoo();\n#endif\n```') is None
-    assert cpp_delimiter_error(task + ' Измени код в проекте.', '```cpp\nfoo(\n```') is None
+    assert cpp_snippet_error(task, '```cpp\nresult.reserve a.size() - k + 1);\n```') is True
+    assert cpp_snippet_error(task, '```cpp\nresult.reserve a.size() - k + 1;\n```') is True
+    assert cpp_snippet_error(task, '```cpp\nresult.reserve(a.size() - k + 1); // ]\n```') is False
+    assert cpp_snippet_error(task, '```cpp\nconst char* s = "("; char c = \'}\';\n```') is False
+    assert cpp_snippet_error(task, '```cpp\n#if X\nfoo();\n#endif\n```') is None
+    assert cpp_snippet_error(task + ' Измени код в проекте.', '```cpp\nfoo(\n```') is None
+    unsafe = ('```cpp\nvoid f(size_t k) {\n'
+              'for (size_t i = 0; i < a.size(); ++i) {\n'
+              'while (!q.empty() && q.front() <= i - k) q.pop_front();\n'
+              '}\n}\n```')
+    assert cpp_snippet_error(task, unsafe) is True
+    assert cpp_snippet_error(task, unsafe.replace('while (!q.empty()', 'while (i >= k && !q.empty()')) is False
 
 
 def test_stm32_clock_snapshot_uses_a_single_writer():

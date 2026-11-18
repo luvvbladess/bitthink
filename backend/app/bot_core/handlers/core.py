@@ -1,4 +1,5 @@
 from app.services.search_budget import search_turn
+from app.services.response_policy import inline_code_task
 import asyncio
 import logging
 import re
@@ -95,7 +96,7 @@ async def reduce_heavy_context(
     """
     Map-Reduce для больших контекстов.
     Порог — доля официального окна текущего режима, а не фиксированные 700k символов:
-    у режима Поиск (Kimi) 256k токенов, у Авто / Computer / Research / Luna / Sol — около миллиона.
+    у Экспресса, Оркестратора, Исследования, Luna и Sol окно около миллиона токенов.
     """
     from model_context import (
         estimate_message_tokens,
@@ -308,6 +309,10 @@ async def get_smart_response(
     model = clamp_model(tier, model)
     if model == 'studio':
         model = 'auto'  # Old saved choices now use the unified chat.
+    if model == 'docgen':
+        from docgen_router import handles_document_turn
+        if not handles_document_turn(user_text, messages):
+            model = 'auto'
     canvas_job = None
     if not (is_desktop or cloud_task) and model not in {'director', 'docgen'}:
         from canvas_intent import canvas_request
@@ -434,7 +439,8 @@ async def get_smart_response(
         messages = list(messages)
         messages.insert(-1 if messages and messages[-1].get('role') == 'user' else len(messages),
                         {'role': 'system', 'content': evidence_note})
-    from app.services.search_budget import current_search_budget
+    from app.services.search_budget import current_search_budget, configure_request_budget
+    configure_request_budget(intent, user_text)
     if model == 'gpt-6-sol' and current_search_budget.get():
         current_search_budget.get().searches, current_search_budget.get().reads = 4, 6
     from app.services.authoritative_catalogs import read_catalogs
@@ -457,8 +463,8 @@ async def get_smart_response(
     if place_request and not intent.web_forbidden:
         configure_budget()
     messages.insert(0, {'role': 'system', 'content': VENUE_RULES if place_request else SEARCH_PLAN})
-    # Files first only for this turn's uploads in Auto. Search/Research still
-    # go to the web even if an older photo or PDF is sitting in the thread.
+    # Files first only for this turn's uploads in Express. Research still
+    # goes to the web even if an older photo or PDF is sitting in the thread.
     web_required = not intent.web_forbidden and (bool(catalog_note) or intent.needs_web or (followup_web and not intent.local) or turn_requires_web(
         user_text,
         "auto" if is_desktop else model,
@@ -479,7 +485,7 @@ async def get_smart_response(
             'Если данных не хватает, сначала прочитай подходящие локальные файлы. '
             'Не проверяй устройство локального проекта поиском в интернете без необходимости.'})
 
-    # Search, Auto and Research use our metasearch through the writer model, not Kimi.
+    # Express and Research use our metasearch through the writer model.
     # Links to sites that refuse our server (Ozon, Wildberries, ...) are read ahead of the model,
     # so every mode sees what is known about them instead of improvising a "no connection" excuse.
     from web_scraper import walled_links_context
@@ -492,9 +498,12 @@ async def get_smart_response(
         messages = _with_link_context(messages, link_block)
 
     grounded_sources: List[Dict[str, str]] = catalog_sources
-    if web_required and "deepseek" in model:
+    from os import getenv
+    compare_catalogs = (intent.topic == 'procurement' and intent.task == 'comparison'
+                        and getenv('WEB_SEARCH_BACKEND') == 'hybrid')
+    if web_required and ("deepseek" in model or compare_catalogs):
         web_context, retrieved_sources = await build_grounded_web_context(
-            user_text, max_results=14, pages_to_read=6
+            user_text, max_results=14, pages_to_read=6, **({'recovery': True} if compare_catalogs else {})
         )
         grounded_sources = _merge_sources(grounded_sources, retrieved_sources, limit=28)
         messages = _with_web_context(messages, web_context)
@@ -524,18 +533,27 @@ async def get_smart_response(
             'Дословные цитаты — исходные данные: сохраняй слова, орфографию и пунктуацию, '
             'включая длинное тире. Правила стиля применяй только к собственным пояснениям.'})
     from app.services.conversation_context import workspaces
-    pricing = ''
-    if (tool_result is None and model in {'auto', 'director'} and intent.task == 'comparison'
+    pricing, price_table = '', ''
+    pricing_record = None
+    if (tool_result is None and model in {'auto', 'director', 'gpt-6-sol'}
+            and intent.task == 'comparison'
             and web_required and not intent.local and not link_block and not is_desktop and not cloud_task
             and not has_documents and not has_images and not workspaces.get() and not place_request):
         from app.services.pricing_prefetch import pricing_context
-        from app.services.run_protocol import current_run
-        pricing = await pricing_context(user_text, user_id, current_run.get())
-    if (tool_result is None and model in {'auto', 'director'} and not is_desktop and not cloud_task
+        from app.services.run_protocol import RunRecord, current_run
+        pricing_record = current_run.get() or RunRecord()
+        evidence_token = current_run.set(pricing_record)
+        try:
+            pricing, price_table = await pricing_context(user_text, user_id, pricing_record)
+        finally:
+            current_run.reset(evidence_token)
+    if (tool_result is None and model in {'auto', 'director', 'gpt-6-sol'}
+            and not is_desktop and not cloud_task
             and not has_documents and not has_images and not workspaces.get() and not place_request and not pricing):
-        from app.services.answer_tools import maybe_tool_answer
-        tool_result = await maybe_tool_answer(messages, user_text, user_id, allowed_models(tier),
-                                              pool='computer' if model == 'director' else 'chat')
+        from app.services.answer_tools import dotnet_reference_urls, maybe_tool_answer
+        if model in {'auto', 'director'} or dotnet_reference_urls(user_text):
+            tool_result = await maybe_tool_answer(messages, user_text, user_id, allowed_models(tier),
+                                                  pool='computer' if model == 'director' else 'chat')
     if tool_result is not None:
         result = tool_result
     elif pricing:
@@ -548,19 +566,19 @@ async def get_smart_response(
             )
         finally:
             billing_pool.reset(pool_token)
+        if price_table:
+            text, files, reasoning, sources = result
+            result = (price_table + ('\n\n' + text if text and not text.startswith('❌') else ''),
+                      files, reasoning, sources)
     elif has_documents and not own_files:
         from status_feed import push_status
 
         await push_status("think", "Разбираю загруженные документы")
-        if model == "gpt-6-astra":
-            document_model = "gpt-6-astra"
-        else:
-            document_model = "gpt-6-sol"
-        document_model = clamp_model(tier, document_model)
+        document_model = clamp_model(tier, "gpt-6-sol")
         document_effort = reasoning_effort if reasoning_effort not in {None, "none"} else (
-            "high" if model == "gpt-6-astra" or research_mode else "medium"
+            "high" if research_mode else "medium"
         )
-        await push_status("think", "Разбираю документы в песочнице" if model == "gpt-6-astra" else "Собираю ответ по документам")
+        await push_status("think", "Собираю ответ по документам")
         doc_tools, doc_force_web = openai_tool_flags(model, web_required)
         result = await get_chat_response(
             messages,
@@ -583,11 +601,12 @@ async def get_smart_response(
             model=clamp_model(tier, vision_model),
             user_id=user_id,
             use_tools=vision_tools,
-            reasoning_effort="high" if model == "gpt-6-astra" else ("medium" if has_documents else "low"),
+            reasoning_effort="medium" if has_documents else "low",
             on_reasoning_delta=on_reasoning_delta,
             force_web_search=vision_force_web,
         )
-    elif intent.web_forbidden and model in {'search', 'gpt-6-sol'}:
+    elif model == "gpt-6-sol" and (intent.web_forbidden or (
+            not intent.needs_web and inline_code_task(user_text))):
         result = await get_chat_response(
             messages, model=clamp_model(tier, 'gpt-6-sol' if research_mode else 'gpt-6-luna'),
             user_id=user_id, use_tools=False, use_skills=False,
@@ -707,12 +726,6 @@ async def get_smart_response(
             result = await get_studio_response(messages, user_text, user_id, status_msg)
         finally:
             canvas_creation.reset(canvas_token)
-    elif model == "search":
-        result = await get_chat_response(
-            messages, model=clamp_model(tier, "gpt-6-luna"), user_id=user_id, use_tools=True,
-            reasoning_effort="low", on_reasoning_delta=None,
-            force_web_search=True,
-        )
     elif model == "gpt-6-sol":
         synthesizer = clamp_model(tier, model)
         result = await get_chat_response(
@@ -726,19 +739,6 @@ async def get_smart_response(
         result = await get_deepseek_response(
             messages, model=model, user_id=user_id, use_tools=True, chat_tools=True, on_reasoning_delta=on_reasoning_delta,
         )
-    elif model == "gpt-6-astra":
-        from status_feed import push_status
-        await push_status("think", "Работаю в песочнице")
-        astra_effort = reasoning_effort if reasoning_effort not in {None, "none"} else "high"
-        result = await get_chat_response(
-            messages,
-            model="gpt-6-astra",
-            user_id=user_id,
-            use_tools=True,
-            reasoning_effort=astra_effort,
-            on_reasoning_delta=on_reasoning_delta,
-            force_web_search=False,
-        )
     else:
         result = await get_chat_response(
             messages, model=model, user_id=user_id, use_tools=True, chat_tools=True,
@@ -749,18 +749,19 @@ async def get_smart_response(
     answer, files, reasoning, model_sources = result
     from status_feed import push_status
     from app.services.run_protocol import current_run
-    record = current_run.get()
-    if (model in {'auto', 'director'} and not is_desktop and not cloud_task and not files
+    record = current_run.get() or (pricing_record if pricing else None)
+    if (model in {'auto', 'director', 'gpt-6-sol'} and not is_desktop and not cloud_task and not files
             and not intent.needs_web and not followup_web and not model_sources
             and not has_documents and not has_images and not workspaces.get()
             and (not record or not record.tools)):
-        from app.services.answer_format import cpp_delimiter_error
-        if cpp_delimiter_error(user_text, answer):
+        from app.services.answer_format import cpp_snippet_error
+        if cpp_snippet_error(user_text, answer):
             from app.billing.quota import billing_pool
             from app.services.response_policy import compact_messages
             await push_status("think", "Исправляю синтаксис фрагмента C++")
             retry_chat = [*compact_messages(messages), {'role': 'assistant', 'content': answer},
-                          {'role': 'system', 'content': 'В черновике не совпадают скобки. Исправь синтаксис и '
+                          {'role': 'system', 'content': 'Исправь вызовы методов, баланс скобок и '
+                           'вычитание size_t до проверки границы в черновике. Сохрани '
                            'сохрани контракт задачи. Верни только один полный блок Markdown с языком cpp.'}]
             pool_token = billing_pool.set(pool)
             try:
@@ -770,10 +771,10 @@ async def get_smart_response(
                 )
             finally:
                 billing_pool.reset(pool_token)
-            answer = (corrected if cpp_delimiter_error(user_text, corrected) is False else
-                      'Не удалось подготовить синтаксически целый фрагмент C++.')
+            answer = (corrected if cpp_snippet_error(user_text, corrected) is False else
+                      'Не удалось подготовить проверенный фрагмент C++.')
     await push_status("think", "Оформляю ответ")
-    source_limit = 28 if model == "director" else (24 if model in {"gpt-6-sol", "gpt-6-astra", "search"} else 18)
+    source_limit = 28 if model == "director" else (24 if model == "gpt-6-sol" else 18)
     sources = _merge_sources(grounded_sources, model_sources, limit=source_limit)
     from app.services.followup_evidence import previous_source_rows
     from app.services.source_quality import cited_urls, resolve_numbered_citations
@@ -783,15 +784,16 @@ async def get_smart_response(
     # Sources provide context and attribution, never a delivery gate. Do not
     # rerun generation or erase an answer based on citation/read-state heuristics.
     answer = resolve_numbered_citations(answer, _merge_sources(sources, previous_sources, limit=40))
-    if record and (web_required or model == 'search') and not intent.web_forbidden:
+    if intent.topic == 'procurement' and intent.needs_web:
+        from app.services.source_quality import mark_unobserved_supplier_links
+        answer = mark_unobserved_supplier_links(answer, sources, user_text)
+    if (record and web_required and not intent.web_forbidden
+            and intent.topic in {'ai', 'games', 'shopping', 'procurement'}):
         from app.services.source_quality import guard_current_numbers
         answer = guard_current_numbers(answer, record.page_texts, query=user_text)
     cited = cited_urls(answer)
     sources = [s for s in sources if s.get('origin') != 'history' or s['summary'].splitlines()[0] in cited]
     sources = _merge_sources(sources, [s for s in previous_sources if s['summary'].splitlines()[0] in cited], limit=source_limit)
-    if any(s.get("summary", "").startswith("http") for s in sources):
-        from kimi_client import strip_source_links
-        answer = strip_source_links(answer)
     # Never expose raw provider chain-of-thought. The compact status feed is the
     # user-facing explanation of progress.
     from skill_commands import guard_unsaved_claim

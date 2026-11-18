@@ -102,6 +102,24 @@ def test_empty_tests_do_not_count_as_acceptance(workspace):
     assert not operation(state, 'test')['gates']['test']
 
 
+def test_harness_is_opt_in_and_only_runs_python_product_tests(workspace, monkeypatch):
+    state, _ = start()
+    calls = []
+
+    def command(uid, root, argv, timeout, *, process_limit, harness):
+        calls.append(harness)
+        return {'exit_code': 0, 'passed': True, 'command': argv, 'output': 'Ran 1 test'}
+
+    monkeypatch.setattr(factory, '_command', command)
+    monkeypatch.setenv('SANDBOX_MODE', '1')
+    monkeypatch.delenv('PRODUCT_TEST_HARNESS', raising=False)
+    operation(state, 'test')
+    monkeypatch.setenv('PRODUCT_TEST_HARNESS', '1')
+    operation(state, 'build')
+    assert operation(state, 'test')['ready']
+    assert calls == [False, False, True]
+
+
 def test_check_that_rewrites_sources_is_not_a_receipt(workspace, monkeypatch):
     state, root = start()
     def change(*args, **kwargs):

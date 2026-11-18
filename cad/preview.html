@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Крепёжная пластина · Построение в FreeCAD</title>
+<style>
+  :root{color-scheme:dark;--bg:#0c1012;--viewport:#0a0e10;--panel:#161c1e;--elevated:#1c2427;--line:#ffffff14;--text:#f2f4f5;--secondary:#c5cbce;--muted:#b0b8bb;--accent:#21a0ce;--success:#4ade80;--action-text:#0b1214;--action-hover:#1a9aab}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif}
+  main{max-width:1440px;margin:auto;padding:clamp(14px,3vw,36px)}
+  h1,h2,p{margin:0}
+  .masthead{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:18px}
+  h1{font-size:clamp(22px,3vw,32px);line-height:1.2;letter-spacing:-.02em}
+  .verified{font-size:12px;color:var(--success);white-space:nowrap}
+  .layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(210px,265px);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .viewport{position:relative;min-width:0;min-height:320px;background:var(--viewport)}
+  canvas{display:block;width:100%;height:clamp(320px,56vh,620px);touch-action:none;cursor:grab}
+  canvas:active{cursor:grabbing}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+  canvas:focus-visible{outline-offset:-4px}
+  .viewport-note{position:absolute;top:15px;left:16px;color:var(--muted);font-size:11px;letter-spacing:.09em;pointer-events:none}
+  .camera{position:absolute;right:10px;bottom:10px;display:flex;gap:5px}
+  button{font:inherit;color:inherit;background:var(--elevated);border:1px solid var(--line);min-height:44px;border-radius:8px;cursor:pointer}
+  button:hover{background:color-mix(in srgb,var(--text) 8%,var(--elevated))}
+  .camera button{min-width:44px;padding:0 9px}
+  .side{background:var(--panel);border-left:1px solid var(--line);padding:16px}
+  h2{font-size:14px;letter-spacing:.015em;margin-bottom:10px}
+  ol{list-style:none;padding:0;margin:0;display:grid;gap:4px}
+  .step{width:100%;display:grid;grid-template-columns:24px minmax(0,1fr);align-items:center;text-align:left;padding:7px 8px;gap:8px;background:transparent;border-color:transparent}
+  .step:hover{background:var(--elevated)}
+  .step[aria-current=step]{background:color-mix(in srgb,var(--accent) 12%,var(--panel));border-color:var(--accent)}
+  .step span:first-child{color:var(--muted);font:11px/1.4 ui-monospace,monospace}
+  .step strong{font-size:13px}
+  .step-note{color:var(--muted);font-size:12px;min-height:3.5em;margin:10px 1px 15px}
+  dl{border-top:1px solid var(--line);margin:0;padding-top:10px;display:grid;gap:6px;font-size:12px}
+  dl div{display:flex;justify-content:space-between;gap:8px}
+  dt{color:var(--muted)} dd{margin:0;font-variant-numeric:tabular-nums;text-align:right}
+  .playbar{display:grid;grid-template-columns:max-content minmax(0,1fr) max-content;align-items:center;gap:12px;margin-top:12px}
+  .play{background:var(--accent);color:var(--action-text);border-color:var(--accent);border-radius:999px;padding:0 16px;font-weight:650}
+  .play:hover{background:var(--action-hover);border-color:var(--action-hover)}
+  .scrub{display:grid;gap:1px;color:var(--muted);font-size:12px;min-width:0}
+  input[type=range]{accent-color:var(--accent);width:100%;margin:0;min-height:25px;cursor:pointer}
+  .counter,.help{color:var(--muted);font-size:12px}
+  .counter{font-variant-numeric:tabular-nums;white-space:nowrap}
+  .help{margin-top:9px}
+  @media(max-width:660px){
+    .masthead{display:block}.verified{display:block;margin-top:6px}
+    .layout{grid-template-columns:1fr}.side{border-left:0;border-top:1px solid var(--line)}
+    canvas{height:clamp(300px,50vh,460px)} .viewport{min-height:300px}
+    ol{grid-template-columns:repeat(2,minmax(0,1fr))}
+  }
+  @media(max-width:380px){.playbar{grid-template-columns:max-content minmax(0,1fr)}.counter{grid-column:2}}
+</style>
+</head>
+<body>
+<main>
+  <header class="masthead">
+    <h1>Крепёжная пластина</h1>
+    <p class="verified">● STEP проверен</p>
+  </header>
+  <div class="layout">
+    <section class="viewport" aria-label="Просмотр модели">
+      <canvas tabindex="0" role="img" aria-label="Трёхмерная модель крепёжной пластины" aria-describedby="camera-help"></canvas>
+      <p class="viewport-note" aria-hidden="true">ПРОЕКЦИЯ · ММ</p>
+      <div class="camera" aria-label="Управление видом">
+        <button type="button" data-camera="out" aria-label="Отдалить">−</button>
+        <button type="button" data-camera="in" aria-label="Приблизить">+</button>
+        <button type="button" data-camera="reset" aria-label="Сбросить ракурс">↺</button>
+      </div>
+    </section>
+    <aside class="side">
+      <h2>Этапы построения</h2>
+      <ol>
+        <li><button type="button" class="step" data-step="0"><span>01</span><strong>Контур</strong></button></li>
+        <li><button type="button" class="step" data-step="1"><span>02</span><strong>Заготовка</strong></button></li>
+        <li><button type="button" class="step" data-step="2"><span>03</span><strong>Отверстия</strong></button></li>
+        <li><button type="button" class="step" data-step="3" aria-current="step"><span>04</span><strong>Готовая деталь</strong></button></li>
+      </ol>
+      <p class="step-note" aria-live="polite"></p>
+      <dl>
+        <div><dt>Габариты</dt><dd id="size"></dd></div>
+        <div><dt>Отверстия</dt><dd id="holes"></dd></div>
+        <div><dt>Отступ от краёв</dt><dd id="inset"></dd></div>
+        <div><dt>Объём</dt><dd id="volume"></dd></div>
+      </dl>
+    </aside>
+  </div>
+  <div class="playbar">
+    <button type="button" class="play">Показать построение</button>
+    <label class="scrub" for="progress">Шкала построения<input id="progress" type="range" min="0" max="300" value="300"></label>
+    <output class="counter" for="progress">04 / 04</output>
+  </div>
+  <p class="help" id="camera-help">Перетаскивайте модель для поворота. Колесо мыши меняет масштаб. С клавиатуры доступны стрелки, +, − и Home.</p>
+</main>
+<script>
+  const { size, centers, radius, inset, volume } = __GEOMETRY__;
+  const [length, width, thickness] = size;
+  const number = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 });
+  const canvas = document.querySelector('canvas'), ctx = canvas.getContext('2d');
+  const theme = getComputedStyle(document.documentElement);
+  const tone = name => theme.getPropertyValue('--' + name).trim();
+  const slider = document.querySelector('#progress'), play = document.querySelector('.play');
+  const steps = [...document.querySelectorAll('.step')];
+  const note = document.querySelector('.step-note'), counter = document.querySelector('.counter');
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  const stagePositions = [0,199,218,300];
+  const notes = [
+    'Прямоугольный контур задаёт длину и ширину пластины.',
+    'FreeCAD создаёт сплошную заготовку заданной толщины.',
+    'Четыре цилиндра задают положение и диаметр вырезов.',
+    'FreeCAD вычёл цилиндры и подтвердил геометрию после открытия STEP.',
+  ];
+  document.querySelector('#size').textContent = size.map(x => number.format(x)).join(' × ') + ' мм';
+  document.querySelector('#holes').textContent = centers.length + ' × Ø' + number.format(radius * 2) + ' мм';
+  document.querySelector('#inset').textContent = number.format(inset) + ' мм';
+  document.querySelector('#volume').textContent = number.format(volume) + ' мм³';
+  const outline = [[0,0],[length,0],[length,width],[0,width]];
+  const circles = centers.map(([x,y]) => Array.from({length:48}, (_, i) => {
+    const t = i * Math.PI / 24;
+    return [x + radius * Math.cos(t), y + radius * Math.sin(t)];
+  }));
+  const initialView = {yaw:-0.61, tilt:0.63, zoom:1};
+  let {yaw, tilt, zoom} = initialView;
+  let progress = 300, step = -1, running = false, frame = 0, lastTime = 0, drag;
+  const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+
+  function draw() {
+    const {width: w, height: h} = canvas.getBoundingClientRect();
+    if (w < 1 || h < 1) return;
+    const dpr = Math.min(devicePixelRatio || 1, 2);
+    const rw = Math.round(w * dpr), rh = Math.round(h * dpr);
+    if (canvas.width !== rw || canvas.height !== rh) { canvas.width = rw; canvas.height = rh; }
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    ctx.clearRect(0,0,w,h);
+    const c = Math.cos(yaw), s = Math.sin(yaw), e = Math.sin(tilt), f = Math.cos(tilt);
+    const scale = Math.min(w * .78, h * .96) * zoom / Math.hypot(...size);
+    const depth = ([x,y]) => (x-length/2)*s + (y-width/2)*c;
+    const project = ([x,y],z) => [w/2 + scale*((x-length/2)*c - (y-width/2)*s),
+      h/2 - scale*(depth([x,y])*e + (z-thickness/2)*f)];
+    function trace(points, close = true) {
+      ctx.moveTo(...points[0]);
+      for (const point of points.slice(1)) ctx.lineTo(...point);
+      if (close) ctx.closePath();
+    }
+    const floor = -Math.hypot(length,width) * .045;
+    const grid = Math.max(length,width) / 8;
+    ctx.beginPath();
+    for (let i=-9; i<=9; i++) {
+      const x = length/2 + i*grid, y = width/2 + i*grid;
+      trace([project([x,width/2-9*grid],floor),project([x,width/2+9*grid],floor)],false);
+      trace([project([length/2-9*grid,y],floor),project([length/2+9*grid,y],floor)],false);
+    }
+    ctx.lineWidth = 1; ctx.strokeStyle = tone('line'); ctx.stroke();
+    const t = reduced.matches ? stagePositions[step] : progress;
+    const z = thickness * (t < 100 ? 0 : clamp((t-100)/64,.08,1));
+    const cut = t >= 300 ? circles.length : clamp(Math.floor((t-218)/18),0,circles.length);
+    const near = e < 0 ? 0 : z, far = e < 0 ? z : 0;
+    function face(level) {
+      ctx.beginPath();
+      trace(outline.map(p => project(p,level)));
+      for (const circle of circles.slice(0,cut)) trace(circle.map(p => project(p,level)));
+      ctx.fill('evenodd');
+    }
+    if (z === 0) {
+      ctx.beginPath(); trace(outline.map(p => project(p,0)));
+      ctx.fillStyle=tone('accent'); ctx.globalAlpha=.12; ctx.fill(); ctx.globalAlpha=1;
+      ctx.strokeStyle=tone('accent'); ctx.lineWidth=1.5; ctx.stroke();
+      return;
+    }
+    ctx.fillStyle=tone('elevated'); face(far);
+    const sides = outline.map((p,i) => [p,outline[(i+1)%4]])
+      .sort(([a,b],[c,d]) => depth(c)+depth(d)-depth(a)-depth(b));
+    for (const [p,q] of sides) {
+      ctx.beginPath(); trace([project(p,0),project(q,0),project(q,z),project(p,z)]);
+      ctx.fillStyle=tone('muted');
+      ctx.globalAlpha=Math.abs(q[0]-p[0]) > 0 ? .55 : .38;
+      ctx.fill(); ctx.globalAlpha=1;
+    }
+    for (const circle of circles.slice(0,cut)) {
+      ctx.save(); ctx.beginPath(); trace(circle.map(p => project(p,near))); ctx.clip();
+      ctx.fillStyle=tone('elevated'); ctx.fillRect(0,0,w,h);
+      ctx.beginPath(); trace(circle.map(p => project(p,far)));
+      ctx.globalCompositeOperation='destination-out'; ctx.fill(); ctx.restore();
+    }
+    const metal = ctx.createLinearGradient(w*.2,h*.3,w*.8,h*.7);
+    metal.addColorStop(0,tone('secondary')); metal.addColorStop(1,tone('muted'));
+    ctx.fillStyle=metal; face(near);
+    ctx.beginPath(); trace(outline.map(p => project(p,near)));
+    ctx.lineWidth=1; ctx.strokeStyle=tone('text'); ctx.stroke();
+    if (t >= 200 && t < 300) {
+      ctx.strokeStyle=tone('viewport'); ctx.lineWidth=1.5;
+      circles.forEach((circle,i) => {
+        ctx.beginPath(); trace(circle.map(p => project(p,near))); ctx.stroke();
+        if (i >= cut) {
+          const [x,y]=project(centers[i],near);
+          ctx.beginPath(); ctx.moveTo(x-5,y);ctx.lineTo(x+5,y);ctx.moveTo(x,y-5);ctx.lineTo(x,y+5);ctx.stroke();
+        }
+      });
+    }
+  }
+
+  function seek(value) {
+    progress = clamp(value,0,300);
+    slider.value = Math.round(progress);
+    const current = Math.min(3, Math.floor(progress/100));
+    if (current !== step) {
+      step = current;
+      steps.forEach((button,i) => i===step ? button.setAttribute('aria-current','step') : button.removeAttribute('aria-current'));
+      note.textContent = notes[step];
+      counter.textContent = '0' + (step+1) + ' / 04';
+      slider.setAttribute('aria-valuetext', steps[step].innerText.trim());
+    }
+    draw();
+  }
+  function pause() {
+    running=false; cancelAnimationFrame(frame);
+    play.textContent=progress>=300 ? 'Показать построение' : 'Продолжить';
+  }
+  function tick(now) {
+    if (!running) return;
+    if (lastTime) seek(progress + Math.min(50,now-lastTime)*.058);
+    lastTime=now;
+    if (progress>=300) pause(); else frame=requestAnimationFrame(tick);
+  }
+  play.addEventListener('click', () => {
+    if (running) { pause(); return; }
+    if (progress>=300) seek(0);
+    running=true; lastTime=0; play.textContent='Пауза'; frame=requestAnimationFrame(tick);
+  });
+  slider.addEventListener('input', () => { seek(Number(slider.value)); pause(); });
+  steps.forEach((button,i) => button.addEventListener('click', () => { seek(stagePositions[i]); pause(); }));
+  function camera(action) {
+    if (action==='reset') ({yaw,tilt,zoom}=initialView);
+    else zoom=clamp(zoom*(action==='in'?1.17:1/1.17),.52,2.8);
+    draw();
+  }
+  document.querySelectorAll('[data-camera]').forEach(button => button.addEventListener('click', () => camera(button.dataset.camera)));
+  canvas.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || drag) return;
+    drag={id:event.pointerId,x:event.clientX,y:event.clientY};
+    canvas.setPointerCapture(event.pointerId);
+  });
+  canvas.addEventListener('pointermove', event => {
+    if (!drag || event.pointerId!==drag.id) return;
+    yaw+=(event.clientX-drag.x)*.009;
+    tilt=clamp(tilt+(event.clientY-drag.y)*.008,-1.44,1.44);
+    drag.x=event.clientX; drag.y=event.clientY; draw();
+  });
+  canvas.addEventListener('lostpointercapture', () => { drag=undefined; });
+  canvas.addEventListener('wheel', event => { event.preventDefault(); camera(event.deltaY<0?'in':'out'); }, {passive:false});
+  canvas.addEventListener('keydown', event => {
+    if (!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','+','=','-','Home'].includes(event.key)) return;
+    event.preventDefault();
+    if (event.key==='Home') camera('reset');
+    else if ('+=-'.includes(event.key)) camera(event.key==='-'?'out':'in');
+    else {
+      yaw+=(event.key==='ArrowRight'?.12:event.key==='ArrowLeft'?-.12:0);
+      tilt=clamp(tilt+(event.key==='ArrowUp'?.12:event.key==='ArrowDown'?-.12:0),-1.44,1.44);
+      draw();
+    }
+  });
+  new ResizeObserver(draw).observe(canvas);
+  seek(300);
+</script>
+</body>
+</html>

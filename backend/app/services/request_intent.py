@@ -14,7 +14,8 @@ def _has(pattern, text):
 
 
 def forbids_web(text: str) -> bool:
-    return _has(r'\bбез\s+(?:поиска|интернета|веба)\b|\bне\s+(?:ищи|гугли|используй\s+(?:интернет|поиск))\b|'
+    return _has(r'\bбез\s+(?:(?:веб[-‑– ]|интернет[-‑– ])?поиска|интернета|веба)\b|'
+                r'\bне\s+(?:ищи|гугли|используй\s+(?:интернет|(?:веб[-‑– ]|интернет[-‑– ])?поиск))\b|'
                 r'\b(?:только|исключительно)\s+(?:по\s+)?(?:вложени\w*|файл\w*|данному\s+тексту)\b|'
                 r'\b(?:do not|don.t)\s+(?:browse|search)\b', text or '')
 
@@ -44,8 +45,49 @@ class RequestIntent:
                 f'продолжение: {self.followup}. Это ориентир планирования, а не установленный факт. '
                 'Приоритет у исходной просьбы пользователя и её ограничений. ' + contract +
                 (' Пользователь запретил интернет: не вызывай поиск и чтение сайтов.' if self.web_forbidden else '') +
+                (' Начни ответ с конкретных компаний и прямых ссылок. Первый web_search: короткое каталожное название '
+                 'товара, явно заданное свойство или марка и заданный регион, всего 3–7 слов. Не подменяй заданное '
+                 'свойство предположением о марке. Не добавляй описание применения и цепочку слов '
+                 '«производитель каталог купить поставщик». '
+                 'Если выдача дала меньше двух подходящих компаний или в ней потерялся ключевой параметр, '
+                 'повтори web_search один раз с коротким отраслевым названием или возможной маркой. '
+                 'Для неизвестного параметра покажи варианты для запроса. Не открывай страницы поисковиков. '
+                 'Открой подходящие страницы разных компаний в пределах бюджета. '
+                 'Если есть несколько подходящих компаний, покажи их отдельными пунктами. '
+                 'Ставь только адреса из выдачи или прочитанных страниц, не достраивай адрес товара вручную. '
+                 'Отличай поставщика от изготовителя, точную позицию от кандидата для запроса. '
+                 'Если доступна только выдача, дай ссылку как зацепку, без точных характеристик из неё. '
+                 'Не перечисляй точные размеры, стандарты, цены или остатки без запроса пользователя. '
+                 'Совпадения по части критериев помечай как варианты для запроса и называй, что не подтверждено. '
+                 'Сохрани описанную пользователем конструкцию, не проектируй её заново.'
+                 if self.topic == 'procurement' and self.needs_web else '') +
                 ' Если поиск неполон, сделай ограниченную адресную проверку пробела, дай подтверждённую часть '
                 'и кратко обозначь оставшийся пробел. Не выдумывай данные и не обещай безошибочность.')
+
+
+_RASTER_FORMAT_FOLLOWUP = re.compile(
+    r'(?i)^\s*(?:(?:а\s+)?(?:теперь\s+)?(?:пришли|отправь|дай|покажи|сохрани|экспортируй)'
+    r'\b[^.!?\n]{0,120}\b(?:png|jpe?g)\b|(?:а\s+)?(?:в|как)\s+(?:png|jpe?g)\b)'
+)
+
+
+def raster_format_followup(text: str) -> bool:
+    return bool(_RASTER_FORMAT_FOLLOWUP.match(text or ''))
+
+
+def previous_user_requests(query, history):
+    """Yield recent user requests, skipping the current turn and assistant output."""
+    current = (query or '').strip().casefold()
+    for row in reversed(list(history or [])[-12:]):
+        role = row.get('role') if isinstance(row, dict) else getattr(row, 'role', None)
+        if role != 'user':
+            continue
+        content = row.get('content') if isinstance(row, dict) else getattr(row, 'content', '')
+        if isinstance(content, list):
+            content = '\n'.join(str(part.get('text') or '') for part in content
+                                if isinstance(part, dict) and part.get('type') in {'text', 'input_text'})
+        if isinstance(content, str) and (body := content.strip()) and body.casefold() != current:
+            yield body
 
 
 def classify_request(query: str, history=()) -> RequestIntent:
@@ -57,16 +99,10 @@ def classify_request(query: str, history=()) -> RequestIntent:
     text = (query or '').strip().lower()[:16000]
     head = text.split('\n', 1)[0][:500]
     forbidden = forbids_web(head)
-    previous = ''
-    for row in reversed(list(history or [])[-8:]):
-        role = row.get('role') if isinstance(row, dict) else getattr(row, 'role', None)
-        content = row.get('content') if isinstance(row, dict) else getattr(row, 'content', '')
-        if role == 'user' and isinstance(content, str) and content.strip().lower() != text:
-            previous = content[:2000].lower()
-            break
+    previous = next(previous_user_requests(query, history), '')[:2000].lower()
     followup = bool(previous and len(text) < 500 and not _has(r'новая тема|другой вопрос|сменим тему', head) and
-                    _has(r'^а\s+как\b|^(?:а\s+)?(?:почему|как насч[её]т|версии?|цена|отзывы|ссылки|цифрами|подробнее|продолжай|сделай короче)\b|'
-                         r'\b(?:у не[её]|у него|у них|е[её]|эт(?:о|от|ой|и|их)|он[аои]?)\b', head))
+                    (raster_format_followup(head) or _has(r'^а\s+как\b|^(?:а\s+)?(?:почему|как насч[её]т|версии?|цена|отзывы|ссылки|цифрами|подробнее|продолжай|сделай короче)\b|'
+                         r'\b(?:у не[её]|у него|у них|е[её]|эт(?:о|от|ой|и|их)|он[аои]?)\b', head)))
     subject = text + (' ' + previous if followup else '')
     topic = ('ai' if _has(r'нейро(?:нк|нок|сет)\w*|\b(?:llm|ии|ai|gpt|claude|gemini|deepseek|codex)\b|языков\w* модел', subject)
              else 'shopping' if _has(r'купить|в наличии|доставк|маркетплейс|\b(?:ozon|ozon.ru|вб|wb|dns|днс)\b|бюджет|тариф|подписк|корзин', subject)
@@ -89,13 +125,29 @@ def classify_request(query: str, history=()) -> RequestIntent:
     elif _has(r'^(?:а\s+)?(?:поищи\s+)?(?:как|объясни|расскажи|почему|что такое)\b', head):
         task = 'explanation'
         local = not _has(r'сегодня|сейчас|щас|актуальн|последн\w*|нов\w* патч|https?://|поищи|загугли', head) and not game_guide
-    elif followup and _has(r'^(?:а\s+)?(?:подробнее|продолжай|почему)\b', head):
+    elif followup and (raster_format_followup(head) or _has(r'^(?:а\s+)?(?:подробнее|продолжай|почему)\b', head)):
         task = 'followup'
     else:
         task = 'fact'
     from app.services.place_selection import selection_request
     if task != 'transformation' and selection_request(query, history):
         topic, task, local = 'places', 'recommendation', False
+    procurement = ' '.join(text[:500].split())
+    if task != 'transformation' and _has(
+        r'\b(?:посмотреть|изучить|разобрать|сравнить|покажи|найди|посмотри)\s+'
+        r'(?:конструкц\w*|устройств\w*|черт[её]ж\w*|разрез\w*)\b.{0,140}'
+        r'\b(?:от\s+\w+|производител\w*|поставщик\w*)\b', procurement,
+    ):
+        topic, task, local = 'procurement', 'comparison', False
+    if not local and topic != 'places' and _has(
+        r'\b(?:найд\w*|поищ\w*|подбер\w*|подобрать|посовет\w*|порекоменду\w*)\b.{0,350}'
+        r'\b(?:поставщик\w*|производител\w*|изготовител\w*|покупн\w*)\b|'
+        r'\b(?:нужен|нужны|ищу|ищем)\s+(?:поставщик\w*|производител\w*|изготовител\w*)\b|'
+        r'\b(?:где|у кого)\s+(?:найти|купить|заказать)\b.{0,140}\b(?:напрямую|оптом|производител\w*|поставщик\w*)\b|'
+        r'\b(?:какие|кто)\s+(?:компани\w+\s+)?(?:поставля\w*|производи\w*|изготавлива\w*)\b',
+        procurement,
+    ):
+        topic, task = 'procurement', 'recommendation'
     explicit = _has(r'https?://|\b(?:загугл\w*|погугл\w*|поищи|гугли|найди в (?:интернете|сети)|web search|search online)\b', text)
     fresh = _has(r'сегодня|вчера|актуальн|последн\w* (?:верси|релиз)|новейш|свеж\w*|новост|винрейт|патч|'
                  r'сколько стоит|\bцен[аыуе]\b|в наличии|доставк|\bпогод\w*|курс (?:валют|доллар|евро)|котиров', head)
@@ -108,7 +160,7 @@ def classify_request(query: str, history=()) -> RequestIntent:
     needs_web = not forbidden and not local and bool(
         explicit or fresh or task == 'recommendation' or
         (task == 'overview' and topic in {'ai', 'shopping', 'games'}) or
-        (task == 'comparison' and topic in {'ai', 'shopping'}) or
+        (task == 'comparison' and topic in {'ai', 'shopping', 'procurement'}) or
         (task == 'explanation' and game_guide) or
         (followup and _has(r'верс\w*|цифр\w*|цен[аыуе]|отзыв\w*|ссыл\w*|проверь|подтверд\w*', head)))
     return RequestIntent(task, topic, needs_web, forbidden, followup, local)

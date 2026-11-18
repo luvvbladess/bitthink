@@ -85,10 +85,12 @@ def test_production_economy_workers_are_enabled_for_paid_orchestrator(monkeypatc
     monkeypatch.delenv('ORCHESTRATOR_ECONOMY_WORKERS', raising=False)
     assert 'glm-5.3-flash' in computer_models('creator')
     assert 'glm-5.3-flash' in computer_models('creator')
-    assert 'minimax-m3.1-flash' not in computer_models('creator')
+    assert 'minimax-m3.1-flash' in computer_models('creator')
     assert 'glm-5.3-flash' not in computer_models('free')
+    assert 'minimax-m3.1-flash' not in computer_models('free')
     monkeypatch.setenv('ORCHESTRATOR_ECONOMY_WORKERS', '')
     assert 'glm-5.3-flash' not in computer_models('creator')
+    assert 'minimax-m3.1-flash' not in computer_models('creator')
 
 
 def test_sonnet_is_preserved_for_a_strong_product_stage(monkeypatch):

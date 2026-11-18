@@ -1,9 +1,42 @@
 import asyncio
+import json
 
 import pytest
 
 from orchestrator_activity import employee_activity, tool_activity
 from status_feed import announce_tool, bind_status, push_status
+
+
+@pytest.mark.parametrize('saved', [False, True])
+def test_bitclient_diagram_build_keeps_writer_and_requires_saved_files(monkeypatch, saved):
+    import openai_client
+    from director_router import _execute_employee
+    from app.services.desktop_context import desktop_capabilities, desktop_executor
+
+    async def local(name, args):
+        assert name == 'diagram_create'
+        return json.dumps({'files': [{'path': 'result.png'}]})
+
+    async def model(messages, **kwargs):
+        from computer_tools import response_tool_names
+        assert not kwargs['force_web_search'] and 'allowed_tools' not in kwargs
+        assert 'diagram_create' in response_tool_names(attach_tools=True, chat_only=False, force_web=False, skill_tools=True)
+        if saved:
+            await desktop_executor.get()('diagram_create', {'path': 'result.drawio'})
+        return 'Этап отработан.', [], '', []
+
+    monkeypatch.setattr(openai_client, 'get_chat_response', model)
+    executor = desktop_executor.set(local)
+    caps = desktop_capabilities.set(frozenset({'diagram_create'}))
+    try:
+        result = asyncio.run(_execute_employee({
+            'role': 'Исполнитель', 'task': 'Аккуратно исправить блок-схему и сохранить PNG.',
+            'model': 'gpt-6-luna', 'web': True, 'project_patch': True,
+        }, 1, [], 1))
+    finally:
+        desktop_capabilities.reset(caps)
+        desktop_executor.reset(executor)
+    assert result['status'] == ('ok' if saved else 'error')
 
 
 @pytest.mark.parametrize('tool,args,kind,title', [

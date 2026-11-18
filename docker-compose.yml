@@ -29,6 +29,7 @@ services:
       - SANDBOX_URL=http://sandbox:8090
       - SANDBOX_TOKEN=${SANDBOX_TOKEN:-}
       - WORKSPACES_DIR=/workspaces
+      - BITTHINK_CAD_ENABLED=${BITTHINK_CAD_ENABLED:-0}
     # DEBUG and SECRET_KEY come from the mounted .env file only.
     # Set both explicitly in .env before deploying.
     volumes:
@@ -39,6 +40,7 @@ services:
     networks:
       - default
       - sandbox_net
+      - cad_net
     working_dir: /app
     restart: unless-stopped
     depends_on:
@@ -59,6 +61,7 @@ services:
       - SANDBOX_URL=http://sandbox:8090
       - SANDBOX_TOKEN=${SANDBOX_TOKEN:-}
       - WORKSPACES_DIR=/workspaces
+      - BITTHINK_CAD_ENABLED=${BITTHINK_CAD_ENABLED:-0}
     volumes:
       - ./data:/app/data
       - ./uploads:/app/uploads
@@ -67,6 +70,7 @@ services:
     networks:
       - default
       - sandbox_net
+      - cad_net
     command: python -m app.workers.generations
     mem_limit: ${GENERATION_WORKER_MEMORY:-2g}
     cpus: ${GENERATION_WORKER_CPUS:-2.0}
@@ -125,6 +129,7 @@ services:
       dockerfile: sandbox/Dockerfile
     environment:
       - SANDBOX_TOKEN=${SANDBOX_TOKEN:-}
+      - PRODUCT_TEST_HARNESS=${PRODUCT_TEST_HARNESS:-0}
     volumes:
       - ./workspaces:/workspaces
       - ./backend/app/services/workspace_fs.py:/opt/sandbox/workspace_fs.py:ro
@@ -152,6 +157,31 @@ services:
       timeout: 3s
       retries: 8
 
+  cad:
+    profiles: ["cad"]
+    build:
+      context: .
+      dockerfile: cad/Dockerfile
+    networks:
+      - cad_net
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 64
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8091), timeout=2).close()"]
+      interval: 10s
+      timeout: 3s
+      retries: 4
+
 volumes:
   postgres_data:
   onlyoffice_data:
@@ -161,3 +191,5 @@ networks:
   sandbox_net:
     internal: true
   sandbox_out:
+  cad_net:
+    internal: true

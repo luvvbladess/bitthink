@@ -258,7 +258,7 @@ async def _generate_and_send(
     # Long web replies used to deliver an ephemeral response.docx only through
     # the socket. Persist it with the other files so preview and history agree.
     from app.services.desktop_context import desktop_mode
-    from canvas_intent import text_response_requested
+    from canvas_intent import explicitly_text_only, text_response_requested
     auto_docx = False
     if len(response_text) > 8000 and desktop_mode.get() is None and not text_response_requested(prompt_content):
         try:
@@ -271,6 +271,27 @@ async def _generate_and_send(
         if docx_bytes:
             generated_files = [*(generated_files or []), {'filename': 'response.docx', 'bytes': docx_bytes}]
             auto_docx = True
+
+    wants_mesh = bool(re.search(r'(?i)(?:3[дd]|тр[её]хмерн|\bcad\b|холст|\bglb\b|\bobj\b|\bstl\b)', prompt_content or ''))
+    if desktop_mode.get() != "chat" and not explicitly_text_only(prompt_content) and (generated_files or wants_mesh):
+        from app.services.mesh_preview import find_preview
+
+        named_files = [(_generated_filename(item), item) for item in generated_files or []]
+        if not any(item.get('canvas') or Path(name).suffix.lower() in {'.html', '.htm'} for name, item in named_files):
+            mesh = await asyncio.to_thread(find_preview, [(name, item['bytes']) for name, item in named_files
+                                                          if isinstance(item.get('bytes'), bytes)]) if generated_files else None
+            if mesh is None and wants_mesh:
+                from app.services.workspace_fs import newest_mesh
+                try:
+                    stored = await asyncio.to_thread(newest_mesh, int(bot_user_id))
+                except (TypeError, ValueError, OSError, RuntimeError):
+                    stored = None
+                if stored:
+                    mesh = await asyncio.to_thread(find_preview, [stored])
+            if mesh:
+                name, preview = mesh
+                generated_files = [*(generated_files or []), {'filename': Path(name).stem[:100] + '-3d.html',
+                                                              'bytes': preview, 'canvas': True}]
 
     outgoing: list[tuple[str, bytes, dict]] = []
     for item in generated_files or []:

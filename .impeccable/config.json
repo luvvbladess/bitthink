@@ -8,6 +8,15 @@
         "value": "sfmono-regular",
         "createdAt": "2026-10-17T23:55:48.470Z",
         "reason": "Codex: existing code blocks use a monospace fallback, explicitly allowed by DESIGN.md code typography; prose continues using Inter."
+      },
+      {
+        "rule": "overused-font",
+        "value": "inter",
+        "files": [
+          "backend/app/services/mesh_preview.html"
+        ],
+        "createdAt": "2026-11-09T22:48:37.776Z",
+        "reason": "Codex: Inter is the single product typeface specified in DESIGN.md and the 3D viewer is embedded in Bit Think."
       }
     ]
   }

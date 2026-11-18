@@ -515,6 +515,8 @@ def _chat_image_bytes(user_id: int, *, current_turn_only: bool) -> list[bytes]:
         start = last_assistant + 1
     found: list[bytes] = []
     for message in messages[start:]:
+        if getattr(message, "role", "") != "user":
+            continue
         attachment = getattr(message, "attachment", None) or {}
         if not conversation_manager._is_image_attachment(attachment):
             continue
@@ -603,13 +605,15 @@ async def get_image_response(
     user_text: str,
     user_id: int,
     status_msg: Any,
+    *,
+    reference_only: bool = False,
 ) -> Optional[Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]]:
     """Нарисовать или поправить картинку прямо в обычном чате. None – это не про картинку.
 
     Без этого просьба «добавь ребёнку очки» к приложенному фото уходила в модель,
     которая только смотрит на снимок, и она отвечала, что рисовать не умеет.
     """
-    from studio.html_canvas import detect_kind_explicit, requested_image_size
+    from studio.html_canvas import detect_kind_explicit, explicitly_requests_raster
 
     from canvas_intent import artifact_brief
     text = artifact_brief(user_text)
@@ -626,21 +630,42 @@ async def get_image_response(
     from studio.html_canvas import load_previous_html, is_image_canvas
     target = target_for_turn(user_id)
     canvas_edit = re.search(r'(?i)^\s*(?:измени\s+текущий\s+макет|в\s+текущем\s+макете\s+измени)', text)
-    if target and canvas_edit:
+    if target and canvas_edit and not reference_only:
         if not any(item.get('url') == target for item in canvas_attachments(user_id)):
             return 'Не удалось найти выбранный холст в этой беседе. Откройте его снова.', [], '', []
         previous_html = load_previous_html(user_id)
         if previous_html and is_image_canvas(previous_html):
             return await _run_image_studio(messages, user_text, user_id, status_msg, previous_html=previous_html)
+    from app.services.request_intent import previous_user_requests, raster_format_followup
+    image_request = detect_kind_explicit(text) == "image"
+    reference = re.compile(r'(?i)\b(?:по|на\s+основе)\s+(?:[\w-]+\s+){0,3}(?:эскиз\w*|референс\w*|фото\w*|снимк\w*|рисунк\w*|изображени\w*)\b')
+    reference_brief = user_text if explicitly_requests_raster(text) and reference.search(text) else ''
+    if raster_format_followup(text):
+        refinements = [user_text]
+        for previous in previous_user_requests(user_text, messages):
+            if raster_format_followup(previous):
+                refinements.append(previous)
+                continue
+            directive = artifact_brief(previous)
+            if directive and reference.search(directive) and explicitly_requests_raster(directive):
+                reference_brief = previous + '\n\nУточнение пользователя: ' + '\n'.join(reversed(refinements))
+            break
+    if reference_only and not reference_brief:
+        return None
     command = bool(_IMAGE_COMMAND.search(text)) and not _NOT_A_PICTURE_JOB.search(text)
     turn_images = _chat_image_bytes(user_id, current_turn_only=True)
+    if reference_brief:
+        sources = turn_images or _chat_image_bytes(user_id, current_turn_only=False)[-1:]
+        if not sources:
+            return 'Не удалось открыть исходное изображение. Прикрепите эскиз ещё раз.', [], '', []
+        return await _run_image_studio(messages, reference_brief, user_id, status_msg, source_images=sources)
     if turn_images:
-        if not command:
+        if not (command or explicitly_requests_raster(text)):
             return None
         sources: list[bytes] | None = turn_images
     elif command and (previous := _last_reply_image(user_id)):
         sources = [previous]
-    elif detect_kind_explicit(text) == "image":
+    elif image_request:
         sources = None
     else:
         return None

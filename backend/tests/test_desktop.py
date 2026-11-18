@@ -180,7 +180,7 @@ def test_local_skills_catalog_and_resource_roundtrip(monkeypatch, account):
     assert desktop_skills.get() == []
 
 
-@pytest.mark.parametrize("tier,models", [("free", {"auto", "search"}), ("pro", {"auto", "gpt-6-sol", "director", "search"}), ("proplus", {"auto", "gpt-6-sol", "director", "gpt-6-astra", "search"})])
+@pytest.mark.parametrize("tier,models", [("free", {"auto"}), ("pro", {"auto", "gpt-6-sol", "director"}), ("proplus", {"auto", "gpt-6-sol", "director"})])
 def test_desktop_answer_modes_follow_site_plan(monkeypatch, account, tier, models):
     email, token = account
     async def subscription(user):
@@ -189,7 +189,7 @@ def test_desktop_answer_modes_follow_site_plan(monkeypatch, account, tier, model
     response = TestClient(app).get("/desktop/status", headers={"Authorization": "Bearer " + token})
     assert response.status_code == 200
     assert set(response.json()["chat_models"]) == models
-    assert [row['label'] for row in response.json()['chat_modes']] == ['Экспресс','Поиск','Исследование','Astra','Документы','Оркестратор']
+    assert [row['label'] for row in response.json()['chat_modes']] == ['Экспресс','Исследование','Документы','Оркестратор']
     assert not {"glm-5.3-flash", "minimax-m3.1-flash"} & set(response.json()["chat_models"])
 
 

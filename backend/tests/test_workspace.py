@@ -24,6 +24,17 @@ def test_workspace_is_jailed_and_runs_python(tmp_path, monkeypatch):
     assert "print('sandbox-ok', 3 + 3)" in dispatch(uid, "read", {"path": "scripts/hello.py"})
 
 
+def test_binary_mesh_read_says_the_file_is_present(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORKSPACES_DIR", str(tmp_path))
+    dispatch(94011, "write", {"path": "aurora_cruiser.glb", "content": "placeholder"})
+    target = tmp_path / "u94011" / "aurora_cruiser.glb"
+    target.write_bytes(b"glTF\x02\x00\x00\x00binary-model")
+    answer = dispatch(94011, "read", {"path": "aurora_cruiser.glb"})
+    assert "на месте" in answer
+    assert "не текст" in answer
+    assert "binary-model" not in answer
+
+
 def test_workspace_rejects_escape(tmp_path, monkeypatch):
     monkeypatch.setenv("WORKSPACES_DIR", str(tmp_path))
     uid = 94002

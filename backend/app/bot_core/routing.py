@@ -85,17 +85,17 @@ def turn_requires_web(
 ) -> bool:
     """Whether this turn should leave the chat to fetch the internet.
 
-    Search, Research and Pilot always go to the web. Auto still searches only
+    Research and Pilot always go to the web. Express still searches only
     when the question itself needs fresh facts. has_documents / has_images are
     accepted so callers can pass current-turn file flags without changing
-    Search or Pilot.
+    Research or Pilot.
     """
     from search_engine import query_requires_web
 
     from app.services.request_intent import forbids_web
     if forbids_web((user_text or '').split('\n', 1)[0]):
         return False
-    if model in {"search", "kimi-k2.6"} or research_mode or model == "director":
+    if research_mode or model == "director":
         return True
     return query_requires_web(user_text)
 

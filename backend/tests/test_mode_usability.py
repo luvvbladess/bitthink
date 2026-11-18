@@ -93,8 +93,9 @@ def test_expired_plan_does_not_advertise_or_select_premium_modes(account, monkey
         response=client.get('/models',headers=headers);assert response.status_code==200
         data=response.json()
         assert data['astraAvailable'] is False and data['computerAvailable'] is False
-        assert data['researchModel'] is None and data['searchAvailable'] is True
-        assert client.post('/models/select',json={'model':'gpt-6-astra'},headers=headers).status_code==403
+        assert data['researchModel'] is None and data['searchAvailable'] is False
+        migrated=client.post('/models/select',json={'model':'gpt-6-astra'},headers=headers)
+        assert migrated.status_code==200 and migrated.json()['model']=='auto'
 
 
 def test_explicit_mode_is_bound_to_the_message_not_to_another_tab(account):
@@ -113,7 +114,7 @@ def test_explicit_mode_is_bound_to_the_message_not_to_another_tab(account):
     assert asyncio.run(repo.get_user_model(email))=='auto'
 
 
-@pytest.mark.parametrize('model',['gpt-6-astra','not-a-model',123])
+@pytest.mark.parametrize('model',['not-a-model',123])
 def test_forged_or_locked_mode_is_rejected_without_a_job(account, model):
     from app.main import create_app
     email, _ = account; request_id=uuid.uuid4().hex

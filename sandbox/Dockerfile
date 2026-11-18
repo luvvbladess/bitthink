@@ -1,8 +1,13 @@
 FROM node:22-bookworm-slim AS node_runtime
+RUN npm install --prefix /opt/dsh --ignore-scripts --no-audit --no-fund @deepseek-ai/node-addon-system@0.1.2 \
+    && cd /opt/dsh \
+    && node --input-type=module -e 'import { copyFileSync } from "node:fs"; import { launcherPath } from "@deepseek-ai/node-addon-system/landlock-run"; copyFileSync(launcherPath(), "/usr/local/bin/bitthink-landlock-run")' \
+    && chmod 0755 /usr/local/bin/bitthink-landlock-run
 FROM python:3.12-slim-bookworm
 
 # Same supported Node major as the application build. No host runtime mount.
 COPY --from=node_runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node_runtime /usr/local/bin/bitthink-landlock-run /usr/local/bin/bitthink-landlock-run
 COPY --from=node_runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
@@ -15,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libxslt1-dev \
         zlib1g-dev \
         chromium \
+        python3 libfreecad-python3-0.20 freecad-common \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 sandbox \
     && mkdir -p /workspaces /opt/sandbox \
@@ -44,6 +50,7 @@ RUN pip install --no-cache-dir \
 
 WORKDIR /opt/sandbox
 COPY sandbox/server.py /opt/sandbox/server.py
+COPY --chmod=755 sandbox/freecad-python /usr/local/bin/freecad-python
 COPY backend/app/services/page_shot.py /opt/sandbox/page_shot.py
 COPY sandbox/healthcheck.py /opt/sandbox/healthcheck.py
 COPY sandbox/sitecustomize.py /usr/local/lib/python3.12/site-packages/sitecustomize.py

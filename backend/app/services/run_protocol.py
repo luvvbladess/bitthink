@@ -116,6 +116,8 @@ class RunRecord:
 
     def read_key(self, name: str, args: dict) -> str:
         # Never persist private arguments. The guard lasts only this turn.
+        if name == 'browse_page':
+            args = {'url': str(args.get('url') or '').split('#', 1)[0]}
         return hashlib.sha256(json.dumps([name, args], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def finish_read(self, name: str, key: str, result: str, elapsed: float) -> None:

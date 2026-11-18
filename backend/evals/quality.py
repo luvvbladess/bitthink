@@ -19,6 +19,11 @@ from app.services.request_intent import classify_request
 def score_answer(case, answer, sources, *, seconds=0, usage=None):
     from app.services.source_quality import evidence_issues, cited_urls
     evidence = evidence_issues(answer, sources)
+    if case.get('expect', {}).get('web') is False:
+        evidence = [e for e in evidence if e not in {
+            'missing_inline_evidence', 'precise_claim_without_inline_source'}]
+    if case.get('expected_abstention'):
+        evidence = [e for e in evidence if e != 'incomplete_answer_needs_recovery']
     reliability = [error for error in evidence
                    if error not in {'empty_or_failed', 'incomplete_answer_needs_recovery'}]
     completion = [error for error in evidence

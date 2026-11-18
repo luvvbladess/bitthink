@@ -5,6 +5,22 @@ from urllib.parse import urlsplit
 from app.services.run_protocol import public_url
 
 SOURCE_RULES = """Работа с источниками:
+Для правового вопроса прочитай полный текст нужной статьи и условия её применения:
+оглавление и заголовок не подтверждают норму. Если текст недоступен, найди другую
+доступную публикацию нормы; не называй главную страницу портала первоисточником статьи.
+В сравнении исследований укажи для каждого дизайн, выборку, результат и ограничения;
+различай выручку и производительность, сокращённые часы и сжатую рабочую неделю.
+В сравнении товаров используй точную конфигурацию и прямую карточку. Проверяй
+цену и наличие отдельно. При сбое магазина попробуй другого продавца; не называй
+поисковую выдачу проверенной карточкой и не выдумывай предложения.
+Данные пользователя и вычисления из них не требуют веб-ссылки. Сохрани найденный
+факт, если не установлена другая его часть: известная ставка и неизвестная дата
+вступления в силу — разные поля. Укажи конкретный пробел, а не общий отказ.
+Для текущей ключевой ставки таблица по дням подтверждает значение, но не дату
+принятия или вступления решения в силу. Эти даты бери только из текста решения;
+при сохранении ставки не придумывай новую дату её начала. Непроверенную дату
+прямо назови неустановленной, сохранив подтверждённую ставку и ссылку.
+Если пользователь просит ссылки, сохрани прямые Markdown-ссылки в готовом ответе.
 Сначала дай полезный ответ на вопрос пользователя. Для меняющихся фактов получи
 актуальные данные доступными инструментами. Ищи с точным названием и контекстом.
 Используй уже полученное содержимое: не открывай прочитанную страницу повторно
@@ -12,6 +28,10 @@ SOURCE_RULES = """Работа с источниками:
 Нет обязательного числа источников и ссылок у каждого пункта. Панель источников
 доступна пользователю; добавляй ссылки в ответ, когда они помогают открыть материал.
 Для текущих тарифов предпочитай действующую страницу цен старому анонсу.
+Для версии с датой и прямой ссылкой начни с официального каталога релизов.
+Открой страницу конкретного выпуска по ссылке из каталога или выдачи и сверь
+номер, дату и стабильность. Укажи версию, дату и прямую Markdown-ссылку в одном
+абзаце. Общий каталог не выдавай за страницу этого выпуска.
 Учитывай регион, состояние товара, дату и условия предложения. Не придумывай цены,
 наличие, версии и даты публикации. Если цифра не видна в прочитанном источнике,
 не включай её в таблицу или рекомендацию. Для точных цен и процентов используй
@@ -28,8 +48,8 @@ SOURCE_RULES = """Работа с источниками:
 
 
 def cited_urls(answer: str) -> set[str]:
-    return {value for raw in re.findall(r'\]\((https?://[^\s)]+)\)', answer or '')
-            if (value := public_url(raw))}
+    return {value for raw in re.findall(r'https?://[^\s<>`\])]+', answer or '')
+            if (value := public_url(raw.rstrip('.,;:!?')))}
 
 
 def source_urls(sources) -> set[str]:
@@ -40,6 +60,29 @@ def source_urls(sources) -> set[str]:
         if url := public_url(raw):
             urls.add(url)
     return urls
+
+
+def mark_unobserved_supplier_links(answer, sources, query):
+    from app.services.prose_transform import transform_prose
+
+    observed = source_urls(sources)
+    if not observed:
+        return answer
+    # A read catalog can expose a real item URL without opening the item itself.
+    observed |= cited_urls(query)
+    for source in sources:
+        if source.get('evidence_state') == 'read':
+            observed |= cited_urls(source.get('summary', ''))
+    normalized = {url.rstrip('/') for url in observed}
+
+    def mark(match):
+        url = public_url((match[2] or match[3]).rstrip('.,;:!?'))
+        if not url or url.rstrip('/') in normalized:
+            return match[0]
+        return (match[1] + ' ' if match[1] else '') + '(ссылка не подтверждена)'
+
+    pattern = r'\[([^\]\n]+)\]\((https?://[^\s)]+)\)|(https?://[^\s<>\]\)]+)'
+    return transform_prose(answer, lambda prose: re.sub(pattern, mark, prose))
 
 
 def resolve_numbered_citations(answer: str, sources) -> str:
@@ -388,6 +431,10 @@ def _numeric_evidence(page):
 
 
 def guard_current_numbers(answer, page_texts, *, query=''):
+    from app.services.orchestrator_policy import calculation_task
+    # Supplied quantities and their derived results do not need web evidence.
+    if calculation_task(query):
+        return answer
     # shortcut: local text evidence, upgrade to structured entities when readers expose them.
     pages = {url: list(_numeric_evidence(page)) for url, page in page_texts.items()
              if not page.startswith('[Копия из веб-архива')}

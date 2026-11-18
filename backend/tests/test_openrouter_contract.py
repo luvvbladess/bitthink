@@ -116,6 +116,41 @@ def test_invalid_arguments_never_execute_an_empty_action(provider, arguments):
     assert json.loads(tool['content'])['error'] == 'invalid_arguments'
 
 
+def test_bitclient_sonnet_deduplicates_unchanged_reads_without_rewriting_prefix(provider):
+    from app.services.desktop_context import desktop_executor
+
+    provider.results[:] = ['x' * 14_000] * 9 + ['changed' * 2_000]
+    provider.turns.extend([
+        [chunk(calls=[NS(index=0, id=f'read-{i}', function=NS(name='workspace_read', arguments='{}'))])]
+        for i in range(10)
+    ])
+    provider.turns.append([chunk(content='Done')])
+    token = desktop_executor.set(lambda *args: None)
+    try:
+        response = asyncio.run(oc.get_openrouter_response(
+            [{'role': 'user', 'content': 'Read sample'}], model=oc.SONNET_MODEL, use_skills=False,
+            max_tool_loops=11, allowed_tools=frozenset({'workspace_read'}),
+        ))
+    finally:
+        desktop_executor.reset(token)
+    assert response[0] == 'Done'
+    assert [tool['function']['name'] for tool in provider.requests[0]['tools']] == ['workspace_read']
+    tools = [m for m in provider.requests[-1]['messages'] if m['role'] == 'tool']
+    assert len(tools) == 10 and tools[0]['content'] == 'x' * 14_000
+    assert tools[-1]['content'] == 'changed' * 2_000
+    assert [json.loads(m['content'])['same_as_tool_call'] for m in tools[1:-1]] == ['read-0'] * 8
+    for first, later in zip(provider.requests, provider.requests[1:]):
+        assert later['messages'][:len(first['messages'])] == first['messages']
+
+
+def test_deduplication_leaves_mutations_and_different_file_ranges_intact():
+    text, seen = 'x' * 12_000, {}
+    assert oc._deduplicate_read(seen, 'workspace_read', {'start_line': 1}, text, 'one') == text
+    assert oc._deduplicate_read(seen, 'workspace_read', {'start_line': 10}, text, 'two') == text
+    assert oc._deduplicate_read(seen, 'workspace_edit', {}, text, 'three') == text
+    assert oc._deduplicate_read(seen, 'workspace_edit', {}, text, 'four') == text
+
+
 def test_stop_after_acceptance_does_not_spend_another_model_call(provider):
     provider.turns.append([chunk(calls=[tool_call()])])
     response = run(stop_after_tool=lambda name, value: value == 'data')

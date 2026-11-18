@@ -140,3 +140,38 @@ def test_selected_image_canvas_edits_text_instead_of_refusing(monkeypatch,prompt
         return 'edited',[], '',[]
     monkeypatch.setattr(sr,'_run_image_studio',image)
     assert asyncio.run(sr.get_image_response([],prompt,1,None))[0]=='edited'
+
+
+def test_sketch_image_and_png_followup_use_original_upload(monkeypatch):
+    from app.services.photo_cad import requested
+
+    brief = ('Создай изображение на основе моего эскиза. Изобрази объект как реалистичную '
+             '3D-визуализацию, но только в виде изображения: не создавай настоящую 3D-модель. '
+             'Ракурс 3/4, точка обзора со стороны правого угла. Чёрно-белая палитра.')
+    followup = 'Пришли мне фотографии в jpeg или png Ракурс 3/4, точка обзора со стороны правого угла.'
+    assert not requested(brief, True)
+    assert not requested('Создай текстовый промт для генерации фотографии: ' + brief, True)
+    upload = [b'storefront']
+    calls = []
+
+    async def draw(messages, prompt, user_id, status, **kwargs):
+        calls.append((prompt, kwargs['source_images']))
+        return 'rendered', [], '', []
+
+    monkeypatch.setattr(sr, '_chat_image_bytes', lambda uid, current_turn_only: [] if current_turn_only else upload)
+    monkeypatch.setattr(sr, '_last_reply_image', lambda uid: b'wrong generated image')
+    monkeypatch.setattr(sr, '_run_image_studio', draw)
+    assert asyncio.run(sr.get_image_response([], brief, 1, None))[0] == 'rendered'
+    history = [{'role': 'user', 'content': [{'type': 'text', 'text': brief}]},
+               {'role': 'assistant', 'content': 'Созданы FCStd, STEP и OBJ.'},
+               {'role': 'user', 'content': followup}]
+    history.insert(2, {'role': 'user', 'content': 'А в PNG?'})
+    history.insert(3, {'role': 'assistant', 'content': 'Toyota RAV4.'})
+    assert asyncio.run(sr.get_image_response(history, followup, 1, None, reference_only=True))[0] == 'rendered'
+    assert calls == [(brief, upload), (brief + '\n\nУточнение пользователя: А в PNG?\n' + followup, upload)]
+    other_task = [{'role': 'user', 'content': 'Создай сайт.'}]
+    assert asyncio.run(sr.get_image_response(history[:-1] + other_task, followup, 1, None, reference_only=True)) is None
+    assert asyncio.run(sr.get_image_response([], 'Создай 3D-модель корпуса по этому изображению', 1, None, reference_only=True)) is None
+    upload.clear()
+    result = asyncio.run(sr.get_image_response(history, followup, 1, None))
+    assert 'Прикрепите эскиз' in result[0] and not result[1] and len(calls) == 2

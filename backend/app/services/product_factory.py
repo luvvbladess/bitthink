@@ -112,7 +112,7 @@ def _public(state, root):
             'packaged': state.get('packaged_revision') == revision and bool(state.get('archive')) and (root.parent.parent / state['archive']).is_file()}
 
 
-def _command(uid, root, argv, timeout=90, process_limit=64):
+def _command(uid, root, argv, timeout=90, process_limit=64, *, harness=False):
     if os.environ.get('WORKSPACE_ALLOW_LOCAL_RUN') != '1' and os.environ.get('SANDBOX_MODE') != '1':
         raise ValueError('Сборка запускается только в изолированной песочнице.')
     if os.name != 'posix' and os.environ.get('SANDBOX_MODE') == '1':
@@ -128,9 +128,22 @@ def _command(uid, root, argv, timeout=90, process_limit=64):
     env.update(GOMAXPROCS='2', UV_THREADPOOL_SIZE='2', NEXT_TELEMETRY_DISABLED='1')
     # No application secrets, proxy credentials, sandbox token or database URL.
     started = time.monotonic()
-    with tempfile.TemporaryFile() as output:
+    with contextlib.ExitStack() as stack:
+        output = stack.enter_context(tempfile.TemporaryFile())
+        launch = argv
+        if harness:
+            scratch = stack.enter_context(tempfile.TemporaryDirectory(dir=root, prefix='.tmp-product-test-'))
+            env.update(HOME=scratch, TMPDIR=scratch, npm_config_cache=str(Path(scratch) / 'npm-cache'))
+            launch = ['/usr/local/bin/bitthink-landlock-run']
+            for path in ('/usr', '/lib', '/lib64', '/bin', '/etc', '/dev/urandom', '/proc/self'):
+                if Path(path).exists():
+                    launch.extend(('--ro', path))
+            venv = home / '.venv'
+            if venv.is_dir() and not venv.is_symlink():
+                launch.extend(('--ro', str(venv)))
+            launch.extend(('--rw', str(root), '--rw', '/dev/null', '--', *argv))
         try:
-            child = subprocess.Popen(argv, cwd=root, env=env, stdin=subprocess.DEVNULL,
+            child = subprocess.Popen(launch, cwd=root, env=env, stdin=subprocess.DEVNULL,
                 stdout=output, stderr=subprocess.STDOUT, start_new_session=os.name == 'posix',
                 preexec_fn=(lambda: fs._prepare_child(uid, timeout, False, process_limit)) if os.name == 'posix' else None)
             try:
@@ -154,8 +167,11 @@ def _command(uid, root, argv, timeout=90, process_limit=64):
         output.seek(0, 2)
         output.seek(max(0, output.tell() - 8000))
         log = output.read(8000).decode('utf-8', 'replace')
-    return {'exit_code': code, 'passed': code == 0, 'seconds': round(time.monotonic() - started, 2),
-            'command': argv, 'output': log}
+    check = {'exit_code': code, 'passed': code == 0, 'seconds': round(time.monotonic() - started, 2),
+             'command': argv, 'output': log}
+    if harness:
+        check['runner'] = 'dsh-landlock'
+    return check
 
 
 def _static_build(root):
@@ -322,7 +338,10 @@ def operate(uid, args):
                 raise ValueError('Нужны реальные тесты ключевого пользовательского сценария (test_*, *.test.*, *.spec.*).')
             argv = [python, '-m', 'unittest', 'discover', '-s', 'tests', '-v'] if stack == 'python' else ['node', '--test'] if stack == 'static' else ['npm', 'run', 'test']
         if argv:
-            check = _command(uid, root, argv, 160 if action == 'install' else 90, process_limit=192)
+            harness = (action == 'test' and stack == 'python' and os.environ.get('SANDBOX_MODE') == '1'
+                       and os.environ.get('PRODUCT_TEST_HARNESS') == '1')
+            check = _command(uid, root, argv, 160 if action == 'install' else 90,
+                             process_limit=192, harness=harness)
         if action == 'test' and state['stack'] == 'python' and re.search(r'Ran 0 tests', check['output']):
             check.update(passed=False, output=check['output'] + '\nНе выполнено ни одного теста.')
         if action == 'test' and re.search(r'(?m)^# tests 0\s*$', check['output']):

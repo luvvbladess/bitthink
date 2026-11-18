@@ -3,6 +3,20 @@ from app.config import get_settings  # noqa: F401
 from web_scraper import _clean_html
 
 
+def test_reader_preserves_versioned_release_links_from_the_current_site():
+    text = _clean_html(
+        '<main><a href="/downloads/release/python-3152/">Python 3.15.2</a>'
+        '<a href="/downloads/latest/">Latest Python 3.15.2</a>'
+        '<a href="https://other.example/releases/tag/v3.15.2">Python 3.15.2</a>'
+        '<a href="/downloads/release/python-3151/?token=private">Python 3.15.1</a></main>',
+        'https://www.python.org/downloads/',
+    )
+    assert text.split('\n\n', 1)[0].splitlines() == [
+        'Ссылки на конкретные выпуски из страницы:',
+        'Python 3.15.2 — https://www.python.org/downloads/release/python-3152/',
+    ]
+
+
 def test_navigation_named_wrapper_preserves_article_and_editorial_banner():
     text = _clean_html('''<html><body class="python about"><div id="touchnav-wrapper">
     <nav>Navigation links which should not become page evidence.</nav>

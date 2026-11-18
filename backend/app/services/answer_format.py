@@ -43,8 +43,8 @@ def normalize_answer_format(answer, task):
     return candidate
 
 
-def cpp_delimiter_error(task, answer):
-    """Return None when a structural check is inapplicable."""
+def cpp_snippet_error(task, answer):
+    """Check common syntax and index errors in standalone C++ snippets."""
     from app.services.response_policy import inline_code_task
 
     if not re.search(r'(?i)(?<!\w)[cс]\+\+', task) or not inline_code_task(task):
@@ -57,6 +57,17 @@ def cpp_delimiter_error(task, answer):
     if re.search(r'R"|\\\r?\n|(?m:^\s*#\s*(?!include\b|pragma\b)\w+)', code):
         return None
     plain = re.sub(r'//[^\n]*|/\*[\s\S]*?\*/|"(?:\\.|[^"\\\n])*"|\'(?:(?:\\.)|[^\'\\\n])*\'', '', code)
+    if re.search(r'\b\w+\s*(?:\.|->)\s*reserve\s+[\w\d][^;\n]*;', plain):
+        return True
+    unsigned_parameters = set(re.findall(r'[(,]\s*(?:std::)?size_t\s+(\w+)\s*[,)]', plain))
+    # shortcut: a zero-based loop's first condition only; broader data-flow needs a compiler and tests.
+    for loop in re.finditer(r'for\s*\(\s*(?:std::)?size_t\s+(\w+)\s*=\s*0\s*;[^\n{]+\)\s*\{\s*'
+                            r'(?:if|while)\s*\(([^\n{]+)\)', plain):
+        index, condition = loop.groups()
+        for limit in unsigned_parameters - {index}:
+            subtraction = re.search(rf'\b{index}\s*-\s*{limit}\b', condition)
+            if subtraction and not re.search(rf'\b(?:{index}|{limit})\b', condition[:subtraction.start()]):
+                return True
     stack = []
     matching = {')': '(', ']': '[', '}': '{'}
     for char in plain:

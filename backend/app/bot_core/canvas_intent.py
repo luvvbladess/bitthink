@@ -5,11 +5,19 @@ from contextvars import ContextVar
 canvas_creation = ContextVar('canvas_creation', default=False)
 
 
+def _directive(text):
+    return re.sub(r'```[\s\S]*?```|«[^»]*»|“[^”]*”|"[^"]*"', ' ', text or '')
+
+
+def explicitly_text_only(text):
+    return bool(re.search(r'(?i)не\s+(?:(?:надо|нужно|делай|создавай|создавать)\s+){0,2}(?:делать\s+)?холст|без\s+холста|(?:результат\w*|ответ\w*)[^.!?\n]{0,45}(?:текстом|в\s+чате)', _directive(text)))
+
+
 def text_response_requested(text):
     """Read directives outside source quotations, including multiline quotations."""
-    scope = re.sub(r'```[\s\S]*?```|«[^»]*»|“[^”]*”|"[^"]*"', ' ', text or '')
-    if re.search(r'(?i)не\s+(?:(?:надо|нужно|делай|создавай|создавать)\s+){0,2}(?:делать\s+)?холст|без\s+холста|(?:результат\w*|ответ\w*)[^.!?\n]{0,45}(?:текстом|в\s+чате)', scope):
+    if explicitly_text_only(text):
         return True
+    scope = _directive(text)
     analysis = re.search(r'(?i)\b(?:проанализируй|проанализируйте|скорректируй|переформулируй|разбери|оцени|проверь|analyze|analyse|review)\b', scope)
     build = re.search(r'(?i)\b(?:создай|собери|сделай|подготовь|нарисуй|create|build|make)\s+(?:[\w-]+\s+){0,3}(?:холст\w*|дашборд\w*|инфографик\w*|презентаци\w*|сайт\w*|лендинг\w*|картинк\w*|изображени\w*|dashboard|website|slides|image)\b', scope)
     edit_canvas = (re.search(r'(?i)текущ\w*\s+(?:макет\w*|холст\w*)', scope)

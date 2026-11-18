@@ -1,4 +1,5 @@
 """Run a local-history Orchestrator turn without creating a website conversation."""
+import json
 import uuid
 from app.core.repository import repo
 
@@ -27,6 +28,7 @@ async def run_local_chat(user, content, cid, status, chunk, file, *, history, se
     from turn_scope import turn_conversation, delivery
     from app.services.chat_service import WebStatusMessenger, _generated_filename
     from app.billing.quota import clear_quota_charge, refund_quota_charge
+    from app.billing.answer_usage import QUERY as USAGE_QUERY, collect_usage
 
     bot_id = await repo.ensure_user(user)
     messages = local_history(history, content)
@@ -45,11 +47,14 @@ async def run_local_chat(user, content, cid, status, chunk, file, *, history, se
     try:
         # A nonexistent scoped id prevents helpers from reading the website's active chat.
         # No conversation row, message, attachment or memory refresh is persisted here.
-        with turn_conversation("local-" + uuid.uuid4().hex), delivery(deliver):
+        with turn_conversation("local-" + uuid.uuid4().hex), delivery(deliver), collect_usage() as usage:
             text, files, reasoning, search = await get_smart_response(
                 bot_id, content, messages, WebStatusMessenger(status), on_reasoning_delta=send_reasoning_delta,
             )
         clear_quota_charge()
+        if usage.models:
+            search = [item for item in (search or []) if item.get('query') != USAGE_QUERY]
+            search.append({'query': USAGE_QUERY, 'summary': json.dumps(usage.snapshot())})
         if send_extras and (reasoning or search):
             await send_extras(reasoning, search)
         await deliver(text, files)

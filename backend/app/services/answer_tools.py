@@ -151,12 +151,34 @@ async def _read_references(urls, task, user_id, record):
         except asyncio.TimeoutError:
             return ''
     bodies = await asyncio.gather(*(one(url) for url in urls), return_exceptions=True)
-    read = {s['url'] for s in record.sources if s['status'] == 'read'}
-    if not all(url in read for url in urls):
-        return None
     if any(not isinstance(body, str) or not body.startswith('URL:') for body in bodies):
         return None
-    return '\n\n'.join(bodies)
+    from urllib.parse import urlsplit
+    read = {s['url'] for s in record.sources if s['status'] == 'read'}
+    resolved = [body.splitlines()[0].removeprefix('URL:').strip() for body in bodies]
+    for requested, actual in zip(map(urlsplit, urls), map(urlsplit, resolved)):
+        if (actual.scheme, actual.netloc, actual.path.rstrip('/')) != (
+                requested.scheme, requested.netloc, requested.path.rstrip('/')):
+            return None
+        if requested.query and actual.query != requested.query:
+            return None
+    return ('\n\n'.join(bodies), resolved) if all(url in read for url in resolved) else None
+
+
+def dotnet_reference_urls(task):
+    from app.services.request_intent import classify_request
+
+    intent = classify_request(task)
+    if (intent.web_forbidden or intent.task in {'transformation', 'creation'} or len(task) > 1200
+            or re.search(r'(?i)https?://|прикрепл|\b(?:файл\w*|проект\w*|исправь|реализуй|запусти)\b', task)
+            or not re.search(r'(?i)Microsoft\s+Learn|официальн\w*\s+(?:документ\w*|источник\w*)', task)):
+        return []
+    paths = {'CancellationToken': 'system.threading.cancellationtoken',
+             'HttpClient.Timeout': 'system.net.http.httpclient.timeout'}
+    version = re.search(r'(?i)\bNET\s+(\d+)\b', task)
+    view = f'?view=net-{version[1]}.0' if version else ''
+    return [f'https://learn.microsoft.com/en-us/dotnet/api/{path}{view}'
+            for name, path in paths.items() if re.search(r'\b' + re.escape(name) + r'\b', task, re.I)]
 
 
 def enfusion_signature_question(task):
@@ -186,7 +208,8 @@ async def maybe_tool_answer(messages, task, user_id, available, *, pool='chat'):
     if ranking is not None:
         return ranking
     enfusion_urls = enfusion_reference_urls(task)
-    urls = enfusion_urls or python_reference_urls(task, messages)
+    dotnet_urls = dotnet_reference_urls(task)
+    urls = enfusion_urls or dotnet_urls or python_reference_urls(task, messages)
     calculation = not urls and computation_query(task, messages)
     if not urls and not calculation:
         return None
@@ -204,9 +227,10 @@ async def maybe_tool_answer(messages, task, user_id, available, *, pool='chat'):
             from app.services.request_intent import classify_request
             related = classify_request(task, messages).followup or bool(re.match(r'(?i)^а\s', task))
             query = task + ('\n' + _previous_user(task, messages) if related else '')
-            body = await _read_references(urls, query, user_id, record)
-            if body is None:
+            references = await _read_references(urls, query, user_id, record)
+            if references is None:
                 return None
+            body, resolved_urls = references
             # All numbers/versions come from actual reads; URLs are entry points,
             # not a stored answer catalog. Failures use the existing agent path.
             chat.insert(0, {'role':'system', 'content': COMPACT_ANSWER_RULES + '\n' + subject_note(task)})
@@ -217,13 +241,17 @@ async def maybe_tool_answer(messages, task, user_id, available, *, pool='chat'):
             result = await get_chat_response(chat, model='gpt-6-luna', user_id=user_id,
                 use_tools=False, use_skills=False, reasoning_effort='low')
             answer, files, reasoning, sources = result
-            if (enfusion_urls and answer.strip() and not answer.lstrip().startswith('❌')
+            if ((enfusion_urls or dotnet_urls) and answer.strip() and not answer.lstrip().startswith('❌')
                     and not re.search(r'(?i)без\s+ссылок|не\s+(?:добавляй|давай)\s+ссылок|'
                                       r'только\s+(?:сигнатур\w*|код|json)', task)):
                 from app.services.source_quality import cited_urls
-                url = enfusion_urls[0]
-                if url not in cited_urls(answer):
-                    answer = f'{answer.rstrip()}\n\n[Справка ScriptComponent]({url})'
+                cited = cited_urls(answer)
+                names = ['Справка ScriptComponent'] if enfusion_urls else [
+                    'Microsoft Learn · ' + ('CancellationToken' if 'system.threading.' in url else 'HttpClient.Timeout')
+                    for url in resolved_urls]
+                missing = [f'[{label}]({url})' for label, url in zip(names, resolved_urls) if url not in cited]
+                if missing:
+                    answer = answer.rstrip() + '\n\n' + ' · '.join(missing)
             return answer, files, reasoning, record.enrich_sources(sources)
         engineering = teaching_calculation(task)
         strong = engineering or bool(re.search(r'(?i)вероятност|условн\w*|байес|без\s+возвращения|матожидан|дисперс', task))

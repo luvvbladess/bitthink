@@ -497,12 +497,13 @@ def test_attachments_skip_forced_web_in_auto_not_search_modes():
     assert not turn_requires_web(question, "auto", has_documents=True)
     assert not turn_requires_web(question, "auto", has_images=True)
     assert not turn_requires_web(question, "studio", has_images=True)
-    assert turn_requires_web(question, "kimi-k2.6", has_documents=True)
-    assert turn_requires_web(question, "kimi-k2.6", has_images=True)
+    assert not turn_requires_web(question, "search", has_documents=True)
+    assert not turn_requires_web(question, "kimi-k2.6", has_documents=True)
+    assert not turn_requires_web(question, "kimi-k2.6", has_images=True)
     assert turn_requires_web(question, "gpt-6-sol", research_mode=True, has_images=True)
     assert turn_requires_web(question, "gpt-6-sol", research_mode=True, has_documents=True)
     assert turn_requires_web("загугли курс доллара", "auto", has_documents=True)
-    assert turn_requires_web("что нового", "kimi-k2.6")
+    assert not turn_requires_web("что нового", "auto")
     assert turn_requires_web("сделай обзор рынка", "gpt-6-sol", research_mode=True)
     assert turn_requires_web("зайди на сайт компании", "director")
     assert turn_requires_web("Проанализируй прикреплённые файлы.", "director", has_documents=True)
@@ -541,24 +542,21 @@ def test_open_document_bodies_count_even_when_upload_was_earlier():
     assert packed_has_open_documents([body, {"role": "user", "content": "Проверь"}])
 
 
-def test_search_mode_uses_our_search_not_kimi():
+def test_retired_chat_modes_are_not_dispatch_branches():
     from pathlib import Path
 
     source = (Path(__file__).resolve().parents[1] / "app" / "bot_core" / "handlers" / "core.py").read_text(encoding="utf-8")
-    kimi_block = source.split('elif model == "search":', 1)[1].split("elif model", 1)[0]
-    assert "get_chat_response" in kimi_block
-    assert "force_web_search=True" in kimi_block
-    assert "kimi_web_result" not in kimi_block
+    assert 'elif model == "search":' not in source
+    assert 'elif model == "gpt-6-astra":' not in source
     assert "get_kimi_chat_response" not in source
     assert "force_web_search=web_required" in source
     director_block = source.split('elif model == "director":', 1)[1].split('elif model == "studio":', 1)[0]
     assert "get_director_response" in director_block
     assert "kimi_web_result" not in director_block
     assert "force_web_search=True" not in director_block
-    astra_block = source.split('elif model == "gpt-6-astra":', 1)[1].split("else:", 1)[0]
-    assert "use_tools=True" in astra_block
-    assert "force_web_search=False" in astra_block
-    assert "get_director_response" not in astra_block
+    sol_block = source.split('elif model == "gpt-6-sol":', 1)[1].split("elif", 1)[0]
+    assert "get_chat_response" in sol_block
+    assert "force_web_search=True" in sol_block
 
 
 def test_explicit_and_volatile_queries_require_web_search():

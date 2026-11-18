@@ -1,4 +1,5 @@
 import asyncio
+import json
 from unittest.mock import AsyncMock
 import pytest
 from app.api import desktop
@@ -24,13 +25,19 @@ def test_local_generation_does_not_write_conversations_or_change_active_chat(mon
     monkeypatch.setattr(desktop.repo, "add_message", add)
     monkeypatch.setattr(desktop.repo, "set_active_conversation", activate)
     async def generate(user, content, messages, messenger, **kwargs):
+        from app.billing.answer_usage import current
+
         assert user == 42 and content == "next"
         assert messages[0]["content"] == "first"
         assert turn_conversation_id().startswith("local-")
+        current.get().record('gpt-6-sol', (300, 50, 100, 0), 120)
         return "Local answer", [{"filename": "test.txt", "bytes": b"file"}], "", []
     monkeypatch.setattr(core, "get_smart_response", generate)
-    chunk, file = AsyncMock(), AsyncMock()
-    asyncio.run(run_local_chat("fixture", "next", None, AsyncMock(), chunk, file, history=[{"role": "user", "content": "first"}, {"role": "assistant", "content": "old answer"}]))
+    chunk, file, extras = AsyncMock(), AsyncMock(), AsyncMock()
+    asyncio.run(run_local_chat("fixture", "next", None, AsyncMock(), chunk, file, history=[{"role": "user", "content": "first"}, {"role": "assistant", "content": "old answer"}], send_extras=extras))
     chunk.assert_awaited_once_with("Local answer")
     file.assert_awaited_once_with("test.txt", b"file")
+    item = extras.await_args.args[1][0]
+    assert item['query'] == '__answer_usage__'
+    assert json.loads(item['summary'])['models'][0]['units'] == 120
     create.assert_not_awaited(); add.assert_not_awaited(); activate.assert_not_awaited()

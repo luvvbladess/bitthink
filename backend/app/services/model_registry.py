@@ -84,7 +84,7 @@ def experimental_workers():
 
 
 def production_workers():
-    requested = os.getenv('ORCHESTRATOR_ECONOMY_WORKERS', 'glm-5.3-flash')
+    requested = os.getenv('ORCHESTRATOR_ECONOMY_WORKERS', 'glm-5.3-flash,minimax-m3.1-flash')
     names = {item.strip() for item in requested.split(',')}
-    return ['glm-5.3-flash'] if names & {'minimax-m3.1-flash', 'glm-5.3-flash'} else []
+    return [name for name in ('glm-5.3-flash', 'minimax-m3.1-flash') if name in names]
 

@@ -25,8 +25,8 @@ def calculation_task(task: str) -> bool:
     """Arithmetic on supplied quantities is not web research about prices."""
     text = task or ''
     return (len(re.findall(r'\d+(?:[.,]\d+)?', text)) >= 2
-            and bool(re.search(r'(?i)посчитай|рассчитай|вычисли|сколько\s+(?:платить|месяцев)|на\s+сколько\s+процент|какую\s+скидку|проверь.{0,30}(?:вычислен|расч[её]т|python|инструмент)', text))
-            and not re.search(r'(?i)https?://|\b(?:сегодня|актуальн\w*|курс|котировк\w*)\b|найди\s+(?:цен|стоим)|поиск\s+в\s+интернет', text))
+            and bool(re.search(r'(?i)посчитай|рассчитай|вычисли|дай\s+расч[её]т|итогов\w*\s+цен\w*|сколько\s+(?:платить|месяцев)|на\s+сколько\s+процент|какую\s+скидку|проверь.{0,30}(?:вычислен|расч[её]т|python|инструмент)', text))
+            and not re.search(r'(?i)https?://|\b(?:сегодня|актуальн\w*|курс|котировк\w*)\b|найди|поищи|проверь\s+(?:цен|ставк|налич)|сейчас|свеж\w*|поиск\s+в\s+интернет', text))
 
 
 def chat_reasoning_task(task: str) -> bool:
@@ -133,6 +133,23 @@ def routine_task(task: str, document_context: str = '') -> bool:
 
 def routine_tool_task(task: str) -> bool:
     return routine_task(task) and bool(_TOOL_TARGET.search(task or ''))
+
+
+def quick_file_read(task: str, assignment: str, context: str) -> bool:
+    if len(context) > 12_000 or not routine_task(task, context):
+        return False
+    from app.services.request_intent import classify_request
+    from app.services.subject_guidance import subject_for_query
+
+    return (
+        bool(re.search(r'(?i)прочита|прочти|извлек|выпиши|вытащи|\bread\b|\bextract\b', task))
+        and bool(re.search(r'(?i)файл|вложени|документ|\.(?:json|csv|tsv|txt|md|ya?ml|ini|xml|xlsx|docx|pdf)\b', task))
+        and not any(critical_task(text) or classify_request(text).needs_web or subject_for_query(text) == 'engineering'
+                    or re.search(r'(?i)https?://|поиск|поищи|найди|сайт|рассчит|посчита|вычисл|'
+                                 r'сохрани|запиши|создай|измени|отправь|переименуй|копир|перемест|скачай|'
+                                 r'отредактируй|обнови|замени|дополни|\b(?:write|save|rename|copy|move|send|calculate)\b', text)
+                    for text in (task, assignment))
+    )
 
 
 def needs_recovery(journal) -> bool:

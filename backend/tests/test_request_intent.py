@@ -26,6 +26,38 @@ def test_no_web_has_priority_over_mode(mode):
     assert not turn_requires_web('Без интернета: какие лучшие ИИ?', mode, research_mode=mode=='gpt-6-sol')
 
 
+@pytest.mark.parametrize('suffix', ['Без веб-поиска.', 'Без интернет-поиска.', 'Не используй веб-поиск.'])
+def test_spelled_out_search_opt_out_in_research_mode(suffix):
+    query = 'Проверь актуальную версию Python. ' + suffix
+    assert classify_request(query).web_forbidden
+    assert not turn_requires_web(query, 'gpt-6-sol', research_mode=True)
+
+
+@pytest.mark.parametrize('query', [
+    'так же мне нужно подобрать\nтермостойкую металлическую сетка чтобы волокно не выдувалось '
+    'в поток, она будет одеваться на перфорированную трубку, сетка тоже должна быть покупной, то есть от производителя',
+    'Найди поставщика листового поликарбоната 6 мм в Казани',
+    'Кто производит графитовые прокладки для теплообменников?',
+    'Нужны поставщики керамических изоляторов в Омске.',
+    'Где заказать напрямую у изготовителя керамические изоляторы?',
+])
+def test_express_requires_search_for_suppliers(query):
+    intent = classify_request(query)
+    assert (intent.task, intent.topic, intent.needs_web) == ('recommendation', 'procurement', True)
+    assert turn_requires_web(query, 'auto')
+    assert 'короткое каталожное название' in intent.note()
+
+
+@pytest.mark.parametrize('query', [
+    'Без поиска: найди поставщиков сетки по моим заметкам.',
+    'Что такое поставщик?',
+    'Как проверить поставщика?',
+    'Переведи: подбери поставщика керамических изоляторов',
+])
+def test_express_does_not_search_when_supplier_is_only_a_subject(query):
+    assert not turn_requires_web(query, 'auto')
+
+
 def test_intent_retained_without_losing_source_notes():
     from app.services.followup_evidence import EVIDENCE_MARKER
     from app.services.authoritative_catalogs import CATALOG_MARKER
@@ -227,3 +259,29 @@ def test_grader_does_not_lose_prices_after_long_feature_table(monkeypatch):
         [dict(summary=url+'\nFeatures',evidence_state='read')],{url:body},123))
     observation=seen[0]['observations'][0]
     assert '$17 annual' in observation['text'] and not observation['truncated']
+
+
+def test_comparing_manufacturer_designs_gets_web_and_room_for_technical_sheets():
+    from app.services.search_budget import SearchBudget, configure_request_budget, current_search_budget
+
+    query = 'Нужно посмотреть конструкцию глушителей от Дискон и акцес, говорят это основные поставщики промышленных глушителей'
+    intent = classify_request(query)
+    assert (intent.task, intent.topic, intent.needs_web, intent.local) == ('comparison', 'procurement', True, False)
+    budget = SearchBudget()
+    token = current_search_budget.set(budget)
+    try:
+        configure_request_budget(intent, query)
+        assert budget.read_left >= 4
+    finally:
+        current_search_budget.reset(token)
+    assert not classify_request('Без поиска, нужно посмотреть конструкцию насоса от производителя').needs_web
+
+
+def test_raster_format_request_continues_multimodal_user_message():
+    from app.services.request_intent import classify_request
+
+    history = [{'role': 'user', 'content': [{'type': 'text', 'text': 'Создай изображение по эскизу'},
+                                            {'type': 'image_url', 'image_url': {'url': 'image'}}]},
+               {'role': 'assistant', 'content': 'Описание другой картинки.'}]
+    intent = classify_request('А в PNG?', history)
+    assert intent.followup and intent.task == 'followup' and not intent.needs_web

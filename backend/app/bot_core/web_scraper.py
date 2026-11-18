@@ -165,9 +165,17 @@ def _clean_html(html: str, page_url: str = '') -> str:
     soup = BeautifulSoup(html, "html.parser")
     product_facts = _product_metadata(soup)
     cards = {}
+    releases = {}
+    host = urlparse(page_url).hostname
     for link in soup.select('a[href]'):
         target = urljoin(page_url, link.get('href', ''))
         parsed = urlparse(target)
+        if (len(releases) < 10 and parsed.scheme == 'https' and parsed.hostname == host
+                and not (parsed.username or parsed.password or parsed.query or parsed.fragment)
+                and re.search(r'/(?:downloads/release|releases/tag)/[^/]+/?$', parsed.path)):
+            label = link.get_text(' ', strip=True)
+            if re.search(r'\d+\.\d+', label):
+                releases.setdefault(target, label[:100])
         if not is_ru_marketplace(target) or parsed.scheme != 'https':
             continue
         if not re.match(r'^/(product0?/|card/|product--[^/]+/|catalog/\d+/detail\.aspx)', parsed.path):
@@ -176,6 +184,8 @@ def _clean_html(html: str, page_url: str = '') -> str:
         if len(cards) >= 24:
             break
     candidate_links = ('Ссылки на отдельные карточки из страницы (ещё не проверены):\n'+ '\n'.join(f'{label} — {target}' for target,label in cards.items())+'\n\n') if cards else ''
+    release_links = ('Ссылки на конкретные выпуски из страницы:\n'
+                     + '\n'.join(f'{label} — {target}' for target, label in releases.items()) + '\n\n') if releases else ''
     
     # Удаляем ненужные теги, НО ОСТАВЛЯЕМ header и aside, так как там часто лежат виджеты курсов
     for tag in soup(["script", "style", "nav", "footer", 
@@ -288,7 +298,39 @@ def _clean_html(html: str, page_url: str = '') -> str:
     text = "\n".join(lines)
     
     body = (product_facts + "\n\n" + text).strip() if product_facts else text
-    return candidate_links + table_text + body
+    return candidate_links + release_links + table_text + body
+
+
+async def _read_pdf_response(response):
+    """Bound public PDFs before parsing; scanned pages remain unverified."""
+    from html import escape
+    import fitz
+    data = bytearray()
+    async for chunk in response.content.iter_chunked(65536):
+        data.extend(chunk)
+        if len(data) > 10 * 1024 * 1024:
+            return -1, '[PDF превышает лимит 10 МБ; найди текстовую публикацию]'
+    def extract():
+        with fitz.open(stream=bytes(data), filetype='pdf') as document:
+            if document.needs_pass or len(document) > 300:
+                return ''
+            parts = []
+            size = 0
+            for i, page in enumerate(document):
+                text = page.get_text()[:30000]
+                if text.strip():
+                    parts.append(f'Страница {i + 1}\n{text}')
+                size += len(text)
+                if size >= page_text_limit.get():
+                    break
+            return '\n\n'.join(parts)
+    try:
+        text = await asyncio.to_thread(extract)
+    except Exception:
+        return -1, '[PDF не удалось прочитать; найди другую публикацию]'
+    if not text:
+        return -1, '[PDF защищён, слишком большой или не содержит извлекаемого текста]'
+    return 200, '<html><body><pre>' + escape(text[:page_text_limit.get()]) + '</pre></body></html>'
 
 
 async def _fetch_direct(session: aiohttp.ClientSession, url: str) -> Tuple[int, str]:
@@ -297,6 +339,8 @@ async def _fetch_direct(session: aiohttp.ClientSession, url: str) -> Tuple[int, 
         if resp.status != 200:
             return resp.status, ""
         content_type = resp.headers.get("Content-Type", "")
+        if "application/pdf" in content_type.lower():
+            return await _read_pdf_response(resp)
         if not any(kind in content_type for kind in ("text/html", "text/plain", "application/json", "+json")):
             return -1, f"[Невозможно прочитать: тип контента {content_type}]"
         html = await resp.text(errors="replace")
@@ -395,6 +439,8 @@ async def _fetch_via_ru_proxy(session: aiohttp.ClientSession, url: str) -> Tuple
             if resp.status != 200:
                 return resp.status, ""
             content_type = resp.headers.get("Content-Type", "")
+            if "application/pdf" in content_type.lower():
+                return await _read_pdf_response(resp)
             if "text/html" not in content_type and "text/plain" not in content_type:
                 return -1, f"[Невозможно прочитать: тип контента {content_type}]"
             html = await resp.text(errors="replace")
@@ -430,7 +476,10 @@ def _query_from_url(url: str) -> Tuple[str, str]:
 
 
 async def _recover_from_search(url: str) -> str:
-    """The page itself is walled off for our server. The search index still knows the product."""
+    """Find public alternatives when the page itself could not be read."""
+    from app.services.server_search import safe_result_url
+    if not safe_result_url(url):
+        return ''
     try:
         from search_engine import search_web
 
@@ -455,7 +504,7 @@ async def _recover_from_search(url: str) -> str:
         for i, r in enumerate(picked, 1)
     ]
     return (
-        f"[Сайт {host} закрыт от автоматического чтения с серверов (антибот-защита), саму страницу открыть "
+        f"[Сайт {host}: саму страницу открыть "
         "не удалось. Ниже то, что поиск знает по этой ссылке: это может быть неполно и не заменяет сайт. "
         "Не выдавай эти фрагменты за прочитанную страницу. Если нужных фактов нет, уточни поиск "
         "по пробелу и открой альтернативный источник; сохрани полезную подтверждённую часть ответа.]\n\nЗапрос: " + query + "\n" + "\n".join(lines)
@@ -604,6 +653,12 @@ async def _fetch_url_content_transport(url: str, *, use_kimi_fallback: bool = Tr
     from app.services.server_search import use_server_search
     if use_kimi_fallback and not use_server_search() and _is_fetch_failure(text):
         recovered = await _recover_with_kimi_fetch(url)
+        if recovered:
+            return fetched_url or url, recovered
+    from app.services.search_budget import current_search_budget
+    budget = current_search_budget.get()
+    if _is_fetch_failure(text) and budget and budget.search_left:
+        recovered = await _recover_from_search(fetched_url or url)
         if recovered:
             return fetched_url or url, recovered
     return fetched_url, _mark_listing_page(fetched_url or url, text)

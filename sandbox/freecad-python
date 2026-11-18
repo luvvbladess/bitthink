@@ -1,0 +1,4 @@
+#!/bin/sh
+export PYTHONPATH=/usr/lib/freecad-python3/lib
+export QT_QPA_PLATFORM=offscreen
+exec /usr/bin/python3 -s "$@"

@@ -51,7 +51,17 @@ def page_excerpt(text, query='', url='', budget=8000):
             coverage += 90 * bool(re.search(definition(focus), body))
         return coverage, -windows[index][0]
 
-    chosen = []
+    legal = []
+    if re.search(r'(?i)стать|\bтк\b|кодекс', query):
+        for number in re.findall(r'\b\d{1,4}\b', query)[:8]:
+            matches = list(re.finditer(r'(?im)^\s*статья\s+' + number + r'[.\s]', text))
+            if matches:
+                # Codes often repeat headings in their TOC before the full article.
+                start = matches[-1].start()
+                windows.append((start, min(len(text), start + width)))
+                bodies.append(text[start:start + width].casefold())
+                legal.append(len(windows) - 1)
+    chosen = list(legal)
     for symbol in symbols:
         if definitions[symbol]:
             # Start at the definition, not a window whose last line happens

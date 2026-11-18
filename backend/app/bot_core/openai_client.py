@@ -485,6 +485,8 @@ async def get_chat_response(
         attach_tools = bool(use_tools or is_astra)
         # Astra is the sandbox agent: never drop computer tools for a web-only hop.
         force_web = bool(force_web_search and not is_astra)
+        from app.services.request_intent import classify_request
+        procurement = force_web and classify_request(_last_user_text(messages)).topic == 'procurement'
         chat_only = bool(chat_tools and not is_astra)
         skill_tools = bool(use_skills)
         sandbox = bool(is_astra or (attach_tools and not force_web and not chat_only))
@@ -848,8 +850,12 @@ async def get_chat_response(
                         args = json.loads(fc_args_str)
                         query = args.get("query", "")
                         if query:
-                            from search_engine import search_web, smart_web_search
+                            from search_engine import read_supplier_candidates, search_web, smart_web_search
                             found = await search_web(query, max_results=14)
+                            if procurement and found and sum(
+                                row.get('evidence_state') == 'read' for row in search_results
+                            ) < 2:
+                                found = await read_supplier_candidates(query, found, user_id)
                             tool_result = await smart_web_search(query, sources=found)
                             search_count += 1
                             # One item per link: the UI lists only items whose summary starts with a URL.

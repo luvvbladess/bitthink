@@ -96,6 +96,14 @@ def image_brief_text(user_text: str) -> str:
     return re.split(r'(?im)^\s*(?:негативный\s+промпт|negative\s+prompt)\s*:', user_text or '', maxsplit=1)[0]
 
 
+def explicitly_requests_raster(text: str) -> bool:
+    return bool(re.match(
+        r'(?i)^\s*(?:создай|сделай|сгенерируй|нарисуй|изобрази|create|generate|draw)\s+'
+        r'(?:[\w-]+\s+){0,3}(?:изображение|картинку|фото|фотографию|визуализацию|рендер|image|picture|photo|render)\b',
+        re.split(r'(?i)\b(?:по|на\s+основе|from|based\s+on)\b', text, maxsplit=1)[0],
+    ))
+
+
 def descriptive_image_brief(user_text: str) -> bool:
     text = image_brief_text(user_text).strip()
     if re.match(r'(?i)^(?:напиши|опиши|объясни|расскажи|переведи|проанализируй|оцени|сравни|проверь|почему|как\b|что\b|write\b|explain\b|describe\b)', text):

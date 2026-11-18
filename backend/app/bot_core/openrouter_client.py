@@ -124,6 +124,23 @@ def _tool_text(result):
                        'next_step': 'Read only the needed range of the saved source.'}, ensure_ascii=False)
 
 
+_REPEATABLE_READS = {'workspace_read', 'workspace_ls', 'workspace_glob', 'workspace_grep'}
+
+
+def _deduplicate_read(seen, name, args, result, call_id):
+    text = _tool_text(result)
+    if name not in _REPEATABLE_READS or not isinstance(result, str) or len(text) < 4_096:
+        return text
+    key = name, json.dumps(args, sort_keys=True, ensure_ascii=False), result
+    first = seen.setdefault(key, call_id)
+    if first == call_id:
+        return text
+    return json.dumps({
+        'same_as_tool_call': first,
+        'note': 'Инструмент снова вернул тот же текст. Полный результат уже есть выше, в указанном вызове.',
+    }, ensure_ascii=False)
+
+
 def _delta_field(delta: Any, key: str) -> Any:
     value = getattr(delta, key, None)
     if value:
@@ -148,6 +165,7 @@ async def get_openrouter_response(
     reasoning_effort: Optional[str] = None,
     stop_after_tool: Optional[Any] = None,
     output_token_limit: Optional[int] = None,
+    allowed_tools: Optional[frozenset[str]] = None,
 ) -> Tuple[str, List[Dict[str, Any]], str, List[Dict[str, str]]]:
     """Same return shape as the DeepSeek and OpenAI clients."""
     client = _client_or_none()
@@ -177,6 +195,8 @@ async def get_openrouter_response(
     if model == 'glm-5.3-flash':
         wanted &= {'list_chat_files', 'read_chat_document', 'workspace_read', 'workspace_ls',
                    'workspace_grep', 'workspace_glob', 'load_skill', 'read_skill_resource', 'get_capabilities'}
+    if allowed_tools is not None:
+        wanted &= allowed_tools
     extra_tools = [tool for tool in COMPUTER_TOOLS_CHAT if tool["function"]["name"] in wanted]
     try:
         current_messages = _messages_for_api(messages)
@@ -195,6 +215,8 @@ async def get_openrouter_response(
     spec = _SPECS[model]
     session_id = uuid.uuid4().hex
     actions_executed = 0
+    from app.services.desktop_context import desktop_executor
+    read_results = {} if model == SONNET_MODEL and desktop_executor.get() is not None else None
 
     def result(text, *, error_kind='', retryable=False):
         return ModelResult(text, generated_files, '\n\n'.join(reasoning_parts), search_results[:20],
@@ -205,7 +227,8 @@ async def get_openrouter_response(
 
         from deepseek_client import VISUALIZE_TOOL_DEEPSEEK, WEB_SEARCH_TOOL_DEEPSEEK
         catalog = ([VISUALIZE_TOOL_DEEPSEEK] if use_tools and model != 'glm-5.3-flash' else []) + ([WEB_SEARCH_TOOL_DEEPSEEK] if use_tools and search_count < 5 and model != 'glm-5.3-flash' else []) + extra_tools
-        active_tools = [tool for tool in catalog if search_tools_allowed(tool["function"]["name"])] if use_tools or use_skills else []
+        active_tools = [tool for tool in catalog if search_tools_allowed(tool["function"]["name"])
+                        and (allowed_tools is None or tool["function"]["name"] in allowed_tools)] if use_tools or use_skills else []
         final_pass = loop_i == loops - 1
         if final_pass:
             active_tools = []
@@ -340,7 +363,7 @@ async def get_openrouter_response(
                 await announce_tool(name, args if isinstance(args, dict) else {})
             except Exception:
                 pass
-            if name == "web_search" and isinstance(args, dict):
+            if name == "web_search" and (allowed_tools is None or name in allowed_tools):
                 query = str(args.get("query") or "")
                 if not query:
                     tool_result = "❌ Ошибка: пустой поисковой запрос."
@@ -368,7 +391,9 @@ async def get_openrouter_response(
                     search_results.append({"query": str(args.get("url")), "summary": (tool_result or "")[:500]})
             else:
                 tool_result = f"Инструмент {name} не найден."
-            current_messages.append({'role': 'tool', 'tool_call_id': call['id'], 'content': _tool_text(tool_result)})
+            content = (_deduplicate_read(read_results, name, args, tool_result, call['id'])
+                       if read_results is not None else _tool_text(tool_result))
+            current_messages.append({'role': 'tool', 'tool_call_id': call['id'], 'content': content})
             from app.services.engineering_io import EngineeringResult
             if isinstance(tool_result, EngineeringResult):
                 if tool_result.image_data_url:

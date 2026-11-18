@@ -100,3 +100,68 @@ def test_glm_is_not_given_visual_or_expert_work(monkeypatch):
     employee['model'] = 'gpt-6-sol'
     result = dr._clamp_employee_plan({'new_employees': [employee]}, 1, 'Проверь архитектуру и безопасность сервера')
     assert result['new_employees'][0]['model'] == 'gpt-6-sol'
+
+
+@pytest.mark.parametrize(('request_text', 'kind', 'web', 'images', 'expected'), [
+    ('Прочитай файлы config.json и override.json и выпиши поля', 'extract_text', False, False, True),
+    ('Прочитай файл config.json', 'file_operation', False, False, True),
+    ('Прочитай файл config.json', 'classify', False, False, False),
+    ('Прочитай файл и сохрани отчёт', 'file_operation', False, False, False),
+    ('Прочитай файл и вычисли прогиб балки', 'extract_text', False, False, False),
+    ('Извлеки условия договора из файла', 'extract_text', False, False, False),
+    ('Прочитай файл config.json', 'extract_text', True, False, False),
+    ('Прочитай файл config.json', 'extract_text', False, True, False),
+])
+def test_minimax_is_selected_only_for_short_file_reads(monkeypatch, request_text, kind, web, images, expected):
+    monkeypatch.delenv('ORCHESTRATOR_ECONOMY_WORKERS', raising=False)
+    monkeypatch.setattr(dr, '_employee_models', lambda uid: list(dr.MODEL_POOL))
+    item = {'role': 'Чтение', 'task': request_text, 'model': 'gpt-6-luna', 'work_kind': kind, 'web': web}
+    result = dr._clamp_employee_plan({'new_employees': [item]}, 1, request_text, has_images=images)['new_employees'][0]
+    assert (result['model'] == dr.FILE_READER_MODEL) is expected
+    assert bool(result.get('file_reader')) is expected
+
+
+def test_minimax_reader_disables_write_tools(monkeypatch):
+    import asyncio
+    import openrouter_client
+
+    async def respond(messages, **kwargs):
+        assert kwargs['model'] == dr.FILE_READER_MODEL
+        assert kwargs['use_skills'] is False
+        assert kwargs['max_tool_loops'] == 6
+        assert kwargs['allowed_tools'] == dr.FILE_READER_TOOLS
+        assert {'workspace_read', 'read_chat_document'} <= kwargs['allowed_tools']
+        assert not {'workspace_write', 'workspace_run', 'server_search'} & kwargs['allowed_tools']
+        return 'Прочитано', [], '', []
+
+    monkeypatch.setattr(openrouter_client, 'get_openrouter_response', respond)
+    item = {'role': 'Чтение', 'task': 'Прочитай файл config.json', 'model': dr.FILE_READER_MODEL, 'file_reader': True}
+    result = asyncio.run(dr._execute_employee(item, 1, [], 1))
+    assert result['status'] == 'ok' and result['model'] == dr.FILE_READER_MODEL
+
+
+@pytest.mark.parametrize(('request_text', 'expected'), [
+    ('Прочитай файл config.json и выпиши поля', 'minimax-m3.1-flash'),
+    ('Прочитай файл config.json и скопируй его в другую папку', 'gpt-6-luna'),
+    ('Прочитай файл и вычисли прогиб балки', 'gpt-6-luna'),
+    ('Как работает список Python?', 'gpt-6-luna'),
+])
+def test_direct_file_reader_replaces_only_luna_reads(monkeypatch, request_text, expected):
+    import asyncio
+    import openai_client
+    import openrouter_client
+
+    async def respond(messages, **kwargs):
+        assert kwargs['model'] == expected
+        if expected == dr.FILE_READER_MODEL:
+            assert kwargs['allowed_tools'] == dr.FILE_READER_TOOLS
+            assert kwargs['use_skills'] is False
+            assert kwargs['reasoning_effort'] == 'low'
+        return 'Ответ', [], '', []
+
+    monkeypatch.delenv('ORCHESTRATOR_ECONOMY_WORKERS', raising=False)
+    monkeypatch.setattr(dr, '_employee_models', lambda uid: list(dr.MODEL_POOL))
+    monkeypatch.setattr(dr, '_direct_answer_model', lambda uid, task: dr.DIRECT_ANSWER_MODEL)
+    monkeypatch.setattr(openai_client, 'get_chat_response', respond)
+    monkeypatch.setattr(openrouter_client, 'get_openrouter_response', respond)
+    assert asyncio.run(dr._answer_directly([{'role': 'user', 'content': request_text}], 1))[0] == 'Ответ'

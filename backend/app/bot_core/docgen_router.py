@@ -1953,6 +1953,22 @@ async def _update_status(status_msg: Any, text: str) -> None:
         logger.debug(f"Failed to edit docgen status message: {e}")
 
 
+def handles_document_turn(user_text, messages):
+    """Keep ordinary questions out of the document confirmation workflow."""
+    text = user_text or ''
+    if re.search(r'(?i)перекосило\s+лицо|невнятн\w*\s+речь|подозрени\w*\s+на\s+инсульт', text):
+        return False
+    from clarify import is_clarify_reply
+    if is_clarify_reply(text) or _replacement_table(text)[1]:
+        return True
+    if re.search(r'(?is)(?:создай|подготовь|сделай|собери|напиши|составь|сгенерируй|оформи|доработай|исправь)[^\n.!?]{0,80}'
+                 r'(?:документ|docx|word|договор|отч[её]т|инструкци|регламент|техническ\w*\s+задани)', text):
+        return True
+    previous = next((m.get('content', '') for m in reversed(messages[:-1])
+                     if m.get('role') == 'assistant'), '')
+    return bool(re.search(r'Разделов:|Состав комплекта|Начинать генерацию', str(previous)))
+
+
 async def get_docgen_response(
     messages: List[Dict[str, Any]],
     user_text: str,

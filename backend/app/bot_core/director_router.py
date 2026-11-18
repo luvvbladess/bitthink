@@ -7,7 +7,7 @@
 """
 
 from app.services.search_budget import search_turn
-from app.services.orchestrator_policy import ROUTINE_MODEL, ECONOMY_RULES, routine_task, routine_tool_task, routine_employee, needs_recovery, economy_enabled, critical_task, bounded_text_task, calculation_task, chat_reasoning_task, bounded_text_revision
+from app.services.orchestrator_policy import ROUTINE_MODEL, ECONOMY_RULES, routine_task, routine_tool_task, routine_employee, needs_recovery, economy_enabled, critical_task, bounded_text_task, calculation_task, chat_reasoning_task, bounded_text_revision, quick_file_read
 from app.services.orchestrator_metrics import model_phase, trace_director
 import json
 import logging
@@ -38,6 +38,13 @@ def _desktop_work_instructions() -> str:
             "Для правки проекта найди конкретное место, измени только его и проверь возвращённый фрагмент. "
             "Чужую проблему назови и не правь, пока об этом не попросили. "
             "Для остальных задач сначала найди нужные данные, затем выполни просьбу и проверь результат. "
+            "Если ссылка из проекта ведёт к отсутствующему файлу, проверь путь относительно файла со ссылкой "
+            "и один раз поищи по имени через workspace_glob. Затем смени подход: для публичного ресурса "
+            "открой указанный URL или найди файл через server_search по публичному имени и версии. "
+            "Не передавай в веб-поиск локальные пути, имена внутренних файлов и закрытые данные. "
+            "Сверь источник и версию. Если ресурс закрытый или точного совпадения нет, продолжи независимые шаги "
+            "и назови недостающий файл и заблокированную часть. Передай этот порядок сотруднику, которому поручён поиск. "
+            "Заявляй о выполнении только после проверки результата по задаче. "
             "Запрашивай уточнение, если без него невозможно выполнить задачу. "
             "Не предлагай другой режим: в BitClient используется только Оркестратор.]"
         ) + local_skills_instructions()
@@ -70,6 +77,8 @@ DIRECT_ANSWER_MODEL = "gpt-6-luna"
 ECONOMY_COMPOSER_MODEL = "gpt-6-luna"
 QUALITY_COMPOSER_MODEL = "gpt-6-sol"
 FALLBACK_EMPLOYEE_MODEL = "gpt-6-luna"
+FILE_READER_MODEL = 'minimax-m3.1-flash'
+FILE_READER_TOOLS = frozenset({'workspace_read', 'workspace_ls', 'workspace_glob', 'read_chat_document', 'list_chat_files'})
 ASTRA_HIRE_MARKERS = ("юрид", "договор", "контракт", "архитектур", "аудит", "расслед")
 
 
@@ -253,6 +262,10 @@ _FILE_REQUEST_RE = re.compile(
 )
 
 
+def _diagram_build(text: str) -> bool:
+    return bool(re.search(r'(?i)(?:нарис|начерт|сдела|созда|собер|сгенерир|исправ|поправ|обнов|доработ|экспорт|передела)\w*.{0,80}(?:блок[ -]?схем|схем\w*\s+(?:процесс|алгоритм)|diagrams\.net|draw\.?io|flowchart)', text or ''))
+
+
 def _wants_file(text: str) -> bool:
     value=text or ""
     value = re.sub(r'(?i)без\s+создания\s+файлов|не\s+создавай\s+файлы', '', value)
@@ -262,7 +275,7 @@ def _wants_file(text: str) -> bool:
         return True
     if re.search(r"(?i)начерт\w*|(?:сдела|созда|восстанов|разработ|собер)\w*.{0,80}(?:черт[её]ж|комплект\s+КД|конструкторск\w*\s+документац)",value):
         return True
-    if re.search(r"(?i)(?:нарис|начерт|сдела|созда|собер|сгенерир)\w*.{0,80}(?:блок[ -]?схем|схем\w*\s+(?:процесс|алгоритм)|diagrams\.net|draw\.?io|flowchart)", value):
+    if _diagram_build(value):
         return True
     fixed_comparison=bool(re.search(r"сравни|сравне|compare",value,re.I) and len(re.findall(r"https?://",value))>=2)
     explicit_format=bool(re.search(r"файл|документ|\b(?:docx|xlsx|csv|pdf|pptx|word|excel)\b|ворд|эксел",value,re.I))
@@ -351,7 +364,11 @@ async def _new_file_names(user_id: int, since: float) -> List[str] | None:
 
 def _file_builder_employee(user_text: str) -> Dict[str, str]:
     from computer_skills.loader import match_skills
-    from app.services.desktop_context import desktop_executor
+    from app.services.desktop_context import desktop_capabilities, desktop_executor
+    if desktop_executor.get() is not None and 'diagram_create' in desktop_capabilities.get() and _diagram_build(user_text):
+        return {'role': 'Правка блок-схемы', 'model': FALLBACK_EMPLOYEE_MODEL,
+                'task': 'Исправь блок-схему по запросу ниже. Используй локальный diagram_create, сохрани редактируемую копию и заказанные форматы. '
+                        'Если запрошен PNG, проверь его через desktop_image_inspect. Оригинал сохраняй.\n' + user_text}
     if desktop_executor.get() is None and 'eng_reverse' in match_skills(user_text,sandbox=True):
         return {
             'role':'Выпуск чертежей',
@@ -457,11 +474,16 @@ def _clamp_employee_plan(
             and not item.get('product_phase')
             and work_kind in {'classify', 'extract_text', 'file_operation', 'small_edit'}
         )
-        if flash_eligible and 'glm-5.3-flash' in enabled:
+        file_reader = (flash_eligible and not strong and not item.get('web') and desktop_executor.get() is None
+                       and FILE_READER_MODEL in enabled and work_kind in {'extract_text', 'file_operation'}
+                       and quick_file_read(original_task, str(item.get('task') or ''), document_context))
+        if file_reader:
+            model = FILE_READER_MODEL
+        elif flash_eligible and 'glm-5.3-flash' in enabled:
             model = 'glm-5.3-flash'
-        elif model == 'glm-5.3-flash':
+        elif model in {'glm-5.3-flash', FILE_READER_MODEL}:
             model = PLANNER_MODEL if (strong or recovery) and PLANNER_MODEL in allowed else FALLBACK_EMPLOYEE_MODEL
-        extra: Dict[str, Any] = {}
+        extra: Dict[str, Any] = {'file_reader': True} if file_reader else {}
         # BitClient staged CAD specialists
         from app.services.desktop_cad_completion import cad_employee_phase, cad_phase_model, CAD_SPECIALIST_SCOPE
         phase = cad_employee_phase(item) if cad_astra else None
@@ -1207,7 +1229,11 @@ async def _execute_employee(
         "Не проси пользователя скопировать страницу или выполнить команду за тебя. "
         "Не спрашивай пользователя и не давай нумерованный опросник: делай работу сам."
     )
-    focused_patch = bool(employee.get('bounded_code_change') or employee.get('project_patch'))
+    from app.services.desktop_context import desktop_capabilities, desktop_executor
+    local_diagram = desktop_executor.get() is not None and 'diagram_create' in desktop_capabilities.get() and _diagram_build(task)
+    if local_diagram:
+        base_prompt += '\nДоступен локальный diagram_create. Исправь и сохрани схему этим инструментом. Успех подтверждают пути в результате инструмента.'
+    focused_patch = not local_diagram and bool(employee.get('bounded_code_change') or employee.get('project_patch'))
     if focused_patch:
         from app.services.desktop_context import desktop_executor
         environment = ('Среда: BitClient, Windows/PowerShell. Для команд используй desktop_run_command.'
@@ -1275,10 +1301,17 @@ async def _execute_employee(
     validation_token = validation.set(validation_state)
     cad_original_executor = desktop_executor.get()
     cad_executor_token = None
+    diagram_saved = False
     if cad_original_executor is not None:
         async def cad_observed_executor(name, args):
+            nonlocal diagram_saved
             result = await cad_original_executor(name, args)
             cad_evidence.record(name, args, result)
+            if name == 'diagram_create' and local_diagram:
+                try:
+                    diagram_saved |= bool(json.loads(result).get('files'))
+                except (ValueError, TypeError, AttributeError):
+                    pass
             return result
         cad_executor_token = desktop_executor.set(cad_observed_executor)
     reasoning = ""
@@ -1305,6 +1338,9 @@ async def _execute_employee(
             evidence = product_evidence.get() or {}
             return name == 'product_lifecycle' and evidence.get('product_id') == employee.get('product_id') and bool(evidence.get('ready'))
         stop_options = {'stop_after_tool': product_accepted} if employee.get('product_phase') == 'build' and employee.get('product_id') else {}
+        if employee.get('file_reader') and model == FILE_READER_MODEL:
+            stop_options.update(allowed_tools=FILE_READER_TOOLS, use_skills=False)
+            loops = 6
         if focused_patch:
             tools = CODE_EDIT_TOOLS - ({'workspace_run'} if desktop_executor.get() is not None else
                                       {name for name in CODE_EDIT_TOOLS if name.startswith('desktop_')})
@@ -1337,13 +1373,16 @@ async def _execute_employee(
                 loops = 6  # Search, skill, selective read/retry, then synthesis.
             response = await get_chat_response(
                 employee_messages, model=model, user_id=user_id, use_tools=True, max_tool_loops=loops,
-                force_web_search=bool(employee.get("web", legacy_search)),
+                force_web_search=bool(employee.get("web", legacy_search) and not local_diagram),
                 reasoning_effort="low" if employee.get('bounded_code_change') and not employee.get('project_patch') else "high" if cad_build and model == "gpt-6-astra" else None,
                 **stop_options,
             )
             answer, _, reasoning, search = response
 
         provider_failed = bool(getattr(response, 'error_kind', '')) or answer.startswith('❌') or not answer.strip() or answer == 'Нет ответа от модели'
+        if local_diagram and not diagram_saved and not provider_failed:
+            provider_failed = True
+            answer = 'Создание файлов схемы на этом этапе не подтверждено.\n\n' + answer
         return {
             "round": round_num, "role": role, "task": task, "model": model, "cad_phase": employee.get("cad_phase"), "cad_errors": cad_evidence.errors, "cad_resolved": sorted(cad_evidence.resolved), "status": "error" if cad_evidence.errors else "ok", "result": answer + ("\nCAD compiler diagnostics:\n" + "\n".join(cad_evidence.errors) if cad_evidence.errors else ""),
             **({'product_phase': employee['product_phase']} if employee.get('product_phase') else {}),
@@ -1609,7 +1648,7 @@ async def _plan_round(
         "Поле model - строго один из id моделей выше. questions: 1-3 штуки, у каждого 2-6 коротких options."
     )
     prompt += ('\nКаждому сотруднику добавь work_kind: classify (классификация текста), extract_text (извлечение полей из текста), '
-        'file_operation (копирование/преобразование/встраивание готовых файлов), small_edit (ограниченная небольшая правка), '
+        'file_operation (чтение/копирование/преобразование/встраивание готовых файлов), small_edit (ограниченная небольшая правка), '
         'research, expert или build. Это смысл этапа, а не название инструмента. '
         'Для classify/extract_text используй glm-5.3-flash, если он доступен и не нужны изображения; '
         'для простых file_operation/small_edit — тоже glm-5.3-flash. Сложные этапы оставляй сильной модели.\n')
@@ -1896,6 +1935,15 @@ async def _answer_directly(
             # One writer reads sources and answers; no planner/employee/composer copies.
             model = DIRECT_ANSWER_MODEL
             call_options['force_web_search'] = True
+    from app.services.desktop_context import desktop_executor
+    from app.services.model_registry import production_workers
+    if (not compact_kind and model == DIRECT_ANSWER_MODEL and desktop_executor.get() is None
+            and not packed_has_images(messages) and FILE_READER_MODEL in production_workers()
+            and quick_file_read(task, task, _extract_document_context(messages))
+            and FILE_READER_MODEL in _employee_models(user_id)):
+        model = FILE_READER_MODEL
+        call_options = {'use_tools': True, 'allowed_tools': FILE_READER_TOOLS,
+                        'use_skills': False, 'max_tool_loops': 6}
     spec = model_spec(model)
     response_fn = get_chat_response
     if spec and spec.provider == 'openrouter':
@@ -2157,6 +2205,12 @@ async def _run_director(
 
     from app.services.task_checkpoints import resumed_journal, save as save_checkpoint
     journal: List[Dict[str, Any]] = list(resumed_journal.get() or [])
+    if not journal and not place_request and desktop_executor.get() is None and not document_context and not packed_has_images(messages):
+        from app.services.cad_plate import plate_request, respond as respond_cad_plate
+        if plate_request(user_text):
+            cad_result = await respond_cad_plate(user_text, user_id)
+            if cad_result is not None:
+                return cad_result
     if not document_context and not packed_has_images(messages):
         from app.services.text_document import respond as respond_text_document
         document_result = await respond_text_document(messages, user_text, user_id)
@@ -2170,6 +2224,27 @@ async def _run_director(
     # Asked before a revision rewrites user_text with the old brief, which always looks like "build a site".
     asked_new_product = is_product_request(user_text) and not any(entry.get('product_id') for entry in journal)
     turn_has_images = packed_has_images(messages) or _turn_has_images(user_id)
+    if not journal and not place_request and desktop_executor.get() is not None and not cad_extensions:
+        from studio_router import get_image_response
+
+        rendered = await get_image_response(messages, user_text, user_id, status_msg, reference_only=True)
+        if rendered is not None:
+            return rendered
+    if not journal and not place_request and desktop_executor.get() is None:
+        from app.services.photo_cad import build_from_reference, generate, requested
+
+        if requested(user_text, turn_has_images):
+            from conversations import conversation_manager
+
+            references = conversation_manager.vision_parts_for_chat(user_id, 'фото референса')
+            if references:
+                result = await build_from_reference(
+                    user_text, user_id, references, _employee_models(user_id), generate,
+                    lambda: _new_files(user_id, started),
+                    lambda label: _update_status(status_msg, label, 'work'),
+                )
+                if result is not None:
+                    return result
     from app.services.response_policy import compact_answer_kind
     compact_kind = compact_answer_kind(user_text, web_required=needs_research(user_text, turn_has_images), messages=messages)
     if (compact_kind and not journal and not workspaces.get() and not document_context
@@ -2189,10 +2264,10 @@ async def _run_director(
     text_followup = bounded_text_revision(user_text, messages) and not (document_context or turn_has_images)
     simple_without_project = not workspaces.get() and (text_followup or _is_light_task(user_text, document_context, turn_has_images, user_id))
     projects = list(workspaces.get() or [])
-    bounded_patch = (economy_enabled() and bounded_code_change(user_text) and not journal
+    bounded_patch = (economy_enabled() and bounded_code_change(user_text) and not _diagram_build(user_text) and not journal
                      and not projects and not turn_has_images and not cad_extensions
                      and not place_request)
-    local_fix = (desktop_executor.get() is not None and not cad_extensions and not journal
+    local_fix = (desktop_executor.get() is not None and not _diagram_build(user_text) and not cad_extensions and not journal
                  and not bounded_patch and not place_request and local_project_change(user_text))
     routed = {'action': 'defer', 'goal': '', 'workspace_id': ''}
     if desktop_executor.get() is None and not place_request and not cad_extensions and not bounded_patch:
